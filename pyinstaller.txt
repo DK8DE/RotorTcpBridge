@@ -1,0 +1,4 @@
+pyinstaller --noconfirm --clean --windowed --name RotorTcpBridge `
+  --icon "rotortcpbridge\rotor.ico" `
+  --add-data "rotortcpbridge\rotor.ico;rotortcpbridge" `
+  run.py

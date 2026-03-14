@@ -1,0 +1,460 @@
+"""Hauptfenster der RotorTcpBridge-Anwendung."""
+from __future__ import annotations
+
+from PySide6.QtWidgets import (
+    QSizePolicy,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QGroupBox,
+    QLabel,
+    QPushButton,
+    QLineEdit,
+    QFormLayout,
+)
+from PySide6.QtCore import Qt, QTimer
+
+from ..app_icon import get_app_icon
+from ..i18n import t
+from ..version import APP_VERSION
+from ..compass.compass_window import CompassWindow
+from .statistics_window import StatisticsWindow
+from .led_widget import Led
+from .log_window import LogWindow
+from .settings_window import SettingsWindow
+from .weather_window import WeatherWindow
+from .about_window import AboutWindow
+from .command_buttons_window import CommandButtonsWindow
+from .ui_utils import px_to_dip
+from .theme import apply_theme_mode
+from .popup_handlers import ErrorPopupHandler, WarningPopupHandler
+from .axis_widget import _make_axis_panel, fill_axis_panel
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, cfg: dict, controller, pst_server, hw_client, save_cfg_cb, logbuf):
+        super().__init__()
+        self.cfg = cfg
+        self.ctrl = controller
+        self.pst = pst_server
+        self.hw = hw_client
+        self.save_cfg_cb = save_cfg_cb
+        self.logbuf = logbuf
+        self._hw_off_since: float | None = None
+
+        self.setWindowTitle(f"{t('app.title')} v{APP_VERSION}")
+        self.setWindowIcon(get_app_icon())
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
+        root = QWidget()
+        self.setCentralWidget(root)
+        main = QVBoxLayout(root)
+
+        top = QHBoxLayout()
+        self.btn_open_compass = QPushButton(t("main.btn_compass"))
+        self.btn_open_weather = QPushButton(t("main.btn_weather"))
+        self.btn_open_weather.setVisible(False)
+        self.btn_open_commands = QPushButton(t("main.btn_commands"))
+        self.btn_open_settings = QPushButton(t("main.btn_settings"))
+        self.btn_toggle_log = QPushButton(t("main.btn_log"))
+        self.btn_about = QPushButton("?")
+        self.btn_about.setFixedWidth(px_to_dip(self, 28))
+        self.btn_about.setToolTip(t("about.title"))
+        top.addWidget(self.btn_open_compass)
+        top.addWidget(self.btn_open_commands)
+        top.addWidget(self.btn_open_settings)
+        top.addWidget(self.btn_toggle_log)
+        top.addWidget(self.btn_open_weather)
+        top.addWidget(self.btn_about)
+        top.addStretch(1)
+        main.addLayout(top)
+
+        gb_srv = QGroupBox(t("main.group_server"))
+        main.addWidget(gb_srv)
+        srv_form = QFormLayout(gb_srv)
+
+        led_d = px_to_dip(self, 12)
+        self.led_pst = Led(led_d, self)
+        self.led_pst_conn = Led(led_d, self)
+        self.led_hw = Led(led_d, self)
+
+        def _led_wrap(led) -> QWidget:
+            w = QWidget()
+            l = QVBoxLayout(w)
+            l.setContentsMargins(0, 2, 0, 0)
+            l.addWidget(led)
+            return w
+
+        self.ed_pst = QLineEdit()
+        self.ed_pst.setReadOnly(True)
+        self.ed_hw = QLineEdit()
+        self.ed_hw.setReadOnly(True)
+
+        pst_row = QHBoxLayout()
+        pst_row.setContentsMargins(0, 0, 0, 0)
+        pst_row.setSpacing(px_to_dip(self, 6))
+        pst_row.addWidget(_led_wrap(self.led_pst))
+        pst_row.addWidget(self.ed_pst, 1)
+        pst_row_w = QWidget()
+        pst_row_w.setLayout(pst_row)
+        srv_form.addRow(t("main.srv_pst_label"), pst_row_w)
+
+        hw_row = QHBoxLayout()
+        hw_row.setContentsMargins(0, 0, 0, 0)
+        hw_row.setSpacing(px_to_dip(self, 6))
+        hw_row.addWidget(_led_wrap(self.led_hw))
+        hw_row.addWidget(self.ed_hw, 1)
+        hw_row_w = QWidget()
+        hw_row_w.setLayout(hw_row)
+        srv_form.addRow(t("main.srv_hw_label"), hw_row_w)
+
+        pst_conn_row = QHBoxLayout()
+        pst_conn_row.setContentsMargins(0, 0, 0, 0)
+        pst_conn_row.setSpacing(px_to_dip(self, 6))
+        pst_conn_row.addWidget(_led_wrap(self.led_pst_conn))
+        pst_conn_row.addWidget(QLabel(t("main.srv_pst_conn_text")))
+        pst_conn_row.addStretch(1)
+        pst_conn_row_w = QWidget()
+        pst_conn_row_w.setLayout(pst_conn_row)
+        srv_form.addRow(t("main.srv_pst_conn_label"), pst_conn_row_w)
+
+        try:
+            srv_form.setVerticalSpacing(px_to_dip(self, 4))
+            srv_form.setContentsMargins(px_to_dip(self, 8), px_to_dip(self, 4), px_to_dip(self, 8), px_to_dip(self, 4))
+        except Exception:
+            pass
+
+        slave_az = self.cfg.get("rotor_bus", {}).get("slave_az", "?")
+        slave_el = self.cfg.get("rotor_bus", {}).get("slave_el", "?")
+        self.gb_az = QGroupBox(f"AZ ID:{slave_az}")
+        self.gb_el = QGroupBox(f"EL ID:{slave_el}")
+        main.addWidget(self.gb_az)
+        main.addWidget(self.gb_el)
+
+        self.az_fields = _make_axis_panel(self.gb_az, "az", self.ctrl)
+        self.el_fields = _make_axis_panel(self.gb_el, "el", self.ctrl)
+
+        gb_act = QGroupBox(t("main.group_actions"))
+        main.addWidget(gb_act)
+        gb_act.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        gb_act.setMaximumHeight(px_to_dip(self, 140))
+        actions = QVBoxLayout(gb_act)
+
+        self.btn_ref = QPushButton(t("main.btn_ref"))
+        self.btn_stop = QPushButton(t("main.btn_stop"))
+        self.btn_delwarn = QPushButton(t("main.btn_delwarn"))
+        self.btn_statistics = QPushButton(t("main.btn_statistics"))
+        act_btn_row = QHBoxLayout()
+        act_btn_row.addWidget(self.btn_ref)
+        act_btn_row.addWidget(self.btn_stop)
+        act_btn_row.addWidget(self.btn_delwarn)
+        act_btn_row.addWidget(self.btn_statistics)
+        actions.addLayout(act_btn_row)
+
+        self.btn_ref.clicked.connect(lambda: self.ctrl.reference_all(True))
+        self.btn_stop.clicked.connect(self.ctrl.stop_all)
+        self.btn_delwarn.clicked.connect(self.ctrl.clear_warnings_all)
+        self.btn_statistics.clicked.connect(self._open_statistics)
+
+        self.t = QTimer(self)
+        self.t.timeout.connect(self._tick)
+        self.t.start(100)
+
+        self._log_win = LogWindow(self.logbuf, parent=None)
+        self._settings_win = SettingsWindow(
+            self.cfg, self.ctrl, self.pst, self.hw, self.save_cfg_cb, self.logbuf,
+            after_apply_cb=self._after_settings_applied,
+            rebuild_ui_cb=self._rebuild_all_windows,
+            parent=None,
+        )
+
+        self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+        self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
+        self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
+        self._commands_win = CommandButtonsWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+
+        self.btn_open_compass.clicked.connect(self._open_compass)
+        self.btn_open_weather.clicked.connect(self._open_weather)
+        self.btn_open_commands.clicked.connect(self._open_commands)
+        self.btn_open_settings.clicked.connect(self._open_settings)
+        self.btn_toggle_log.clicked.connect(self._toggle_log)
+        self.btn_about.clicked.connect(self._open_about)
+
+        self._fixed_w = None
+        self._fixed_h = None
+        self._last_axis_vis: tuple[bool, bool] | None = None
+        self._error_popup = ErrorPopupHandler()
+        self._warning_popup = WarningPopupHandler()
+
+        apply_theme_mode(self.cfg)
+        self._update_axis_visibility()
+        self._apply_fixed_mainwindow_size()
+
+    def _open_about(self):
+        dlg = AboutWindow(parent=self)
+        dlg.exec()
+
+    def _open_settings(self):
+        self._settings_win.show()
+        self._settings_win.raise_()
+        self._settings_win.activateWindow()
+
+    def _toggle_log(self):
+        if self._log_win.isVisible():
+            self._log_win.hide()
+        else:
+            self._log_win.show()
+            self._log_win.raise_()
+            self._log_win.activateWindow()
+            self._log_win.refresh()
+
+    def _retranslate_ui(self):
+        """Alle Texte des Hauptfensters auf die aktuelle Sprache aktualisieren."""
+        self.setWindowTitle(f"{t('app.title')} v{APP_VERSION}")
+        self.btn_about.setToolTip(t("about.title"))
+        self.btn_open_compass.setText(t("main.btn_compass"))
+        self.btn_open_weather.setText(t("main.btn_weather"))
+        self.btn_open_commands.setText(t("main.btn_commands"))
+        self.btn_open_settings.setText(t("main.btn_settings"))
+        self.btn_toggle_log.setText(t("main.btn_log"))
+        self.btn_ref.setText(t("main.btn_ref"))
+        self.btn_stop.setText(t("main.btn_stop"))
+        self.btn_delwarn.setText(t("main.btn_delwarn"))
+        self.btn_statistics.setText(t("main.btn_statistics"))
+
+    def _rebuild_all_windows(self):
+        """Alle Fenster schließen und neu erstellen (nach Sprachänderung)."""
+        try:
+            for attr in ("_log_win", "_compass_win", "_statistics_win", "_weather_win", "_commands_win"):
+                w = getattr(self, attr, None)
+                if w is not None:
+                    try:
+                        w.close()
+                    except Exception:
+                        pass
+            from ..compass.compass_window import CompassWindow
+            from .statistics_window import StatisticsWindow
+            from .weather_window import WeatherWindow
+            from .command_buttons_window import CommandButtonsWindow
+            from .log_window import LogWindow
+            self._log_win = LogWindow(self.logbuf, parent=None)
+            self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+            self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
+            self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
+            self._commands_win = CommandButtonsWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+            self._retranslate_ui()
+        except Exception:
+            pass
+        self._after_settings_applied()
+        # Einstellungsfenster verzögert neu erstellen (wir befinden uns noch in seinem Aufrufstack)
+        QTimer.singleShot(900, self._rebuild_settings_win)
+
+    def _rebuild_settings_win(self):
+        """Einstellungsfenster mit neuer Sprache neu erstellen."""
+        try:
+            old = getattr(self, "_settings_win", None)
+            if old is not None:
+                try:
+                    old.close()
+                except Exception:
+                    pass
+            self._settings_win = SettingsWindow(
+                self.cfg, self.ctrl, self.pst, self.hw, self.save_cfg_cb, self.logbuf,
+                after_apply_cb=self._after_settings_applied,
+                rebuild_ui_cb=self._rebuild_all_windows,
+                parent=None,
+            )
+        except Exception:
+            pass
+
+    def _after_settings_applied(self):
+        apply_theme_mode(self.cfg)
+        self._update_groupbox_titles()
+        self._update_axis_visibility()
+        self._apply_fixed_mainwindow_size()
+        if hasattr(self, "_compass_win") and self._compass_win.isVisible():
+            self._compass_win._update_groupbox_titles()
+            if hasattr(self._compass_win, "_apply_label_colors_from_palette"):
+                self._compass_win._apply_label_colors_from_palette()
+
+    def _open_compass(self):
+        try:
+            if hasattr(self._compass_win, "_update_groupbox_titles"):
+                self._compass_win._update_groupbox_titles()
+            if hasattr(self._compass_win, "refresh_visibility"):
+                self._compass_win.refresh_visibility()
+            self._compass_win.show()
+            self._compass_win.raise_()
+            self._compass_win.activateWindow()
+        except Exception:
+            pass
+
+    def _open_weather(self):
+        try:
+            self._weather_win.show()
+            self._weather_win.raise_()
+            self._weather_win.activateWindow()
+        except Exception:
+            pass
+
+    def _open_commands(self):
+        try:
+            if hasattr(self._commands_win, "_refresh_dst_dropdown"):
+                self._commands_win._refresh_dst_dropdown()
+            self._commands_win.show()
+            self._commands_win.raise_()
+            self._commands_win.activateWindow()
+        except Exception:
+            pass
+
+    def _open_statistics(self):
+        try:
+            self._statistics_win.show()
+            self._statistics_win.raise_()
+            self._statistics_win.activateWindow()
+        except Exception:
+            pass
+
+    def _update_groupbox_titles(self):
+        slave_az = self.cfg.get("rotor_bus", {}).get("slave_az", "?")
+        slave_el = self.cfg.get("rotor_bus", {}).get("slave_el", "?")
+        self.gb_az.setTitle(f"AZ ID:{slave_az}")
+        self.gb_el.setTitle(f"EL ID:{slave_el}")
+
+    def _update_axis_visibility(self):
+        az_on = bool(getattr(self.ctrl, "enable_az", True))
+        el_on = bool(getattr(self.ctrl, "enable_el", True))
+        self.gb_az.setVisible(az_on)
+        self.gb_el.setVisible(el_on)
+        try:
+            if hasattr(self, "_compass_win") and hasattr(self._compass_win, "refresh_visibility"):
+                self._compass_win.refresh_visibility()
+        except Exception:
+            pass
+
+    def _update_wind_visibility(self):
+        wind_known = bool(getattr(self.ctrl, "wind_enabled_known", False))
+        wind_on = bool(getattr(self.ctrl, "wind_enabled", False)) if wind_known else False
+        # Fallback nur wenn GETWINDENABLE unbekannt (Rotor implementiert es nicht):
+        # Wind anzeigen, wenn Winddaten empfangen wurden.
+        if not wind_on and not wind_known and hasattr(self.ctrl, "az"):
+            tel = getattr(self.ctrl.az, "telemetry", None)
+            if tel is not None:
+                has_wind = (
+                    getattr(tel, "wind_kmh", None) is not None
+                    or getattr(tel, "wind_dir_deg", None) is not None
+                )
+                if has_wind:
+                    wind_on = True
+        try:
+            w1 = self.az_fields.get("wind_pair_w")
+            if w1 is not None:
+                w1.setVisible(wind_on)
+            w2 = self.az_fields.get("winddir_pair_w")
+            if w2 is not None:
+                w2.setVisible(wind_on)
+            w3 = self.az_fields.get("wind_bft_pair_w")
+            if w3 is not None:
+                w3.setVisible(wind_on)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "btn_open_weather"):
+                self.btn_open_weather.setVisible(wind_on)
+            if (not wind_on) and hasattr(self, "_weather_win") and self._weather_win.isVisible():
+                self._weather_win.hide()
+        except Exception:
+            pass
+
+    def _apply_fixed_mainwindow_size(self):
+        width = px_to_dip(self, 500)
+        try:
+            lay = self.centralWidget().layout()
+            if lay:
+                lay.invalidate()
+                lay.activate()
+        except Exception:
+            pass
+        height = int(self.sizeHint().height()) + px_to_dip(self, 10)
+        if height < px_to_dip(self, 300):
+            height = px_to_dip(self, 300)
+        if self._fixed_w == width and self._fixed_h == height:
+            return
+        self._fixed_w = width
+        self._fixed_h = height
+        self.setFixedSize(width, height)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._update_axis_visibility()
+        self._apply_fixed_mainwindow_size()
+
+    def closeEvent(self, event):
+        try:
+            for w in (getattr(self, "_log_win", None), getattr(self, "_settings_win", None),
+                     getattr(self, "_compass_win", None), getattr(self, "_statistics_win", None),
+                     getattr(self, "_weather_win", None), getattr(self, "_commands_win", None)):
+                try:
+                    if w is not None:
+                        w.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+    def _tick(self):
+        import time as _time
+        self.ctrl.tick_polling()
+
+        pst_on = bool(self.pst.running)
+        hw_on = bool(self.hw.is_connected())
+        self.led_pst.set_state(pst_on)
+        try:
+            last_rx = float(getattr(self.pst, "last_rx_ts", 0.0) or 0.0)
+            pst_recent = pst_on and (last_rx > 0.0) and ((_time.time() - last_rx) <= 2.0)
+        except Exception:
+            pst_recent = False
+        try:
+            self.led_pst_conn.set_state(bool(pst_recent))
+        except Exception:
+            pass
+        try:
+            now = float(_time.time())
+            if hw_on:
+                self._hw_off_since = None
+                self.led_hw.set_state(True)
+            else:
+                if self._hw_off_since is None:
+                    self._hw_off_since = now
+                self.led_hw.set_state((now - float(self._hw_off_since)) < 3.0)
+        except Exception:
+            self.led_hw.set_state(hw_on)
+
+        self.ed_pst.setText(f"{t('main.pst_running') if pst_on else t('main.pst_stopped')}  AZ:{self.pst.port_az}  EL:{self.pst.port_el}  Host:{self.pst.host}")
+        mode = self.cfg["hardware_link"].get("mode", "tcp")
+        if mode == "tcp":
+            ip = self.cfg["hardware_link"].get("tcp_ip", "")
+            port = self.cfg["hardware_link"].get("tcp_port", "")
+            self.ed_hw.setText(f"{t('main.hw_connected') if hw_on else t('main.hw_disconnected')}  TCP {ip}:{port}")
+        else:
+            com = self.cfg["hardware_link"].get("com_port", "")
+            self.ed_hw.setText(f"{t('main.hw_connected') if hw_on else t('main.hw_disconnected')}  COM {com} @ 115200")
+
+        self._update_axis_visibility()
+        self._update_wind_visibility()
+        axis_vis = (bool(self.gb_az.isVisible()), bool(self.gb_el.isVisible()))
+        if self._last_axis_vis != axis_vis:
+            self._last_axis_vis = axis_vis
+            self._apply_fixed_mainwindow_size()
+        if self.gb_az.isVisible():
+            fill_axis_panel(self.az_fields, self.ctrl.az)
+            self._error_popup.maybe_show(self, "AZ", getattr(self.ctrl.az, "error_code", 0))
+            self._warning_popup.maybe_show(self, "AZ", self.ctrl.az)
+        if self.gb_el.isVisible():
+            fill_axis_panel(self.el_fields, self.ctrl.el)
+            self._error_popup.maybe_show(self, "EL", getattr(self.ctrl.el, "error_code", 0))
+            self._warning_popup.maybe_show(self, "EL", self.ctrl.el)
+
+        if self._log_win.isVisible():
+            self._log_win.refresh()

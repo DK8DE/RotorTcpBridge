@@ -1,0 +1,30 @@
+# Virtuelle Umgebung
+.venv/
+venv/
+env/
+
+# PyInstaller Build-Artefakte
+dist/
+build/
+*.spec.bak
+
+# Python Bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Paket-Metadaten
+*.egg-info/
+.eggs/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Installer-Output (wird gebaut, nicht getrackt)
+dist/installer/
+
+# Sonstige Archiv-Dateien
+*.zip

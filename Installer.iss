@@ -1,10 +1,10 @@
 #define MyAppName "RotorTcpBridge"
-#define MyAppPublisher "Joerg DK8DE"
+#define MyAppVersion "1.0"
+#define MyAppPublisher "Joerg Koerner DK8DE"
+#define MyAppURL "https://github.com/dk8de/RotorTcpBridge"
 #define MySourceDir "D:\\Rotor\\RotorTcpBridge\\dist\\RotorTcpBridge"
 #define MyProjDir "D:\\Rotor\\RotorTcpBridge"
 #define MyExeName "RotorTcpBridge.exe"
-#define MyExePath MySourceDir + "\\" + MyExeName
-#define MyAppVersion GetVersionNumbersString(MyExePath)
 #define MyAppIcon "D:\\Rotor\\RotorTcpBridge\\dist\\RotorTcpBridge\\_internal\\rotortcpbridge\\rotor.ico"
 #define MyInternalDir MySourceDir + "\\_internal\\rotortcpbridge"
 
@@ -14,6 +14,14 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+AppSupportURL={#MyAppURL}
+AppUpdatesURL={#MyAppURL}
+VersionInfoVersion={#MyAppVersion}.0.0
+VersionInfoProductName={#MyAppName}
+VersionInfoProductVersion={#MyAppVersion}.0.0
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription={#MyAppName} Setup
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes

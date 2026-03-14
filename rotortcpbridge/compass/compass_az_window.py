@@ -59,55 +59,25 @@ class CompassWidget(QWidget):
         self._heatmap_offset_deg: float = 0.0
         self._top_center_widget: Optional[QWidget] = None
 
-        # Ref/Fährt: Wort zuerst, dann LED (LED 3px unter Schriftbasis)
-        led_d = px_to_dip(self, 13)
-        self._ref_led = Led(led_d, self)
-        ref_led_wrap = QWidget(self)
-        ref_led_layout = QVBoxLayout(ref_led_wrap)
-        ref_led_layout.setContentsMargins(0, 5, 0, 0)
-        ref_led_layout.addWidget(self._ref_led)
-        self._ref_lbl = QLabel(t("axis.ref_label") + ":")
-        self._ref_lbl.setStyleSheet("font-size: 16px; font-weight: bold;")
-        self._ref_lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-        self._ref_row = QWidget(self)
-        ref_h = QHBoxLayout(self._ref_row)
-        ref_h.setContentsMargins(0, 0, 0, 0)
-        ref_h.setSpacing(4)
-        ref_h.addWidget(ref_led_wrap, 0)
-        ref_h.addWidget(self._ref_lbl, 0)
-        self._moving_led = Led(led_d, self)
-        mov_led_wrap = QWidget(self)
-        mov_led_layout = QVBoxLayout(mov_led_wrap)
-        mov_led_layout.setContentsMargins(0, 5, 0, 0)
-        mov_led_layout.addWidget(self._moving_led)
-        self._moving_lbl = QLabel(t("axis.moving_label"))
-        self._moving_lbl.setStyleSheet("font-size: 16px; font-weight: bold;")
-        self._moving_lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-        self._moving_row = QWidget(self)
-        mov_h = QHBoxLayout(self._moving_row)
-        mov_h.setContentsMargins(0, 0, 0, 0)
-        mov_h.setSpacing(4)
-        mov_h.addWidget(mov_led_wrap, 0)
-        mov_h.addWidget(self._moving_lbl, 0)
-        self._online_led = Led(led_d, self)
-        on_led_wrap = QWidget(self)
-        on_led_layout = QVBoxLayout(on_led_wrap)
-        on_led_layout.setContentsMargins(0, 5, 0, 0)
-        on_led_layout.addWidget(self._online_led)
-        self._online_lbl = QLabel(t("axis.online_label") + ":")
-        self._online_lbl.setStyleSheet("font-size: 16px; font-weight: bold;")
-        self._online_lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-        self._online_row = QWidget(self)
-        on_h = QHBoxLayout(self._online_row)
-        on_h.setContentsMargins(0, 0, 0, 0)
-        on_h.setSpacing(4)
-        on_h.addWidget(on_led_wrap, 0)
-        on_h.addWidget(self._online_lbl, 0)
+        self._led_d = px_to_dip(self, 13)
+        lbl_style = "font-size: 16px; font-weight: bold;"
 
-        # LED-Zeilen sind immer sichtbar – unabhängig vom Windsensor
-        self._ref_row.setVisible(True)
-        self._moving_row.setVisible(True)
-        self._online_row.setVisible(True)
+        self._moving_led = Led(self._led_d, self)
+        self._moving_lbl = QLabel(t("axis.moving_label"), self)
+        self._moving_lbl.setStyleSheet(lbl_style)
+
+        self._online_led = Led(self._led_d, self)
+        self._online_lbl = QLabel(t("axis.online_label"), self)
+        self._online_lbl.setStyleSheet(lbl_style)
+
+        self._ref_led = Led(self._led_d, self)
+        self._ref_lbl = QLabel(t("axis.ref_label"), self)
+        self._ref_lbl.setStyleSheet(lbl_style)
+
+        for w in (self._moving_led, self._moving_lbl,
+                  self._online_led, self._online_lbl,
+                  self._ref_led,    self._ref_lbl):
+            w.setVisible(True)
 
         self.setMinimumSize(280, 280)
 
@@ -146,18 +116,24 @@ class CompassWidget(QWidget):
             y = 0
             self._top_center_widget.setGeometry(x, y, max(w, 120), max(h, 22))
             self._top_center_widget.raise_()
-        # Moving / Online / Ref – alle drei links, von oben nach unten
-        line3_y = int(line2_y + 22)
-        line4_y = int(line3_y + 22)
-        self._moving_row.adjustSize()
-        self._moving_row.setGeometry(margin, line2_y, self._moving_row.width(), self._moving_row.height())
-        self._moving_row.raise_()
-        self._online_row.adjustSize()
-        self._online_row.setGeometry(margin, line3_y, self._online_row.width(), self._online_row.height())
-        self._online_row.raise_()
-        self._ref_row.adjustSize()
-        self._ref_row.setGeometry(margin, line4_y, self._ref_row.width(), self._ref_row.height())
-        self._ref_row.raise_()
+        # Moving / Online / Ref – absolute Positionierung, LED-Spalte exakt auf einer Linie
+        led_d  = self._led_d
+        lbl_x  = margin + led_d + 4   # Label beginnt immer direkt nach der LED
+        row_h  = 22
+        line3_y = line2_y + row_h
+        line4_y = line3_y + row_h
+
+        self._moving_led.setGeometry(margin, line2_y + 5, led_d, led_d)
+        self._moving_lbl.setGeometry(lbl_x,  line2_y,     200,   row_h)
+        self._moving_led.raise_(); self._moving_lbl.raise_()
+
+        self._online_led.setGeometry(margin, line3_y + 5, led_d, led_d)
+        self._online_lbl.setGeometry(lbl_x,  line3_y,     200,   row_h)
+        self._online_led.raise_(); self._online_lbl.raise_()
+
+        self._ref_led.setGeometry(margin, line4_y + 5, led_d, led_d)
+        self._ref_lbl.setGeometry(lbl_x,  line4_y,     200,   row_h)
+        self._ref_led.raise_(); self._ref_lbl.raise_()
 
     def set_current_deg(self, deg: Optional[float]) -> None:
         self._current_deg = None if deg is None else wrap_deg(deg)

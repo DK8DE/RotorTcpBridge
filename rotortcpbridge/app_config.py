@@ -64,7 +64,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
       # Lokal gespeicherte Antennen-Namen (3 Stück) für Einstellungen.
       "antenna_names": ["Antenne 1", "Antenne 2", "Antenne 3"],
       # Sprache der Benutzeroberfläche: "de" oder "en"
-      "language": "de"
+      "language": "de",
+      # UDP UcxLog: Bei aktiviertem Häkchen lauscht die App auf 127.0.0.1:12040
+      # und nimmt XML-Positionsdaten von UcxLog entgegen (<Rotor><Azimut>…</Azimut></Rotor>).
+      "udp_ucxlog_enabled": False,
+      "udp_ucxlog_port": 12040
   }
 }
 

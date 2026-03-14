@@ -9,6 +9,7 @@ from .logutil import LogBuffer
 from .hardware_client import HardwareClient
 from .rotor_controller import RotorController
 from .pst_server import PstDualServer
+from .udp_ucxlog import UdpUcxLogListener
 from .ui.main_window import MainWindow
 
 
@@ -43,6 +44,14 @@ def main():
     # PST-Server direkt beim Programmstart starten
     pst.start()
 
+    # UDP UcxLog-Listener (wenn aktiviert)
+    udp_ucxlog = UdpUcxLogListener(ctrl, log)
+    ui_cfg = cfg.get("ui", {})
+    udp_ucxlog.start(
+        enabled=bool(ui_cfg.get("udp_ucxlog_enabled", False)),
+        port=int(ui_cfg.get("udp_ucxlog_port", 12040)),
+    )
+
     # Beim Start einmal prüfen, ob die Rotoren bereits referenziert sind
     ctrl.check_ref_once()
 
@@ -56,11 +65,12 @@ def main():
     app = QApplication(sys.argv)
     # App-Icon global setzen (wirkt als Default für alle Fenster)
     app.setWindowIcon(get_app_icon())
-    w = MainWindow(cfg, ctrl, pst, hw, save_cfg_cb, log)
+    w = MainWindow(cfg, ctrl, pst, hw, save_cfg_cb, log, udp_ucxlog=udp_ucxlog)
     w.resize(1100, 650)
     w.show()
 
     rc = app.exec()
+    udp_ucxlog.stop()
     log.close()
     sys.exit(rc)
 

@@ -1,6 +1,10 @@
 """Log-Fenster mit Filter und Pause."""
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
@@ -58,6 +62,10 @@ class LogWindow(QDialog):
         self.btn_scroll = QPushButton(t("log.btn_scroll_pause"))
         self.btn_scroll.clicked.connect(self._toggle_scroll)
         btn_row.addWidget(self.btn_scroll, 0)
+        btn_open = QPushButton(t("log.btn_open_folder"))
+        btn_open.setToolTip(t("log.btn_open_folder_tooltip"))
+        btn_open.clicked.connect(self._open_log_folder)
+        btn_row.addWidget(btn_open, 0)
         btn_row.addStretch(1)
         btn_close = QPushButton(t("log.btn_close"))
         btn_close.clicked.connect(self.close)
@@ -133,6 +141,22 @@ class LogWindow(QDialog):
                 sb.setValue(sb.maximum())
             except Exception:
                 pass
+
+    def _open_log_folder(self) -> None:
+        """Log-Ordner im Explorer öffnen und die Log-Datei markieren."""
+        try:
+            log_p = Path(self.logbuf._log_path)
+            if sys.platform == "win32":
+                if log_p.exists():
+                    subprocess.Popen(["explorer", "/select,", str(log_p)])
+                else:
+                    subprocess.Popen(["explorer", str(log_p.parent)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(log_p.parent)])
+            else:
+                subprocess.Popen(["xdg-open", str(log_p.parent)])
+        except Exception:
+            pass
 
     def _on_filter_changed(self, text: str) -> None:
         self._filter_text = str(text or "")

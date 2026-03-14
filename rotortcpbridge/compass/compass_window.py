@@ -138,6 +138,28 @@ class CompassWindow(QDialog):
 
         row.addWidget(self.gb_el, 1)
 
+        # Favoriten-Zeile unter der POS-Zeile
+        fav_row = QHBoxLayout()
+        fav_row.setContentsMargins(7, 6, 7, 4)
+        self.cb_fav = QComboBox()
+        self.cb_fav.setMinimumWidth(180)
+        self.cb_fav.setEditable(False)
+        self.ed_fav_name = QLineEdit()
+        self.ed_fav_name.setPlaceholderText(t("compass.fav_name_placeholder"))
+        self.ed_fav_name.setMaxLength(15)
+        self.ed_fav_name.setFixedWidth(110)
+        self.btn_fav_save = QPushButton(t("compass.fav_btn_save"))
+        self.btn_fav_save.setAutoDefault(False)
+        self.btn_fav_save.setDefault(False)
+        self.btn_fav_delete = QPushButton(t("compass.fav_btn_delete"))
+        self.btn_fav_delete.setAutoDefault(False)
+        self.btn_fav_delete.setDefault(False)
+        fav_row.addWidget(self.cb_fav)
+        fav_row.addWidget(self.ed_fav_name)
+        fav_row.addWidget(self.btn_fav_save)
+        fav_row.addWidget(self.btn_fav_delete)
+        root.addLayout(fav_row, 0)
+
         self.btn_stop_az.clicked.connect(self._on_stop_az)
         self.btn_stop_el.clicked.connect(self._on_stop_el)
         self.btn_ref_az.clicked.connect(lambda: self.ctrl.reference_az(True))
@@ -153,6 +175,11 @@ class CompassWindow(QDialog):
         self.chk_strom_el.stateChanged.connect(self._on_strom_el_toggled)
         self.az_compass.targetPicked.connect(self._on_target_picked_az)
         self.el_compass.targetPicked.connect(self._on_target_picked_el)
+
+        self.cb_fav.activated.connect(self._on_fav_activated)
+        self.btn_fav_save.clicked.connect(self._on_fav_save)
+        self.btn_fav_delete.clicked.connect(self._on_fav_delete)
+        self._refresh_favorites_dropdown()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -294,6 +321,116 @@ class CompassWindow(QDialog):
         except Exception:
             pass
         self.el_compass.set_heatmap_visible(on)
+
+    def _get_favorites(self) -> list[dict]:
+        """Liefert Liste der gespeicherten Favoriten aus der Config."""
+        items = self.cfg.get("ui", {}).get("compass_favorites", [])
+        if not isinstance(items, list):
+            return []
+        out: list[dict] = []
+        for it in items:
+            if isinstance(it, dict) and "name" in it:
+                try:
+                    out.append({
+                        "name": str(it["name"])[:15],
+                        "az": float(it.get("az", 0.0)),
+                        "el": clamp_el(float(it.get("el", 0.0))),
+                    })
+                except (TypeError, ValueError):
+                    pass
+        return out
+
+    def _refresh_favorites_dropdown(self) -> None:
+        """Dropdown mit Favoriten füllen."""
+        favs = self._get_favorites()
+        self.cb_fav.blockSignals(True)
+        self.cb_fav.clear()
+        if not favs:
+            self.cb_fav.addItem(t("compass.fav_dropdown_placeholder"), None)
+        else:
+            for f in favs:
+                self.cb_fav.addItem(f"{f['name']} ({f['az']:.1f}°, {f['el']:.1f}°)", f)
+        self.cb_fav.blockSignals(False)
+
+    @Slot(int)
+    def _on_fav_activated(self, idx: int) -> None:
+        """Favorit ausgewählt → dorthin fahren."""
+        if idx < 0:
+            return
+        data = self.cb_fav.itemData(idx)
+        if not isinstance(data, dict) or "az" not in data or "el" not in data:
+            return
+        rotor_az = wrap_deg(float(data["az"]))
+        rotor_el = clamp_el(float(data["el"]))
+        self._stop_az_ts = None
+        self._stop_el_ts = None
+        off_az = self._get_antenna_offset_az()
+        az_display = wrap_deg(rotor_az + off_az)
+        self._target_az = rotor_az
+        self._target_el = rotor_el
+        self.az_compass.set_target_deg(az_display)
+        self.el_compass.set_target_deg(rotor_el)
+        self.ed_az_soll.setText(f"{az_display:.1f}")
+        self.ed_el_soll.setText(f"{rotor_el:.1f}")
+        # Nur set_az_deg/set_el_deg aufrufen – sie setzen moving nur für aktivierte Achsen.
+        # Vorher manuell moving=True zu setzen führte bei deaktivierter EL dazu, dass
+        # el.moving nie zurückgesetzt wurde (kein EL-Polling) → GETPOSDG blieb im Schnelltakt.
+        try:
+            self.ctrl.set_az_deg(rotor_az, force=True)
+            self.ctrl.set_el_deg(rotor_el, force=True)
+        except Exception:
+            pass
+
+    @Slot()
+    def _on_fav_save(self) -> None:
+        """Aktuelle Position unter dem eingegebenen Namen speichern."""
+        name = str(self.ed_fav_name.text()).strip()
+        if not name:
+            return
+        name = name[:15]
+        try:
+            az_d10 = getattr(self.ctrl.az, "pos_d10", None)
+            el_d10 = getattr(self.ctrl.el, "pos_d10", None)
+        except Exception:
+            return
+        if az_d10 is None:
+            return
+        az_deg = float(az_d10) / 10.0
+        el_deg = clamp_el(float(el_d10 or 0) / 10.0)  # EL 0 bei nur AZ
+        fav = {"name": name[:15], "az": wrap_deg(az_deg), "el": el_deg}
+        if "ui" not in self.cfg:
+            self.cfg["ui"] = {}
+        favs = self._get_favorites()
+        favs.append(fav)
+        self.cfg["ui"]["compass_favorites"] = favs
+        try:
+            self.save_cfg_cb(self.cfg)
+        except Exception:
+            pass
+        self._refresh_favorites_dropdown()
+        self.ed_fav_name.clear()
+
+    @Slot()
+    def _on_fav_delete(self) -> None:
+        """Ausgewählten Favoriten löschen."""
+        idx = self.cb_fav.currentIndex()
+        if idx < 0:
+            return
+        data = self.cb_fav.itemData(idx)
+        if data is None:  # Placeholder bei leerer Liste
+            return
+        favs = self._get_favorites()
+        if idx >= len(favs):
+            return
+        favs.pop(idx)
+        if "ui" not in self.cfg:
+            self.cfg["ui"] = {}
+        self.cfg["ui"]["compass_favorites"] = favs
+        try:
+            self.save_cfg_cb(self.cfg)
+        except Exception:
+            pass
+        self._refresh_favorites_dropdown()
 
     _COMPASS_INFO_STYLE = "font-size: 12pt; font-weight: 700;"
 

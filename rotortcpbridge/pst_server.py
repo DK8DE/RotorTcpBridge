@@ -51,19 +51,21 @@ class PstAxisServer:
         self._listen_sock = None
 
     def _apply_set(self, cmd):
-        # Je nach Port nur AZ oder nur EL setzen
+        # Je nach Port nur AZ oder nur EL setzen; deaktivierte Achsen ignorieren
         if self.axis == "az":
-            if cmd.az_d10 is not None:
+            if cmd.az_d10 is not None and bool(getattr(self.ctrl, "enable_az", True)):
                 self.ctrl.set_az_from_spid(cmd.az_d10)
         else:
-            if cmd.el_d10 is not None:
+            if cmd.el_d10 is not None and bool(getattr(self.ctrl, "enable_el", True)):
                 self.ctrl.set_el_from_spid(cmd.el_d10)
 
     def _apply_stop(self):
         if self.axis == "az":
-            self.ctrl.stop_az()
+            if bool(getattr(self.ctrl, "enable_az", True)):
+                self.ctrl.stop_az()
         else:
-            self.ctrl.stop_el()
+            if bool(getattr(self.ctrl, "enable_el", True)):
+                self.ctrl.stop_el()
 
     def _loop(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -128,9 +130,12 @@ class PstAxisServer:
                             elif cmd.cmd == CMD_STATUS:
                                 pass
 
-                            # Antwort: immer gesamte Position (AZ+EL), PstRotator nimmt je Port was er braucht.
-                            reply = encode_reply(self.ctrl.az.pos_d10, self.ctrl.el.pos_d10, ph=10, pv=10)
-                            self.log.write("PST", f"{self.axis.upper()} TX reply_len={len(reply)} az={self.ctrl.az.pos_d10} el={self.ctrl.el.pos_d10} hex={reply.hex()}")
+                            # Antwort: Position je Achse – deaktivierte oder unbekannte Achse liefert 0°.
+                            # MacDoppler/HRD erwarten 0 für nicht vorhandene Achsen statt ungültiger Werte.
+                            az_d10 = (self.ctrl.az.pos_d10 or 0) if bool(getattr(self.ctrl, "enable_az", True)) else 0
+                            el_d10 = (self.ctrl.el.pos_d10 or 0) if bool(getattr(self.ctrl, "enable_el", True)) else 0
+                            reply = encode_reply(az_d10, el_d10, ph=10, pv=10)
+                            self.log.write("PST", f"{self.axis.upper()} TX reply_len={len(reply)} az={az_d10} el={el_d10} hex={reply.hex()}")
                             c.sendall(reply)
 
                     except socket.timeout:

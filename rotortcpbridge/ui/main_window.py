@@ -33,7 +33,7 @@ from .axis_widget import _make_axis_panel, fill_axis_panel
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, cfg: dict, controller, pst_server, hw_client, save_cfg_cb, logbuf):
+    def __init__(self, cfg: dict, controller, pst_server, hw_client, save_cfg_cb, logbuf, udp_ucxlog=None):
         super().__init__()
         self.cfg = cfg
         self.ctrl = controller
@@ -41,9 +41,11 @@ class MainWindow(QMainWindow):
         self.hw = hw_client
         self.save_cfg_cb = save_cfg_cb
         self.logbuf = logbuf
+        self._udp_ucxlog = udp_ucxlog
         self._hw_off_since: float | None = None
+        self._last_title: str = ""
 
-        self.setWindowTitle(f"{t('app.title')} v{APP_VERSION}")
+        self._update_title_bar()
         self.setWindowIcon(get_app_icon())
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
         root = QWidget()
@@ -209,9 +211,37 @@ class MainWindow(QMainWindow):
             self._log_win.activateWindow()
             self._log_win.refresh()
 
+    def _update_title_bar(self) -> None:
+        """Titelleiste dynamisch aktualisieren: Basis + aktuelle Position + Online-Status."""
+        base = f"{t('app.title')} v{APP_VERSION}"
+        try:
+            hw_on = bool(self.hw.is_connected())
+            if hw_on:
+                parts: list[str] = []
+                if bool(getattr(self.ctrl, "enable_az", True)):
+                    az_d10 = getattr(self.ctrl.az, "pos_d10", None)
+                    if az_d10 is not None:
+                        parts.append(f"AZ: {az_d10 / 10:.1f}°")
+                if bool(getattr(self.ctrl, "enable_el", True)):
+                    el_d10 = getattr(self.ctrl.el, "pos_d10", None)
+                    if el_d10 is not None:
+                        parts.append(f"EL: {el_d10 / 10:.1f}°")
+                if parts:
+                    title = f"{base} \u2014 {' '.join(parts)} \u2014 Online"
+                else:
+                    title = f"{base} \u2014 Online"
+            else:
+                title = base
+        except Exception:
+            title = base
+        if title != self._last_title:
+            self._last_title = title
+            self.setWindowTitle(title)
+
     def _retranslate_ui(self):
         """Alle Texte des Hauptfensters auf die aktuelle Sprache aktualisieren."""
-        self.setWindowTitle(f"{t('app.title')} v{APP_VERSION}")
+        self._last_title = ""  # Cache zurücksetzen damit Neuaufbau greift
+        self._update_title_bar()
         self.btn_about.setToolTip(t("about.title"))
         self.btn_open_compass.setText(t("main.btn_compass"))
         self.btn_open_weather.setText(t("main.btn_weather"))
@@ -273,6 +303,12 @@ class MainWindow(QMainWindow):
         self._update_groupbox_titles()
         self._update_axis_visibility()
         self._apply_fixed_mainwindow_size()
+        if self._udp_ucxlog is not None:
+            ui = self.cfg.get("ui", {})
+            self._udp_ucxlog.start(
+                enabled=bool(ui.get("udp_ucxlog_enabled", False)),
+                port=int(ui.get("udp_ucxlog_port", 12040)),
+            )
         if hasattr(self, "_compass_win") and self._compass_win.isVisible():
             self._compass_win._update_groupbox_titles()
             if hasattr(self._compass_win, "_apply_label_colors_from_palette"):
@@ -464,6 +500,8 @@ class MainWindow(QMainWindow):
             fill_axis_panel(self.el_fields, self.ctrl.el)
             self._error_popup.maybe_show(self, "EL", getattr(self.ctrl.el, "error_code", 0))
             self._warning_popup.maybe_show(self, "EL", self.ctrl.el)
+
+        self._update_title_bar()
 
         if self._log_win.isVisible():
             self._log_win.refresh()

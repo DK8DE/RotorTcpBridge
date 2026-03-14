@@ -124,24 +124,27 @@ class RotorController:
         # Windsensor-Feature-Flag aus GETWINDENABLE (0/1). Off bis Antwort vorliegt.
         self.wind_enabled: bool = False
         self.wind_enabled_known: bool = False
+        self._wind_enable_inflight: bool = False
+        self._wind_enable_sent_ts: float = 0.0
         self._hw_prev_connected: bool = False
         self._startup_burst_until: float = 0.0
         self._last_wind_enable_poll: float = 0.0
-        # Polling-Defaults:
-        # - Während der Rotor fährt: nur Position (schnell) + ERR/PWM alle 2s.
-        #   (GETWARN/TEMP/ANEMO/GETWINDDIR werden während Fahrt NICHT abgefragt,
-        #    damit die Anzeige flüssig bleibt.)
-        # - Im Stand: Zusatzwerte nur alle 2s (WARN/TEMP/ANEMO/GETWINDDIR/PWM/REF).
+        # Polling-Intervalle (ms):
+        # Fahrt  : nur GETPOSDG + GETERR
+        # Idle   : alle weiteren Abfragen mit unterschiedlichem Takt
         self._cfg_poll = {
-            "pos_fast": 100,  # 10 Hz
-            "pos_slow": 300,
-            "warn": 2000,
-            "err": 2000,
-            "telemetry": 2000,  # TempA/TempM/Anemo nur im Idle
-            "pwm": 2000,        # immer 2s (Idle + Fahrt)
-            "ref": 300,         # Referenzfahrt: schnell pollend
-            "ref_idle": 2000,   # Idle: Referenzstatus alle 2s (z.B. nach Rotor-Reboot)
-            "offline_timeout": 2000,  # >2s ohne ACK/NAK => online=False
+            "pos_fast": 100,    # 10 Hz  (Fahrt)
+            "pos_slow": 10000,  # 10 s   (Idle)
+            "err_moving": 5000,  # 5 s    (während Fahrt)
+            "err_idle":  10000,  # 10 s   (Idle)
+            "warn":     10000,  # 10 s   (nur Idle)
+            "pwm":      10000,  # 10 s   (nur Idle)
+            "minpwm":   10000,  # 10 s   (nur Idle, ändert sich kaum)
+            "telemetry": 10000, # 10 s   (nur Idle: GETTEMPA/GETTEMPM)
+            "ref":       300,   # 300 ms (Referenzfahrt: schnell)
+            "ref_idle":  5000,  # 5 s    (Idle: Referenzstatus)
+            "windenable": 10000,# 10 s   (Idle: Sensor angesteckt/abgesteckt)
+            "offline_timeout": 2000,
         }
 
         # Async telegram handler
@@ -674,16 +677,16 @@ class RotorController:
             self._cal_bins_inflight_az = False
             self._live_bins_inflight_az = False
             self._last_wind_enable_poll = 0.0
+            self.wind_enabled_known = False
+            self._wind_enable_inflight = False
+            self._wind_enable_sent_ts = 0.0
 
             # Sofortige Erstabfrage (damit UI direkt gefüllt wird):
-            # - Position + ERR + PWM + MINPWM + REF
-            # - Warn + Temp/Wind ebenfalls einmalig direkt
-            # - GETWINDENABLE nur einmal bei Connect (nicht periodisch)
+            # Position + ERR + PWM + MINPWM + REF + Warn + Temp
+            # GETWINDENABLE wird vom Idle-Polling-Block übernommen (Inflight-Guard verhindert Doppelabfrage)
             try:
                 if self.enable_az:
                     self._poll_pos(self.slave_az, self.az, "AZ", now, expected_period_s=0.2)
-                    if not self.wind_enabled_known:
-                        self._poll_wind_enable(self.slave_az, self.az, "AZ")
                     self._poll_err(self.slave_az, self.az, "AZ")
                     self._poll_pwm(self.slave_az, self.az, "AZ")
                     self._poll_minpwm(self.slave_az, self.az, "AZ")
@@ -704,28 +707,29 @@ class RotorController:
                 pass
         self._hw_prev_connected = hw_on
 
-        pos_fast_s = self._cfg_poll["pos_fast"]/1000.0
-        pos_slow_s = self._cfg_poll["pos_slow"]/1000.0
-        warn_s = self._cfg_poll["warn"]/1000.0
-        err_s  = self._cfg_poll["err"]/1000.0
-        tel_s  = self._cfg_poll["telemetry"]/1000.0
-        pwm_s  = float(self._cfg_poll.get("pwm", 2000))/1000.0
-        ref_s  = self._cfg_poll["ref"]/1000.0
-        ref_idle_s = float(self._cfg_poll.get("ref_idle", 2000))/1000.0
-        offline_timeout_s = float(self._cfg_poll.get("offline_timeout", 2000))/1000.0
+        pos_fast_s      = self._cfg_poll["pos_fast"]    / 1000.0
+        pos_slow_s      = self._cfg_poll["pos_slow"]    / 1000.0
+        err_moving_s    = self._cfg_poll["err_moving"]   / 1000.0
+        err_idle_s      = self._cfg_poll["err_idle"]    / 1000.0
+        warn_s          = self._cfg_poll["warn"]        / 1000.0
+        pwm_s           = self._cfg_poll["pwm"]         / 1000.0
+        minpwm_s        = self._cfg_poll["minpwm"]      / 1000.0
+        tel_s           = self._cfg_poll["telemetry"]   / 1000.0
+        ref_s           = self._cfg_poll["ref"]         / 1000.0
+        ref_idle_s      = self._cfg_poll["ref_idle"]    / 1000.0
+        windenable_s    = self._cfg_poll["windenable"]  / 1000.0
+        offline_timeout_s = self._cfg_poll["offline_timeout"] / 1000.0
 
         # Dynamisches Polling:
-        # - Wenn der Rotor fährt (inkl. Referenzfahrt), Position schnell pollen.
-        # - Während der Fahrt Zusatzwerte NICHT pollen (außer ERR/PWM alle 2s),
-        #   damit die Positionsanzeige nicht ruckelt.
+        # - Fahrt  : nur GETPOSDG (10 Hz) + GETERR (5 s) → Bus frei für Position
+        # - Idle   : GETPOSDG (10 s) + ERR/WARN/PWM/TEMP/MINPWM (10 s)
+        #            + GETREF/GETWINDENABLE (5–10 s) + Wind (2 s)
         moving = bool(self.az.moving or self.el.moving or self.az.ref_poll_active or self.el.ref_poll_active)
 
         if hw_on:
-            # GETWINDENABLE periodisch wiederholen bis Antwort (falls Erstabfrage verloren ging)
-            if not self.wind_enabled_known and self.enable_az and (now - self._last_wind_enable_poll >= 3.0):
-                self._last_wind_enable_poll = now
-                self._poll_wind_enable(self.slave_az, self.az, "AZ")
-            # Falls Wind-ACK ausbleibt: Inflight-Sperre nach Timeout freigeben (0.9s = Request-Timeout).
+            # Inflight-Sperren nach Request-Timeout freigeben (verhindert dauerhaftes Blockieren).
+            if self._wind_enable_inflight and ((now - self._wind_enable_sent_ts) > 1.5):  # now = time.time()
+                self._wind_enable_inflight = False
             if self._wind_speed_inflight and ((now - float(self._wind_speed_sent_ts or 0.0)) > 0.9):
                 self._wind_speed_inflight = False
             if self._wind_dir_inflight and ((now - float(self._wind_dir_sent_ts or 0.0)) > 0.9):
@@ -748,9 +752,10 @@ class RotorController:
                 if sent_any:
                     self._last_poll = now
 
-            # Während Bewegung: nur Position (schnell) + ERR alle 2s. Alle anderen Abfragen warten.
+            # Während Bewegung: NUR Position (schnell) + ERR alle 5 s.
+            # Kein WARN, keine Telemetrie, kein Wind, kein PWM – Bus-Priorität für Position.
             if moving:
-                if now - self._last_err >= max(2.0, err_s):
+                if now - self._last_err >= err_moving_s:
                     self._last_err = now
                     if self.enable_az:
                         self._poll_err(self.slave_az, self.az, "AZ")
@@ -758,27 +763,40 @@ class RotorController:
                         self._poll_err(self.slave_el, self.el, "EL")
 
             if not moving:
-                # Zusatzabfragen nur im Stand, damit während Fahrt GETPOSDG maximal priorisiert bleibt.
-                if now - self._last_err >= max(2.0, err_s):
+                # Idle: alle Zusatzabfragen – damit während der Fahrt GETPOSDG maximal priorisiert bleibt.
+
+                # GETERR: 10 s im Idle
+                if now - self._last_err >= err_idle_s:
                     self._last_err = now
                     if self.enable_az:
                         self._poll_err(self.slave_az, self.az, "AZ")
                     if self.enable_el:
                         self._poll_err(self.slave_el, self.el, "EL")
 
-                if now - self._last_pwm >= max(2.0, pwm_s):
+                # GETPWM: 2 s
+                if now - self._last_pwm >= pwm_s:
                     self._last_pwm = now
                     if self.enable_az:
                         self._poll_pwm(self.slave_az, self.az, "AZ")
                     if self.enable_el:
                         self._poll_pwm(self.slave_el, self.el, "EL")
 
-                if now - self._last_minpwm >= max(2.0, pwm_s):
+                # GETMINPWM: 10 s (ändert sich kaum)
+                if now - self._last_minpwm >= minpwm_s:
                     self._last_minpwm = now
                     if self.enable_az:
                         self._poll_minpwm(self.slave_az, self.az, "AZ")
                     if self.enable_el:
                         self._poll_minpwm(self.slave_el, self.el, "EL")
+
+                # GETWINDENABLE: Startphase alle 3 s, danach alle 10 s (Sensor an/ab)
+                if self.enable_az:
+                    wind_unknown_retry = (not self.wind_enabled_known
+                                         and (now - self._last_wind_enable_poll >= 3.0))
+                    wind_known_repoll  = (self.wind_enabled_known
+                                         and (now - self._last_wind_enable_poll >= windenable_s))
+                    if wind_unknown_retry or wind_known_repoll:
+                        self._poll_wind_enable(self.slave_az, self.az, "AZ")
 
                 # GETCALSTATE/LIVE nur wenn Statistik-Fenster offen
                 if self._statistics_window_open:
@@ -839,23 +857,24 @@ class RotorController:
                     self._wind_beaufort_due_ts = 0.0
                     self._poll_idle_wind_beaufort(self.slave_az, self.az, "AZ")
 
-                # Nur im Idle: Warnungen und "schwere" Telemetrie (Temp/Wind) alle 2s.
-                if now - self._last_warn >= max(2.0, warn_s):
+                # GETWARN: 2 s
+                if now - self._last_warn >= warn_s:
                     self._last_warn = now
                     if self.enable_az:
                         self._poll_warn(self.slave_az, self.az, "AZ")
                     if self.enable_el:
                         self._poll_warn(self.slave_el, self.el, "EL")
 
-                if now - self._last_tel >= max(2.0, tel_s):
+                # GETTEMPA/GETTEMPM: 10 s
+                if now - self._last_tel >= tel_s:
                     self._last_tel = now
                     if self.enable_az:
                         self._poll_idle_telemetry(self.slave_az, self.az, "AZ")
                     if self.enable_el:
                         self._poll_idle_telemetry(self.slave_el, self.el, "EL")
 
-                # Idle: Referenzstatus regelmäßig abfragen (z.B. Rotor wurde neu gestartet)
-                if now - self._last_ref_idle >= max(2.0, ref_idle_s):
+                # GETREF: 5 s (Rotor könnte zwischendurch neu gestartet worden sein)
+                if now - self._last_ref_idle >= ref_idle_s:
                     self._last_ref_idle = now
                     if self.enable_az:
                         self._poll_ref(self.slave_az, self.az, "AZ")
@@ -1096,9 +1115,14 @@ class RotorController:
         ))
 
     def _poll_wind_enable(self, dst:int, axis_state:AxisState, axis:str):
-        """Abfragen, ob Windsensor vorhanden ist (GETWINDENABLE)."""
+        """Abfragen, ob Windsensor vorhanden ist (GETWINDENABLE). Inflight-Guard verhindert Doppelabfrage."""
         if int(dst) != int(self.slave_az):
             return
+        if self._wind_enable_inflight:
+            return
+        self._wind_enable_inflight = True
+        self._wind_enable_sent_ts = time.time()    # muss time.time() sein – tick nutzt time.time() als 'now'
+        self._last_wind_enable_poll = time.time()  # muss time.time() sein – tick nutzt time.time() als 'now'
         self.hw.send_request(HwRequest(
             line=build(self.master_id, dst, "GETWINDENABLE", "0"),
             expect_prefix=None,
@@ -1678,6 +1702,7 @@ class RotorController:
                     return
                 if (tel.cmd.startswith("ACK_GETWINDENABLE") or tel.cmd.startswith("ACK_WINDENABLE")
                         or tel.cmd.startswith("ACK_SETWINDENABLE")):
+                    self._wind_enable_inflight = False
                     v = _parse_int(tel.params.strip())
                     if v is not None:
                         self.wind_enabled = bool(int(v) != 0)

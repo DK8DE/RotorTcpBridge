@@ -5,7 +5,12 @@ a = Analysis(
     ['run.py'],
     pathex=[],
     binaries=[],
-    datas=[('rotortcpbridge\\rotor.ico', 'rotortcpbridge')],
+    datas=[
+        ('rotortcpbridge\\rotor.ico',          'rotortcpbridge'),
+        ('rotortcpbridge\\windPfeil.png',       'rotortcpbridge'),
+        ('rotortcpbridge\\locales\\de.json',    'rotortcpbridge\\locales'),
+        ('rotortcpbridge\\locales\\en.json',    'rotortcpbridge\\locales'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

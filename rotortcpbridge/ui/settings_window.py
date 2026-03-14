@@ -44,7 +44,7 @@ class SettingsWindow(QDialog):
         self.setWindowTitle(t("settings.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setFixedSize(px_to_dip(self, 820), px_to_dip(self, 475))
+        self.setFixedSize(px_to_dip(self, 570), px_to_dip(self, 475))
 
         main = QVBoxLayout(self)
         cols = QHBoxLayout()

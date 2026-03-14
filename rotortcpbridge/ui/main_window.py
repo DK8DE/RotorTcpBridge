@@ -183,6 +183,7 @@ class MainWindow(QMainWindow):
         self._fixed_w = None
         self._fixed_h = None
         self._last_axis_vis: tuple[bool, bool] | None = None
+        self._last_wind_vis: bool | None = None
         self._error_popup = ErrorPopupHandler()
         self._warning_popup = WarningPopupHandler()
 
@@ -332,11 +333,12 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _update_wind_visibility(self):
+    def _update_wind_visibility(self) -> bool:
+        """Wind-UI ein-/ausblenden. Gibt wind_on zurück."""
         wind_known = bool(getattr(self.ctrl, "wind_enabled_known", False))
         wind_on = bool(getattr(self.ctrl, "wind_enabled", False)) if wind_known else False
-        # Fallback nur wenn GETWINDENABLE unbekannt (Rotor implementiert es nicht):
-        # Wind anzeigen, wenn Winddaten empfangen wurden.
+        # Fallback nur wenn GETWINDENABLE noch unbekannt (Rotor implementiert es nicht):
+        # Wind anzeigen, wenn bereits Winddaten empfangen wurden.
         if not wind_on and not wind_known and hasattr(self.ctrl, "az"):
             tel = getattr(self.ctrl.az, "telemetry", None)
             if tel is not None:
@@ -365,6 +367,7 @@ class MainWindow(QMainWindow):
                 self._weather_win.hide()
         except Exception:
             pass
+        return wind_on
 
     def _apply_fixed_mainwindow_size(self):
         width = px_to_dip(self, 500)
@@ -442,10 +445,16 @@ class MainWindow(QMainWindow):
             self.ed_hw.setText(f"{t('main.hw_connected') if hw_on else t('main.hw_disconnected')}  COM {com} @ 115200")
 
         self._update_axis_visibility()
-        self._update_wind_visibility()
+        wind_on = self._update_wind_visibility()
         axis_vis = (bool(self.gb_az.isVisible()), bool(self.gb_el.isVisible()))
+        size_changed = False
         if self._last_axis_vis != axis_vis:
             self._last_axis_vis = axis_vis
+            size_changed = True
+        if self._last_wind_vis != wind_on:
+            self._last_wind_vis = wind_on
+            size_changed = True
+        if size_changed:
             self._apply_fixed_mainwindow_size()
         if self.gb_az.isVisible():
             fill_axis_panel(self.az_fields, self.ctrl.az)

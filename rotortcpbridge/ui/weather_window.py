@@ -48,6 +48,11 @@ class WindRoseWidget(QWidget):
             ]
 
         roots: list[Path] = []
+        # PyInstaller onedir: _MEIPASS zeigt auf _internal/ – höchste Priorität
+        try:
+            roots.append(Path(sys._MEIPASS))  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
         try:
             roots.append(Path(__file__).resolve().parent)  # ui/
         except Exception:
@@ -266,6 +271,10 @@ class WeatherWindow(QDialog):
                 getattr(tel, "wind_kmh", None) is not None or getattr(tel, "wind_dir_deg", None) is not None
             ):
                 wind_on = True
+        # Wenn Windanzeige deaktiviert → Fenster selbst schließen
+        if wind_known and not wind_on and self.isVisible():
+            self.hide()
+            return
         mode = str(self.cfg.get("ui", {}).get("wind_dir_display", "to") or "to").strip().lower()
         if mode not in ("from", "to"):
             mode = "to"

@@ -78,23 +78,25 @@ def _BLOCK1():
 def _BLOCK2():
     return [(t(key), sc, gc) for key, sc, gc in _BLOCK2_DEFS]
 
-# (min, max, unit): Wertprüfung und Einheit. is_current_mA=True: Eingabe mA, Sendung mV (0–1300 mV = 0–10 A)
+# Tupel: (min, max, unit, is_current_mA, is_timeout_s)
+# is_current_mA : Eingabe mA, Senden/Empfangen mV  (0–1300 mV = 0–10 A)
+# is_timeout_s  : Eingabe Sekunden, Senden/Empfangen ms
 _PARAM_SPEC = {
-    "SETID": (1, 254, "ID", False),
-    "SETWINDENABLE": (0, 1, "0/1", False),
-    "SETWINDDIROF": (0, 360, "°", False),
-    "SETTEMPM": (0, 90, "°C", False),
-    "SETSWAPTEMP": (0, 1, "0/1", False),
-    "SETRAMP": (0, 60, "°", False),
-    "SETPOSTIMEOUT": (1000, 600000, "ms", False),
-    "SETHOMETIMEOUT": (1000, 600000, "ms", False),
-    "SETHOMERETURN": (0, 1, "0/1", False),
-    "SETHOMEPWM": (0, 100, "%", False),
-    "SETHOMESEEKPPWM": (0, 100, "%", False),
-    "SETMINPWM": (15, 100, "%", False),
-    "SETMAXDG": (0, 360, "°", False),
-    "SETIWARN": (100, 10000, "mA", True),
-    "SETIMAX": (100, 10000, "mA", True),
+    "SETID":           (1,   254,   "ID",  False, False),
+    "SETWINDENABLE":   (0,   1,     "0/1", False, False),
+    "SETWINDDIROF":    (0,   360,   "°",   False, False),
+    "SETTEMPM":        (0,   90,    "°C",  False, False),
+    "SETSWAPTEMP":     (0,   1,     "0/1", False, False),
+    "SETRAMP":         (0,   60,    "°",   False, False),
+    "SETPOSTIMEOUT":   (1,   600,   "s",   False, True),
+    "SETHOMETIMEOUT":  (1,   600,   "s",   False, True),
+    "SETHOMERETURN":   (0,   1,     "0/1", False, False),
+    "SETHOMEPWM":      (0,   100,   "%",   False, False),
+    "SETHOMESEEKPPWM": (0,   100,   "%",   False, False),
+    "SETMINPWM":       (15,  100,   "%",   False, False),
+    "SETMAXDG":        (0,   360,   "°",   False, False),
+    "SETIWARN":        (100, 10000, "mA",  True,  False),
+    "SETIMAX":         (100, 10000, "mA",  True,  False),
 }
 
 _MV_PER_A = 130.0  # 1300 mV = 10 A
@@ -447,6 +449,17 @@ class CommandButtonsWindow(QDialog):
         except Exception as e:
             QMessageBox.warning(self, "Befehl", f"Senden fehlgeschlagen: {e}")
 
+    def _build_timeout_s_tooltip(self, set_cmd: str, min_s: float, max_s: float) -> str:
+        """Tooltip für Timeout-Eingabefelder (Eingabe Sekunden, Hardware ms)."""
+        key_map = {
+            "SETPOSTIMEOUT":  "cmd.tooltip_setpostimeout_s",
+            "SETHOMETIMEOUT": "cmd.tooltip_sethometimeout_s",
+        }
+        help_line  = t(key_map.get(set_cmd, "cmd.tooltip_setpostimeout_s"))
+        note_line  = t("cmd.tooltip_timeout_s_note")
+        range_line = f"{t('catalog.range')}: {int(min_s)} .. {int(max_s)} s"
+        return "\n".join([set_cmd, help_line, note_line, range_line])
+
     def _build_current_ma_tooltip(self, set_cmd: str, min_ma: float, max_ma: float) -> str:
         """Tooltip für mA-Eingabefelder (SETIWARN / SETIMAX)."""
         key_map = {
@@ -460,13 +473,15 @@ class CommandButtonsWindow(QDialog):
 
     def _add_param_row_to_grid(self, grid: QGridLayout, row: int, label: str, set_cmd: str, get_cmd: str):
         """Grid-Spalten: 0=Label (links), 1=Eingabe (100px), 2=Einheit (28px), 3=Button (55px)."""
-        param_spec = _PARAM_SPEC.get(set_cmd, (None, None, "", False))
-        min_v, max_v, unit, is_current_mA = param_spec
+        param_spec = _PARAM_SPEC.get(set_cmd, (None, None, "", False, False))
+        min_v, max_v, unit, is_current_mA, is_timeout_s = param_spec
         lab = QLabel(label + ":")
         lab.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         cmd_spec = self._all_spec_by_name.get(set_cmd) or self._all_spec_by_name.get(get_cmd)
         if is_current_mA and min_v is not None and max_v is not None:
             tooltip = self._build_current_ma_tooltip(set_cmd, min_v, max_v)
+        elif is_timeout_s and min_v is not None and max_v is not None:
+            tooltip = self._build_timeout_s_tooltip(set_cmd, min_v, max_v)
         else:
             tooltip = format_cmd_tooltip(cmd_spec) if cmd_spec is not None else ""
         if tooltip:
@@ -574,7 +589,7 @@ class CommandButtonsWindow(QDialog):
                 ed.setPlaceholderText(t("cmd.err_placeholder"))
 
     def _display_value_for_get(self, get_cmd: str, params: str) -> str:
-        """Konvertiert Hardware-Werte für Anzeige (z.B. mV→mA bei Strom)."""
+        """Konvertiert Hardware-Werte für Anzeige (mV→mA bei Strom, ms→s bei Timeout)."""
         set_cmd = None
         for _, sc, gc in _BLOCK1() + _BLOCK2():
             if gc == get_cmd:
@@ -585,6 +600,12 @@ class CommandButtonsWindow(QDialog):
                 mv = int(float(str(params).strip()))
                 ma = round(mv * 10000.0 / 1300.0)
                 return str(ma)
+            except (ValueError, TypeError):
+                pass
+        if set_cmd in ("SETPOSTIMEOUT", "SETHOMETIMEOUT"):
+            try:
+                ms = int(float(str(params).strip()))
+                return str(ms // 1000)
             except (ValueError, TypeError):
                 pass
         return params.strip()
@@ -632,11 +653,12 @@ class CommandButtonsWindow(QDialog):
         self._update_frame()
 
     def _validate_and_convert_param(self, cmd: str, raw: str) -> tuple[str | None, str | None]:
-        """Prüft den Wert, konvertiert bei Strom (mA→mV). Returns (params_to_send, error_msg); bei Ok ist error_msg None."""
+        """Prüft den Wert; konvertiert mA→mV (Strom) bzw. s→ms (Timeout).
+        Returns (params_to_send, error_msg); bei Ok ist error_msg None."""
         spec = _PARAM_SPEC.get(cmd)
         if not spec:
             return (raw, None)
-        min_v, max_v, unit, is_current_mA = spec
+        min_v, max_v, unit, is_current_mA, is_timeout_s = spec
         try:
             val = int(float(str(raw).strip().replace(",", ".")))
         except (ValueError, TypeError):
@@ -646,6 +668,10 @@ class CommandButtonsWindow(QDialog):
                 return (None, f"Strom {val} mA außerhalb {min_v}–{max_v} mA")
             mv = round(val * _MV_PER_A / 1000.0)
             return (str(mv), None)
+        if is_timeout_s:
+            if val < min_v or val > max_v:
+                return (None, f"Timeout {val} s außerhalb {min_v}–{max_v} s")
+            return (str(val * 1000), None)
         if min_v is not None and val < min_v:
             return (None, f"Wert {val} unter Minimum {min_v}")
         if max_v is not None and val > max_v:

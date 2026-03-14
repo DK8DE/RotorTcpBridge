@@ -121,6 +121,9 @@ class RotorController:
         # Kompass-Manual-Eingabe: PST-SET für 10s ignorieren, damit nicht überschrieben wird
         self._compass_manual_az_ts: float = 0.0
         self._compass_manual_el_ts: float = 0.0
+        # Callback: wird nach jedem erfolgreichen SETANTOFF-ACK aufgerufen (z.B. Kompassfenster-Refresh)
+        self.on_antenna_offsets_changed: Optional[Callable[[], None]] = None
+
         # Windsensor-Feature-Flag aus GETWINDENABLE (0/1). Off bis Antwort vorliegt.
         self.wind_enabled: bool = False
         self.wind_enabled_known: bool = False
@@ -252,6 +255,11 @@ class RotorController:
                 ok = True
                 try:
                     setattr(axis_state, f"antoff{slot}", float(v.replace(",", ".")))
+                except Exception:
+                    pass
+                try:
+                    if callable(self.on_antenna_offsets_changed):
+                        self.on_antenna_offsets_changed()
                 except Exception:
                     pass
             else:
@@ -680,6 +688,10 @@ class RotorController:
             self.wind_enabled_known = False
             self._wind_enable_inflight = False
             self._wind_enable_sent_ts = 0.0
+            # Antennenwerte zurücksetzen → Kompassfenster-Timer erkennt fehlende Werte
+            self.az.antoff1 = None
+            self.az.antoff2 = None
+            self.az.antoff3 = None
 
             # Sofortige Erstabfrage (damit UI direkt gefüllt wird):
             # Position + ERR + PWM + MINPWM + REF + Warn + Temp

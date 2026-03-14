@@ -160,11 +160,27 @@ class CompassWindow(QDialog):
         self._antenna_request_timer = QTimer(self)
         self._antenna_request_timer.setInterval(2000)
         self._antenna_request_timer.timeout.connect(self._request_antenna_offsets)
+        # Callback: sofort Dropdown aktualisieren wenn Antennenwerte via Einstellungen geändert wurden
+        if hasattr(self.ctrl, "on_antenna_offsets_changed"):
+            self.ctrl.on_antenna_offsets_changed = self._on_antenna_offsets_changed
         self._tick()
 
+    def _on_antenna_offsets_changed(self) -> None:
+        """Wird nach erfolgreichem SETANTOFF-ACK vom Controller aufgerufen → Dropdown sofort aktualisieren."""
+        self._refresh_antenna_dropdown()
+
     def _request_antenna_offsets(self) -> None:
-        if hasattr(self.ctrl, "request_antenna_offsets"):
-            self.ctrl.request_antenna_offsets()
+        """Antennenwerte abfragen – nur wenn noch nicht alle drei bekannt sind.
+        Timer stoppt sich selbst, sobald alle Werte vorhanden sind."""
+        all_known = all(
+            getattr(self.ctrl.az, f"antoff{i}", None) is not None
+            for i in (1, 2, 3)
+        )
+        if all_known:
+            self._antenna_request_timer.stop()
+        else:
+            if hasattr(self.ctrl, "request_antenna_offsets"):
+                self.ctrl.request_antenna_offsets()
         self._refresh_antenna_dropdown()
 
     def _refresh_antenna_dropdown(self) -> None:
@@ -214,14 +230,23 @@ class CompassWindow(QDialog):
         # Zeiger (Position, Antenne) sofort mit höchster Priorität; Heatmap/Stats danach
         if hasattr(self.ctrl, "request_immediate_pos"):
             self.ctrl.request_immediate_pos()
-        if hasattr(self.ctrl, "request_antenna_offsets"):
-            self.ctrl.request_antenna_offsets()
+        all_known = all(
+            getattr(self.ctrl.az, f"antoff{i}", None) is not None
+            for i in (1, 2, 3)
+        )
+        if not all_known:
+            # Noch nicht alle Versätze bekannt → einmalig anfordern und Retry-Timer starten
+            if hasattr(self.ctrl, "request_antenna_offsets"):
+                self.ctrl.request_antenna_offsets()
+            self._antenna_request_timer.start()
+        # Wenn alle Versätze bereits bekannt: kein Request, kein Timer nötig
         QTimer.singleShot(300, self._request_immediate_stats_delayed)
-        self._antenna_request_timer.start()
         self._tick()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._antenna_request_timer.stop()
+        if hasattr(self.ctrl, "on_antenna_offsets_changed"):
+            self.ctrl.on_antenna_offsets_changed = None
         if hasattr(self.ctrl, "set_compass_window_open"):
             self.ctrl.set_compass_window_open(False)
         super().closeEvent(event)

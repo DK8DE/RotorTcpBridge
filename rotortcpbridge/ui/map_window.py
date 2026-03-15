@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import socket
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -34,17 +36,73 @@ from ..app_icon import get_app_icon
 from ..geo_utils import beam_center_line_points, beam_polygon_points, bearing_deg
 from ..i18n import t
 
+# Lokaler HTTP-Server für Offline-Tiles (umgeht file://-Blockierung in WebEngine)
+_offline_server: Optional["_TilesHTTPServer"] = None
+_offline_server_lock = threading.Lock()
+
+
+class _TilesHTTPServer:
+    """Minimaler HTTP-Server für Karten-Tiles aus lokalem Ordner."""
+
+    def __init__(self, karten_path: Path):
+        self._path = karten_path
+        self._server = None
+        self._thread = None
+        self._port = 0
+
+    def start(self) -> int:
+        if self._server is not None:
+            return self._port
+        for port in range(37540, 37560):
+            try:
+                from http.server import HTTPServer, SimpleHTTPRequestHandler
+                _base = Path(self._path)
+
+                class _TilesHandler(SimpleHTTPRequestHandler):
+                    def __init__(self, *args, **kwargs):
+                        kwargs.setdefault("directory", str(_base))
+                        super().__init__(*args, **kwargs)
+
+                self._server = HTTPServer(("127.0.0.1", port), _TilesHandler)
+                self._server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self._port = port
+                self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+                self._thread.start()
+                return port
+            except OSError:
+                continue
+        return 0
+
+    def stop(self):
+        if self._server:
+            self._server.shutdown()
+            self._server = None
+
 
 def _offline_tiles_base_path() -> Path:
-    """Pfad zum Karten-Ordner (z.B. Projektroot/Karten)."""
+    """Pfad zum Karten-Ordner (Standard-OSM-Struktur: z/x/y.png)."""
     for base in [
-        Path(__file__).resolve().parents[2] / "Karten",
+        Path(__file__).resolve().parents[1] / "Karten",   # rotortcpbridge/Karten
+        Path(__file__).resolve().parents[2] / "Karten",   # Projektroot/Karten
         Path.cwd() / "Karten",
         Path(os.environ.get("APPDATA", "")) / "RotorTcpBridge" / "Karten",
     ]:
         if base.exists() and base.is_dir():
             return base
-    return Path(__file__).resolve().parents[2] / "Karten"
+    return Path(__file__).resolve().parents[1] / "Karten"
+
+
+def _offline_tile_url() -> str:
+    """Startet ggf. HTTP-Server für Offline-Tiles und liefert Tile-URL-Template."""
+    global _offline_server
+    path = _offline_tiles_base_path()
+    with _offline_server_lock:
+        if _offline_server is None:
+            _offline_server = _TilesHTTPServer(path)
+        port = _offline_server.start()
+    if port:
+        return f"http://127.0.0.1:{port}/{{z}}/{{x}}/{{y}}.png"
+    return ""  # Fallback (leer = Online-Tiles nutzen)
 
 
 def _build_map_html(params: dict) -> str:
@@ -63,10 +121,8 @@ def _build_map_html(params: dict) -> str:
     info_reichweite = params.get("info_reichweite", "Reichweite")
     dark = bool(params.get("dark_mode", False))
     offline = bool(params.get("offline", False))
-    karten_path = _offline_tiles_base_path()
     if offline:
-        file_url = karten_path.as_uri() + "/"
-        tile_url = file_url + "{z}/{x}/{y}.png"
+        tile_url = _offline_tile_url() or "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
     elif dark:
         tile_url = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
     else:
@@ -808,9 +864,8 @@ class MapWindow(QDialog):
         offline = params.get("offline", False)
         if self._map_loaded:
             if self._map_offline is not None and self._map_offline != offline:
-                karten_path = _offline_tiles_base_path()
                 if offline:
-                    tile_url_off = karten_path.as_uri() + "/{z}/{x}/{y}.png"
+                    tile_url_off = _offline_tile_url() or "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
                     js_off = f"if (typeof window.setMapOfflineMode === 'function') window.setMapOfflineMode(true, {json.dumps(tile_url_off)});"
                 else:
                     tile_url_on = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" if dark else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
@@ -824,8 +879,7 @@ class MapWindow(QDialog):
         self._update_status_bar()
         self._update_wind_overlay()
         if not self._map_loaded:
-            base_url = QUrl.fromLocalFile(str(_offline_tiles_base_path()) + "/") if offline else QUrl("about:blank")
-            self._view.setHtml(html, base_url)
+            self._view.setHtml(html, QUrl("about:blank"))
             self._map_loaded = True
 
     def showEvent(self, event):

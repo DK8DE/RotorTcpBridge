@@ -216,6 +216,7 @@
   "map.info_azimut": "Azimuth",
   "map.info_offnung": "Opening angle",
   "map.info_reichweite": "Range",
+  "map.chk_offline": "Offline map",
 
   "catalog.help.TEST": "Connection test (Ping).",
   "catalog.help.STOP": "Soft stop (normal braking). Ends a position move.\n Errors are NOT cleared.",

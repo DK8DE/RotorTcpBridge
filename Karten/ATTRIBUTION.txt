@@ -1,0 +1,8 @@
+Diese Karte verwendet OpenStreetMap-Kacheln.
+
+Attribution:
+© OpenStreetMap-Mitwirkende
+
+Quelle der Tiles:
+https://tile.openstreetmap.org/{z}/{x}/{y}.png
+

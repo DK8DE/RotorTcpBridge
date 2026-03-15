@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
+from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFrame,
@@ -32,6 +35,18 @@ from ..geo_utils import beam_center_line_points, beam_polygon_points, bearing_de
 from ..i18n import t
 
 
+def _offline_tiles_base_path() -> Path:
+    """Pfad zum Karten-Ordner (z.B. Projektroot/Karten)."""
+    for base in [
+        Path(__file__).resolve().parents[2] / "Karten",
+        Path.cwd() / "Karten",
+        Path(os.environ.get("APPDATA", "")) / "RotorTcpBridge" / "Karten",
+    ]:
+        if base.exists() and base.is_dir():
+            return base
+    return Path(__file__).resolve().parents[2] / "Karten"
+
+
 def _build_map_html(params: dict) -> str:
     """Erstellt die vollständige HTML-Seite mit Leaflet.
     Enthält window.updateBeam(data) zum Aktualisieren ohne Zoom/Zentrum zu ändern."""
@@ -47,11 +62,15 @@ def _build_map_html(params: dict) -> str:
     info_offnung = params.get("info_offnung", "Öffnungswinkel")
     info_reichweite = params.get("info_reichweite", "Reichweite")
     dark = bool(params.get("dark_mode", False))
-    tile_url = (
-        "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-        if dark
-        else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-    )
+    offline = bool(params.get("offline", False))
+    karten_path = _offline_tiles_base_path()
+    if offline:
+        file_url = karten_path.as_uri() + "/"
+        tile_url = file_url + "{z}/{x}/{y}.png"
+    elif dark:
+        tile_url = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+    else:
+        tile_url = "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
     info_bg = "#2d2d2d" if dark else "white"
     info_color = "#e1e1e1" if dark else "inherit"
     body_bg = "#1c1c1c" if dark else "inherit"
@@ -89,11 +108,14 @@ def _build_map_html(params: dict) -> str:
 
     const TILE_URL_DARK = "https://{{s}}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}{{r}}.png";
     const TILE_URL_LIGHT = "https://{{s}}.basemaps.cartocdn.com/rastertiles/voyager/{{z}}/{{x}}/{{y}}{{r}}.png";
-    const TILE_OPTS = {{ subdomains: 'abcd', maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>' }};
+    const OFFLINE_ATTRIBUTION = "© OpenStreetMap-Mitwirkende";
+    const ONLINE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
+    const isOffline = {str(offline).lower()};
+    const tileOpts = isOffline ? {{ maxZoom: 19, minZoom: 0, attribution: OFFLINE_ATTRIBUTION }}
+      : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }};
 
     const map = L.map('map').setView([lat, lon], 10);
-    let tileLayer = L.tileLayer({json.dumps(tile_url)}, TILE_OPTS).addTo(map);
+    let tileLayer = L.tileLayer({json.dumps(tile_url)}, tileOpts).addTo(map);
 
     let marker = L.marker([lat, lon]).addTo(map);
     marker.bindPopup("Antennenstandort").openPopup();
@@ -131,10 +153,18 @@ def _build_map_html(params: dict) -> str:
         '<div><strong>' + (data.info_reichweite || 'Reichweite') + ':</strong> ' + data.range_km.toFixed(1) + ' km</div>';
     }};
 
+    window.setMapOfflineMode = function(offline, tileUrl) {{
+      if (tileLayer) map.removeLayer(tileLayer);
+      const opts = offline ? {{ maxZoom: 19, minZoom: 0, attribution: OFFLINE_ATTRIBUTION }}
+        : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }};
+      tileLayer = L.tileLayer(tileUrl, opts).addTo(map);
+    }};
+
     window.setMapDarkMode = function(dark) {{
+      if (isOffline) return;
       const url = dark ? TILE_URL_DARK : TILE_URL_LIGHT;
       if (tileLayer) map.removeLayer(tileLayer);
-      tileLayer = L.tileLayer(url, TILE_OPTS).addTo(map);
+      tileLayer = L.tileLayer(url, {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }}).addTo(map);
       document.body.style.background = dark ? '#1c1c1c' : 'inherit';
       const info = document.getElementById('info');
       if (info) {{
@@ -382,6 +412,9 @@ class MapWindow(QDialog):
         self._lbl_temp_motor.setStyleSheet(lbl_style)
         self._lbl_temp_ambient = QLabel("–")
         self._lbl_temp_ambient.setStyleSheet(lbl_style)
+        self._chk_offline = QCheckBox(t("map.chk_offline"))
+        self._chk_offline.setChecked(bool(self.cfg.get("ui", {}).get("map_offline", False)))
+        self._chk_offline.stateChanged.connect(self._on_offline_changed)
         self._btn_ref_az = QPushButton(t("compass.btn_ref_az"))
         self._btn_ref_az.setAutoDefault(False)
         self._btn_ref_az.setDefault(False)
@@ -400,6 +433,7 @@ class MapWindow(QDialog):
         status_bar.addWidget(self._lbl_temp_motor)
         status_bar.addWidget(self._lbl_temp_ambient)
         status_bar.addStretch(1)
+        status_bar.addWidget(self._chk_offline)
         status_bar.addWidget(self._btn_ref_az)
         layout.addLayout(status_bar)
 
@@ -408,6 +442,7 @@ class MapWindow(QDialog):
         self._refresh_timer.timeout.connect(self._refresh_map)
         self._map_loaded = False
         self._map_dark_mode: Optional[bool] = None
+        self._map_offline: Optional[bool] = None
         self._smooth_azimuth: float | None = None
         self._SMOOTH_FACTOR = 0.25
 
@@ -454,6 +489,7 @@ class MapWindow(QDialog):
             "info_offnung": t("map.info_offnung"),
             "info_reichweite": t("map.info_reichweite"),
             "dark_mode": bool(self.cfg.get("ui", {}).get("force_dark_mode", False)),
+            "offline": bool(self.cfg.get("ui", {}).get("map_offline", False)),
         }
 
     def _get_antenna_offset_az(self) -> float:
@@ -621,6 +657,19 @@ class MapWindow(QDialog):
             pass
         self._refresh_favorites_dropdown()
 
+    def _on_offline_changed(self) -> None:
+        """Offline-Karte ein/aus → Config speichern, Karte aktualisiert sich über cfg."""
+        on = bool(self._chk_offline.isChecked())
+        if "ui" not in self.cfg:
+            self.cfg["ui"] = {}
+        self.cfg["ui"]["map_offline"] = on
+        try:
+            if self.save_cfg_cb:
+                self.save_cfg_cb(self.cfg)
+        except Exception:
+            pass
+        self._refresh_map()
+
     def _on_ref_az(self) -> None:
         """Referenz AZ auslösen."""
         try:
@@ -756,14 +805,27 @@ class MapWindow(QDialog):
         else:
             html = _build_map_html(params)
         dark = params.get("dark_mode", False)
-        if self._map_dark_mode is not None and self._map_dark_mode != dark:
-            js_dark = f"if (typeof window.setMapDarkMode === 'function') window.setMapDarkMode({json.dumps(dark)});"
-            self._view.page().runJavaScript(js_dark)
+        offline = params.get("offline", False)
+        if self._map_loaded:
+            if self._map_offline is not None and self._map_offline != offline:
+                karten_path = _offline_tiles_base_path()
+                if offline:
+                    tile_url_off = karten_path.as_uri() + "/{z}/{x}/{y}.png"
+                    js_off = f"if (typeof window.setMapOfflineMode === 'function') window.setMapOfflineMode(true, {json.dumps(tile_url_off)});"
+                else:
+                    tile_url_on = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" if dark else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+                    js_off = f"if (typeof window.setMapOfflineMode === 'function') window.setMapOfflineMode(false, {json.dumps(tile_url_on)});"
+                self._view.page().runJavaScript(js_off)
+            elif self._map_dark_mode is not None and self._map_dark_mode != dark and not offline:
+                js_dark = f"if (typeof window.setMapDarkMode === 'function') window.setMapDarkMode({json.dumps(dark)});"
+                self._view.page().runJavaScript(js_dark)
         self._map_dark_mode = dark
+        self._map_offline = offline
         self._update_status_bar()
         self._update_wind_overlay()
         if not self._map_loaded:
-            self._view.setHtml(html, QUrl("about:blank"))
+            base_url = QUrl.fromLocalFile(str(_offline_tiles_base_path()) + "/") if offline else QUrl("about:blank")
+            self._view.setHtml(html, base_url)
             self._map_loaded = True
 
     def showEvent(self, event):
@@ -772,6 +834,7 @@ class MapWindow(QDialog):
         self._refresh_favorites_dropdown()
         self._map_loaded = False
         self._map_dark_mode = None
+        self._map_offline = None
         self._smooth_azimuth = None
         self._refresh_map()
         self._refresh_timer.start()

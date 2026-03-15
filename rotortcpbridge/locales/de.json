@@ -216,6 +216,7 @@
   "map.info_azimut": "Azimut",
   "map.info_offnung": "Öffnungswinkel",
   "map.info_reichweite": "Reichweite",
+  "map.chk_offline": "Offline-Karte",
 
   "catalog.help.TEST": "Verbindungstest (Ping).",
   "catalog.help.STOP": "Weicher Stop (normales Abbremsen). Beendet eine Positionsfahrt.\n Fehler werden NICHT gelöscht.",

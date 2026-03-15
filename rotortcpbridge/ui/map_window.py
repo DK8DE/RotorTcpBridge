@@ -37,7 +37,8 @@ from ..geo_utils import beam_center_line_points, beam_polygon_points, bearing_de
 from ..i18n import t
 
 # Lokaler HTTP-Server für Offline-Tiles (umgeht file://-Blockierung in WebEngine)
-_offline_server: Optional["_TilesHTTPServer"] = None
+_offline_server_light: Optional["_TilesHTTPServer"] = None
+_offline_server_dark: Optional["_TilesHTTPServer"] = None
 _offline_server_lock = threading.Lock()
 
 
@@ -53,7 +54,7 @@ class _TilesHTTPServer:
     def start(self) -> int:
         if self._server is not None:
             return self._port
-        for port in range(37540, 37560):
+        for port in range(37540, 37580):
             try:
                 from http.server import HTTPServer, SimpleHTTPRequestHandler
                 _base = Path(self._path)
@@ -62,6 +63,15 @@ class _TilesHTTPServer:
                     def __init__(self, *args, **kwargs):
                         kwargs.setdefault("directory", str(_base))
                         super().__init__(*args, **kwargs)
+
+                    def log_message(self, format, *args):
+                        pass  # Keine Tile-Request-Logs in der Konsole
+
+                    def do_GET(self):
+                        try:
+                            super().do_GET()
+                        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+                            pass  # Client hat Verbindung abgebrochen (z.B. beim Zoomen)
 
                 self._server = HTTPServer(("127.0.0.1", port), _TilesHandler)
                 self._server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -79,30 +89,54 @@ class _TilesHTTPServer:
             self._server = None
 
 
-def _offline_tiles_base_path() -> Path:
-    """Pfad zum Karten-Ordner (Standard-OSM-Struktur: z/x/y.png)."""
+def _offline_tiles_base_path(dark: bool = False) -> Path:
+    """Pfad zum Karten-Ordner (Standard: z/x/y.png). dark=True -> KartenDark, sonst KartenLight."""
+    subdir = "KartenDark" if dark else "KartenLight"
     for base in [
-        Path(__file__).resolve().parents[1] / "Karten",   # rotortcpbridge/Karten
-        Path(__file__).resolve().parents[2] / "Karten",   # Projektroot/Karten
-        Path.cwd() / "Karten",
-        Path(os.environ.get("APPDATA", "")) / "RotorTcpBridge" / "Karten",
+        Path(__file__).resolve().parents[1] / subdir,
+        Path(__file__).resolve().parents[2] / subdir,
+        Path.cwd() / subdir,
+        Path(os.environ.get("APPDATA", "")) / "RotorTcpBridge" / subdir,
     ]:
         if base.exists() and base.is_dir():
             return base
-    return Path(__file__).resolve().parents[1] / "Karten"
+    return Path(__file__).resolve().parents[1] / subdir
 
 
-def _offline_tile_url() -> str:
+def _offline_zoom_range(dark: bool = False) -> tuple[int, int]:
+    """Ermittelt min/max Zoom aus vorhandenen Tiles (z/x/y-Struktur)."""
+    for use_dark in (dark, not dark):
+        base = _offline_tiles_base_path(use_dark)
+        zooms = []
+        try:
+            for name in os.listdir(base):
+                if name.isdigit():
+                    z_dir = base / name
+                    if z_dir.is_dir() and any((z_dir / n).is_dir() for n in os.listdir(z_dir) if n.isdigit()):
+                        zooms.append(int(name))
+            if zooms:
+                return (min(zooms), max(zooms))
+        except OSError:
+            pass
+    return (0, 4)
+
+
+def _offline_tile_url(dark: bool = False) -> str:
     """Startet ggf. HTTP-Server für Offline-Tiles und liefert Tile-URL-Template."""
-    global _offline_server
-    path = _offline_tiles_base_path()
+    global _offline_server_light, _offline_server_dark
+    path = _offline_tiles_base_path(dark)
     with _offline_server_lock:
-        if _offline_server is None:
-            _offline_server = _TilesHTTPServer(path)
-        port = _offline_server.start()
+        if dark:
+            if _offline_server_dark is None:
+                _offline_server_dark = _TilesHTTPServer(path)
+            port = _offline_server_dark.start()
+        else:
+            if _offline_server_light is None:
+                _offline_server_light = _TilesHTTPServer(path)
+            port = _offline_server_light.start()
     if port:
         return f"http://127.0.0.1:{port}/{{z}}/{{x}}/{{y}}.png"
-    return ""  # Fallback (leer = Online-Tiles nutzen)
+    return ""
 
 
 def _build_map_html(params: dict) -> str:
@@ -121,12 +155,18 @@ def _build_map_html(params: dict) -> str:
     info_reichweite = params.get("info_reichweite", "Reichweite")
     dark = bool(params.get("dark_mode", False))
     offline = bool(params.get("offline", False))
+    locator_overlay = bool(params.get("map_locator_overlay", False))
+    offline_min_z, offline_max_z = _offline_zoom_range(dark) if offline else (0, 19)
     if offline:
-        tile_url = _offline_tile_url() or "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        tile_url = _offline_tile_url(dark) or ("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" if dark else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png")
+        tile_url_light = _offline_tile_url(False) or "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+        tile_url_dark = _offline_tile_url(True) or "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
     elif dark:
         tile_url = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        tile_url_light = tile_url_dark = tile_url
     else:
         tile_url = "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+        tile_url_light = tile_url_dark = tile_url
     info_bg = "#2d2d2d" if dark else "white"
     info_color = "#e1e1e1" if dark else "inherit"
     body_bg = "#1c1c1c" if dark else "inherit"
@@ -139,13 +179,14 @@ def _build_map_html(params: dict) -> str:
   <title>Antennenkarte</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet.maidenhead@1.1.0/src/maidenhead.js" crossorigin=""></script>
   <style>
     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
     html, body {{ width: 100%; height: 100%; overflow: hidden; background: {body_bg}; }}
     #map {{ width: 100%; height: 100%; }}
     #info {{ position: absolute; top: 12px; left: 62px; z-index: 1000;
       background: {info_bg}; color: {info_color}; padding: 10px 14px; border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.15); font: 13px/1.4 sans-serif; }}
+      font: 13px/1.4 sans-serif; }}
     #info div {{ margin: 2px 0; }}
   </style>
 </head>
@@ -167,10 +208,13 @@ def _build_map_html(params: dict) -> str:
     const OFFLINE_ATTRIBUTION = "© OpenStreetMap-Mitwirkende";
     const ONLINE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
     const isOffline = {str(offline).lower()};
-    const tileOpts = isOffline ? {{ maxZoom: 19, minZoom: 0, attribution: OFFLINE_ATTRIBUTION }}
+    const offlineMinZ = {offline_min_z};
+    const offlineMaxZ = {offline_max_z};
+    const tileOpts = isOffline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION }}
       : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }};
 
-    const map = L.map('map').setView([lat, lon], 10);
+    const initZoom = isOffline ? {offline_max_z} : 10;
+    const map = L.map('map', {{ maxZoom: isOffline ? {offline_max_z} : 19, minZoom: isOffline ? {offline_max_z} : 0 }}).setView([lat, lon], initZoom);
     let tileLayer = L.tileLayer({json.dumps(tile_url)}, tileOpts).addTo(map);
 
     let marker = L.marker([lat, lon]).addTo(map);
@@ -188,6 +232,11 @@ def _build_map_html(params: dict) -> str:
 
     const allLayer = L.featureGroup([marker, poly, dashLine]);
     map.fitBounds(allLayer.getBounds().pad(0.1));
+    if (isOffline) {{
+      map.setMinZoom(offlineMaxZ);
+      map.setMaxZoom(offlineMaxZ);
+      map.setZoom(offlineMaxZ);
+    }}
 
     map.on('click', function(e) {{
       const lat2 = e.latlng.lat;
@@ -209,25 +258,120 @@ def _build_map_html(params: dict) -> str:
         '<div><strong>' + (data.info_reichweite || 'Reichweite') + ':</strong> ' + data.range_km.toFixed(1) + ' km</div>';
     }};
 
+    const OFFLINE_TILE_URL_LIGHT = {json.dumps(tile_url_light)};
+    const OFFLINE_TILE_URL_DARK = {json.dumps(tile_url_dark)};
     window.setMapOfflineMode = function(offline, tileUrl) {{
       if (tileLayer) map.removeLayer(tileLayer);
-      const opts = offline ? {{ maxZoom: 19, minZoom: 0, attribution: OFFLINE_ATTRIBUTION }}
+      const opts = offline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION }}
         : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }};
       tileLayer = L.tileLayer(tileUrl, opts).addTo(map);
+      if (offline) {{
+        map.setMinZoom(offlineMaxZ);
+        map.setMaxZoom(offlineMaxZ);
+        map.setZoom(offlineMaxZ);
+      }} else {{
+        map.setMinZoom(0);
+        map.setMaxZoom(19);
+      }}
     }};
 
     window.setMapDarkMode = function(dark) {{
-      if (isOffline) return;
-      const url = dark ? TILE_URL_DARK : TILE_URL_LIGHT;
+      const url = isOffline ? (dark ? OFFLINE_TILE_URL_DARK : OFFLINE_TILE_URL_LIGHT) : (dark ? TILE_URL_DARK : TILE_URL_LIGHT);
+      const opts = isOffline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION }}
+        : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }};
       if (tileLayer) map.removeLayer(tileLayer);
-      tileLayer = L.tileLayer(url, {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }}).addTo(map);
+      tileLayer = L.tileLayer(url, opts).addTo(map);
       document.body.style.background = dark ? '#1c1c1c' : 'inherit';
       const info = document.getElementById('info');
       if (info) {{
         info.style.background = dark ? '#2d2d2d' : 'white';
         info.style.color = dark ? '#e1e1e1' : 'inherit';
       }}
+      if (locatorVisible) {{
+        _mapDark = dark;
+        _currentLocatorKey = '';
+        _updateLocatorPrecision();
+      }}
     }};
+
+    let locatorLayer = null;
+    let locatorVisible = false;
+    let _mapDark = {str(dark).lower()};
+    // Präzision je nach Zoom: 0-2 ein Buchstabe, 3-6 JN, 7-11 JN48, 12+ JN48LD (letzte 2 Buchstaben 1 Stufe später)
+    function _precisionForZoom(z) {{
+      if (z < 7) return 2;   // Grid für 1 oder 2 Zeichen
+      if (z < 12) return 4;  // JN48 (ab 7)
+      return 6;               // JN48LD (ab 12)
+    }}
+    function _displayLengthForZoom(z) {{
+      if (z < 3) return 1;   // nur 1 Buchstabe
+      if (z < 7) return 2;   // JN (bis 6)
+      if (z < 12) return 4;  // JN48 (ab 7)
+      return 6;               // JN48LD (ab 12, 1 Stufe später)
+    }}
+    function _createLocatorLayer(isDark, precision, displayLen) {{
+      return L.maidenhead({{
+        precision: precision,
+        polygonStyle: {{ color: isDark ? '#b0b0b0' : '#333', weight: 0.5, fill: true, fillColor: 'transparent', fillOpacity: 0 }},
+        spawnMarker: function(latlng, prec) {{
+          const fg = isDark ? '#e0e0e0' : '#333';
+          const shadow = isDark ? '0 0 2px #000, 0 0 4px #000, 1px 1px 1px #000' : '0 0 2px #fff, 0 0 4px #fff, 1px 1px 1px #fff';
+          const full = L.Maidenhead.latLngToIndex(latlng.lat, latlng.lng, prec);
+          const text = full.substring(0, displayLen).toUpperCase();
+          let dLat = 0, dLng = 0;
+          if (prec === 2) {{ dLat = 5; dLng = 10; }}
+          else if (prec === 4) {{ dLat = 0.5; dLng = 1; }}
+          else if (prec === 6) {{ dLat = 2.5/120; dLng = 5/120; }}
+          const corner = L.latLng(latlng.lat - dLat, latlng.lng + dLng);
+          return L.marker(corner, {{ icon: L.divIcon({{
+            html: "<div style='display:inline-block; white-space:nowrap; background:transparent; color:" + fg + "; text-shadow:" + shadow + "; padding:1px 3px; font:22px monospace; line-height:1.2;'>" + text + "</div>",
+            iconSize: [0, 0],
+            iconAnchor: [120, 32]
+          }}) }});
+        }}
+      }});
+    }}
+    let _currentLocatorKey = '';
+    // Bei jedem Zoom prüfen: Wechsel sofort bei Präzisionsänderung (v.a. rauszoomen)
+    function _updateLocatorPrecision() {{
+      if (!locatorVisible || !map) return;
+      const z = map.getZoom();
+      const prec = _precisionForZoom(z);
+      const dispLen = _displayLengthForZoom(z);
+      const key = prec + '-' + dispLen;
+      if (key === _currentLocatorKey && locatorLayer) return;
+      _currentLocatorKey = key;
+      if (locatorLayer) {{
+        map.removeLayer(locatorLayer);
+      }}
+      locatorLayer = _createLocatorLayer(_mapDark, prec, dispLen);
+      map.addLayer(locatorLayer);
+    }}
+    let _lastLocatorCheck = 0;
+    map.on('zoom', function() {{
+      if (!locatorVisible) return;
+      const now = Date.now();
+      if (now - _lastLocatorCheck < 80) return;
+      _lastLocatorCheck = now;
+      _updateLocatorPrecision();
+    }});
+    map.on('zoomend', function() {{
+      if (locatorVisible) _updateLocatorPrecision();
+    }});
+    window.setMapLocatorOverlay = function(show, darkMode) {{
+      if (darkMode !== undefined) _mapDark = darkMode;
+      locatorVisible = !!show;
+      if (show) {{
+        _updateLocatorPrecision();
+      }} else if (locatorLayer) {{
+        map.removeLayer(locatorLayer);
+        locatorLayer = null;
+        _currentLocatorKey = '';
+      }}
+    }};
+    if ({str(locator_overlay).lower()}) {{
+      setTimeout(function() {{ if (typeof window.setMapLocatorOverlay === 'function') window.setMapLocatorOverlay(true, {str(dark).lower()}); }}, 100);
+    }}
 
   </script>
 </body>
@@ -298,11 +442,15 @@ class MapWindOverlay(QFrame):
             self._dark_mode = bool(dark)
             self._apply_theme()
 
+    def set_visible(self, on: bool) -> None:
+        """Overlay ein-/ausblenden, wenn Windsensor offline."""
+        self.setVisible(bool(on))
+
     def _apply_theme(self) -> None:
         if self._dark_mode:
-            self.setStyleSheet("background: #2d2d2d; color: #e1e1e1; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.35);")
+            self.setStyleSheet("background: #2d2d2d; color: #e1e1e1; border-radius: 8px;")
         else:
-            self.setStyleSheet("background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);")
+            self.setStyleSheet("background: white; border-radius: 8px;")
 
     def _animate_wind_dir(self) -> None:
         if self._wind_dir_deg is None or self._wind_dir_draw_deg is None:
@@ -471,6 +619,9 @@ class MapWindow(QDialog):
         self._chk_offline = QCheckBox(t("map.chk_offline"))
         self._chk_offline.setChecked(bool(self.cfg.get("ui", {}).get("map_offline", False)))
         self._chk_offline.stateChanged.connect(self._on_offline_changed)
+        self._chk_locator = QCheckBox(t("map.chk_locator"))
+        self._chk_locator.setChecked(bool(self.cfg.get("ui", {}).get("map_locator_overlay", False)))
+        self._chk_locator.stateChanged.connect(self._on_locator_changed)
         self._btn_ref_az = QPushButton(t("compass.btn_ref_az"))
         self._btn_ref_az.setAutoDefault(False)
         self._btn_ref_az.setDefault(False)
@@ -490,6 +641,7 @@ class MapWindow(QDialog):
         status_bar.addWidget(self._lbl_temp_ambient)
         status_bar.addStretch(1)
         status_bar.addWidget(self._chk_offline)
+        status_bar.addWidget(self._chk_locator)
         status_bar.addWidget(self._btn_ref_az)
         layout.addLayout(status_bar)
 
@@ -499,7 +651,8 @@ class MapWindow(QDialog):
         self._map_loaded = False
         self._map_dark_mode: Optional[bool] = None
         self._map_offline: Optional[bool] = None
-        self._smooth_azimuth: float | None = None
+        self._map_locator_overlay: Optional[bool] = None
+        self._smooth_azimuth: Optional[float] = None
         self._SMOOTH_FACTOR = 0.25
 
     def _get_params(self) -> dict:
@@ -546,6 +699,7 @@ class MapWindow(QDialog):
             "info_reichweite": t("map.info_reichweite"),
             "dark_mode": bool(self.cfg.get("ui", {}).get("force_dark_mode", False)),
             "offline": bool(self.cfg.get("ui", {}).get("map_offline", False)),
+            "map_locator_overlay": bool(self.cfg.get("ui", {}).get("map_locator_overlay", False)),
         }
 
     def _get_antenna_offset_az(self) -> float:
@@ -726,6 +880,19 @@ class MapWindow(QDialog):
             pass
         self._refresh_map()
 
+    def _on_locator_changed(self) -> None:
+        """Locator-Overlay ein/aus → Config speichern, Karte aktualisieren."""
+        on = bool(self._chk_locator.isChecked())
+        if "ui" not in self.cfg:
+            self.cfg["ui"] = {}
+        self.cfg["ui"]["map_locator_overlay"] = on
+        try:
+            if self.save_cfg_cb:
+                self.save_cfg_cb(self.cfg)
+        except Exception:
+            pass
+        self._refresh_map()
+
     def _on_ref_az(self) -> None:
         """Referenz AZ auslösen."""
         try:
@@ -746,6 +913,7 @@ class MapWindow(QDialog):
         if mode not in ("from", "to"):
             mode = "to"
         self._wind_overlay.set_wind_dir_mode(mode)
+        self._wind_overlay.set_visible(wind_on)
         if not wind_on:
             self._wind_overlay.set_wind_dir_deg(0.0)
             self._wind_overlay.set_wind_kmh(None)
@@ -865,17 +1033,22 @@ class MapWindow(QDialog):
         if self._map_loaded:
             if self._map_offline is not None and self._map_offline != offline:
                 if offline:
-                    tile_url_off = _offline_tile_url() or "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                    tile_url_off = _offline_tile_url(dark) or ("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" if dark else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png")
                     js_off = f"if (typeof window.setMapOfflineMode === 'function') window.setMapOfflineMode(true, {json.dumps(tile_url_off)});"
                 else:
                     tile_url_on = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" if dark else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
                     js_off = f"if (typeof window.setMapOfflineMode === 'function') window.setMapOfflineMode(false, {json.dumps(tile_url_on)});"
                 self._view.page().runJavaScript(js_off)
-            elif self._map_dark_mode is not None and self._map_dark_mode != dark and not offline:
+            elif self._map_dark_mode is not None and self._map_dark_mode != dark:
                 js_dark = f"if (typeof window.setMapDarkMode === 'function') window.setMapDarkMode({json.dumps(dark)});"
                 self._view.page().runJavaScript(js_dark)
+            if self._map_locator_overlay is not None and self._map_locator_overlay != params.get("map_locator_overlay", False):
+                loc_on = bool(params.get("map_locator_overlay", False))
+                js_loc = f"if (typeof window.setMapLocatorOverlay === 'function') window.setMapLocatorOverlay({json.dumps(loc_on)}, {json.dumps(dark)});"
+                self._view.page().runJavaScript(js_loc)
         self._map_dark_mode = dark
         self._map_offline = offline
+        self._map_locator_overlay = params.get("map_locator_overlay", False)
         self._update_status_bar()
         self._update_wind_overlay()
         if not self._map_loaded:
@@ -889,6 +1062,7 @@ class MapWindow(QDialog):
         self._map_loaded = False
         self._map_dark_mode = None
         self._map_offline = None
+        self._map_locator_overlay = None
         self._smooth_azimuth = None
         self._refresh_map()
         self._refresh_timer.start()

@@ -70,8 +70,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
       # Standortkoordinaten (Breite/Länge in Grad dezimal)
       "location_lat": 49.502651,
       "location_lon": 8.375019,
-      # Offline-Karte: True = lokale Tiles aus Karten-Ordner verwenden
+      # Offline-Karte: True = lokale Tiles aus KartenLight-/KartenDark-Ordner verwenden
       "map_offline": False,
+      # Amateurfunk-Locator: True = Maidenhead-Grid als Overlay einblenden
+      "map_locator_overlay": False,
       # UDP UcxLog: Bei aktiviertem Häkchen lauscht die App auf 127.0.0.1:12040
       # und nimmt XML-Positionsdaten von UcxLog entgegen (<Rotor><Azimut>…</Azimut></Rotor>).
       "udp_ucxlog_enabled": False,

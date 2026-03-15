@@ -839,6 +839,7 @@ class MapWindow(QDialog):
         status_bar.addWidget(self._lbl_online)
         status_bar.addWidget(self._led_ref)
         status_bar.addWidget(self._lbl_ref)
+        status_bar.addSpacing(px_to_dip(self, 20))
         status_bar.addWidget(self._lbl_temp_motor)
         status_bar.addWidget(self._lbl_temp_ambient)
         status_bar.addStretch(1)

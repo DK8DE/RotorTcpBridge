@@ -189,15 +189,15 @@ class MainWindow(QMainWindow):
         self.t.start(100)
 
         self._log_win = LogWindow(self.logbuf, parent=None)
+        self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+        self._map_win = MapWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
         self._settings_win = SettingsWindow(
             self.cfg, self.ctrl, self.pst, self.hw, self.save_cfg_cb, self.logbuf,
             after_apply_cb=self._after_settings_applied,
             rebuild_ui_cb=self._rebuild_all_windows,
+            map_window=self._map_win,
             parent=None,
         )
-
-        self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
-        self._map_win = MapWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
         self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
         self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
         self._commands_win = CommandButtonsWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
@@ -322,6 +322,7 @@ class MainWindow(QMainWindow):
                 self.cfg, self.ctrl, self.pst, self.hw, self.save_cfg_cb, self.logbuf,
                 after_apply_cb=self._after_settings_applied,
                 rebuild_ui_cb=self._rebuild_all_windows,
+                map_window=self._map_win,
                 parent=None,
             )
         except Exception:
@@ -443,7 +444,7 @@ class MainWindow(QMainWindow):
         return wind_on
 
     def _apply_fixed_mainwindow_size(self):
-        width = px_to_dip(self, 400)
+        width = px_to_dip(self, 460)
         try:
             lay = self.centralWidget().layout()
             if lay:

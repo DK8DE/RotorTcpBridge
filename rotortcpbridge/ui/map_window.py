@@ -1,6 +1,7 @@
 """Karten-Fenster mit Leaflet und Antennen-Beam."""
 from __future__ import annotations
 
+import base64
 import json
 import math
 import os
@@ -11,9 +12,10 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -25,7 +27,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtWebEngineCore import QWebEnginePage
+from PySide6.QtWebEngineCore import (
+    QWebEnginePage,
+    QWebEngineProfile,
+    QWebEngineUrlRequestJob,
+    QWebEngineUrlSchemeHandler,
+)
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from ..angle_utils import clamp_el, fmt_deg, shortest_delta_deg, wrap_deg
@@ -36,57 +43,202 @@ from ..app_icon import get_app_icon
 from ..geo_utils import beam_center_line_points, beam_polygon_points, bearing_deg
 from ..i18n import t
 
-# Lokaler HTTP-Server für Offline-Tiles (umgeht file://-Blockierung in WebEngine)
-_offline_server_light: Optional["_TilesHTTPServer"] = None
-_offline_server_dark: Optional["_TilesHTTPServer"] = None
-_offline_server_lock = threading.Lock()
+# Custom URL-Scheme für Offline-Tiles (funktioniert ohne Netzwerkadapter)
+ROTORTILES_SCHEME = "rotortiles"
+
+
+def _static_lib_path() -> Path:
+    """Pfad zu rotortcpbridge/static (Leaflet, Maidenhead)."""
+    return Path(__file__).resolve().parent.parent / "static"
+
+
+_DEBUG_TILES = False
+
+
+class _TilesUrlSchemeHandler(QWebEngineUrlSchemeHandler):
+    """Liefert Offline-Tiles und Bibliotheken (Leaflet) via rotortiles:-URLs (ohne Netzwerk)."""
+
+    def requestStarted(self, job: QWebEngineUrlRequestJob) -> None:
+        url = job.requestUrl()
+        url_str = url.toString()
+        path = url.path().lstrip("/")
+        parts = path.split("/") if path else []
+        # Map-Seite: rotortiles:map/ oder rotortiles:map
+        if parts and parts[0] == "map":
+            global _pending_map_html
+            html = _pending_map_html
+            if not html:
+                if _DEBUG_TILES:
+                    print(f"[rotortiles] FAIL (map): kein HTML gesetzt")
+                job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
+                return
+            data = html.encode("utf-8")
+            buffer = QBuffer(job)
+            buffer.setData(QByteArray(data))
+            buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+            job.reply(QByteArray(b"text/html; charset=utf-8"), buffer)
+            if _DEBUG_TILES:
+                print(f"[rotortiles] OK map ({len(data)} bytes)")
+            return
+        # Lib: rotortiles:lib/leaflet.min.js, leaflet.css, maidenhead.js, images/...
+        if len(parts) >= 2 and parts[0] == "lib":
+            rel = "/".join(parts[1:])
+            base_lib = _static_lib_path()
+            lib_path = (base_lib / rel).resolve()
+            if not str(lib_path).startswith(str(base_lib.resolve())):
+                job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
+                return
+            mime = "application/javascript"
+            if rel.endswith(".css"):
+                mime = "text/css"
+            elif rel.endswith(".js"):
+                mime = "application/javascript"
+            elif rel.endswith(".png"):
+                mime = "image/png"
+            if not lib_path.is_file():
+                job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
+                return
+            try:
+                data = lib_path.read_bytes()
+            except OSError:
+                job.fail(QWebEngineUrlRequestJob.Error.RequestFailed)
+                return
+            buffer = QBuffer(job)
+            buffer.setData(QByteArray(data))
+            buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+            job.reply(QByteArray(mime.encode()), buffer)
+            if _DEBUG_TILES:
+                print(f"[rotortiles] OK lib: {rel}")
+            return
+        if len(parts) < 4 or parts[0] not in ("light", "dark"):
+            if _DEBUG_TILES:
+                print(f"[rotortiles] FAIL (kein Tile): {url_str} -> path={path!r} parts={parts}")
+            job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
+            return
+        theme, z_s, x_s, y_part = parts[0], parts[1], parts[2], parts[3]
+        if not y_part.endswith(".png"):
+            job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
+            return
+        try:
+            z, x, y = int(z_s), int(x_s), int(y_part[:-4])
+        except ValueError:
+            job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
+            return
+        base = _offline_tiles_base_path(dark=(theme == "dark"))
+        tile_path = base / str(z) / str(x) / f"{y}.png"
+        if not tile_path.is_file():
+            if _DEBUG_TILES:
+                print(f"[rotortiles] FAIL (Datei fehlt): {tile_path}")
+            job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
+            return
+        try:
+            data = tile_path.read_bytes()
+        except OSError as e:
+            if _DEBUG_TILES:
+                print(f"[rotortiles] FAIL (Lesefehler): {tile_path} -> {e}")
+            job.fail(QWebEngineUrlRequestJob.Error.RequestFailed)
+            return
+        buffer = QBuffer(job)
+        buffer.setData(QByteArray(data))
+        buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+        job.reply(QByteArray(b"image/png"), buffer)
+        if _DEBUG_TILES:
+            print(f"[rotortiles] OK tile: {z}/{x}/{y}.png ({len(data)} bytes)")
+
+
+_tiles_handler_installed = False
+_pending_map_html: str = ""  # HTML für rotortiles:map/ (nur bei load() im Offline-Modus)
+
+# Ein einzelner HTTP-Server für beide Kartensets (Light + Dark) via URL-Pfad
+_http_tile_server: Optional["_TilesHTTPServer"] = None
+_http_server_lock = threading.Lock()
 
 
 class _TilesHTTPServer:
-    """Minimaler HTTP-Server für Karten-Tiles aus lokalem Ordner."""
+    """Lokaler HTTP-Server für Light- und Dark-Tiles über URL-Pfade.
+    /light/z/x/y.png → KartenLight, /dark/z/x/y.png → KartenDark."""
 
-    def __init__(self, karten_path: Path):
-        self._path = karten_path
+    def __init__(self):
         self._server = None
         self._thread = None
         self._port = 0
+        self._light_path = _offline_tiles_base_path(False)
+        self._dark_path = _offline_tiles_base_path(True)
 
     def start(self) -> int:
         if self._server is not None:
             return self._port
+        light_dir = str(self._light_path)
+        dark_dir = str(self._dark_path)
         for port in range(37540, 37580):
             try:
-                from http.server import HTTPServer, SimpleHTTPRequestHandler
-                _base = Path(self._path)
+                from http.server import HTTPServer, BaseHTTPRequestHandler
 
-                class _TilesHandler(SimpleHTTPRequestHandler):
-                    def __init__(self, *args, **kwargs):
-                        kwargs.setdefault("directory", str(_base))
-                        super().__init__(*args, **kwargs)
-
+                class _Handler(BaseHTTPRequestHandler):
                     def log_message(self, format, *args):
-                        pass  # Keine Tile-Request-Logs in der Konsole
+                        pass
 
                     def do_GET(self):
+                        path = self.path.lstrip("/")
+                        if path.startswith("light/"):
+                            rel = path[len("light/"):]
+                            base = light_dir
+                        elif path.startswith("dark/"):
+                            rel = path[len("dark/"):]
+                            base = dark_dir
+                        else:
+                            self.send_error(404)
+                            return
+                        file_path = os.path.join(base, rel.replace("/", os.sep))
+                        if not os.path.isfile(file_path):
+                            self.send_error(404)
+                            return
                         try:
-                            super().do_GET()
-                        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
-                            pass  # Client hat Verbindung abgebrochen (z.B. beim Zoomen)
+                            with open(file_path, "rb") as f:
+                                data = f.read()
+                            self.send_response(200)
+                            self.send_header("Content-Type", "image/png")
+                            self.send_header("Content-Length", str(len(data)))
+                            self.send_header("Cache-Control", "no-store")
+                            self.end_headers()
+                            self.wfile.write(data)
+                        except (OSError, ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+                            pass
 
-                self._server = HTTPServer(("127.0.0.1", port), _TilesHandler)
-                self._server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self._server = HTTPServer(("127.0.0.1", port), _Handler)
                 self._port = port
                 self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
                 self._thread.start()
+                if _DEBUG_TILES:
+                    print(f"[TileHTTP] Server gestartet port={port} light={light_dir} dark={dark_dir}")
                 return port
             except OSError:
                 continue
         return 0
 
-    def stop(self):
-        if self._server:
-            self._server.shutdown()
-            self._server = None
+
+def _offline_tile_url_http(dark: bool = False) -> str:
+    """HTTP-Server starten, Tile-URL liefern. Leer wenn Server nicht startet."""
+    global _http_tile_server
+    with _http_server_lock:
+        if _http_tile_server is None:
+            _http_tile_server = _TilesHTTPServer()
+        port = _http_tile_server.start()
+    theme = "dark" if dark else "light"
+    url = f"http://127.0.0.1:{port}/{theme}/{{z}}/{{x}}/{{y}}.png" if port else ""
+    if _DEBUG_TILES:
+        print(f"[TileHTTP] dark={dark} port={port} url={url[:70]}")
+    return url
+
+
+def install_rotortiles_handler() -> None:
+    """Nach QApplication aufrufen."""
+    global _tiles_handler_installed
+    if _tiles_handler_installed:
+        return
+    profile = QWebEngineProfile.defaultProfile()
+    profile.installUrlSchemeHandler(ROTORTILES_SCHEME.encode(), _TilesUrlSchemeHandler())
+    _tiles_handler_installed = True
 
 
 def _offline_tiles_base_path(dark: bool = False) -> Path:
@@ -122,26 +274,18 @@ def _offline_zoom_range(dark: bool = False) -> tuple[int, int]:
 
 
 def _offline_tile_url(dark: bool = False) -> str:
-    """Startet ggf. HTTP-Server für Offline-Tiles und liefert Tile-URL-Template."""
-    global _offline_server_light, _offline_server_dark
-    path = _offline_tiles_base_path(dark)
-    with _offline_server_lock:
-        if dark:
-            if _offline_server_dark is None:
-                _offline_server_dark = _TilesHTTPServer(path)
-            port = _offline_server_dark.start()
-        else:
-            if _offline_server_light is None:
-                _offline_server_light = _TilesHTTPServer(path)
-            port = _offline_server_light.start()
-    if port:
-        return f"http://127.0.0.1:{port}/{{z}}/{{x}}/{{y}}.png"
-    return ""
+    """Tile-URL: HTTP-Server (bei Netzwerk), sonst rotortiles:-Scheme."""
+    url = _offline_tile_url_http(dark)
+    if url:
+        return url
+    theme = "dark" if dark else "light"
+    return f"{ROTORTILES_SCHEME}:{theme}/{{z}}/{{x}}/{{y}}.png"
 
 
-def _build_map_html(params: dict) -> str:
+def _build_map_html(params: dict, dark: bool | None = None) -> str:
     """Erstellt die vollständige HTML-Seite mit Leaflet.
-    Enthält window.updateBeam(data) zum Aktualisieren ohne Zoom/Zentrum zu ändern."""
+    Enthält window.updateBeam(data) zum Aktualisieren ohne Zoom/Zentrum zu ändern.
+    dark: expliziter Wert (hat Vorrang vor params['dark_mode'])."""
     lat = params["lat"]
     lon = params["lon"]
     azimuth = params["azimuth"]
@@ -153,14 +297,19 @@ def _build_map_html(params: dict) -> str:
     info_standort = params.get("info_standort", "Standort")
     info_offnung = params.get("info_offnung", "Öffnungswinkel")
     info_reichweite = params.get("info_reichweite", "Reichweite")
-    dark = bool(params.get("dark_mode", False))
+    if dark is None:
+        dark = bool(params.get("dark_mode", False))
+    else:
+        dark = bool(dark)
     offline = bool(params.get("offline", False))
     locator_overlay = bool(params.get("map_locator_overlay", False))
-    offline_min_z, offline_max_z = _offline_zoom_range(dark) if offline else (0, 19)
+    offline_min_z, offline_max_z = _offline_zoom_range(dark)
     if offline:
         tile_url = _offline_tile_url(dark) or ("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" if dark else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png")
         tile_url_light = _offline_tile_url(False) or "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
         tile_url_dark = _offline_tile_url(True) or "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        if _DEBUG_TILES:
+            print(f"[BuildHTML] dark={dark} tile={tile_url[:60]} light={tile_url_light[:60]} dark={tile_url_dark[:60]}")
     elif dark:
         tile_url = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
         tile_url_light = tile_url_dark = tile_url
@@ -171,15 +320,42 @@ def _build_map_html(params: dict) -> str:
     info_color = "#e1e1e1" if dark else "inherit"
     body_bg = "#1c1c1c" if dark else "inherit"
 
+    antenna_path = Path(__file__).resolve().parent.parent / "Antenne.png"
+    antenna_data_url = ""
+    antenna_target_data_url = ""
+    try:
+        data = antenna_path.read_bytes()
+        antenna_data_url = "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+    except OSError:
+        pass
+    antenna_target_path = Path(__file__).resolve().parent.parent / "Antenne_T.png"
+    try:
+        data = antenna_target_path.read_bytes()
+        antenna_target_data_url = "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+    except OSError:
+        pass
+
+    # Leaflet und Maidenhead inline einbetten (rotortiles:-URLs werden bei about:blank blockiert)
+    def _read_static(name: str) -> str:
+        p = _static_lib_path() / name
+        if not p.is_file():
+            return ""
+        txt = p.read_text(encoding="utf-8", errors="replace")
+        if name.endswith(".js"):
+            txt = txt.replace("</script>", "<\\/script>")
+        return txt
+
+    leaflet_css = _read_static("leaflet.css")
+    leaflet_js = _read_static("leaflet.min.js")
+    maidenhead_js = _read_static("maidenhead.js")
+
     return f"""<!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Antennenkarte</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script src="https://unpkg.com/leaflet.maidenhead@1.1.0/src/maidenhead.js" crossorigin=""></script>
+  <style>{leaflet_css}</style>
   <style>
     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
     html, body {{ width: 100%; height: 100%; overflow: hidden; background: {body_bg}; }}
@@ -197,6 +373,8 @@ def _build_map_html(params: dict) -> str:
     <div><strong>{info_reichweite}:</strong> {range_km:.1f} km</div>
   </div>
   <div id="map"></div>
+  <script>{leaflet_js}</script>
+  <script>{maidenhead_js}</script>
   <script>
     const lat = {lat};
     const lon = {lon};
@@ -213,11 +391,24 @@ def _build_map_html(params: dict) -> str:
     const tileOpts = isOffline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION }}
       : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }};
 
+    console.log('[Map] Init isOffline=' + isOffline + ' tileUrl=' + {json.dumps(tile_url)} + ' origin=' + (document.location && document.location.origin ? document.location.origin : '?'));
     const initZoom = isOffline ? {offline_max_z} : 10;
-    const map = L.map('map', {{ maxZoom: isOffline ? {offline_max_z} : 19, minZoom: isOffline ? {offline_max_z} : 0 }}).setView([lat, lon], initZoom);
+    const map = L.map('map', {{ maxZoom: isOffline ? {offline_max_z} : 19, minZoom: isOffline ? {offline_max_z} : 3 }}).setView([lat, lon], initZoom);
     let tileLayer = L.tileLayer({json.dumps(tile_url)}, tileOpts).addTo(map);
+    tileLayer.on('tileerror', function(e) {{ console.error('[Map] Tile-Fehler:', e.tile?.src || e); }});
+    tileLayer.on('load', function() {{ console.log('[Map] Tiles geladen'); }});
 
-    let marker = L.marker([lat, lon]).addTo(map);
+    const antennaIcon = {json.dumps(antenna_data_url)} ? L.icon({{
+      iconUrl: {json.dumps(antenna_data_url)},
+      iconSize: [30, 30],
+      iconAnchor: [15, 30]
+    }}) : null;
+    const antennaTargetIcon = {json.dumps(antenna_target_data_url)} ? L.icon({{
+      iconUrl: {json.dumps(antenna_target_data_url)},
+      iconSize: [30, 30],
+      iconAnchor: [15, 30]
+    }}) : antennaIcon;
+    let marker = L.marker([lat, lon], antennaIcon ? {{ icon: antennaIcon }} : {{}}).addTo(map);
     marker.bindPopup("Antennenstandort").openPopup();
 
     let poly = L.polygon(polyCoords, {{
@@ -238,9 +429,13 @@ def _build_map_html(params: dict) -> str:
       map.setZoom(offlineMaxZ);
     }}
 
+    let clickMarker = null;
     map.on('click', function(e) {{
       const lat2 = e.latlng.lat;
       const lon2 = e.latlng.lng;
+      if (clickMarker) map.removeLayer(clickMarker);
+      clickMarker = L.marker([lat2, lon2], antennaTargetIcon ? {{ icon: antennaTargetIcon }} : {{}}).addTo(map);
+      clickMarker.bindPopup("Ziel");
       window.location = 'rotorapp://setaz?lat=' + lat2 + '&lon=' + lon2;
     }});
 
@@ -249,7 +444,7 @@ def _build_map_html(params: dict) -> str:
       map.removeLayer(marker);
       map.removeLayer(poly);
       map.removeLayer(dashLine);
-      marker = L.marker([data.lat, data.lon]).addTo(map);
+      marker = L.marker([data.lat, data.lon], antennaIcon ? {{ icon: antennaIcon }} : {{}}).addTo(map);
       marker.bindPopup("Antennenstandort");
       poly = L.polygon(data.polygon, {{ color: '#5BA3D0', fillColor: '#87CEEB', fillOpacity: 0.35, weight: 2, interactive: false }}).addTo(map);
       dashLine = L.polyline(data.centerLine, {{ color: 'blue', weight: 2, dashArray: '8, 8', interactive: false }}).addTo(map);
@@ -260,7 +455,9 @@ def _build_map_html(params: dict) -> str:
 
     const OFFLINE_TILE_URL_LIGHT = {json.dumps(tile_url_light)};
     const OFFLINE_TILE_URL_DARK = {json.dumps(tile_url_dark)};
+    let _currentOffline = isOffline;
     window.setMapOfflineMode = function(offline, tileUrl) {{
+      _currentOffline = offline;
       if (tileLayer) map.removeLayer(tileLayer);
       const opts = offline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION }}
         : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }};
@@ -268,19 +465,24 @@ def _build_map_html(params: dict) -> str:
       if (offline) {{
         map.setMinZoom(offlineMaxZ);
         map.setMaxZoom(offlineMaxZ);
-        map.setZoom(offlineMaxZ);
+        map.setView(map.getCenter(), offlineMaxZ, {{ animate: false }});
       }} else {{
-        map.setMinZoom(0);
+        map.setMinZoom(3);
         map.setMaxZoom(19);
       }}
     }};
 
     window.setMapDarkMode = function(dark) {{
-      const url = isOffline ? (dark ? OFFLINE_TILE_URL_DARK : OFFLINE_TILE_URL_LIGHT) : (dark ? TILE_URL_DARK : TILE_URL_LIGHT);
-      const opts = isOffline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION }}
+      const url = _currentOffline ? (dark ? OFFLINE_TILE_URL_DARK : OFFLINE_TILE_URL_LIGHT) : (dark ? TILE_URL_DARK : TILE_URL_LIGHT);
+      const opts = _currentOffline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION }}
         : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }};
       if (tileLayer) map.removeLayer(tileLayer);
       tileLayer = L.tileLayer(url, opts).addTo(map);
+      if (_currentOffline) {{
+        map.setMinZoom(offlineMaxZ);
+        map.setMaxZoom(offlineMaxZ);
+        map.setView(map.getCenter(), offlineMaxZ, {{ animate: false }});
+      }}
       document.body.style.background = dark ? '#1c1c1c' : 'inherit';
       const info = document.getElementById('info');
       if (info) {{
@@ -995,6 +1197,9 @@ class MapWindow(QDialog):
         """Beam-Daten aktualisieren ohne Karten-Zoom/Zentrum zu ändern.
         Azimuth wird geglättet für flüssige Bewegung ohne Ruckeln."""
         params = self._get_params()
+        # dark_mode immer direkt aus Config (force_dark_mode) – auch für Offline-Tiles
+        dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", False))
+        params["dark_mode"] = dark
         target_az = params["azimuth"]
         if self._smooth_azimuth is None:
             self._smooth_azimuth = target_az
@@ -1006,8 +1211,9 @@ class MapWindow(QDialog):
         lon = params["lon"]
         opening = params["opening"]
         range_km = params["range_km"]
-        polygon = beam_polygon_points(lat, lon, self._smooth_azimuth, opening, range_km)
-        center_line = beam_center_line_points(lat, lon, self._smooth_azimuth, range_km)
+        az = float(self._smooth_azimuth or 0.0)
+        polygon = beam_polygon_points(lat, lon, az, opening, range_km)
+        center_line = beam_center_line_points(lat, lon, az, range_km)
         params["polygon"] = [[p[0], p[1]] for p in polygon]
         params["center_line"] = [[p[0], p[1]] for p in center_line]
         if self._map_loaded:
@@ -1027,8 +1233,7 @@ class MapWindow(QDialog):
             js = f"if (typeof window.updateBeam === 'function') window.updateBeam({json.dumps(data)});"
             self._view.page().runJavaScript(js)
         else:
-            html = _build_map_html(params)
-        dark = params.get("dark_mode", False)
+            html = _build_map_html(params, dark=dark)
         offline = params.get("offline", False)
         if self._map_loaded:
             if self._map_offline is not None and self._map_offline != offline:
@@ -1052,7 +1257,21 @@ class MapWindow(QDialog):
         self._update_status_bar()
         self._update_wind_overlay()
         if not self._map_loaded:
-            self._view.setHtml(html, QUrl("about:blank"))
+            tile_url = _offline_tile_url(params.get("dark_mode", False)) if offline else ""
+            if offline and tile_url.startswith("http://"):
+                # HTTP-Server funktioniert: setHtml mit about:blank (Tiles von 127.0.0.1)
+                if _DEBUG_TILES:
+                    print(f"[Map] setHtml (HTTP-Tiles) offline=True tileUrl={tile_url[:50]}...")
+                self._view.setHtml(html, QUrl("about:blank"))
+            elif offline and tile_url.startswith("rotortiles:"):
+                # Kein HTTP: load von rotortiles:map/
+                global _pending_map_html
+                _pending_map_html = html
+                if _DEBUG_TILES:
+                    print(f"[Map] load rotortiles:map/ tileUrl={tile_url}")
+                self._view.load(QUrl("rotortiles:map/"))
+            else:
+                self._view.setHtml(html, QUrl("about:blank"))
             self._map_loaded = True
 
     def showEvent(self, event):
@@ -1071,13 +1290,25 @@ class MapWindow(QDialog):
     def _reposition_wind_overlay(self) -> None:
         """Wind-Overlay nach Layout-Berechnung positionieren."""
         cont = self._wind_overlay.parent()
-        if cont is not None and hasattr(cont, "_wind_overlay"):
+        if isinstance(cont, QWidget) and hasattr(cont, "_wind_overlay"):
             ov = getattr(cont, "_wind_overlay", None)
             if ov is not None:
                 margin = 12
                 w, h = ov.width(), ov.height()
                 ov.setGeometry(cont.width() - w - margin, margin, w, h)
                 ov.raise_()
+
+    def reload_for_settings_change(self) -> None:
+        """Karte vollständig neu laden (z.B. nach Änderung Dark Mode/Offline in Einstellungen).
+        Erzwingt neues HTML mit aktuellem cfg – setMapDarkMode per JS reicht in Offline nicht zuverlässig."""
+        if not self._view or not self._view.page():
+            return
+        self._map_loaded = False
+        self._map_dark_mode = None
+        self._map_offline = None
+        self._map_locator_overlay = None
+        self._refresh_map()
+        QApplication.processEvents()
 
     def hideEvent(self, event):
         self._refresh_timer.stop()

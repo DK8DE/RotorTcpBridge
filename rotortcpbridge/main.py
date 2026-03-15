@@ -1,8 +1,13 @@
 from __future__ import annotations
 import sys
+
+# Scheme-Registrierung VOR allen anderen Imports (sonst ignoriert Qt sie)
+import rotortcpbridge.webengine_schemes  # noqa: F401
+
 from PySide6.QtWidgets import QApplication
 
 from .app_config import load_config, save_config
+from .ui.map_window import install_rotortiles_handler
 from .app_icon import get_app_icon
 from .i18n import load_lang
 from .logutil import LogBuffer
@@ -63,6 +68,7 @@ def main():
         log.write("INFO", "Config gespeichert")
 
     app = QApplication(sys.argv)
+    install_rotortiles_handler()
     # App-Icon global setzen (wirkt als Default für alle Fenster)
     app.setWindowIcon(get_app_icon())
     w = MainWindow(cfg, ctrl, pst, hw, save_cfg_cb, log, udp_ucxlog=udp_ucxlog)

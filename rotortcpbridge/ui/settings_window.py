@@ -30,7 +30,7 @@ from .ui_utils import px_to_dip
 class SettingsWindow(QDialog):
     """Einstellungen + Server/Hardware Buttons."""
 
-    def __init__(self, cfg: dict, controller, pst_server, hw_client, save_cfg_cb, logbuf, after_apply_cb, rebuild_ui_cb=None, parent=None):
+    def __init__(self, cfg: dict, controller, pst_server, hw_client, save_cfg_cb, logbuf, after_apply_cb, rebuild_ui_cb=None, map_window=None, parent=None):
         super().__init__(parent)
         self.cfg = cfg
         self.ctrl = controller
@@ -40,12 +40,13 @@ class SettingsWindow(QDialog):
         self.logbuf = logbuf
         self.after_apply_cb = after_apply_cb
         self.rebuild_ui_cb = rebuild_ui_cb
+        self._map_window = map_window
         self._antenna_giveup_done = False
 
         self.setWindowTitle(t("settings.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setFixedSize(px_to_dip(self, 720), px_to_dip(self, 475))
+        self.setFixedSize(px_to_dip(self, 820), px_to_dip(self, 475))
 
         main = QVBoxLayout(self)
         cols = QHBoxLayout()
@@ -312,6 +313,9 @@ class SettingsWindow(QDialog):
         self._antenna_refresh_timer.start()
         self._antenna_request_timer.start()
         self._antenna_giveup_timer.start()
+        # Snapshot der aktuellen Spinbox-Werte – nur wenn User etwas ändert, wird ins EEPROM geschrieben
+        self._snapshot_antoff = [self.sp_az_antoff_1.value(), self.sp_az_antoff_2.value(), self.sp_az_antoff_3.value()]
+        self._snapshot_angle  = [self.sp_az_angle_1.value(),  self.sp_az_angle_2.value(),  self.sp_az_angle_3.value()]
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._antenna_refresh_timer.stop()
@@ -486,6 +490,9 @@ class SettingsWindow(QDialog):
             if all_loaded:
                 self._antenna_refresh_timer.stop()
                 self._antenna_request_timer.stop()
+                # Snapshot nach erstem vollständigen Poll aus Gerät aktualisieren
+                self._snapshot_antoff = [self.sp_az_antoff_1.value(), self.sp_az_antoff_2.value(), self.sp_az_antoff_3.value()]
+                self._snapshot_angle  = [self.sp_az_angle_1.value(),  self.sp_az_angle_2.value(),  self.sp_az_angle_3.value()]
             self._update_antenna_offset_enabled()
         except Exception:
             pass
@@ -565,26 +572,32 @@ class SettingsWindow(QDialog):
         ]
 
         # AZ-Antennenversatz und Öffnungswinkel in den Rotor schreiben (SETANTOFF1–3, SETANGLE1–3)
+        # Nur übertragen wenn Wert sich gegenüber dem Snapshot beim Öffnen tatsächlich geändert hat
+        snapshot_antoff = getattr(self, "_snapshot_antoff", [None, None, None])
+        snapshot_angle  = getattr(self, "_snapshot_angle",  [None, None, None])
         if self.hw.is_connected() and hasattr(self.ctrl, "set_antenna_offset"):
             all_ok = True
             if self.chk_enable_az.isChecked():
-                az = self.ctrl.az
                 for slot, sp in [(1, self.sp_az_antoff_1), (2, self.sp_az_antoff_2), (3, self.sp_az_antoff_3)]:
-                    new_val = float(sp.value())
-                    cur = getattr(az, f"antoff{slot}", None)
-                    if cur is None or int(round(cur)) != int(new_val):
+                    new_val = int(sp.value())
+                    old_val = snapshot_antoff[slot - 1]
+                    if old_val is None or new_val != int(old_val):
                         self.lbl_status.setText(t("settings.status_az_saving", slot=slot))
                         QApplication.processEvents()
-                        if not self._set_antenna_offset_and_wait("az", slot, new_val):
+                        if not self._set_antenna_offset_and_wait("az", slot, float(new_val)):
                             all_ok = False
+                        else:
+                            snapshot_antoff[slot - 1] = new_val
                 for slot, sp in [(1, self.sp_az_angle_1), (2, self.sp_az_angle_2), (3, self.sp_az_angle_3)]:
-                    new_val = float(sp.value())
-                    cur = getattr(az, f"angle{slot}", None)
-                    if cur is None or int(round(cur)) != int(new_val):
+                    new_val = int(sp.value())
+                    old_val = snapshot_angle[slot - 1]
+                    if old_val is None or new_val != int(old_val):
                         self.lbl_status.setText(t("settings.status_angle_saving", slot=slot))
                         QApplication.processEvents()
-                        if hasattr(self.ctrl, "set_antenna_angle") and not self._set_antenna_angle_and_wait("az", slot, new_val):
+                        if hasattr(self.ctrl, "set_antenna_angle") and not self._set_antenna_angle_and_wait("az", slot, float(new_val)):
                             all_ok = False
+                        else:
+                            snapshot_angle[slot - 1] = new_val
             self.lbl_status.setText(t("settings.status_az_saved") if all_ok else t("settings.status_az_error"))
             QApplication.processEvents()
             if not all_ok:
@@ -608,6 +621,12 @@ class SettingsWindow(QDialog):
 
         if lang_changed:
             load_lang(new_lang)
+
+        if self._map_window is not None:
+            try:
+                self._map_window.reload_for_settings_change()
+            except Exception:
+                pass
 
         if self.after_apply_cb:
             self.after_apply_cb()

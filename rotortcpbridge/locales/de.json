@@ -14,7 +14,7 @@
   "main.btn_compass": "Kompass",
   "main.btn_map": "Karte",
   "main.btn_weather": "Wetter",
-  "main.btn_commands": "Befehle",
+  "main.btn_commands": "Rotor-Konfiguration",
   "main.btn_settings": "Einstellungen",
   "main.btn_log": "Log",
   "main.group_server": "Server",
@@ -99,7 +99,7 @@
   "settings.location_lat": "Standort Breite",
   "settings.location_lon": "Standort Länge",
 
-  "cmd.title": "Befehle",
+  "cmd.title": "Rotor-Konfiguration",
   "cmd.group_build": "Befehl zusammenstellen",
   "cmd.dst_label": "DST:",
   "cmd.cmd_label": "CMD:",

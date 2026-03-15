@@ -424,9 +424,15 @@ class CompassWindow(QDialog):
         if data is None:  # Placeholder bei leerer Liste
             return
         favs = self._get_favorites()
-        if idx >= len(favs):
-            return
-        favs.pop(idx)
+        # Dropdown zeigt sortierte Liste – Eintrag per Daten (name/az/el) identifizieren
+        sel_name = data.get("name")
+        sel_az = data.get("az")
+        sel_el = data.get("el")
+        favs = [f for f in favs if not (
+            f.get("name") == sel_name
+            and abs(float(f.get("az", 0) or 0) - float(sel_az or 0)) < 0.01
+            and abs(float(f.get("el", 0) or 0) - float(sel_el or 0)) < 0.01
+        )]
         if "ui" not in self.cfg:
             self.cfg["ui"] = {}
         self.cfg["ui"]["compass_favorites"] = favs

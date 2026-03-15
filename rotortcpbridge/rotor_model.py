@@ -141,6 +141,10 @@ class AxisState:
     antoff1: Optional[float] = None
     antoff2: Optional[float] = None
     antoff3: Optional[float] = None
+    # Antennen-Öffnungswinkel (GETANGLE1–3): 0–360° pro Antenne
+    angle1: Optional[float] = None
+    angle2: Optional[float] = None
+    angle3: Optional[float] = None
 
     def update_position_sample(self, new_pos_d10: int, sample_ts: Optional[float] = None,
                                expected_period_s: float = 0.2) -> None:

@@ -123,6 +123,7 @@ class RotorController:
         self._compass_manual_el_ts: float = 0.0
         # Callback: wird nach jedem erfolgreichen SETANTOFF-ACK aufgerufen (z.B. Kompassfenster-Refresh)
         self.on_antenna_offsets_changed: Optional[Callable[[], None]] = None
+        self.on_antenna_angles_changed: Optional[Callable[[], None]] = None
 
         # Windsensor-Feature-Flag aus GETWINDENABLE (0/1). Off bis Antwort vorliegt.
         self.wind_enabled: bool = False
@@ -216,6 +217,18 @@ class RotorController:
                     priority=4,
                 ))
 
+    def request_antenna_angles(self) -> None:
+        """AZ-Antennen-Öffnungswinkel vom Rotor lesen (GETANGLE1–3)."""
+        if self.enable_az:
+            for cmd in ("GETANGLE1", "GETANGLE2", "GETANGLE3"):
+                self.hw.send_request(HwRequest(
+                    line=build(self.master_id, self.slave_az, cmd, "0"),
+                    expect_prefix=None,
+                    timeout_s=0.5,
+                    on_done=None,
+                    priority=4,
+                ))
+
     def set_antenna_offset(
         self,
         axis: str,
@@ -260,6 +273,68 @@ class RotorController:
                 try:
                     if callable(self.on_antenna_offsets_changed):
                         self.on_antenna_offsets_changed()
+                except Exception:
+                    pass
+            else:
+                if tel:
+                    self.log.write("WARN", f"{cmd} -> NAK oder ungültige Antwort: {tel.cmd}")
+                else:
+                    self.log.write("WARN", f"{cmd} -> keine gültige ACK-Antwort")
+            if on_done:
+                on_done(ok)
+
+        self.hw.send_request(HwRequest(
+            line=line,
+            expect_prefix=expect,
+            timeout_s=1.2,
+            on_done=done,
+            priority=2,
+        ))
+
+    def set_antenna_angle(
+        self,
+        axis: str,
+        slot: int,
+        value_deg: float,
+        on_done: Optional[Callable[[bool], None]] = None,
+    ) -> None:
+        """Antennen-Öffnungswinkel schreiben (SETANGLE1–3). Ruft on_done(success) nach ACK/NAK/Timeout.
+        success=True nur bei ACK_SETANGLEx."""
+        if slot not in (1, 2, 3):
+            if on_done:
+                on_done(False)
+            return
+        cmd = f"SETANGLE{slot}"
+        v = str(round(max(0.0, min(360.0, value_deg)), 1))
+        expect = f"ACK_SETANGLE{slot}"
+        dst = None
+        axis_state = None
+        if axis.lower() == "az" and self.enable_az:
+            dst = self.slave_az
+            axis_state = self.az
+        elif axis.lower() == "el" and self.enable_el:
+            dst = self.slave_el
+            axis_state = self.el
+        if dst is None or axis_state is None:
+            if on_done:
+                on_done(False)
+            return
+
+        line = build(self.master_id, dst, cmd, v)
+
+        def done(tel: Optional[Telegram], err: Optional[str]):
+            ok = False
+            if err:
+                self.log.write("WARN", f"{cmd} -> keine Antwort ({err})")
+            elif tel and tel.cmd.startswith("ACK_SETANGLE"):
+                ok = True
+                try:
+                    setattr(axis_state, f"angle{slot}", float(v.replace(",", ".")))
+                except Exception:
+                    pass
+                try:
+                    if callable(self.on_antenna_angles_changed):
+                        self.on_antenna_angles_changed()
                 except Exception:
                     pass
             else:
@@ -692,6 +767,9 @@ class RotorController:
             self.az.antoff1 = None
             self.az.antoff2 = None
             self.az.antoff3 = None
+            self.az.angle1 = None
+            self.az.angle2 = None
+            self.az.angle3 = None
 
             # Sofortige Erstabfrage (damit UI direkt gefüllt wird):
             # Position + ERR + PWM + MINPWM + REF + Warn + Temp
@@ -715,6 +793,7 @@ class RotorController:
                     self._poll_warn(self.slave_el, self.el, "EL")
                     self._poll_idle_telemetry(self.slave_el, self.el, "EL")
                 self.request_antenna_offsets()
+                self.request_antenna_angles()
             except Exception:
                 pass
         self._hw_prev_connected = hw_on
@@ -1692,6 +1771,22 @@ class RotorController:
                     v = _parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.antoff3 = max(0.0, min(360.0, v))
+                    return
+                # Antennen-Öffnungswinkel (GETANGLE1–3)
+                if tel.cmd.startswith("ACK_GETANGLE1"):
+                    v = _parse_float(tel.params.strip())
+                    if v is not None:
+                        axis_state.angle1 = max(0.0, min(360.0, v))
+                    return
+                if tel.cmd.startswith("ACK_GETANGLE2"):
+                    v = _parse_float(tel.params.strip())
+                    if v is not None:
+                        axis_state.angle2 = max(0.0, min(360.0, v))
+                    return
+                if tel.cmd.startswith("ACK_GETANGLE3"):
+                    v = _parse_float(tel.params.strip())
+                    if v is not None:
+                        axis_state.angle3 = max(0.0, min(360.0, v))
                     return
                 if tel.cmd.startswith("ACK_GETANEMO") or tel.cmd.startswith("ACK_ANEMO"):
                     v = _parse_float_any(tel.params)

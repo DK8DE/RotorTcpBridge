@@ -12,7 +12,10 @@ from PySide6.QtWidgets import (
     QPushButton,
     QLineEdit,
     QFormLayout,
+    QMenuBar,
+    QMenu,
 )
+from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt, QTimer
 
 from ..app_icon import get_app_icon
@@ -24,6 +27,7 @@ from .led_widget import Led
 from .log_window import LogWindow
 from .settings_window import SettingsWindow
 from .weather_window import WeatherWindow
+from .map_window import MapWindow
 from .about_window import AboutWindow
 from .command_buttons_window import CommandButtonsWindow
 from .ui_utils import px_to_dip
@@ -51,27 +55,38 @@ class MainWindow(QMainWindow):
         self._update_title_bar()
         self.setWindowIcon(get_app_icon())
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
+
+        menubar = self.menuBar()
+        self._menu_setup = menubar.addMenu(t("main.menu_setup"))
+        self._act_commands = QAction(t("main.btn_commands"), self)
+        self._act_commands.triggered.connect(self._open_commands)
+        self._menu_setup.addAction(self._act_commands)
+        self._act_settings = QAction(t("main.btn_settings"), self)
+        self._act_settings.triggered.connect(self._open_settings)
+        self._menu_setup.addAction(self._act_settings)
+        self._act_log = QAction(t("main.btn_log"), self)
+        self._act_log.triggered.connect(self._toggle_log)
+        self._menu_setup.addAction(self._act_log)
+
+        self._menu_help = menubar.addMenu(t("main.menu_help"))
+        self._act_version = QAction(t("main.menu_version"), self)
+        self._act_version.triggered.connect(self._open_about)
+        self._menu_help.addAction(self._act_version)
+
         root = QWidget()
         self.setCentralWidget(root)
         main = QVBoxLayout(root)
 
         top = QHBoxLayout()
         self.btn_open_compass = QPushButton(t("main.btn_compass"))
+        self.btn_open_map = QPushButton(t("main.btn_map"))
+        self.btn_statistics = QPushButton(t("main.btn_statistics"))
         self.btn_open_weather = QPushButton(t("main.btn_weather"))
         self.btn_open_weather.setVisible(False)
-        self.btn_open_commands = QPushButton(t("main.btn_commands"))
-        self.btn_open_settings = QPushButton(t("main.btn_settings"))
-        self.btn_toggle_log = QPushButton(t("main.btn_log"))
-        self.btn_about = QPushButton("?")
-        self.btn_about.setFixedWidth(px_to_dip(self, 28))
-        self.btn_about.setToolTip(t("about.title"))
-        top.addWidget(self.btn_open_compass)
-        top.addWidget(self.btn_open_commands)
-        top.addWidget(self.btn_open_settings)
-        top.addWidget(self.btn_toggle_log)
-        top.addWidget(self.btn_open_weather)
-        top.addWidget(self.btn_about)
-        top.addStretch(1)
+        top.addWidget(self.btn_open_compass, 1)
+        top.addWidget(self.btn_open_map, 1)
+        top.addWidget(self.btn_statistics, 1)
+        top.addWidget(self.btn_open_weather, 1)
         main.addLayout(top)
 
         gb_srv = QGroupBox(t("main.group_server"))
@@ -159,18 +174,15 @@ class MainWindow(QMainWindow):
         self.btn_ref = QPushButton(t("main.btn_ref"))
         self.btn_stop = QPushButton(t("main.btn_stop"))
         self.btn_delwarn = QPushButton(t("main.btn_delwarn"))
-        self.btn_statistics = QPushButton(t("main.btn_statistics"))
         act_btn_row = QHBoxLayout()
-        act_btn_row.addWidget(self.btn_ref)
-        act_btn_row.addWidget(self.btn_stop)
-        act_btn_row.addWidget(self.btn_delwarn)
-        act_btn_row.addWidget(self.btn_statistics)
+        act_btn_row.addWidget(self.btn_ref, 1)
+        act_btn_row.addWidget(self.btn_stop, 1)
+        act_btn_row.addWidget(self.btn_delwarn, 1)
         actions.addLayout(act_btn_row)
 
         self.btn_ref.clicked.connect(lambda: self.ctrl.reference_all(True))
         self.btn_stop.clicked.connect(self.ctrl.stop_all)
         self.btn_delwarn.clicked.connect(self.ctrl.clear_warnings_all)
-        self.btn_statistics.clicked.connect(self._open_statistics)
 
         self.t = QTimer(self)
         self.t.timeout.connect(self._tick)
@@ -185,16 +197,15 @@ class MainWindow(QMainWindow):
         )
 
         self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+        self._map_win = MapWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
         self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
         self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
         self._commands_win = CommandButtonsWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
 
         self.btn_open_compass.clicked.connect(self._open_compass)
+        self.btn_open_map.clicked.connect(self._open_map)
+        self.btn_statistics.clicked.connect(self._open_statistics)
         self.btn_open_weather.clicked.connect(self._open_weather)
-        self.btn_open_commands.clicked.connect(self._open_commands)
-        self.btn_open_settings.clicked.connect(self._open_settings)
-        self.btn_toggle_log.clicked.connect(self._toggle_log)
-        self.btn_about.clicked.connect(self._open_about)
 
         self._fixed_w = None
         self._fixed_h = None
@@ -256,12 +267,15 @@ class MainWindow(QMainWindow):
         """Alle Texte des Hauptfensters auf die aktuelle Sprache aktualisieren."""
         self._last_title = ""  # Cache zurücksetzen damit Neuaufbau greift
         self._update_title_bar()
-        self.btn_about.setToolTip(t("about.title"))
+        self._menu_setup.setTitle(t("main.menu_setup"))
+        self._act_commands.setText(t("main.btn_commands"))
+        self._act_settings.setText(t("main.btn_settings"))
+        self._act_log.setText(t("main.btn_log"))
+        self._menu_help.setTitle(t("main.menu_help"))
+        self._act_version.setText(t("main.menu_version"))
         self.btn_open_compass.setText(t("main.btn_compass"))
+        self.btn_open_map.setText(t("main.btn_map"))
         self.btn_open_weather.setText(t("main.btn_weather"))
-        self.btn_open_commands.setText(t("main.btn_commands"))
-        self.btn_open_settings.setText(t("main.btn_settings"))
-        self.btn_toggle_log.setText(t("main.btn_log"))
         self.btn_ref.setText(t("main.btn_ref"))
         self.btn_stop.setText(t("main.btn_stop"))
         self.btn_delwarn.setText(t("main.btn_delwarn"))
@@ -270,7 +284,7 @@ class MainWindow(QMainWindow):
     def _rebuild_all_windows(self):
         """Alle Fenster schließen und neu erstellen (nach Sprachänderung)."""
         try:
-            for attr in ("_log_win", "_compass_win", "_statistics_win", "_weather_win", "_commands_win"):
+            for attr in ("_log_win", "_compass_win", "_map_win", "_statistics_win", "_weather_win", "_commands_win"):
                 w = getattr(self, attr, None)
                 if w is not None:
                     try:
@@ -284,6 +298,7 @@ class MainWindow(QMainWindow):
             from .log_window import LogWindow
             self._log_win = LogWindow(self.logbuf, parent=None)
             self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+            self._map_win = MapWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
             self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
             self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
             self._commands_win = CommandButtonsWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
@@ -345,6 +360,14 @@ class MainWindow(QMainWindow):
             self._weather_win.show()
             self._weather_win.raise_()
             self._weather_win.activateWindow()
+        except Exception:
+            pass
+
+    def _open_map(self):
+        try:
+            self._map_win.show()
+            self._map_win.raise_()
+            self._map_win.activateWindow()
         except Exception:
             pass
 
@@ -420,7 +443,7 @@ class MainWindow(QMainWindow):
         return wind_on
 
     def _apply_fixed_mainwindow_size(self):
-        width = px_to_dip(self, 500)
+        width = px_to_dip(self, 400)
         try:
             lay = self.centralWidget().layout()
             if lay:
@@ -445,8 +468,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         try:
             for w in (getattr(self, "_log_win", None), getattr(self, "_settings_win", None),
-                     getattr(self, "_compass_win", None), getattr(self, "_statistics_win", None),
-                     getattr(self, "_weather_win", None), getattr(self, "_commands_win", None)):
+                     getattr(self, "_compass_win", None), getattr(self, "_map_win", None),
+                     getattr(self, "_statistics_win", None), getattr(self, "_weather_win", None),
+                     getattr(self, "_commands_win", None)):
                 try:
                     if w is not None:
                         w.close()

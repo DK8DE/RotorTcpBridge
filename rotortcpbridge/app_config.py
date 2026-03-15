@@ -61,10 +61,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
       "compass_antenna": 0,
       # AZ-Antennenversätze (Fallback wenn Rotor noch nicht geantwortet hat): [Ant1, Ant2, Ant3] in Grad
       "antenna_offsets_az": [0.0, 0.0, 0.0],
+      "antenna_angles_az": [0.0, 0.0, 0.0],
+      "antenna_ranges_az": [100.0, 100.0, 100.0],
       # Lokal gespeicherte Antennen-Namen (3 Stück) für Einstellungen.
       "antenna_names": ["Antenne 1", "Antenne 2", "Antenne 3"],
       # Sprache der Benutzeroberfläche: "de" oder "en"
       "language": "de",
+      # Standortkoordinaten (Breite/Länge in Grad dezimal)
+      "location_lat": 49.502651,
+      "location_lon": 8.375019,
       # UDP UcxLog: Bei aktiviertem Häkchen lauscht die App auf 127.0.0.1:12040
       # und nimmt XML-Positionsdaten von UcxLog entgegen (<Rotor><Azimut>…</Azimut></Rotor>).
       "udp_ucxlog_enabled": False,

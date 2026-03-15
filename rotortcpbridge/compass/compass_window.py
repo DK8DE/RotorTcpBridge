@@ -341,8 +341,12 @@ class CompassWindow(QDialog):
         return out
 
     def _refresh_favorites_dropdown(self) -> None:
-        """Dropdown mit Favoriten füllen."""
+        """Dropdown mit Favoriten füllen, sortiert: erst 0–9, dann a–z."""
         favs = self._get_favorites()
+        favs = sorted(favs, key=lambda f: (
+            0 if f["name"] and f["name"][0].isdigit() else 1,
+            f["name"].lower(),
+        ))
         self.cb_fav.blockSignals(True)
         self.cb_fav.clear()
         if not favs:

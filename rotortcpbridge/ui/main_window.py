@@ -44,6 +44,9 @@ class MainWindow(QMainWindow):
         self._udp_ucxlog = udp_ucxlog
         self._hw_off_since: float | None = None
         self._last_title: str = ""
+        self._ucxlog_blink_phase = 0
+        self._ucxlog_blink_active = False
+        self._ucxlog_blink_sequence = (True, False, True, False, True, False, True, False, True)
 
         self._update_title_bar()
         self.setWindowIcon(get_app_icon())
@@ -78,6 +81,7 @@ class MainWindow(QMainWindow):
         led_d = px_to_dip(self, 12)
         self.led_pst = Led(led_d, self)
         self.led_pst_conn = Led(led_d, self)
+        self.led_ucxlog = Led(led_d, self)
         self.led_hw = Led(led_d, self)
 
         def _led_wrap(led) -> QWidget:
@@ -119,6 +123,16 @@ class MainWindow(QMainWindow):
         pst_conn_row_w = QWidget()
         pst_conn_row_w.setLayout(pst_conn_row)
         srv_form.addRow(t("main.srv_pst_conn_label"), pst_conn_row_w)
+
+        ucxlog_row = QHBoxLayout()
+        ucxlog_row.setContentsMargins(0, 0, 0, 0)
+        ucxlog_row.setSpacing(px_to_dip(self, 6))
+        ucxlog_row.addWidget(_led_wrap(self.led_ucxlog))
+        ucxlog_row.addWidget(QLabel(t("main.srv_ucxlog_suffix")))
+        ucxlog_row.addStretch(1)
+        ucxlog_row_w = QWidget()
+        ucxlog_row_w.setLayout(ucxlog_row)
+        srv_form.addRow(t("main.srv_ucxlog_prefix"), ucxlog_row_w)
 
         try:
             srv_form.setVerticalSpacing(px_to_dip(self, 4))
@@ -212,7 +226,7 @@ class MainWindow(QMainWindow):
             self._log_win.refresh()
 
     def _update_title_bar(self) -> None:
-        """Titelleiste dynamisch aktualisieren: Basis + aktuelle Position + Online-Status."""
+        """Titelleiste dynamisch aktualisieren: Basis + aktuelle Position."""
         base = f"{t('app.title')} v{APP_VERSION}"
         try:
             hw_on = bool(self.hw.is_connected())
@@ -227,9 +241,9 @@ class MainWindow(QMainWindow):
                     if el_d10 is not None:
                         parts.append(f"EL: {el_d10 / 10:.1f}°")
                 if parts:
-                    title = f"{base} \u2014 {' '.join(parts)} \u2014 Online"
+                    title = f"{base} \u2014 {' '.join(parts)}"
                 else:
-                    title = f"{base} \u2014 Online"
+                    title = base
             else:
                 title = base
         except Exception:
@@ -458,6 +472,25 @@ class MainWindow(QMainWindow):
             self.led_pst_conn.set_state(bool(pst_recent))
         except Exception:
             pass
+
+        udp = getattr(self, "_udp_ucxlog", None)
+        if udp is not None:
+            if getattr(udp, "packet_received_flag", False):
+                udp.packet_received_flag = False
+                self._ucxlog_blink_phase = 0
+                self._ucxlog_blink_active = True
+            if self._ucxlog_blink_active:
+                seq = self._ucxlog_blink_sequence
+                if self._ucxlog_blink_phase < len(seq):
+                    self.led_ucxlog.set_state(seq[self._ucxlog_blink_phase])
+                    self._ucxlog_blink_phase += 1
+                else:
+                    self._ucxlog_blink_active = False
+            if not self._ucxlog_blink_active:
+                self.led_ucxlog.set_state(udp.is_active)
+        else:
+            self.led_ucxlog.set_state(False)
+
         try:
             now = float(_time.time())
             if hw_on:

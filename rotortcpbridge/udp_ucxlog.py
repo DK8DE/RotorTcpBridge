@@ -12,7 +12,6 @@ from __future__ import annotations
 import socket
 import threading
 import xml.etree.ElementTree as ET
-
 from .angle_utils import wrap_deg
 
 
@@ -27,6 +26,12 @@ class UdpUcxLogListener:
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._running = False
+        self.packet_received_flag = False
+
+    @property
+    def is_active(self) -> bool:
+        """True wenn Listener aktiv lauscht."""
+        return bool(self._enabled and self._running and self._sock is not None)
 
     def start(self, enabled: bool, port: int = 12040) -> None:
         """Listener starten oder mit neuer Konfiguration neu starten."""
@@ -79,7 +84,7 @@ class UdpUcxLogListener:
     def _loop(self) -> None:
         while self._running and self._sock:
             try:
-                data, _ = self._sock.recvfrom(4096)
+                data, addr = self._sock.recvfrom(4096)
             except socket.timeout:
                 continue
             except Exception:
@@ -89,8 +94,10 @@ class UdpUcxLogListener:
             az = self._parse_azimut(data)
             if az is None:
                 continue
+            self.packet_received_flag = True
             az_deg = wrap_deg(az)
-            self.log.write("UDP", f"UcxLog Azimut={az_deg:.1f}° → setze Rotor")
+            sender = f"{addr[0]}:{addr[1]}" if addr else "?"
+            self.log.write("UDP", f"Position AZ {az_deg:.1f}° von {sender} → setze Rotor")
             try:
                 if getattr(self.ctrl, "enable_az", True):
                     self.ctrl.set_az_deg(az_deg, force=True)

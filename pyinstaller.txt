@@ -1,1 +1,19 @@
 pyinstaller --noconfirm --clean RotorTcpBridge.spec
+
+# Build mit aktueller Version aus version.py
+.\build.ps1
+# Version auf 1.3 setzen, bauen, Installer erstellen
+.\build.ps1 -Version "1.3"
+# Nur PyInstaller, kein Installer
+.\build.ps1 -Version "1.3" -SkipInstaller
+
+version.py  (APP_VERSION = "1.3")
+    │
+    ├─► build.ps1 liest Version
+    │       │
+    │       ├─► PyInstaller → spec liest version.py
+    │       │       └─► _version_info.txt → EXE-Eigenschaften (Datei-Details)
+    │       │
+    │       └─► ISCC.exe /DMyAppVersion=1.3 → Installer-Name + AppVersion
+    │
+    └─► App selbst liest version.py zur Laufzeit

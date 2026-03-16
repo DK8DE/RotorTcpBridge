@@ -1,5 +1,9 @@
 #define MyAppName "RotorTcpBridge"
-#define MyAppVersion "1.0"
+; MyAppVersion kann per Kommandozeile überschrieben werden:
+;   ISCC.exe /DMyAppVersion=1.3 Installer.iss
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0"
+#endif
 #define MyAppPublisher "Joerg Koerner DK8DE"
 #define MyAppURL "https://github.com/dk8de/RotorTcpBridge"
 #define MySourceDir "D:\\Rotor\\RotorTcpBridge\\dist\\RotorTcpBridge"
@@ -7,9 +11,11 @@
 #define MyExeName "RotorTcpBridge.exe"
 #define MyAppIcon "D:\\Rotor\\RotorTcpBridge\\dist\\RotorTcpBridge\\_internal\\rotortcpbridge\\rotor.ico"
 #define MyInternalDir MySourceDir + "\\_internal\\rotortcpbridge"
+; AppId NIEMALS ändern – wird für Upgrade/Deinstallation benötigt
+#define MyAppId "A219D4FA-6E44-4A8E-A4D8-7DF7799632F8"
 
 [Setup]
-AppId={{A219D4FA-6E44-4A8E-A4D8-7DF7799632F8}
+AppId={{{#MyAppId}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
@@ -33,7 +39,11 @@ WizardStyle=modern
 PrivilegesRequired=admin
 SetupIconFile={#MyAppIcon}
 UninstallDisplayIcon={app}\{#MyExeName}
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
+LicenseFile=D:\Rotor\RotorTcpBridge\LICENSE.txt
+; Ältere Version wird per Code-Abschnitt automatisch deinstalliert (siehe unten).
+; InstallMode=upgrade würde Dateien überschreiben, aber nicht löschen.
+CloseApplications=yes
 
 [Languages]
 Name: "german";  MessagesFile: "compiler:Languages\German.isl"
@@ -64,22 +74,59 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyExeName}"; Tasks: deskt
 Filename: "{app}\{#MyExeName}"; Description: "{cm:RunAfterInstall}"; Flags: nowait postinstall skipifsilent
 
 [Code]
-{ Setzt die gewählte Installationssprache in der App-Konfiguration.
+
+{ ── Alte Version automatisch deinstallieren ─────────────────────────────────
+  Wird aufgerufen bevor der Setup-Assistent startet.
+  Sucht den Uninstaller der vorherigen Version über die Registry und
+  führt ihn lautlos aus. Benutzerdaten (config.json in AppData) bleiben erhalten,
+  da der Uninstaller nur das Programmverzeichnis bereinigt. }
+procedure UninstallOldVersion();
+var
+  sRegKey:     String;
+  sUninstall:  String;
+  iResultCode: Integer;
+begin
+  sRegKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' +
+             '{#MyAppId}' + '_is1';
+
+  sUninstall := '';
+  { 64-Bit-Registry bevorzugen (App wird im 64-Bit-Modus installiert) }
+  if not RegQueryStringValue(HKLM64, sRegKey, 'UninstallString', sUninstall) then
+    RegQueryStringValue(HKLM,   sRegKey, 'UninstallString', sUninstall);
+
+  if sUninstall <> '' then
+  begin
+    sUninstall := RemoveQuotes(sUninstall);
+    { /SILENT  – keine Benutzeroberfläche
+      /NORESTART – kein automatischer Neustart
+      ewWaitUntilTerminated – warten bis Deinstallation abgeschlossen }
+    Exec(sUninstall, '/SILENT /NORESTART', '', SW_HIDE,
+         ewWaitUntilTerminated, iResultCode);
+  end;
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  UninstallOldVersion();
+  Result := True;
+end;
+
+{ ── Sprache in Konfiguration setzen ─────────────────────────────────────────
   Nur bei Erstinstallation (keine config.json vorhanden).
   Bei Upgrade bleibt die bestehende Spracheinstellung des Benutzers erhalten. }
 procedure SetLanguageInConfig();
 var
-  ConfigDir: String;
+  ConfigDir:  String;
   ConfigFile: String;
-  LangCode: String;
-  Content: String;
+  LangCode:   String;
+  Content:    String;
 begin
   if ActiveLanguage = 'english' then
     LangCode := 'en'
   else
     LangCode := 'de';
 
-  ConfigDir := ExpandConstant('{userappdata}\RotorTcpBridge');
+  ConfigDir  := ExpandConstant('{userappdata}\RotorTcpBridge');
   ConfigFile := ConfigDir + '\config.json';
 
   ForceDirectories(ConfigDir);

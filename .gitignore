@@ -7,6 +7,7 @@ env/
 dist/
 build/
 *.spec.bak
+_version_info.txt
 
 # Python Bytecode
 __pycache__/

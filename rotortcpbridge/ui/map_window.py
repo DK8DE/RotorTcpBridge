@@ -496,58 +496,119 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
       }}
     }};
 
-    let locatorLayer = null;
+    let locatorLayer = null;      // Maidenhead-Gitternetz (Polygone)
+    let locatorLabelLayer = null; // Beschriftungen – dynamisch positioniert
     let locatorVisible = false;
     let _mapDark = {str(dark).lower()};
-    // Präzision je nach Zoom: 0-2 ein Buchstabe, 3-6 JN, 7-11 JN48, 12+ JN48LD (letzte 2 Buchstaben 1 Stufe später)
+    let _locPrec = 2, _locDispLen = 2;
+    // Präzision je nach Zoom
     function _precisionForZoom(z) {{
-      if (z < 7) return 2;   // Grid für 1 oder 2 Zeichen
-      if (z < 12) return 4;  // JN48 (ab 7)
-      return 6;               // JN48LD (ab 12)
+      if (z < 7) return 2;
+      if (z < 12) return 4;
+      return 6;
     }}
     function _displayLengthForZoom(z) {{
-      if (z < 3) return 1;   // nur 1 Buchstabe
-      if (z < 7) return 2;   // JN (bis 6)
-      if (z < 12) return 4;  // JN48 (ab 7)
-      return 6;               // JN48LD (ab 12, 1 Stufe später)
+      if (z < 3) return 1;
+      if (z < 7) return 2;
+      if (z < 12) return 4;
+      return 6;
     }}
-    function _createLocatorLayer(isDark, precision, displayLen) {{
+    // Zellgröße in Grad für die jeweilige Präzision
+    // Werte aus maidenhead.js: latDelta, lngDelta = latDelta * 2
+    function _cellSize(prec) {{
+      if (prec === 2) return {{lat: 10,       lng: 20}};
+      if (prec === 4) return {{lat: 1,        lng: 2}};
+      return             {{lat: 2.5/60,   lng: 5/60}};
+    }}
+    // Nur Gitternetz – Beschriftung übernehmen wir selbst
+    function _createLocatorGridLayer(isDark, precision) {{
       return L.maidenhead({{
         precision: precision,
         polygonStyle: {{ color: isDark ? '#b0b0b0' : '#333', weight: 0.5, fill: true, fillColor: 'transparent', fillOpacity: 0 }},
         spawnMarker: function(latlng, prec) {{
-          const fg = isDark ? '#e0e0e0' : '#333';
-          const shadow = isDark ? '0 0 2px #000, 0 0 4px #000, 1px 1px 1px #000' : '0 0 2px #fff, 0 0 4px #fff, 1px 1px 1px #fff';
-          const full = L.Maidenhead.latLngToIndex(latlng.lat, latlng.lng, prec);
-          const text = full.substring(0, displayLen).toUpperCase();
-          let dLat = 0, dLng = 0;
-          if (prec === 2) {{ dLat = 5; dLng = 10; }}
-          else if (prec === 4) {{ dLat = 0.5; dLng = 1; }}
-          else if (prec === 6) {{ dLat = 2.5/120; dLng = 5/120; }}
-          const corner = L.latLng(latlng.lat - dLat, latlng.lng + dLng);
-          return L.marker(corner, {{ icon: L.divIcon({{
-            html: "<div style='display:inline-block; white-space:nowrap; background:transparent; color:" + fg + "; text-shadow:" + shadow + "; padding:1px 3px; font:22px monospace; line-height:1.2;'>" + text + "</div>",
-            iconSize: [0, 0],
-            iconAnchor: [120, 32]
-          }}) }});
+          // unsichtbarer Dummy-Marker – Beschriftung wird separat gesetzt
+          return L.marker(latlng, {{ opacity: 0, interactive: false, keyboard: false }});
         }}
       }});
     }}
+    // Beschriftungen neu berechnen.
+    // Zwei Phasen:
+    //   Phase 1 – alle sichtbaren Zellmittelpunkte: Label genau am Mittelpunkt
+    //   Phase 2 – Zelle des Viewport-Zentrums: Label immer am Viewport-Zentrum,
+    //             falls Phase 1 für diese Zelle kein Label erzeugt hat.
+    //             Damit ist bei jeder Zoomstufe und jeder Panposition
+    //             immer mindestens ein Label sichtbar.
+    function _updateLocatorLabels() {{
+      if (!locatorLabelLayer || !locatorVisible) return;
+      locatorLabelLayer.clearLayers();
+      const cs  = _cellSize(_locPrec);
+      const b   = map.getBounds();
+      const ne  = b.getNorthEast();
+      const sw  = b.getSouthWest();
+      const mc  = map.getCenter();
+      const fg     = _mapDark ? '#e0e0e0' : '#333';
+      const shadow = _mapDark ? '0 0 2px #000, 0 0 4px #000, 1px 1px 1px #000'
+                              : '0 0 2px #fff, 0 0 4px #fff, 1px 1px 1px #fff';
+      const style = "display:inline-block; white-space:nowrap; background:transparent; color:" + fg +
+                    "; text-shadow:" + shadow +
+                    "; padding:1px 4px; font:bold 20px monospace; line-height:1.2;" +
+                    " transform:translate(-50%,-50%); pointer-events:none;";
+      function addLabel(lat, lng, cellCenterLat, cellCenterLng) {{
+        if (cellCenterLat < -90 || cellCenterLat > 90) return;
+        const text = L.Maidenhead.latLngToIndex(cellCenterLat, cellCenterLng, _locPrec)
+                       .substring(0, _locDispLen).toUpperCase();
+        locatorLabelLayer.addLayer(L.marker([lat, lng], {{
+          icon: L.divIcon({{ html: "<div style='" + style + "'>" + text + "</div>",
+                             iconSize: [0, 0], iconAnchor: [0, 0] }}),
+          interactive: false, keyboard: false
+        }}));
+      }}
+      // Zell-Index des Viewport-Zentrums (für Phase-2-Prüfung)
+      const ctrRowIdx = Math.floor(mc.lat / cs.lat);
+      const ctrColIdx = Math.floor(mc.lng / cs.lng);
+      let centerCellLabeled = false;
+      // Phase 1: Labels für alle Zellen, deren Mittelpunkt im Viewport sichtbar ist
+      const lat0 = Math.floor(sw.lat / cs.lat) * cs.lat;
+      const lng0 = Math.floor(sw.lng / cs.lng) * cs.lng;
+      for (let r = lat0; r <= ne.lat + cs.lat; r += cs.lat) {{
+        for (let c = lng0; c <= ne.lng + cs.lng; c += cs.lng) {{
+          const clat = r + cs.lat / 2;
+          const clng = c + cs.lng / 2;
+          if (clat <= sw.lat || clat >= ne.lat) continue;
+          if (clng <= sw.lng || clng >= ne.lng) continue;
+          addLabel(clat, clng, clat, clng);
+          const rowIdx = Math.round(r / cs.lat);
+          const colIdx = Math.round(c / cs.lng);
+          if (rowIdx === ctrRowIdx && colIdx === ctrColIdx) centerCellLabeled = true;
+        }}
+      }}
+      // Phase 2: Viewport-Zentrum-Zelle noch nicht beschriftet?
+      // → Label am Viewport-Mittelpunkt (immer sichtbar)
+      if (!centerCellLabeled) {{
+        const cellS   = ctrRowIdx * cs.lat;
+        const cellCLat = cellS + cs.lat / 2;
+        const cellCLng = ctrColIdx * cs.lng + cs.lng / 2;
+        addLabel(mc.lat, mc.lng, cellCLat, cellCLng);
+      }}
+    }}
     let _currentLocatorKey = '';
-    // Bei jedem Zoom prüfen: Wechsel sofort bei Präzisionsänderung (v.a. rauszoomen)
     function _updateLocatorPrecision() {{
       if (!locatorVisible || !map) return;
-      const z = map.getZoom();
-      const prec = _precisionForZoom(z);
+      const z       = map.getZoom();
+      const prec    = _precisionForZoom(z);
       const dispLen = _displayLengthForZoom(z);
-      const key = prec + '-' + dispLen;
+      const key     = prec + '-' + dispLen;
       if (key === _currentLocatorKey && locatorLayer) return;
       _currentLocatorKey = key;
-      if (locatorLayer) {{
-        map.removeLayer(locatorLayer);
-      }}
-      locatorLayer = _createLocatorLayer(_mapDark, prec, dispLen);
+      _locPrec    = prec;
+      _locDispLen = dispLen;
+      if (locatorLayer)      map.removeLayer(locatorLayer);
+      if (locatorLabelLayer) map.removeLayer(locatorLabelLayer);
+      locatorLayer      = _createLocatorGridLayer(_mapDark, prec);
+      locatorLabelLayer = L.layerGroup();
       map.addLayer(locatorLayer);
+      map.addLayer(locatorLabelLayer);
+      _updateLocatorLabels();
     }}
     let _lastLocatorCheck = 0;
     map.on('zoom', function() {{
@@ -560,14 +621,18 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
     map.on('zoomend', function() {{
       if (locatorVisible) _updateLocatorPrecision();
     }});
+    // Beim Verschieben der Karte nur die Labels neu positionieren (Gitternetz bleibt)
+    map.on('moveend', function() {{
+      if (locatorVisible) _updateLocatorLabels();
+    }});
     window.setMapLocatorOverlay = function(show, darkMode) {{
       if (darkMode !== undefined) _mapDark = darkMode;
       locatorVisible = !!show;
       if (show) {{
         _updateLocatorPrecision();
-      }} else if (locatorLayer) {{
-        map.removeLayer(locatorLayer);
-        locatorLayer = null;
+      }} else {{
+        if (locatorLayer)      {{ map.removeLayer(locatorLayer);      locatorLayer      = null; }}
+        if (locatorLabelLayer) {{ map.removeLayer(locatorLabelLayer); locatorLabelLayer = null; }}
         _currentLocatorKey = '';
       }}
     }};

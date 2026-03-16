@@ -98,6 +98,10 @@
   "settings.language_label": "Sprache",
   "settings.location_lat": "Standort Breite",
   "settings.location_lon": "Standort Länge",
+  "settings.antenna_height": "Antennenhöhe (Mast)",
+  "settings.antenna_height_tooltip": "Höhe der Antenne über dem Boden (Masthöhe).\nWird im Höhenprofil zur Geländehöhe addiert.",
+  "settings.rf_freq": "Frequenz (Höhenprofil)",
+  "settings.rf_freq_tooltip": "Sendefrequenz für die Beugungsberechnung im Höhenprofil (ITU-R P.526).\nBeispiele: 144,300 MHz (2m SSB), 432,200 MHz (70cm), 1296 MHz (23cm).",
 
   "cmd.title": "Rotor-Konfiguration",
   "cmd.group_build": "Befehl zusammenstellen",

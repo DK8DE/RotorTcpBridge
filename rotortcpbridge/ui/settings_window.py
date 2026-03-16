@@ -167,6 +167,22 @@ class SettingsWindow(QDialog):
         self.ed_location_lon.setValue(float(cfg.get("ui", {}).get("location_lon", 8.375019)))
         self.ed_location_lon.setSuffix("°")
         form_ui.addRow(t("settings.location_lon"), self.ed_location_lon)
+        self.sp_antenna_height = QDoubleSpinBox()
+        self.sp_antenna_height.setRange(0.0, 500.0)
+        self.sp_antenna_height.setDecimals(1)
+        self.sp_antenna_height.setSingleStep(0.5)
+        self.sp_antenna_height.setValue(float(cfg.get("ui", {}).get("antenna_height_m", 0.0)))
+        self.sp_antenna_height.setSuffix(" m")
+        self.sp_antenna_height.setToolTip(t("settings.antenna_height_tooltip"))
+        form_ui.addRow(t("settings.antenna_height"), self.sp_antenna_height)
+        self.sp_rf_freq = QDoubleSpinBox()
+        self.sp_rf_freq.setRange(0.1, 3000.0)
+        self.sp_rf_freq.setDecimals(3)
+        self.sp_rf_freq.setSingleStep(1.0)
+        self.sp_rf_freq.setValue(float(cfg.get("ui", {}).get("rf_freq_mhz", 145.0)))
+        self.sp_rf_freq.setSuffix(" MHz")
+        self.sp_rf_freq.setToolTip(t("settings.rf_freq_tooltip"))
+        form_ui.addRow(t("settings.rf_freq"), self.sp_rf_freq)
 
         # --- Linke Spalte: Verbindung ---
         antenna_names = list(cfg.get("ui", {}).get("antenna_names", [t("settings.antenna_1"), t("settings.antenna_2"), t("settings.antenna_3")]))
@@ -548,8 +564,10 @@ class SettingsWindow(QDialog):
         new_lang = str(self.cb_language.currentData() or "de")
         lang_changed = self.cfg.get("ui", {}).get("language", "de") != new_lang
         self.cfg.setdefault("ui", {})["language"] = new_lang
-        self.cfg.setdefault("ui", {})["location_lat"] = float(self.ed_location_lat.value())
-        self.cfg.setdefault("ui", {})["location_lon"] = float(self.ed_location_lon.value())
+        self.cfg.setdefault("ui", {})["location_lat"]     = float(self.ed_location_lat.value())
+        self.cfg.setdefault("ui", {})["location_lon"]     = float(self.ed_location_lon.value())
+        self.cfg.setdefault("ui", {})["antenna_height_m"] = float(self.sp_antenna_height.value())
+        self.cfg.setdefault("ui", {})["rf_freq_mhz"]      = float(self.sp_rf_freq.value())
         self.cfg.setdefault("ui", {})["antenna_names"] = [
             self.ed_antenna_name_1.text().strip() or t("settings.antenna_1"),
             self.ed_antenna_name_2.text().strip() or t("settings.antenna_2"),

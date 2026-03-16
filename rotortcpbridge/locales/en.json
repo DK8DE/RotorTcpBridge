@@ -98,6 +98,10 @@
   "settings.language_label": "Language",
   "settings.location_lat": "Location Latitude",
   "settings.location_lon": "Location Longitude",
+  "settings.antenna_height": "Antenna Height (Mast)",
+  "settings.antenna_height_tooltip": "Height of the antenna above ground (mast height).\nAdded to terrain elevation in the elevation profile.",
+  "settings.rf_freq": "Frequency (Profile)",
+  "settings.rf_freq_tooltip": "Transmit frequency for diffraction calculation in elevation profile (ITU-R P.526).\nExamples: 144.300 MHz (2m SSB), 432.200 MHz (70cm), 1296 MHz (23cm).",
 
   "cmd.title": "Rotor Configuration",
   "cmd.group_build": "Build command",

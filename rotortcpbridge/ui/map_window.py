@@ -42,6 +42,7 @@ from ..ui.weather_window import WindRoseWidget
 from ..app_icon import get_app_icon
 from ..geo_utils import beam_center_line_points, beam_polygon_points, bearing_deg
 from ..i18n import t
+from .elevation_window import ElevationProfileWindow
 
 # Custom URL-Scheme für Offline-Tiles (funktioniert ohne Netzwerkadapter)
 ROTORTILES_SCHEME = "rotortiles"
@@ -833,17 +834,27 @@ class MapWindow(QDialog):
         self._btn_fav_delete = QPushButton(t("compass.fav_btn_delete"))
         self._btn_fav_delete.setAutoDefault(False)
         self._btn_fav_delete.setDefault(False)
+        self._btn_elevation = QPushButton("Höhenprofil")
+        self._btn_elevation.setAutoDefault(False)
+        self._btn_elevation.setDefault(False)
+        self._btn_elevation.setEnabled(False)
+        self._btn_elevation.setToolTip(
+            "Höhenprofil zwischen Antenne und Ziel anzeigen\n"
+            "(Ziel durch Klick auf die Karte festlegen)"
+        )
 
         toolbar.addWidget(self._cb_antenna)
         toolbar.addWidget(self._cb_fav)
         toolbar.addWidget(self._ed_fav_name)
         toolbar.addWidget(self._btn_fav_save)
         toolbar.addWidget(self._btn_fav_delete)
+        toolbar.addWidget(self._btn_elevation)
         layout.addLayout(toolbar)
 
         self._cb_fav.activated.connect(self._on_fav_activated)
         self._btn_fav_save.clicked.connect(self._on_fav_save)
         self._btn_fav_delete.clicked.connect(self._on_fav_delete)
+        self._btn_elevation.clicked.connect(self._on_elevation_profile)
         self._refresh_favorites_dropdown()
 
         map_container = _MapContainer(self)
@@ -922,6 +933,11 @@ class MapWindow(QDialog):
         self._map_locator_overlay: Optional[bool] = None
         self._smooth_azimuth: Optional[float] = None
         self._SMOOTH_FACTOR = 0.25
+        # Zuletzt per Kartenklick gewähltes Ziel (für Höhenprofil)
+        self._target_lat: Optional[float] = None
+        self._target_lon: Optional[float] = None
+        # Referenz auf offenes Höhenprofil-Fenster (None = nicht offen)
+        self._elevation_win: Optional[ElevationProfileWindow] = None
 
     def _get_params(self) -> dict:
         """Aktuelle Parameter für die Karte."""
@@ -1247,6 +1263,17 @@ class MapWindow(QDialog):
 
     def _on_map_click(self, lat: float, lon: float) -> None:
         """Klick auf Karte: Rotor auf Peilung zu diesem Punkt drehen."""
+        self._target_lat = lat
+        self._target_lon = lon
+        self._btn_elevation.setEnabled(True)
+
+        # Offenes Höhenprofil-Fenster sofort aktualisieren
+        if self._elevation_win is not None and self._elevation_win.isVisible():
+            ui = self.cfg.get("ui", {})
+            home_lat = float(ui.get("location_lat", 49.502651))
+            home_lon = float(ui.get("location_lon", 8.375019))
+            self._elevation_win.update_target(home_lat, home_lon, lat, lon)
+
         ui = self.cfg.get("ui", {})
         lat0 = float(ui.get("location_lat", 49.502651))
         lon0 = float(ui.get("location_lon", 8.375019))
@@ -1258,6 +1285,39 @@ class MapWindow(QDialog):
         except Exception:
             pass
         self._refresh_map()
+
+    def _on_elevation_profile(self) -> None:
+        """Höhenprofil-Fenster zwischen Heimstation und gewähltem Ziel öffnen."""
+        if self._target_lat is None or self._target_lon is None:
+            return
+
+        # Bereits offenes Fenster in den Vordergrund holen
+        if self._elevation_win is not None and self._elevation_win.isVisible():
+            self._elevation_win.raise_()
+            self._elevation_win.activateWindow()
+            return
+
+        ui = self.cfg.get("ui", {})
+        home_lat       = float(ui.get("location_lat", 49.502651))
+        home_lon       = float(ui.get("location_lon", 8.375019))
+        dark           = bool(ui.get("force_dark_mode", False))
+        antenna_height = float(ui.get("antenna_height_m", 0.0))
+        freq_mhz       = float(ui.get("rf_freq_mhz", 145.0))
+
+        # parent=None → unabhängiges Top-Level-Fenster
+        self._elevation_win = ElevationProfileWindow(
+            home_lat=home_lat,
+            home_lon=home_lon,
+            target_lat=self._target_lat,
+            target_lon=self._target_lon,
+            home_name="Antenne",
+            target_name="Ziel",
+            antenna_height_m=antenna_height,
+            freq_mhz=freq_mhz,
+            dark=dark,
+            parent=None,
+        )
+        self._elevation_win.show()
 
     def _refresh_map(self) -> None:
         """Beam-Daten aktualisieren ohne Karten-Zoom/Zentrum zu ändern.

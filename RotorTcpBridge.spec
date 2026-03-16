@@ -6,10 +6,18 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        ('rotortcpbridge\\rotor.ico',          'rotortcpbridge'),
-        ('rotortcpbridge\\windPfeil.png',       'rotortcpbridge'),
-        ('rotortcpbridge\\locales\\de.json',    'rotortcpbridge\\locales'),
-        ('rotortcpbridge\\locales\\en.json',    'rotortcpbridge\\locales'),
+        # Bilder und Icons
+        ('rotortcpbridge\\rotor.ico',               'rotortcpbridge'),
+        ('rotortcpbridge\\windPfeil.png',            'rotortcpbridge'),
+        ('rotortcpbridge\\Antenne.png',              'rotortcpbridge'),
+        ('rotortcpbridge\\Antenne_T.png',            'rotortcpbridge'),
+        # Sprachdateien
+        ('rotortcpbridge\\locales\\de.json',         'rotortcpbridge\\locales'),
+        ('rotortcpbridge\\locales\\en.json',         'rotortcpbridge\\locales'),
+        # Leaflet + Maidenhead (Offline-Karte, inline eingebettet)
+        ('rotortcpbridge\\static\\leaflet.min.js',   'rotortcpbridge\\static'),
+        ('rotortcpbridge\\static\\leaflet.css',      'rotortcpbridge\\static'),
+        ('rotortcpbridge\\static\\maidenhead.js',    'rotortcpbridge\\static'),
     ],
     hiddenimports=[],
     hookspath=[],
@@ -43,6 +51,9 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
+    # Offline-Kartenkacheln (z/x/y.png – Tree() sammelt alle Unterordner automatisch)
+    Tree('rotortcpbridge\\KartenLight', prefix='rotortcpbridge\\KartenLight'),
+    Tree('rotortcpbridge\\KartenDark',  prefix='rotortcpbridge\\KartenDark'),
     strip=False,
     upx=True,
     upx_exclude=[],

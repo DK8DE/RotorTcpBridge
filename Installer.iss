@@ -52,11 +52,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; Alle vom PyInstaller gebauten Dateien (EXE, DLLs, _internal/...)
+; Enthält bereits: Antenne.png, Antenne_T.png, windPfeil.png, rotor.ico,
+;                  locales/, static/ (Leaflet), KartenLight/, KartenDark/
 Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
-
-; Sprachdateien – PyInstaller kopiert JSON nicht automatisch
-Source: "{#MyProjDir}\rotortcpbridge\locales\de.json"; DestDir: "{app}\_internal\rotortcpbridge\locales"; Flags: ignoreversion
-Source: "{#MyProjDir}\rotortcpbridge\locales\en.json"; DestDir: "{app}\_internal\rotortcpbridge\locales"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyExeName}"; IconFilename: "{app}\_internal\rotortcpbridge\rotor.ico"

@@ -33,6 +33,8 @@
   "main.pst_stopped": "aus",
   "main.hw_connected": "verbunden",
   "main.hw_disconnected": "getrennt",
+  "main.ref_failed_title": "Referenzierung nicht gestartet",
+  "main.ref_failed_msg": "Referenzierung {axis} konnte nicht gestartet werden.\nDer Rotor hat nicht mit ACK_SETREF geantwortet.\n\nBitte erneut «Referenzieren» drücken.",
 
   "axis.pos_label": "Pos (°)",
   "axis.target_label": "Ziel (°)",

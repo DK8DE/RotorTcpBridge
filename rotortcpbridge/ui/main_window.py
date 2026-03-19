@@ -4,6 +4,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QSizePolicy,
     QMainWindow,
+    QMessageBox,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -184,6 +185,9 @@ class MainWindow(QMainWindow):
         self.btn_stop.clicked.connect(self.ctrl.stop_all)
         self.btn_delwarn.clicked.connect(self.ctrl.clear_warnings_all)
 
+        # Referenzierungs-Fehler-Callback: Controller ruft dies aus Hintergrundthread auf
+        self.ctrl.on_ref_start_failed = self._on_ref_start_failed
+
         self.t = QTimer(self)
         self.t.timeout.connect(self._tick)
         self.t.start(100)
@@ -333,6 +337,11 @@ class MainWindow(QMainWindow):
         self._update_groupbox_titles()
         self._update_axis_visibility()
         self._apply_fixed_mainwindow_size()
+        if hasattr(self, "_map_win") and self._map_win is not None:
+            try:
+                self._map_win.on_settings_applied()
+            except Exception:
+                pass
         if self._udp_ucxlog is not None:
             ui = self.cfg.get("ui", {})
             self._udp_ucxlog.start(
@@ -480,6 +489,22 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         super().closeEvent(event)
+
+    def _on_ref_start_failed(self, axis: str) -> None:
+        """Wird aus Hintergrundthread aufgerufen – auf UI-Thread weiterleiten."""
+        from PySide6.QtCore import QTimer as _QTimer
+        _QTimer.singleShot(0, lambda: self._show_ref_failed_popup(str(axis)))
+
+    def _show_ref_failed_popup(self, axis: str) -> None:
+        """Zeigt Hinweis, dass SETREF kein ACK erhalten hat."""
+        try:
+            QMessageBox.warning(
+                self,
+                t("main.ref_failed_title"),
+                t("main.ref_failed_msg", axis=axis),
+            )
+        except Exception:
+            pass
 
     def _tick(self):
         import time as _time

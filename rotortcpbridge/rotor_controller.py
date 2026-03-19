@@ -124,6 +124,9 @@ class RotorController:
         # Callback: wird nach jedem erfolgreichen SETANTOFF-ACK aufgerufen (z.B. Kompassfenster-Refresh)
         self.on_antenna_offsets_changed: Optional[Callable[[], None]] = None
         self.on_antenna_angles_changed: Optional[Callable[[], None]] = None
+        # Callback: wird aufgerufen, wenn SETREF kein ACK erhält (Timeout/NAK). arg=Achsname "AZ"/"EL".
+        # Wichtig: wird aus einem Hintergrund-Thread aufgerufen → UI muss QTimer.singleShot nutzen.
+        self.on_ref_start_failed: Optional[Callable[[str], None]] = None
 
         # Windsensor-Feature-Flag aus GETWINDENABLE (0/1). Off bis Antwort vorliegt.
         self.wind_enabled: bool = False
@@ -661,7 +664,11 @@ class RotorController:
             self.reference_el(start_homing)
 
     def reference_az(self, start_homing: bool = True) -> None:
-        """Referenziert nur AZ."""
+        """Referenziert nur AZ.
+
+        moving und ref_poll_active werden erst nach erfolgreichem ACK_SETREF gesetzt.
+        Bei Timeout oder NAK wird on_ref_start_failed aufgerufen (aus Hintergrundthread!).
+        """
         if not self.enable_az:
             return
         v = "1" if start_homing else "0"
@@ -671,14 +678,53 @@ class RotorController:
             self.az.last_set_sent_ts = 0.0
         except Exception:
             pass
-        self._send_simple(self.slave_az, "SETREF", v, expect="ACK_SETREF", prio=0)
-        self.az.ref_poll_active = True
         self.az.referenced = False
-        if start_homing:
-            self.az.moving = True
+        # ref_poll_active und moving erst nach ACK setzen (nicht sofort)
+
+        _start_homing = start_homing
+        _axis_state = self.az
+        _ctrl = self
+        line = build(self.master_id, self.slave_az, "SETREF", v)
+
+        def _on_done_az(tel: Optional[Telegram], err: Optional[str]) -> None:
+            if err:
+                _ctrl.log.write("WARN", f"AZ SETREF -> keine Antwort ({err})")
+                _axis_state.ref_poll_active = False
+                _axis_state.moving = False
+                if callable(_ctrl.on_ref_start_failed):
+                    try:
+                        _ctrl.on_ref_start_failed("AZ")
+                    except Exception:
+                        pass
+                return
+            if tel and (tel.cmd.startswith("ACK_SETREF") or tel.cmd.startswith("ACK_REF")):
+                _axis_state.ref_poll_active = True
+                if _start_homing:
+                    _axis_state.moving = True
+            else:
+                _ctrl.log.write("WARN", f"AZ SETREF -> NAK/unbekannte Antwort: {tel.cmd if tel else 'None'}")
+                _axis_state.ref_poll_active = False
+                _axis_state.moving = False
+                if callable(_ctrl.on_ref_start_failed):
+                    try:
+                        _ctrl.on_ref_start_failed("AZ")
+                    except Exception:
+                        pass
+
+        self.hw.send_request(HwRequest(
+            line=line,
+            expect_prefix="ACK_SETREF",
+            timeout_s=1.0,
+            on_done=_on_done_az,
+            priority=0,
+        ))
 
     def reference_el(self, start_homing: bool = True) -> None:
-        """Referenziert nur EL."""
+        """Referenziert nur EL.
+
+        moving und ref_poll_active werden erst nach erfolgreichem ACK_SETREF gesetzt.
+        Bei Timeout oder NAK wird on_ref_start_failed aufgerufen (aus Hintergrundthread!).
+        """
         if not self.enable_el:
             return
         v = "1" if start_homing else "0"
@@ -688,11 +734,46 @@ class RotorController:
             self.el.last_set_sent_ts = 0.0
         except Exception:
             pass
-        self._send_simple(self.slave_el, "SETREF", v, expect="ACK_SETREF", prio=0)
-        self.el.ref_poll_active = True
         self.el.referenced = False
-        if start_homing:
-            self.el.moving = True
+        # ref_poll_active und moving erst nach ACK setzen (nicht sofort)
+
+        _start_homing = start_homing
+        _axis_state = self.el
+        _ctrl = self
+        line = build(self.master_id, self.slave_el, "SETREF", v)
+
+        def _on_done_el(tel: Optional[Telegram], err: Optional[str]) -> None:
+            if err:
+                _ctrl.log.write("WARN", f"EL SETREF -> keine Antwort ({err})")
+                _axis_state.ref_poll_active = False
+                _axis_state.moving = False
+                if callable(_ctrl.on_ref_start_failed):
+                    try:
+                        _ctrl.on_ref_start_failed("EL")
+                    except Exception:
+                        pass
+                return
+            if tel and (tel.cmd.startswith("ACK_SETREF") or tel.cmd.startswith("ACK_REF")):
+                _axis_state.ref_poll_active = True
+                if _start_homing:
+                    _axis_state.moving = True
+            else:
+                _ctrl.log.write("WARN", f"EL SETREF -> NAK/unbekannte Antwort: {tel.cmd if tel else 'None'}")
+                _axis_state.ref_poll_active = False
+                _axis_state.moving = False
+                if callable(_ctrl.on_ref_start_failed):
+                    try:
+                        _ctrl.on_ref_start_failed("EL")
+                    except Exception:
+                        pass
+
+        self.hw.send_request(HwRequest(
+            line=line,
+            expect_prefix="ACK_SETREF",
+            timeout_s=1.0,
+            on_done=_on_done_el,
+            priority=0,
+        ))
 
     def clear_warnings_all(self):
         if self.enable_az:

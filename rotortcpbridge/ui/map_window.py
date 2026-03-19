@@ -431,12 +431,21 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
     }}
 
     let clickMarker = null;
-    map.on('click', function(e) {{
-      const lat2 = e.latlng.lat;
-      const lon2 = e.latlng.lng;
+
+    window.setClickMarker = function(lat2, lon2) {{
       if (clickMarker) map.removeLayer(clickMarker);
       clickMarker = L.marker([lat2, lon2], antennaTargetIcon ? {{ icon: antennaTargetIcon }} : {{}}).addTo(map);
       clickMarker.bindPopup("Ziel");
+    }};
+
+    window.clearClickMarker = function() {{
+      if (clickMarker) {{ map.removeLayer(clickMarker); clickMarker = null; }}
+    }};
+
+    map.on('click', function(e) {{
+      const lat2 = e.latlng.lat;
+      const lon2 = e.latlng.lng;
+      window.setClickMarker(lat2, lon2);
       window.location = 'rotorapp://setaz?lat=' + lat2 + '&lon=' + lon2;
     }});
 
@@ -837,10 +846,9 @@ class MapWindow(QDialog):
         self._btn_elevation = QPushButton("Höhenprofil")
         self._btn_elevation.setAutoDefault(False)
         self._btn_elevation.setDefault(False)
-        self._btn_elevation.setEnabled(False)
         self._btn_elevation.setToolTip(
-            "Höhenprofil zwischen Antenne und Ziel anzeigen\n"
-            "(Ziel durch Klick auf die Karte festlegen)"
+            "Höhenprofil zwischen Antenne und Ziel anzeigen.\n"
+            "Kein Ziel gesetzt: Heimposition wird als Ziel verwendet."
         )
 
         toolbar.addWidget(self._cb_antenna)
@@ -863,6 +871,7 @@ class MapWindow(QDialog):
         self._view = QWebEngineView(map_container)
         self._page = MapWebPage(self._on_map_click, self._view)
         self._view.setPage(self._page)
+        self._view.loadFinished.connect(self._on_map_load_finished)
         map_layout.addWidget(self._view, 1)
         self._wind_overlay = MapWindOverlay(map_container)
         map_container._wind_overlay = self._wind_overlay
@@ -933,9 +942,19 @@ class MapWindow(QDialog):
         self._map_locator_overlay: Optional[bool] = None
         self._smooth_azimuth: Optional[float] = None
         self._SMOOTH_FACTOR = 0.25
-        # Zuletzt per Kartenklick gewähltes Ziel (für Höhenprofil)
-        self._target_lat: Optional[float] = None
-        self._target_lon: Optional[float] = None
+        # Zuletzt per Kartenklick gewähltes Ziel (aus cfg wiederherstellen)
+        _saved_ui = self.cfg.get("ui", {})
+        self._target_lat: Optional[float] = (
+            float(_saved_ui["map_target_lat"])
+            if "map_target_lat" in _saved_ui else None
+        )
+        self._target_lon: Optional[float] = (
+            float(_saved_ui["map_target_lon"])
+            if "map_target_lon" in _saved_ui else None
+        )
+        # Rotor-Azimut, der durch den letzten Kartenklick gesetzt wurde
+        # (zum Erkennen von Fremd-Bewegungen)
+        self._map_click_rotor_az: Optional[float] = None
         # Referenz auf offenes Höhenprofil-Fenster (None = nicht offen)
         self._elevation_win: Optional[ElevationProfileWindow] = None
 
@@ -1265,7 +1284,12 @@ class MapWindow(QDialog):
         """Klick auf Karte: Rotor auf Peilung zu diesem Punkt drehen."""
         self._target_lat = lat
         self._target_lon = lon
-        self._btn_elevation.setEnabled(True)
+
+        # Zielpunkt persistent speichern (bleibt nach Fensterschluss erhalten)
+        self.cfg.setdefault("ui", {})["map_target_lat"] = lat
+        self.cfg.setdefault("ui", {})["map_target_lon"] = lon
+        if self.save_cfg_cb:
+            self.save_cfg_cb(self.cfg)
 
         # Offenes Höhenprofil-Fenster sofort aktualisieren
         if self._elevation_win is not None and self._elevation_win.isVisible():
@@ -1280,17 +1304,33 @@ class MapWindow(QDialog):
         bearing = bearing_deg(lat0, lon0, lat, lon)
         off = self._get_antenna_offset_az()
         rotor_deg = wrap_deg(bearing - off)
+        self._map_click_rotor_az = rotor_deg  # Kartenklick-Azimut merken
         try:
             self.ctrl.set_az_deg(rotor_deg, force=True)
         except Exception:
             pass
         self._refresh_map()
 
+    def _clear_map_target(self) -> None:
+        """Zielmarker löschen: Zustand, cfg und Kartenanzeige bereinigen."""
+        self._target_lat = None
+        self._target_lon = None
+        self._map_click_rotor_az = None
+        ui = self.cfg.setdefault("ui", {})
+        ui.pop("map_target_lat", None)
+        ui.pop("map_target_lon", None)
+        if self.save_cfg_cb:
+            try:
+                self.save_cfg_cb(self.cfg)
+            except Exception:
+                pass
+        if self._map_loaded:
+            self._view.page().runJavaScript(
+                "if (typeof window.clearClickMarker === 'function') window.clearClickMarker();"
+            )
+
     def _on_elevation_profile(self) -> None:
         """Höhenprofil-Fenster zwischen Heimstation und gewähltem Ziel öffnen."""
-        if self._target_lat is None or self._target_lon is None:
-            return
-
         # Bereits offenes Fenster in den Vordergrund holen
         if self._elevation_win is not None and self._elevation_win.isVisible():
             self._elevation_win.raise_()
@@ -1304,16 +1344,22 @@ class MapWindow(QDialog):
         antenna_height = float(ui.get("antenna_height_m", 0.0))
         freq_mhz       = float(ui.get("rf_freq_mhz", 145.0))
 
+        # Kein Ziel gesetzt → Heimposition als Ziel (Entfernung = 0)
+        target_lat = self._target_lat if self._target_lat is not None else home_lat
+        target_lon = self._target_lon if self._target_lon is not None else home_lon
+
         # parent=None → unabhängiges Top-Level-Fenster
         self._elevation_win = ElevationProfileWindow(
             home_lat=home_lat,
             home_lon=home_lon,
-            target_lat=self._target_lat,
-            target_lon=self._target_lon,
+            target_lat=target_lat,
+            target_lon=target_lon,
             home_name="Antenne",
             target_name="Ziel",
             antenna_height_m=antenna_height,
             freq_mhz=freq_mhz,
+            cfg=self.cfg,
+            save_cfg_cb=self.save_cfg_cb,
             dark=dark,
             parent=None,
         )
@@ -1322,6 +1368,16 @@ class MapWindow(QDialog):
     def _refresh_map(self) -> None:
         """Beam-Daten aktualisieren ohne Karten-Zoom/Zentrum zu ändern.
         Azimuth wird geglättet für flüssige Bewegung ohne Ruckeln."""
+        # ── Fremd-Bewegungserkennung: Rotor extern bewegt? → Marker löschen ──
+        if self._map_click_rotor_az is not None and self._target_lat is not None:
+            az_axis = getattr(self.ctrl, "az", None)
+            if az_axis is not None and bool(getattr(az_axis, "online", False)):
+                tgt_d10 = getattr(az_axis, "target_d10", None)
+                if tgt_d10 is not None:
+                    extern_az = float(tgt_d10) / 10.0
+                    if abs(shortest_delta_deg(extern_az, self._map_click_rotor_az)) > 2.0:
+                        self._clear_map_target()
+
         params = self._get_params()
         # dark_mode immer direkt aus Config (force_dark_mode) – auch für Offline-Tiles
         dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", False))
@@ -1399,6 +1455,32 @@ class MapWindow(QDialog):
             else:
                 self._view.setHtml(html, QUrl("about:blank"))
             self._map_loaded = True
+
+    def _on_map_load_finished(self, ok: bool) -> None:
+        """Wird aufgerufen sobald die Leaflet-Seite vollständig geladen ist."""
+        if not ok or not self._map_loaded:
+            return
+        if self._target_lat is not None and self._target_lon is not None:
+            js = (
+                f"if (typeof window.setClickMarker === 'function') "
+                f"window.setClickMarker({self._target_lat}, {self._target_lon});"
+            )
+            self._view.page().runJavaScript(js)
+
+    def on_settings_applied(self) -> None:
+        """Wird von main_window nach dem Speichern der Einstellungen aufgerufen."""
+        dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", False))
+        if self._elevation_win is not None and self._elevation_win.isVisible():
+            self._elevation_win.apply_theme(dark)
+
+    def closeEvent(self, event):
+        if self._elevation_win is not None:
+            try:
+                self._elevation_win.close()
+            except Exception:
+                pass
+            self._elevation_win = None
+        super().closeEvent(event)
 
     def showEvent(self, event):
         super().showEvent(event)

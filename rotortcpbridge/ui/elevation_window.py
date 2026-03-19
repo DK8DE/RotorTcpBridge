@@ -289,6 +289,87 @@ def _sky_wave_analysis(dist_km: float, freq_mhz: float) -> Optional[Dict]:
     }
 
 
+# ── Optimales Band / Frequenzempfehlung ───────────────────────────────────
+
+# Amateurfunkbänder: (center MHz, Bandname, untere Grenze MHz, obere Grenze MHz)
+_AMATEUR_BANDS: List[Tuple[float, str, float, float]] = [
+    (1.85,   "160 m",  1.810,  2.000),
+    (3.65,   "80 m",   3.500,  3.800),
+    (7.10,   "40 m",   7.000,  7.300),
+    (10.12,  "30 m",  10.100, 10.150),
+    (14.20,  "20 m",  14.000, 14.350),
+    (18.12,  "17 m",  18.068, 18.168),
+    (21.20,  "15 m",  21.000, 21.450),
+    (24.93,  "12 m",  24.890, 24.990),
+    (28.50,  "10 m",  28.000, 29.700),
+    (50.20,   "6 m",  50.000, 54.000),
+    (144.30,  "2 m",  144.000, 146.000),
+    (432.20, "70 cm", 430.000, 440.000),
+]
+
+
+def _best_freq_recommendation(dist_km: float, los_blocked: bool) -> Dict:
+    """
+    Empfiehlt das optimale Amateurfunkband und die Frequenz für diese Entfernung.
+
+    Basis: Tagesmittelwerte der Ionosphäre (solar-mittel, Mitteleuropa).
+    Empfohlene Betriebsfrequenz = 85 % der MUF (±1 Bandstufe Puffer).
+    """
+    RE    = 6371.0
+    H_F2  = 350.0
+    FO_F2 = 7.5   # krit. Frequenz F2-Schicht (Tagesmittel) MHz
+
+    f2_max = 2.0 * math.sqrt(2.0 * RE * H_F2)   # ≈ 4220 km
+    hops_f2 = max(1, math.ceil(dist_km / f2_max)) if dist_km > 0 else 1
+
+    # MUF für diesen Pfad
+    if dist_km > 50:
+        d_hop = dist_km / hops_f2
+        sin_t = (2.0 * H_F2) / math.sqrt(d_hop ** 2 + (2.0 * H_F2) ** 2)
+        muf   = FO_F2 / max(sin_t, 0.05)
+    else:
+        muf = FO_F2 * 1.05
+
+    # ── Kurze Entfernungen: VHF bevorzugt ────────────────────────────────
+    if dist_km < 80 and not los_blocked:
+        if dist_km < 30:
+            return dict(band="70 cm", freq_str="430–440 MHz",
+                        mode="Sichtverbindung", muf=None, color="#5cb85c")
+        return dict(band="2 m", freq_str="144–146 MHz",
+                    mode="VHF Sichtverbindung", muf=None, color="#5cb85c")
+
+    # ── NVIS-Zone: kurze bis mittlere KW-Strecken ────────────────────────
+    if dist_km <= 200:
+        return dict(band="80 m", freq_str="3.5–3.8 MHz",
+                    mode="NVIS (F2-Schicht)", muf=round(muf, 1), color="#5cb85c")
+    if dist_km <= 500:
+        return dict(band="40 m", freq_str="7.0–7.3 MHz",
+                    mode="NVIS / F2-Schicht", muf=round(muf, 1), color="#5cb85c")
+
+    # ── Längere Strecken: MUF-basierte Empfehlung ────────────────────────
+    opt = muf * 0.85   # optimale Betriebsfrequenz ≈ 85 % MUF
+
+    best: Optional[Tuple[float, str, float, float]] = None
+    for band in _AMATEUR_BANDS:
+        if band[0] <= opt:
+            best = band
+
+    if best is None:
+        best = _AMATEUR_BANDS[0]   # Fallback: 160 m
+
+    cf, name, lo, hi = best
+    if hi - lo > 1.0:
+        freq_str = f"{lo:.0f}–{hi:.0f} MHz"
+    else:
+        freq_str = f"{lo:.3f}–{hi:.3f} MHz"
+
+    hop_str = f"F2 {hops_f2}× Sprung"
+    color   = "#5cb85c" if muf >= 10 else "#f0ad4e"
+
+    return dict(band=name, freq_str=freq_str, mode=hop_str,
+                muf=round(muf, 1), color=color)
+
+
 # ── Hintergrund-Thread ────────────────────────────────────────────────────
 
 class _FetchThread(QThread):
@@ -330,6 +411,8 @@ class ElevationProfileWindow(QDialog):
         target_name: str = "Ziel",
         antenna_height_m: float = 0.0,
         freq_mhz: float = 145.0,
+        cfg: Optional[Dict] = None,
+        save_cfg_cb=None,
         dark: bool = False,
         parent=None,
     ) -> None:
@@ -342,6 +425,8 @@ class ElevationProfileWindow(QDialog):
         self._target_name    = target_name
         self._antenna_height = antenna_height_m
         self._freq_mhz       = freq_mhz
+        self._cfg            = cfg
+        self._save_cfg_cb    = save_cfg_cb
         self._dark           = dark
         self._dist_km        = _haversine_km(home_lat, home_lon, target_lat, target_lon)
         self._thread: Optional[_FetchThread] = None
@@ -361,7 +446,7 @@ class ElevationProfileWindow(QDialog):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(5)
 
-        # ── Zeile: Frequenz | Streckeninfo | Status | Beugung ────────────
+        # ── Zeile: Frequenz | Status | Beugungszusammenfassung ───────────
         row = QHBoxLayout()
         row.addWidget(QLabel("Frequenz:"))
         self._sp_freq = QDoubleSpinBox()
@@ -382,21 +467,16 @@ class ElevationProfileWindow(QDialog):
         self._sp_freq.valueChanged.connect(self._on_freq_changed)
         row.addWidget(self._sp_freq)
         row.addSpacing(12)
-        self._lbl_dist = QLabel()
-        self._lbl_dist.setTextFormat(Qt.RichText)
-        self._lbl_dist.setText(
-            f"<b>{home_name}</b> → <b>{target_name}</b>"
-            f"&nbsp;&nbsp;&nbsp;Entfernung: <b>{self._dist_km:.1f} km</b>"
-        )
-        row.addWidget(self._lbl_dist)
-        row.addStretch()
+        # Ionosphärische Ausbreitung – kompakte Info neben der Frequenzeingabe
+        self._lbl_skywave = QLabel()
+        self._lbl_skywave.setTextFormat(Qt.RichText)
+        self._lbl_skywave.setStyleSheet("font-size: 11px;")
+        row.addWidget(self._lbl_skywave)
+        row.addSpacing(8)
         self._lbl_status = QLabel("Lade Höhendaten…")
         self._lbl_status.setStyleSheet("color: gray; font-style: italic;")
         row.addWidget(self._lbl_status)
-        # Zusammenfassung der Beugungsanalyse – wird nach Datenladen befüllt
-        self._lbl_diff = QLabel()
-        self._lbl_diff.setTextFormat(Qt.RichText)
-        row.addWidget(self._lbl_diff)
+        row.addStretch()
         root.addLayout(row)
 
         # ── Chart ─────────────────────────────────────────────────────────
@@ -421,22 +501,34 @@ class ElevationProfileWindow(QDialog):
         self._target_lon = target_lon
         self._dist_km    = _haversine_km(home_lat, home_lon, target_lat, target_lon)
 
-        self._lbl_dist.setText(
-            f"<b>{self._home_name}</b> → <b>{self._target_name}</b>"
-            f"&nbsp;&nbsp;&nbsp;Entfernung: <b>{self._dist_km:.1f} km</b>"
-        )
         # Alte Daten verwerfen, neu laden
         self._last_elev  = None
         self._last_dists = None
         self._last_los   = None
-        self._lbl_diff.setText("")
         self._view.setHtml(self._loading_html())
         self._fetch()
+
+    # ── Theme-Wechsel (Dark ↔ Light) ─────────────────────────────────────
+
+    def apply_theme(self, dark: bool) -> None:
+        """Dark/Light-Mode zur Laufzeit umschalten und Chart neu rendern."""
+        if dark == self._dark:
+            return
+        self._dark = dark
+        if self._last_elev is not None:
+            self._rebuild_chart()
+        else:
+            self._view.setHtml(self._loading_html())
 
     # ── Frequenzänderung ──────────────────────────────────────────────────
 
     def _on_freq_changed(self, value: float) -> None:
         self._freq_mhz = value
+        # Frequenz persistent speichern
+        if self._cfg is not None:
+            self._cfg.setdefault("ui", {})["rf_freq_mhz"] = value
+            if self._save_cfg_cb:
+                self._save_cfg_cb(self._cfg)
         if self._last_elev is not None:
             self._rebuild_chart()
 
@@ -476,11 +568,10 @@ class ElevationProfileWindow(QDialog):
     def _on_error(self, msg: str) -> None:
         self._lbl_status.setText(f"Fehler: {msg}")
         self._lbl_status.setStyleSheet("color: #c0392b;")
-        self._lbl_diff.setText("")
         self._view.setHtml(self._error_html(msg))
 
     def _rebuild_chart(self) -> None:
-        """Berechnet Beugungsanalyse neu und aktualisiert Chart + Zusammenfassungszeile."""
+        """Berechnet Beugungsanalyse neu und aktualisiert Chart + Qt-Infoleiste."""
         if self._last_elev is None:
             return
         elevations = self._last_elev
@@ -491,21 +582,26 @@ class ElevationProfileWindow(QDialog):
 
         diff = _knife_edge_analysis(elevations, los, dists, self._freq_mhz)
 
-        # Kompakte Zusammenfassung in Zeile 2
-        if diff:
-            nu_str  = f"{diff['nu']:.2f}"
-            j_str   = f"{diff['j_db']:.1f}"
-            pwr_str = f"{diff['power_pct']:.1f}"
-            col     = diff["quality_color"]
-            self._lbl_diff.setText(
-                f"ν = <b>{nu_str}</b>"
-                f"&nbsp;&nbsp;J(ν) = <b>{j_str} dB</b>"
-                f"&nbsp;&nbsp;Signal = <b>{pwr_str} %</b>"
-                f"&nbsp;&nbsp;<span style='color:{col};font-weight:bold'>"
-                f"{diff['quality_text']}</span>"
+        # ── Qt-Label: Ionosphärische Info neben Frequenzeingabe ──────────
+        sky  = _sky_wave_analysis(self._dist_km, self._freq_mhz)
+        los_blocked = any(e > l for e, l in list(zip(elevations, los))[1:-1])
+        best = _best_freq_recommendation(self._dist_km, los_blocked)
+        bc   = best["color"]
+
+        parts = []
+        if sky:
+            nvis = " · NVIS" if sky["nvis_ok"] else ""
+            fo   = f"foF₂≈{sky['fo_f2']:.0f} MHz"
+            parts.append(
+                f"<span style='opacity:0.55'>"
+                f"Ionosph. · {sky['band_name']}{nvis} · {fo}</span>"
             )
-        else:
-            self._lbl_diff.setText("")
+        muf_str = f" · MUF≈{best['muf']} MHz" if best.get("muf") else ""
+        parts.append(
+            f"&nbsp;&nbsp;<b style='color:{bc}'>{best['band']}</b>"
+            f"&nbsp;<span style='opacity:0.7'>{best['freq_str']} · {best['mode']}{muf_str}</span>"
+        )
+        self._lbl_skywave.setText("&nbsp;&nbsp;".join(parts))
 
         self._view.setHtml(
             self._build_html(dists, elevations, los, h0, hn, diff)
@@ -642,7 +738,7 @@ class ElevationProfileWindow(QDialog):
                 mode_cards_html += (
                     f'<div class="card">'
                     f'<div class="card-label" style="color:{ok_col}">{m["name"]}</div>'
-                    f'<div class="card-value" style="font-size:11px;padding-top:3px">{m["sub"]}</div>'
+                    f'<div class="card-value">{m["sub"]}</div>'
                     f'</div>'
                 )
             if sky["skip_zone"] and not sky["modes"]:
@@ -650,22 +746,93 @@ class ElevationProfileWindow(QDialog):
                 mode_cards_html += (
                     f'<div class="card" style="border-color:{skip_col}55">'
                     f'<div class="card-label" style="color:{skip_col}">Toter Bereich (Skip-Zone)</div>'
-                    f'<div class="card-value" style="font-size:11px;padding-top:3px;color:{skip_col}">'
+                    f'<div class="card-value" style="color:{skip_col}">'
                     f'kein ionosphärischer Ausbreitungsweg</div></div>'
                 )
-            nvis_note = " · NVIS möglich" if sky["nvis_ok"] else ""
-            fo_str    = f"foF₂ ≈ {sky['fo_f2']:.0f} MHz (Tagesmittel)"
             skywave_section = (
                 f'<div class="divider"></div>'
-                f'<div class="section-title">'
-                f'Ionosphärische Ausbreitung · {sky["band_name"]}{nvis_note}'
-                f'&nbsp;·&nbsp;{fo_str}</div>'
                 f'<div class="cards">{mode_cards_html}</div>'
+            )
+
+        # ── Optimales Band (immer anzeigen, unabhängig von akt. Frequenz) ─
+        los_blocked = any(e > l for e, l in list(zip(elevations, los))[1:-1])
+        best = _best_freq_recommendation(self._dist_km, los_blocked)
+        bc   = best["color"]
+        muf_note = f"&nbsp;·&nbsp;MUF ≈ {best['muf']} MHz" if best.get("muf") else ""
+        opt_card = (
+            f'<div class="card" style="border-color:{bc};border-width:2px">'
+            f'<div class="card-label" style="color:{bc}">Optimales Band (∅ Tagesmittel)</div>'
+            f'<div class="card-value" style="font-size:18px">{best["band"]}</div>'
+            f'<div style="font-size:10px;opacity:0.75;margin-top:2px">'
+            f'{best["freq_str"]}&nbsp;·&nbsp;{best["mode"]}{muf_note}</div>'
+            f'</div>'
+        )
+        # Optimal-Karte in den sky-wave-Abschnitt anhängen oder als eigenen Block
+        if skywave_section:
+            # An bestehende Karten-Zeile anhängen
+            skywave_section = skywave_section[:-len('</div>')] + opt_card + '</div>'
+        else:
+            # Eigener Abschnitt wenn Frequenz ≥ 30 MHz
+            skywave_section = (
+                f'<div class="divider"></div>'
+                f'<div class="cards">{opt_card}</div>'
             )
 
         dists_json = json.dumps(dists)
         elev_json  = json.dumps(elevations)
         los_json   = json.dumps(los)
+
+        # ── Hover-Analyse: Punkt i als hypothetisches Ziel ───────────────
+        # Für jeden Hover-Punkt i: schlechtestes Hindernis auf dem Teilpfad
+        # von der Antenne bis zu diesem Punkt, als wäre i das Ziel.
+        lam_m_pp   = 3e8 / (self._freq_mhz * 1e6)
+        los_start_pp = elevations[0] + self._antenna_height
+        per_point: list = []
+
+        for i in range(len(elevations)):
+            if i < 2 or dists[i] <= 0:
+                per_point.append(None)
+                continue
+
+            dist_i   = dists[i]
+            los_end_pp = elevations[i]   # Ziel-Höhe = Gelände an Punkt i
+
+            # Schlechtestes Hindernis auf dem Teilpfad 0 → i
+            max_h = -1e9
+            max_j = 1
+            for j in range(1, i):
+                t     = dists[j] / dist_i
+                los_j = los_start_pp + (los_end_pp - los_start_pp) * t
+                h_j   = elevations[j] - los_j
+                if h_j > max_h:
+                    max_h = h_j
+                    max_j = j
+
+            d1_km = dists[max_j]
+            d2_km = dists[i] - dists[max_j]
+            if d1_km <= 0 or d2_km <= 0:
+                per_point.append(None)
+                continue
+
+            d1_m  = d1_km * 1000.0
+            d2_m  = d2_km * 1000.0
+            nu_pp = max_h * math.sqrt(2.0 * (d1_m + d2_m) / (lam_m_pp * d1_m * d2_m))
+            if nu_pp <= -0.78:
+                j_pp = 0.0
+            else:
+                arg_pp = math.sqrt((nu_pp - 0.1) ** 2 + 1.0) + nu_pp - 0.1
+                j_pp   = max(0.0, 6.9 + 20.0 * math.log10(max(arg_pp, 1e-12)))
+            pct_pp = 10.0 ** (-j_pp / 10.0) * 100.0
+
+            per_point.append({
+                "h":       round(max_h, 1),
+                "nu":      round(nu_pp, 3),
+                "jdb":     round(j_pp, 1),
+                "pct":     round(pct_pp, 1),
+                "obsDist": round(dists[max_j], 1),
+                "dist":    round(dist_i, 1),
+            })
+        per_point_json = json.dumps(per_point)
 
         return f"""<!DOCTYPE html>
 <html>
@@ -731,7 +898,7 @@ canvas {{ position: absolute; top: 0; left: 0; width: 100% !important; height: 1
     <div class="card-value">{self._dist_km:.1f} km</div>
   </div>
   <div class="card">
-    <div class="card-label">Sichtlinie</div>
+    <div class="card-label">Pfad Ant.→Ziel</div>
     <div class="card-value" style="font-size:13px;padding-top:3px;">{los_txt}</div>
   </div>
 </div>
@@ -744,9 +911,26 @@ canvas {{ position: absolute; top: 0; left: 0; width: 100% !important; height: 1
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
 <script>
-const dists = {dists_json};
-const elev  = {elev_json};
-const los   = {los_json};
+const dists    = {dists_json};
+const elev     = {elev_json};
+const los      = {los_json};
+const perPoint = {per_point_json};
+
+function qualityLabel(jdb) {{
+  if (jdb < 1.0)  return 'Kein Beugungsverlust';
+  if (jdb < 6.0)  return 'Leichte Beugung';
+  if (jdb < 10.0) return 'Merkliche Beugung';
+  if (jdb < 16.0) return 'Starke Beugung';
+  return 'Sehr starke Beugung';
+}}
+function qualityColor(pp) {{
+  if (!pp) return '{v['fg']}';
+  if (pp.jdb < 1.0)  return '#5cb85c';
+  if (pp.jdb < 6.0)  return '#8bc34a';
+  if (pp.jdb < 10.0) return '#f0ad4e';
+  if (pp.jdb < 16.0) return '#e07050';
+  return '#c0392b';
+}}
 
 // Plugin registriert sich via CDN automatisch – kein Chart.register() nötig.
 new Chart(document.getElementById('c'), {{
@@ -766,7 +950,7 @@ new Chart(document.getElementById('c'), {{
         order: 2
       }},
       {{
-        label: 'Sichtlinie',
+        label: 'Direkter Pfad Antenne → Ziel',
         data: los,
         borderColor: '{v['los_color']}',
         borderDash: [7, 4],
@@ -798,10 +982,29 @@ new Chart(document.getElementById('c'), {{
         borderWidth: 1,
         titleColor: '{v['fg']}',
         bodyColor: '{v['fg']}',
+        footerColor: '{v['fg']}',
         padding: 9,
         callbacks: {{
           title: items => ' ' + parseFloat(items[0].label).toFixed(1) + ' km',
-          label: ctx  => '  ' + ctx.dataset.label + ':  ' + Math.round(ctx.raw) + ' m'
+          label: ctx => '  ' + ctx.dataset.label + ':  ' + Math.round(ctx.raw) + ' m',
+          footer: items => {{
+            const pp = perPoint[items[0].dataIndex];
+            if (!pp) return [];
+            const dot = ['🟢','🟡','🟠','🔴','🔴'];
+            const grade = pp.jdb < 1 ? 0 : pp.jdb < 6 ? 1 : pp.jdb < 10 ? 2 : pp.jdb < 16 ? 3 : 4;
+            const obsNote = pp.h > 0
+              ? '  Hindernis bei ' + pp.obsDist + ' km  (+' + pp.h.toFixed(0) + ' m über LOS)'
+              : '  Kein Hindernis auf diesem Teilpfad';
+            return [
+              '',
+              '  Wenn Ziel hier (' + pp.dist + ' km):',
+              obsNote,
+              '  ν = ' + pp.nu.toFixed(2) +
+              '    J(ν) = ' + pp.jdb.toFixed(1) + ' dB' +
+              '    Signal = ' + pp.pct.toFixed(1) + ' %',
+              '  ' + dot[grade] + '  ' + qualityLabel(pp.jdb),
+            ];
+          }}
         }}
       }},
       annotation: {{

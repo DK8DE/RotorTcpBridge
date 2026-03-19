@@ -33,6 +33,8 @@
   "main.pst_stopped": "stopped",
   "main.hw_connected": "connected",
   "main.hw_disconnected": "disconnected",
+  "main.ref_failed_title": "Referencing not started",
+  "main.ref_failed_msg": "Referencing {axis} could not be started.\nThe rotor did not respond with ACK_SETREF.\n\nPlease press «Reference» again.",
 
   "axis.pos_label": "Pos (°)",
   "axis.target_label": "Target (°)",

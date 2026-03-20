@@ -156,6 +156,10 @@ class RotorController:
 
         # Async telegram handler
         self.hw.on_async_telegram = self._on_async_tel
+        try:
+            self.hw.set_expected_response_dst(int(self.master_id))
+        except Exception:
+            pass
 
     def update_ids(self, master_id:int, slave_az:int, slave_el:int, enable_az:bool=True, enable_el:bool=True):
         self.master_id = master_id
@@ -163,6 +167,10 @@ class RotorController:
         self.slave_el = slave_el
         self.enable_az = bool(enable_az)
         self.enable_el = bool(enable_el)
+        try:
+            self.hw.set_expected_response_dst(int(self.master_id))
+        except Exception:
+            pass
 
     def set_statistics_window_open(self, open: bool) -> None:
         """Statistik-Fenster offen/geschlossen. Nur wenn offen: CAL/LIVE/ACC pollen."""
@@ -1674,9 +1682,27 @@ class RotorController:
             dont_disconnect_on_timeout=True,
         ))
 
+    def _tel_dst_allowed(self, tel: Telegram) -> bool:
+        """Eigene Antworten (dst = unsere Master-ID) oder Antworten der konfigurierten Slaves an einen fremden Master."""
+        try:
+            d = int(tel.dst)
+            s = int(tel.src)
+            mid = int(self.master_id)
+            if d == mid:
+                return True
+            saz = int(self.slave_az)
+            sel = int(self.slave_el)
+            if (s == saz or s == sel) and d != mid:
+                return True
+            return False
+        except Exception:
+            return True
+
     # -------------------- Async telegram handler --------------------
     def _on_async_tel(self, tel:Telegram):
         # Asynchrone ACK/NAK aus Polling (wenn Requests ohne pending gesendet werden).
+        if not self._tel_dst_allowed(tel):
+            return
         try:
             axis_state: AxisState | None = None
             axis_name = None
@@ -1760,6 +1786,14 @@ class RotorController:
                                 axis_state.moving = True
                             else:
                                 axis_state.moving = prev_moving
+                    return
+                # SETPOSDG-Bestätigung (z. B. anderer Master mit separater Controller-ID)
+                if tel.cmd.startswith("ACK_SETPOSDG"):
+                    try:
+                        self._apply_local_state_for_ui_command(int(tel.src), "SETPOSDG", tel.params)
+                    except Exception:
+                        pass
+                    axis_state.last_rx_ts = time.time()
                     return
                 if tel.cmd.startswith("NAK_GETPOSDG") or tel.cmd.startswith("NAK_POSDG"):
                     try:
@@ -1913,6 +1947,12 @@ class RotorController:
                     v = _parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.telemetry.pwm_max_pct = v
+                    return
+                if tel.cmd.startswith("ACK_SETPWM"):
+                    v = _parse_float(tel.params.strip())
+                    if v is not None:
+                        axis_state.telemetry.pwm_max_pct = v
+                    axis_state.last_rx_ts = time.time()
                     return
                 if tel.cmd.startswith("ACK_GETMINPWM") or tel.cmd.startswith("ACK_MINPWM"):
                     v = _parse_float(tel.params.strip())

@@ -56,6 +56,8 @@ class HardwareClient:
         self._lock = threading.Lock()
 
         self.on_async_telegram: Optional[Callable[[Telegram], None]] = None
+        # Antworten auf unsere Requests haben DST = eigene Master-ID; andere Master nicht als Pending matchen
+        self._pending_reply_dst: int = 0
         self._last_rx_any_ts: float = 0.0
         self._last_tx_any_ts: float = 0.0
         self._connected_since_ts: float = 0.0
@@ -96,6 +98,13 @@ class HardwareClient:
         """
         mode = str(self.cfg.get("mode", "tcp") or "tcp").strip().lower()
         self._no_rx_timeout_s = 30.0 if mode == "com" else 5.0
+
+    def set_expected_response_dst(self, master_id: int) -> None:
+        """Nur Telegramme mit ``dst == master_id`` dürfen ein ausstehendes TX-Match sein."""
+        try:
+            self._pending_reply_dst = int(master_id)
+        except Exception:
+            self._pending_reply_dst = 0
 
     def update_cfg(self, cfg:dict):
         old = dict(self._applied_cfg or {})
@@ -254,6 +263,13 @@ class HardwareClient:
 
             cmd = (tel.cmd or "").strip()
             if not cmd:
+                return False
+
+            # Gleiches ACK von einem anderen Master (anderes DST) nicht als unsere Antwort werten
+            try:
+                if int(tel.dst) != int(self._pending_reply_dst):
+                    return False
+            except Exception:
                 return False
 
             prefixes = {exp}

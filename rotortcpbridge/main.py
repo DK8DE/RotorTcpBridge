@@ -71,6 +71,7 @@ def main():
     udp_pst.start(
         enabled=bool(ui_cfg.get("udp_pst_enabled", False)),
         port=int(ui_cfg.get("udp_pst_port", 12000)),
+        send_host=str(ui_cfg.get("udp_pst_send_host", "127.0.0.1")),
     )
 
     # Beim Start einmal prüfen, ob die Rotoren bereits referenziert sind

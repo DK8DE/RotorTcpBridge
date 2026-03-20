@@ -64,8 +64,10 @@
 
 - Optional: **UDP**-Listener auf konfigurierbarem Port (Standard z. B. **12000**).
 - Versteht typische **PST-XML**-Telegramme (`<PST><AZIMUTH>…</AZIMUTH></PST>`, STOP, PARK, Abfragen `AZ?` / `TGA?` …).
-- Sendet Positionsmeldungen im Stil **`AZ:xxx`** an **`127.0.0.1 : Port+1`** – wie viele Programme es von **PstRotatorAz** über UDP erwarten.
-- **Aktivierung** und **Port** über die Einstellungen (`udp_pst_enabled`, `udp_pst_port`).
+- Sendet Positionsmeldungen im Stil **`AZ:xxx` / `TGA:xxx`** an **Ziel-IP : Port+1**.
+  - **Standard `127.0.0.1`** – nur der **gleiche PC** wie die Bridge (klassisches PstRotatorAz-Verhalten).
+  - **Anderer Rechner im LAN**: Ziel-IP **manuell eintragen** (IPv4 des Empfängers), oder **`255.255.255.255`** für **Broadcast** im lokalen Subnetz (alle, die auf `Port+1` lauschen; Router leiten Broadcast in der Regel **nicht** zwischen Subnetzen).
+- **Aktivierung**, **Port** und **Ziel-IP** in den Einstellungen (`udp_pst_enabled`, `udp_pst_port`, `udp_pst_send_host`).
 
 ### UDP – UcxLog
 

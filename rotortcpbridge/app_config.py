@@ -89,8 +89,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "udp_ucxlog_port": 12040,
         # UDP PST-Rotator-Emulation: Emuliert das UDP-Protokoll von PstRotatorAz.
         # Hört auf udp_pst_port, sendet Positionsmeldungen an udp_pst_port + 1.
+        # Ziel für AZ:/TGA:-Antworten: 127.0.0.1 = nur dieser PC; 255.255.255.255 = Broadcast im LAN;
+        # oder konkrete IPv4 (z. B. 192.168.1.50) wenn der Empfänger woanders ist.
         "udp_pst_enabled": False,
         "udp_pst_port": 12000,
+        "udp_pst_send_host": "127.0.0.1",
     },
 }
 

@@ -195,6 +195,24 @@ class SettingsWindow(QDialog):
         pst_row_w.setLayout(pst_row)
         form_ui.addRow(pst_row_w)
 
+        self.ed_udp_pst_send_host = QLineEdit()
+        self.ed_udp_pst_send_host.setText(
+            str(cfg.get("ui", {}).get("udp_pst_send_host", "127.0.0.1"))
+        )
+        self.ed_udp_pst_send_host.setPlaceholderText("127.0.0.1")
+        self.ed_udp_pst_send_host.setToolTip(t("settings.udp_pst_send_host_tooltip"))
+        self.ed_udp_pst_send_host.setMaximumWidth(200)
+        pst_send_row = QHBoxLayout()
+        pst_send_row.setContentsMargins(0, 0, 0, 0)
+        pst_send_row.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._lbl_udp_pst_send_host = QLabel(t("settings.udp_pst_send_host_label"))
+        pst_send_row.addWidget(self._lbl_udp_pst_send_host)
+        pst_send_row.addWidget(self.ed_udp_pst_send_host)
+        pst_send_row.addStretch(1)
+        pst_send_row_w = QWidget()
+        pst_send_row_w.setLayout(pst_send_row)
+        form_ui.addRow(pst_send_row_w)
+
         self.btn_cal_start = QPushButton(t("cmd.btn_start_cal"))
         self.btn_cal_start.setAutoDefault(False)
         self.btn_cal_start.setDefault(False)
@@ -765,6 +783,9 @@ class SettingsWindow(QDialog):
         self.cfg.setdefault("ui", {})["udp_ucxlog_enabled"] = bool(self.chk_udp_ucxlog.isChecked())
         self.cfg.setdefault("ui", {})["udp_pst_enabled"] = bool(self.chk_udp_pst.isChecked())
         self.cfg.setdefault("ui", {})["udp_pst_port"] = int(self.sp_udp_pst_port.value())
+        self.cfg.setdefault("ui", {})["udp_pst_send_host"] = (
+            self.ed_udp_pst_send_host.text().strip() or "127.0.0.1"
+        )
         new_lang = str(self.cb_language.currentData() or "de")
         lang_changed = self.cfg.get("ui", {}).get("language", "de") != new_lang
         self.cfg.setdefault("ui", {})["language"] = new_lang

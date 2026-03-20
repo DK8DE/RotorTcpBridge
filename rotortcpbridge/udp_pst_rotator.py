@@ -9,7 +9,7 @@ Protokoll-Übersicht:
     <PST>TGA?</PST>                    → Ziel-Azimut zurückschicken
     (alle anderen Felder werden geparst, aber ignoriert bzw. geloggt)
 
-  Senden  (an 127.0.0.1 : listen_port + 1):
+  Senden  (Ziel konfigurierbar, Standard 127.0.0.1 : listen_port + 1):
     AZ:xxx<CR>   bei Positionsänderung und auf Anfrage AZ?
     TGA:xxx<CR>  auf Anfrage TGA?
 """
@@ -42,11 +42,22 @@ _RE_TAG = re.compile(r"<([^/][^>]*)>(.*?)</\1>", re.DOTALL)
 _ZERO_CONFIRM_TICKS = 3
 
 
+def _parse_ipv4_send_host(raw: str | None, log) -> str:
+    """Gültige IPv4 für sendto; sonst 127.0.0.1 und Log."""
+    s = (raw or "").strip() or "127.0.0.1"
+    try:
+        socket.inet_pton(socket.AF_INET, s)
+        return s
+    except OSError:
+        log.write("WARN", f"UDP PST-Rotator: ungültige Ziel-IP {raw!r}, verwende 127.0.0.1")
+        return "127.0.0.1"
+
+
 class UdpPstRotator:
     """Emuliert die UDP-Schnittstelle von PstRotatorAz.
 
     Hört auf ``listen_port`` (Standard: 12000) und sendet Positionsmeldungen
-    an ``127.0.0.1 : listen_port + 1``.
+    an ``send_host : listen_port + 1`` (Standard: 127.0.0.1 nur lokal).
     """
 
     def __init__(self, controller, log, cfg: dict | None = None):
@@ -55,6 +66,7 @@ class UdpPstRotator:
         self.cfg = cfg
         self._enabled = False
         self._port = 12000
+        self._send_host = "127.0.0.1"
         self._sock_rx: socket.socket | None = None
         self._sock_tx: socket.socket | None = None
         self._thread: threading.Thread | None = None
@@ -76,12 +88,26 @@ class UdpPstRotator:
     def is_active(self) -> bool:
         return bool(self._enabled and self._running and self._sock_rx is not None)
 
-    def start(self, enabled: bool, port: int = 12000) -> None:
-        """Listener starten oder mit neuer Konfiguration neu starten."""
+    def start(
+        self,
+        enabled: bool,
+        port: int = 12000,
+        send_host: str | None = None,
+    ) -> None:
+        """Listener starten oder mit neuer Konfiguration neu starten.
+
+        send_host: IPv4 für ausgehende AZ:/TGA:-Datagramme (Port ist weiter port+1).
+        Wenn None, wird ui.udp_pst_send_host aus cfg gelesen (Default 127.0.0.1).
+        """
         self.stop()
         self.bind_error_msg = None
         self._enabled = bool(enabled)
         self._port = max(1, min(65534, int(port)))  # max 65534 weil port+1 noch frei sein muss
+        if send_host is not None:
+            self._send_host = _parse_ipv4_send_host(send_host, self.log)
+        else:
+            ui = (self.cfg or {}).get("ui", {})
+            self._send_host = _parse_ipv4_send_host(str(ui.get("udp_pst_send_host", "127.0.0.1")), self.log)
         self._last_sent_d10 = None
         self._zero_confirm = 0
         if not self._enabled:
@@ -92,12 +118,18 @@ class UdpPstRotator:
             self._sock_rx.bind(("0.0.0.0", self._port))
             self._sock_rx.settimeout(0.5)
             self._sock_tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # Broadcast (255.255.255.255 oder Subnetz-x.x.x.255) erfordert explizit SO_BROADCAST
+            try:
+                self._sock_tx.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            except OSError:
+                pass
             self._running = True
             self._thread = threading.Thread(target=self._loop, daemon=True, name="UdpPstRotator")
             self._thread.start()
             self.log.write(
                 "INFO",
-                f"UDP PST-Rotator Listener gestartet auf 0.0.0.0:{self._port}, Sende an 127.0.0.1:{self._port + 1}",
+                f"UDP PST-Rotator Listener auf 0.0.0.0:{self._port}, "
+                f"Sende an {self._send_host}:{self._port + 1}",
             )
         except OSError as e:
             self._running = False
@@ -151,11 +183,11 @@ class UdpPstRotator:
     # ------------------------------------------------------------------
 
     def _send_reply(self, msg: str) -> None:
-        """Sendet eine Antwort-Nachricht an 127.0.0.1 : port+1."""
+        """Sendet eine Antwort-Nachricht an konfiguriertes Ziel : port+1."""
         if self._sock_tx is None:
             return
         try:
-            self._sock_tx.sendto(msg.encode("ascii"), ("127.0.0.1", self._port + 1))
+            self._sock_tx.sendto(msg.encode("ascii"), (self._send_host, self._port + 1))
         except Exception as e:
             self.log.write("WARN", f"UDP PST-Rotator Senden fehlgeschlagen: {e}")
 

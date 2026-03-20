@@ -8,7 +8,7 @@
   "about.lbl_license": "License",
   "about.btn_close":   "Close",
 
-  "main.menu_setup": "Setup",
+  "main.menu_setup": "Menü",
   "main.menu_help": "Help",
   "main.menu_version": "Version",
   "main.btn_compass": "Compass",
@@ -28,7 +28,9 @@
   "main.btn_ref": "Reference",
   "main.btn_stop": "STOP",
   "main.btn_delwarn": "Clear warnings",
+  "main.menu_delwarn": "Clear warnings",
   "main.btn_statistics": "Statistics",
+  "main.menu_statistics": "Gear Analysis",
   "main.pst_running": "running",
   "main.pst_stopped": "stopped",
   "main.hw_connected": "connected",

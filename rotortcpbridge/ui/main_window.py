@@ -62,20 +62,26 @@ class MainWindow(QMainWindow):
 
         menubar = self.menuBar()
         self._menu_setup = menubar.addMenu(t("main.menu_setup"))
-        self._act_commands = QAction(t("main.btn_commands"), self)
-        self._act_commands.triggered.connect(self._open_commands)
-        self._menu_setup.addAction(self._act_commands)
         self._act_settings = QAction(t("main.btn_settings"), self)
         self._act_settings.triggered.connect(self._open_settings)
         self._menu_setup.addAction(self._act_settings)
-        self._act_log = QAction(t("main.btn_log"), self)
-        self._act_log.triggered.connect(self._toggle_log)
-        self._menu_setup.addAction(self._act_log)
+        self._act_commands = QAction(t("main.btn_commands"), self)
+        self._act_commands.triggered.connect(self._open_commands)
+        self._menu_setup.addAction(self._act_commands)
+        self._act_statistics = QAction(t("main.menu_statistics"), self)
+        self._act_statistics.triggered.connect(self._open_statistics)
+        self._menu_setup.addAction(self._act_statistics)
+        self._act_delwarn = QAction(t("main.menu_delwarn"), self)
+        self._act_delwarn.triggered.connect(self.ctrl.clear_warnings_all)
+        self._menu_setup.addAction(self._act_delwarn)
 
         self._menu_help = menubar.addMenu(t("main.menu_help"))
         self._act_version = QAction(t("main.menu_version"), self)
         self._act_version.triggered.connect(self._open_about)
         self._menu_help.addAction(self._act_version)
+        self._act_log = QAction(t("main.btn_log"), self)
+        self._act_log.triggered.connect(self._toggle_log)
+        self._menu_help.addAction(self._act_log)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -84,12 +90,12 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout()
         self.btn_open_compass = QPushButton(t("main.btn_compass"))
         self.btn_open_map = QPushButton(t("main.btn_map"))
-        self.btn_statistics = QPushButton(t("main.btn_statistics"))
+        self.btn_ref = QPushButton(t("main.btn_ref"))
         self.btn_open_weather = QPushButton(t("main.btn_weather"))
         self.btn_open_weather.setVisible(False)
         top.addWidget(self.btn_open_compass, 1)
         top.addWidget(self.btn_open_map, 1)
-        top.addWidget(self.btn_statistics, 1)
+        top.addWidget(self.btn_ref, 1)
         top.addWidget(self.btn_open_weather, 1)
         main.addLayout(top)
 
@@ -169,24 +175,7 @@ class MainWindow(QMainWindow):
         self.az_fields = _make_axis_panel(self.gb_az, "az", self.ctrl)
         self.el_fields = _make_axis_panel(self.gb_el, "el", self.ctrl)
 
-        gb_act = QGroupBox(t("main.group_actions"))
-        main.addWidget(gb_act)
-        gb_act.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        gb_act.setMaximumHeight(px_to_dip(self, 140))
-        actions = QVBoxLayout(gb_act)
-
-        self.btn_ref = QPushButton(t("main.btn_ref"))
-        self.btn_stop = QPushButton(t("main.btn_stop"))
-        self.btn_delwarn = QPushButton(t("main.btn_delwarn"))
-        act_btn_row = QHBoxLayout()
-        act_btn_row.addWidget(self.btn_ref, 1)
-        act_btn_row.addWidget(self.btn_stop, 1)
-        act_btn_row.addWidget(self.btn_delwarn, 1)
-        actions.addLayout(act_btn_row)
-
         self.btn_ref.clicked.connect(lambda: self.ctrl.reference_all(True))
-        self.btn_stop.clicked.connect(self.ctrl.stop_all)
-        self.btn_delwarn.clicked.connect(self.ctrl.clear_warnings_all)
 
         # Referenzierungs-Fehler-Callback: Controller ruft dies aus Hintergrundthread auf
         self.ctrl.on_ref_start_failed = self._on_ref_start_failed
@@ -219,7 +208,6 @@ class MainWindow(QMainWindow):
 
         self.btn_open_compass.clicked.connect(self._open_compass)
         self.btn_open_map.clicked.connect(self._open_map)
-        self.btn_statistics.clicked.connect(self._open_statistics)
         self.btn_open_weather.clicked.connect(self._open_weather)
 
         self._fixed_w = None
@@ -283,18 +271,17 @@ class MainWindow(QMainWindow):
         self._last_title = ""  # Cache zurücksetzen damit Neuaufbau greift
         self._update_title_bar()
         self._menu_setup.setTitle(t("main.menu_setup"))
-        self._act_commands.setText(t("main.btn_commands"))
         self._act_settings.setText(t("main.btn_settings"))
-        self._act_log.setText(t("main.btn_log"))
+        self._act_commands.setText(t("main.btn_commands"))
+        self._act_statistics.setText(t("main.menu_statistics"))
+        self._act_delwarn.setText(t("main.menu_delwarn"))
         self._menu_help.setTitle(t("main.menu_help"))
         self._act_version.setText(t("main.menu_version"))
+        self._act_log.setText(t("main.btn_log"))
         self.btn_open_compass.setText(t("main.btn_compass"))
         self.btn_open_map.setText(t("main.btn_map"))
         self.btn_open_weather.setText(t("main.btn_weather"))
         self.btn_ref.setText(t("main.btn_ref"))
-        self.btn_stop.setText(t("main.btn_stop"))
-        self.btn_delwarn.setText(t("main.btn_delwarn"))
-        self.btn_statistics.setText(t("main.btn_statistics"))
 
     def _rebuild_all_windows(self):
         """Alle Fenster schließen und neu erstellen (nach Sprachänderung)."""

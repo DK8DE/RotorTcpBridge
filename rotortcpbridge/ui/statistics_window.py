@@ -1,21 +1,35 @@
 """Statistik-Fenster mit Last-Ringen (CAL/Langzeit/Aktuell) für AZ und EL."""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QShowEvent, QCloseEvent
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QSizePolicy, QGroupBox
+from PySide6.QtWidgets import (
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QFrame,
+    QSizePolicy,
+    QGroupBox,
+)
 
 from ..app_icon import get_app_icon
 from ..i18n import t
 from ..compass.statistic_compass_widget import StatisticCompassWidget
 
 
-def _make_stat_row(cal_w: StatisticCompassWidget, live_w: StatisticCompassWidget,
-                   acc_w: StatisticCompassWidget) -> QHBoxLayout:
+def _make_stat_row(
+    cal_w: StatisticCompassWidget, live_w: StatisticCompassWidget, acc_w: StatisticCompassWidget
+) -> QHBoxLayout:
     """Erstellt eine Zeile mit 3 Statistik-Kompassen (skalieren mit Fenster)."""
     row = QHBoxLayout()
     row.setSpacing(12)
-    for lbl, w in [(t("stats.label_cal"), cal_w), (t("stats.label_longterm"), live_w), (t("stats.label_current"), acc_w)]:
+    for lbl, w in [
+        (t("stats.label_cal"), cal_w),
+        (t("stats.label_longterm"), live_w),
+        (t("stats.label_current"), acc_w),
+    ]:
         box = QFrame()
         box.setFrameStyle(QFrame.Shape.StyledPanel)
         box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)

@@ -76,7 +76,6 @@ def main():
     # Beim Start einmal prüfen, ob die Rotoren bereits referenziert sind
     ctrl.check_ref_once()
 
-
     def save_cfg_cb(new_cfg):
         save_config(new_cfg)
         ctrl.update_polling(new_cfg.get("polling_ms", {}))
@@ -100,4 +99,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

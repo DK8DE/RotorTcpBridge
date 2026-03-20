@@ -13,6 +13,7 @@ Protokoll-Übersicht:
     AZ:xxx<CR>   bei Positionsänderung und auf Anfrage AZ?
     TGA:xxx<CR>  auf Anfrage TGA?
 """
+
 from __future__ import annotations
 
 import re
@@ -23,8 +24,15 @@ from .pst_notify_logic import pst_notify_position_decision
 
 # Alle bekannten PST-Tags, die still ignoriert werden dürfen
 _KNOWN_SILENT = {
-    "TRACK", "ON", "ANT", "OFFSET1", "OFFSET2",
-    "STF", "STR", "QRA", "MYQRA",
+    "TRACK",
+    "ON",
+    "ANT",
+    "OFFSET1",
+    "OFFSET2",
+    "STF",
+    "STR",
+    "QRA",
+    "MYQRA",
 }
 
 _RE_TAG = re.compile(r"<([^/][^>]*)>(.*?)</\1>", re.DOTALL)
@@ -87,11 +95,16 @@ class UdpPstRotator:
             self._running = True
             self._thread = threading.Thread(target=self._loop, daemon=True, name="UdpPstRotator")
             self._thread.start()
-            self.log.write("INFO", f"UDP PST-Rotator Listener gestartet auf 0.0.0.0:{self._port}, Sende an 127.0.0.1:{self._port + 1}")
+            self.log.write(
+                "INFO",
+                f"UDP PST-Rotator Listener gestartet auf 0.0.0.0:{self._port}, Sende an 127.0.0.1:{self._port + 1}",
+            )
         except OSError as e:
             self._running = False
             self.bind_error_msg = f"UDP PST-Rotator: Port {self._port} ist bereits belegt.\n\n{e}"
-            self.log.write("ERROR", f"UDP PST-Rotator bind fehlgeschlagen auf Port {self._port}: {e}")
+            self.log.write(
+                "ERROR", f"UDP PST-Rotator bind fehlgeschlagen auf Port {self._port}: {e}"
+            )
 
     def stop(self) -> None:
         """Listener anhalten."""
@@ -236,7 +249,9 @@ class UdpPstRotator:
             try:
                 az_deg = wrap_deg(float(val))
             except ValueError:
-                self.log.write("WARN", f"UDP PST-Rotator: ungültiger AZIMUTH-Wert '{val}' von {sender}")
+                self.log.write(
+                    "WARN", f"UDP PST-Rotator: ungültiger AZIMUTH-Wert '{val}' von {sender}"
+                )
                 return
             self.log.write("UDP", f"PST AZIMUTH={az_deg:.1f}° von {sender} → setze Rotor")
             try:

@@ -1,4 +1,5 @@
 """Log-Fenster mit Filter und Pause."""
+
 from __future__ import annotations
 
 import subprocess
@@ -78,6 +79,7 @@ class LogWindow(QDialog):
 
         try:
             import time as _time
+
             now = float(_time.time())
             if (now - float(self._last_refresh_ts or 0.0)) < 0.25:
                 return
@@ -108,7 +110,7 @@ class LogWindow(QDialog):
             if needle:
                 lines = [ln for ln in lines if needle in str(ln).lower()]
             self.txt_log.setPlainText("\n".join(lines) if lines else "")
-            self._last_rendered_last_line = (lines[-1] if lines else None)
+            self._last_rendered_last_line = lines[-1] if lines else None
         except Exception:
             pass
 
@@ -134,7 +136,9 @@ class LogWindow(QDialog):
 
     def _toggle_scroll(self):
         self._autoscroll = not bool(self._autoscroll)
-        self.btn_scroll.setText(t("log.btn_scroll_resume") if (not self._autoscroll) else t("log.btn_scroll_pause"))
+        self.btn_scroll.setText(
+            t("log.btn_scroll_resume") if (not self._autoscroll) else t("log.btn_scroll_pause")
+        )
         if self._autoscroll:
             try:
                 sb = self.txt_log.verticalScrollBar()

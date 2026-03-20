@@ -1,4 +1,5 @@
 """Tests für PST-UDP Positions-Push-Logik (Null-Spurios-Debounce)."""
+
 from __future__ import annotations
 
 

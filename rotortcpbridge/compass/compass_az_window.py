@@ -74,9 +74,14 @@ class CompassWidget(QWidget):
         self._ref_lbl = QLabel(t("axis.ref_label"), self)
         self._ref_lbl.setStyleSheet(lbl_style)
 
-        for w in (self._moving_led, self._moving_lbl,
-                  self._online_led, self._online_lbl,
-                  self._ref_led,    self._ref_lbl):
+        for w in (
+            self._moving_led,
+            self._moving_lbl,
+            self._online_led,
+            self._online_lbl,
+            self._ref_led,
+            self._ref_lbl,
+        ):
             w.setVisible(True)
 
         self.setMinimumSize(280, 280)
@@ -110,30 +115,41 @@ class CompassWidget(QWidget):
         top_y = 13
         line2_y = int(top_y + 22)  # unter Wind/Richtung
         if self._top_center_widget is not None:
-            w = self._top_center_widget.sizeHint().width() if self._top_center_widget.sizeHint().isValid() else 140
-            h = self._top_center_widget.sizeHint().height() if self._top_center_widget.sizeHint().isValid() else 24
+            w = (
+                self._top_center_widget.sizeHint().width()
+                if self._top_center_widget.sizeHint().isValid()
+                else 140
+            )
+            h = (
+                self._top_center_widget.sizeHint().height()
+                if self._top_center_widget.sizeHint().isValid()
+                else 24
+            )
             x = (self.width() - w) // 2
             y = 0
             self._top_center_widget.setGeometry(x, y, max(w, 120), max(h, 22))
             self._top_center_widget.raise_()
         # Moving / Online / Ref – absolute Positionierung, LED-Spalte exakt auf einer Linie
-        led_d  = self._led_d
-        lbl_x  = margin + led_d + 4   # Label beginnt immer direkt nach der LED
-        row_h  = 22
+        led_d = self._led_d
+        lbl_x = margin + led_d + 4  # Label beginnt immer direkt nach der LED
+        row_h = 22
         line3_y = line2_y + row_h
         line4_y = line3_y + row_h
 
         self._moving_led.setGeometry(margin, line2_y + 5, led_d, led_d)
-        self._moving_lbl.setGeometry(lbl_x,  line2_y,     200,   row_h)
-        self._moving_led.raise_(); self._moving_lbl.raise_()
+        self._moving_lbl.setGeometry(lbl_x, line2_y, 200, row_h)
+        self._moving_led.raise_()
+        self._moving_lbl.raise_()
 
         self._online_led.setGeometry(margin, line3_y + 5, led_d, led_d)
-        self._online_lbl.setGeometry(lbl_x,  line3_y,     200,   row_h)
-        self._online_led.raise_(); self._online_lbl.raise_()
+        self._online_lbl.setGeometry(lbl_x, line3_y, 200, row_h)
+        self._online_led.raise_()
+        self._online_lbl.raise_()
 
         self._ref_led.setGeometry(margin, line4_y + 5, led_d, led_d)
-        self._ref_lbl.setGeometry(lbl_x,  line4_y,     200,   row_h)
-        self._ref_led.raise_(); self._ref_lbl.raise_()
+        self._ref_lbl.setGeometry(lbl_x, line4_y, 200, row_h)
+        self._ref_led.raise_()
+        self._ref_lbl.raise_()
 
     def set_current_deg(self, deg: Optional[float]) -> None:
         self._current_deg = None if deg is None else wrap_deg(deg)
@@ -330,7 +346,17 @@ class CompassWidget(QWidget):
 
         # ACCBINS-Heatmap-Ring (5px) um den Kompass
         if self._heatmap_visible and (self._bins_cw or self._bins_ccw):
-            paint_bins_heatmap_ring(painter, cx, cy, r, self._bins_cw, self._bins_ccw, elevation=False, ring_width=5.0, offset_deg=self._heatmap_offset_deg)
+            paint_bins_heatmap_ring(
+                painter,
+                cx,
+                cy,
+                r,
+                self._bins_cw,
+                self._bins_ccw,
+                elevation=False,
+                ring_width=5.0,
+                offset_deg=self._heatmap_offset_deg,
+            )
 
         # Rotes Dreieck: Anschlag der Antenne (auf Kreislinie, nach innen zeigend)
         self._draw_anschlag_triangle(painter, cx, cy, r)
@@ -403,7 +429,9 @@ class CompassWidget(QWidget):
         base_l_y = cy - math.cos(rad_l) * base_r
         base_r_x = cx + math.sin(rad_r) * base_r
         base_r_y = cy - math.cos(rad_r) * base_r
-        poly = QPolygonF([QPointF(tip_x, tip_y), QPointF(base_l_x, base_l_y), QPointF(base_r_x, base_r_y)])
+        poly = QPolygonF(
+            [QPointF(tip_x, tip_y), QPointF(base_l_x, base_l_y), QPointF(base_r_x, base_r_y)]
+        )
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(220, 0, 0))
         painter.drawPolygon(poly)

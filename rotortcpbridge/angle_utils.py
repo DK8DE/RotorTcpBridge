@@ -1,4 +1,5 @@
 """Gemeinsame Winkel-Hilfsfunktionen für Kompass und Windrose."""
+
 from __future__ import annotations
 
 

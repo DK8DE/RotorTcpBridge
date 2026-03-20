@@ -7,6 +7,7 @@ UcxLog sendet bei Klick auf 'Setze Rotor' eine UDP-Nachricht an 127.0.0.1:12040:
   <Azimut>306</Azimut>
 </Rotor>
 """
+
 from __future__ import annotations
 
 import socket
@@ -123,7 +124,10 @@ class UdpUcxLogListener:
             rotor_deg = wrap_deg(az_deg - off_az)
             sender = f"{addr[0]}:{addr[1]}" if addr else "?"
             if off_az != 0.0:
-                self.log.write("UDP", f"Position AZ {az_deg:.1f}° (Versatz {off_az:+.1f}° → Rotor {rotor_deg:.1f}°) von {sender} → setze Rotor")
+                self.log.write(
+                    "UDP",
+                    f"Position AZ {az_deg:.1f}° (Versatz {off_az:+.1f}° → Rotor {rotor_deg:.1f}°) von {sender} → setze Rotor",
+                )
             else:
                 self.log.write("UDP", f"Position AZ {az_deg:.1f}° von {sender} → setze Rotor")
             try:

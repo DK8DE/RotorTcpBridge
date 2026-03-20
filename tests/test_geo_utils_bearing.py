@@ -1,4 +1,5 @@
 """Smoke-Tests für geo_utils (Peilung)."""
+
 from __future__ import annotations
 
 import pytest

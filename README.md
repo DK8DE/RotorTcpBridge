@@ -9,6 +9,13 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
+Alternativ alle Tests über **eine** Datei im Projektroot:
+
+```bash
+python run_tests.py
+python run_tests.py -v
+```
+
 Die Tests decken u. a. Winkel-Hilfsfunktionen, Geografie (Peilung), PST-UDP-Positionslogik, RS485-Telegramme und Parameter-Parser ab – ohne Qt/Hardware.
 
 ## Code-Qualität (vor Commit empfohlen)

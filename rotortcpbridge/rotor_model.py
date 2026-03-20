@@ -1,17 +1,25 @@
-
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Set, Optional
 
 WARNINGS = {
     0: ("SW_NONE", "Keine Warnung", "-"),
-    1: ("SW_IS_SOFT", "Strom-Warnung (Soft-Limit erreicht)", "Limits prüfen / IWARN / Mechanik prüfen"),
-    2: ("SW_WIND_GUST", "Windböe / kurzfristig stark erhöhte Last", "Bei Dauer: Schwellwerte oder Mechanik prüfen"),
+    1: (
+        "SW_IS_SOFT",
+        "Strom-Warnung (Soft-Limit erreicht)",
+        "Limits prüfen / IWARN / Mechanik prüfen",
+    ),
+    2: (
+        "SW_WIND_GUST",
+        "Windböe / kurzfristig stark erhöhte Last",
+        "Bei Dauer: Schwellwerte oder Mechanik prüfen",
+    ),
     3: ("SW_DRAG_INCREASE", "Gleichmäßig mehr Reibung", "Kälte/Schmierstoff/Getriebe prüfen"),
     4: ("SW_DRAG_DECREASE", "Gleichmäßig weniger Reibung", "Kann auf 'Last fehlt' hinweisen"),
     5: ("SW_TEMP_AMBIENT_HIGH", "Umgebung zu warm", "Warnschwelle / Schutz / Belüftung prüfen"),
     6: ("SW_TEMP_MOTOR_HIGH", "Motor zu warm", "Warnschwelle / Pausen / Last reduzieren"),
 }
+
 
 def warning_info(wid: int) -> tuple[str, str, str]:
     """Warnungs-ID -> (Name, Bedeutung, Was tun?)."""
@@ -31,28 +39,99 @@ def warning_info(wid: int) -> tuple[str, str, str]:
 # Format: (name, ursache_typisch, was_tun, wie_loeschen)
 ERROR_DETAILS_DOC: dict[int, tuple[str, str, str, str]] = {
     0: ("SE_NONE", "-", "-", "-"),
-    1: ("ERR_HOME_TIMEOUT", "Homing‑Phase überschreitet HOMETIMEOUT.", "Endschalter/Counts/HOMETIMEOUT prüfen und ggf. Mechanik prüfen.", "SETREF (quittiert)"),
-    2: ("ERR_MOVE_TIMEOUT", "Positionsfahrt überschreitet MOVETIMEOUT.", "Mechanik/Last prüfen, MOVETIMEOUT anpassen.", "SETREF (quittiert)"),
-    3: ("ERR_NOT_HOMED", "Positionsfahrt angefordert, aber Homing nicht durchgeführt.", "Erst referenzieren (Homing starten).", "SETREF"),
-    12: ("ERR_OVERCURRENT", "Überstrom erkannt (IMAX überschritten unter Berücksichtigung von OCHOLD/OCIGN).", "Mechanik prüfen, IMAX/Grace/Hold/OCHOLD/OCIGN prüfen.", "SETREF (quittiert)"),
-    13: ("ERR_JAM_DETECTED", "Blockade: zu geringe Bewegung innerhalb JAM‑Fenster.", "Mechanik/Haftreibung prüfen, JAM‑Parameter prüfen/anpassen.", "SETREF (quittiert)"),
-    14: ("ERR_DEADMAN_TIMEOUT", "Deadman‑Timeout: keine gültige RS485‑Anfrage innerhalb des Zeitfensters.", "Master/Bridge prüfen: Keepalive/Deadman‑Intervall anpassen.", "SETREF (quittiert) / Deadman anpassen"),
-    17: ("ERR_MOTOR_BEGIN_FAILED", "PWM/Driver‑(Re)Initialisierung fehlgeschlagen (z. B. nach SETPWMF/SETINVERT).", "PWM/Driver-Config prüfen, ggf. neu starten/Spannung prüfen.", "SETREF (quittiert)"),
+    1: (
+        "ERR_HOME_TIMEOUT",
+        "Homing‑Phase überschreitet HOMETIMEOUT.",
+        "Endschalter/Counts/HOMETIMEOUT prüfen und ggf. Mechanik prüfen.",
+        "SETREF (quittiert)",
+    ),
+    2: (
+        "ERR_MOVE_TIMEOUT",
+        "Positionsfahrt überschreitet MOVETIMEOUT.",
+        "Mechanik/Last prüfen, MOVETIMEOUT anpassen.",
+        "SETREF (quittiert)",
+    ),
+    3: (
+        "ERR_NOT_HOMED",
+        "Positionsfahrt angefordert, aber Homing nicht durchgeführt.",
+        "Erst referenzieren (Homing starten).",
+        "SETREF",
+    ),
+    12: (
+        "ERR_OVERCURRENT",
+        "Überstrom erkannt (IMAX überschritten unter Berücksichtigung von OCHOLD/OCIGN).",
+        "Mechanik prüfen, IMAX/Grace/Hold/OCHOLD/OCIGN prüfen.",
+        "SETREF (quittiert)",
+    ),
+    13: (
+        "ERR_JAM_DETECTED",
+        "Blockade: zu geringe Bewegung innerhalb JAM‑Fenster.",
+        "Mechanik/Haftreibung prüfen, JAM‑Parameter prüfen/anpassen.",
+        "SETREF (quittiert)",
+    ),
+    14: (
+        "ERR_DEADMAN_TIMEOUT",
+        "Deadman‑Timeout: keine gültige RS485‑Anfrage innerhalb des Zeitfensters.",
+        "Master/Bridge prüfen: Keepalive/Deadman‑Intervall anpassen.",
+        "SETREF (quittiert) / Deadman anpassen",
+    ),
+    17: (
+        "ERR_MOTOR_BEGIN_FAILED",
+        "PWM/Driver‑(Re)Initialisierung fehlgeschlagen (z. B. nach SETPWMF/SETINVERT).",
+        "PWM/Driver-Config prüfen, ggf. neu starten/Spannung prüfen.",
+        "SETREF (quittiert)",
+    ),
 }
 
 ERROR_DETAILS_LEGACY: dict[int, tuple[str, str, str, str]] = {
     0: ("SE_NONE", "Kein Fehler", "-", "-"),
-    10: ("SE_TIMEOUT", "Deadman/Keepalive Timeout", "Master sendet zu lange keine Befehle während Bewegung.", "SETREF (quittiert) / Deadman anpassen"),
-    11: ("SE_ENDSTOP", "Endschalter blockiert Fahrtrichtung", "Es soll in Richtung eines aktiven Endschalters gefahren werden.", "Richtung/Endschalter/Offset prüfen, dann SETREF"),
-    12: ("SE_NSTOP_CMD", "NSTOP (Not-Aus) per RS485", "Not-Stop Kommando empfangen.", "Ursache im Master, dann SETREF"),
-    15: ("SE_IS_HARD", "Strom-Hardlimit", "Zu hoher Motorstrom länger als Hold.", "Mechanik prüfen, IMAX/Grace/Hold prüfen, dann SETREF"),
-    16: ("SE_STALL", "Stall: Encoder bewegt sich nicht", "PWM an, aber zu wenige Encoder-Counts im Timeout.", "Mechanik/Haftreibung, MINPWM/KICK/STALLTIMEOUT anpassen, dann SETREF"),
-    17: ("SE_HOME_FAIL", "Homing fehlgeschlagen", "Timeout in Homing-Phase oder Endschalterproblem.", "Endschalter, Counts-Parameter, HOMETIMEOUT prüfen, dann SETREF"),
-    18: ("SE_POS_TIMEOUT", "Positionsfahrt Timeout", "Ziel nicht innerhalb posTimeoutMs erreicht (z.B. zu wenig PWM, Rampen zu weich, Mechanik blockiert).", "SETPOSTIMEOUT erhöhen"),
+    10: (
+        "SE_TIMEOUT",
+        "Deadman/Keepalive Timeout",
+        "Master sendet zu lange keine Befehle während Bewegung.",
+        "SETREF (quittiert) / Deadman anpassen",
+    ),
+    11: (
+        "SE_ENDSTOP",
+        "Endschalter blockiert Fahrtrichtung",
+        "Es soll in Richtung eines aktiven Endschalters gefahren werden.",
+        "Richtung/Endschalter/Offset prüfen, dann SETREF",
+    ),
+    12: (
+        "SE_NSTOP_CMD",
+        "NSTOP (Not-Aus) per RS485",
+        "Not-Stop Kommando empfangen.",
+        "Ursache im Master, dann SETREF",
+    ),
+    15: (
+        "SE_IS_HARD",
+        "Strom-Hardlimit",
+        "Zu hoher Motorstrom länger als Hold.",
+        "Mechanik prüfen, IMAX/Grace/Hold prüfen, dann SETREF",
+    ),
+    16: (
+        "SE_STALL",
+        "Stall: Encoder bewegt sich nicht",
+        "PWM an, aber zu wenige Encoder-Counts im Timeout.",
+        "Mechanik/Haftreibung, MINPWM/KICK/STALLTIMEOUT anpassen, dann SETREF",
+    ),
+    17: (
+        "SE_HOME_FAIL",
+        "Homing fehlgeschlagen",
+        "Timeout in Homing-Phase oder Endschalterproblem.",
+        "Endschalter, Counts-Parameter, HOMETIMEOUT prüfen, dann SETREF",
+    ),
+    18: (
+        "SE_POS_TIMEOUT",
+        "Positionsfahrt Timeout",
+        "Ziel nicht innerhalb posTimeoutMs erreicht (z.B. zu wenig PWM, Rampen zu weich, Mechanik blockiert).",
+        "SETPOSTIMEOUT erhöhen",
+    ),
 }
 
 # Backwards compatibility: bisherige Imports erwarten ERRORS.
 ERRORS = {k: (v[0], v[1]) for k, v in ERROR_DETAILS_LEGACY.items()}
+
 
 def error_info(code: int) -> tuple[str, str]:
     """Fehlercode -> (Name, Text) für UI (Popup + Statusfeld)."""
@@ -68,7 +147,9 @@ def error_info(code: int) -> tuple[str, str]:
     if doc and legacy and doc[0] != legacy[0]:
         name = f"{doc[0]} (alt: {legacy[0]})"
         urs, todo, clear = doc[1], doc[2], doc[3]
-        extra = f"\n\nAlt/Legacy:\nUrsache: {legacy[1]}\nWas tun: {legacy[2]}\nWie löschen: {legacy[3]}"
+        extra = (
+            f"\n\nAlt/Legacy:\nUrsache: {legacy[1]}\nWas tun: {legacy[2]}\nWie löschen: {legacy[3]}"
+        )
         text = f"Ursache: {urs}\nWas tun: {todo}\nWie löschen: {clear}{extra}"
         return name, text
 
@@ -81,6 +162,7 @@ def error_info(code: int) -> tuple[str, str]:
 
     return ("SE_UNKNOWN", "Ursache: Unbekannt\nWas tun: -\nWie löschen: -")
 
+
 @dataclass
 class AxisTelemetry:
     temp_ambient_c: Optional[float] = None
@@ -90,6 +172,7 @@ class AxisTelemetry:
     wind_beaufort: Optional[int] = None  # 0–12, von GETBEAUFORT
     pwm_max_pct: Optional[float] = None
     pwm_min_pct: Optional[float] = None
+
 
 @dataclass
 class AxisState:
@@ -129,7 +212,7 @@ class AxisState:
 
     # Kalibrier-Bins (nur wenn GETCALSTATE=2 DONE): 72 Stromwerte in mV pro Richtung
     cal_state: int = 0  # 0=IDLE, 1=RUNNING, 2=DONE, 3=ABORT
-    cal_bins_cw: Optional[list] = None   # DIR=1, 72 Werte
+    cal_bins_cw: Optional[list] = None  # DIR=1, 72 Werte
     cal_bins_ccw: Optional[list] = None  # DIR=2, 72 Werte
     # Live-Bins (GETLIVEBINS): 72 aktuelle Stromwerte in mV pro Richtung
     live_bins_cw: Optional[list] = None
@@ -146,8 +229,9 @@ class AxisState:
     angle2: Optional[float] = None
     angle3: Optional[float] = None
 
-    def update_position_sample(self, new_pos_d10: int, sample_ts: Optional[float] = None,
-                               expected_period_s: float = 0.2) -> None:
+    def update_position_sample(
+        self, new_pos_d10: int, sample_ts: Optional[float] = None, expected_period_s: float = 0.2
+    ) -> None:
         """Neuen Positions-Sample übernehmen und Interpolation vorbereiten.
 
         Idee:
@@ -167,6 +251,7 @@ class AxisState:
         if ts <= 0.0:
             # Fallback auf "jetzt"
             import time as _time
+
             ts = _time.time()
 
         # Intervall seit letztem Sample bestimmen
@@ -201,6 +286,7 @@ class AxisState:
     def get_smoothed_pos_d10f(self, now_ts: Optional[float] = None) -> float:
         """Geglättete Position (0,1°) als float (für wirklich weiche UI)."""
         import time as _time
+
         t = float(now_ts) if now_ts is not None else _time.time()
 
         # Wenn keine Interpolation aktiv ist, direkt Istwert

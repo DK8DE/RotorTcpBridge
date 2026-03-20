@@ -1,4 +1,5 @@
 """Info-/About-Fenster für RotorTcpBridge."""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
@@ -72,9 +73,9 @@ class AboutWindow(QDialog):
             row.addWidget(val, 1)
             meta_layout.addLayout(row)
 
-        _row("about.lbl_author",  APP_AUTHOR)
+        _row("about.lbl_author", APP_AUTHOR)
         _row("about.lbl_version", f"v{APP_VERSION}")
-        _row("about.lbl_date",    APP_DATE)
+        _row("about.lbl_date", APP_DATE)
 
         root.addWidget(meta)
 

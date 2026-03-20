@@ -1,4 +1,5 @@
 """Tests für RS485-Telegramm (Bauen, Checksumme, Parsen)."""
+
 from __future__ import annotations
 
 import pytest

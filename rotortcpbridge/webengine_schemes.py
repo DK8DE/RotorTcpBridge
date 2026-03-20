@@ -1,5 +1,6 @@
 """Custom URL-Schemes für Qt WebEngine.
 Muss als erstes Modul importiert werden, VOR QApplication und allen WebEngine-Nutzungen."""
+
 from __future__ import annotations
 
 from PySide6.QtCore import QByteArray

@@ -1,4 +1,5 @@
 """Tests für angle_utils (Winkel-Hilfsfunktionen)."""
+
 from __future__ import annotations
 
 import pytest

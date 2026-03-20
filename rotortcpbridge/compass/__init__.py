@@ -1,4 +1,5 @@
 """Kompass-Module für RotorTcpBridge."""
+
 __all__ = ["CompassWindow", "CompassWidget", "ElevationCompassWidget"]
 
 from .compass_window import CompassWindow

@@ -1,4 +1,5 @@
 """Reine Logik für PST-UDP Positions-Push (ohne Socket) – testbar ohne Qt/Hardware."""
+
 from __future__ import annotations
 
 

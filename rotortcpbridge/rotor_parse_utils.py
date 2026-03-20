@@ -1,4 +1,5 @@
 """Parser für Telegram-Parameter (RS485) – ausgelagert für Tests und schlankeren RotorController."""
+
 from __future__ import annotations
 
 import re

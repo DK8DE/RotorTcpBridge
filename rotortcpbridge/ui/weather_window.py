@@ -1,4 +1,5 @@
 """Wetter-Fenster mit Windrose und Temperatur-Anzeige."""
+
 from __future__ import annotations
 
 import math
@@ -97,7 +98,11 @@ class WindRoseWidget(QWidget):
         for root in unique_roots:
             try:
                 for p in root.rglob("*"):
-                    if ("wind" in p.name.lower()) and ("pfeil" in p.name.lower()) and p.name.lower().endswith(".png"):
+                    if (
+                        ("wind" in p.name.lower())
+                        and ("pfeil" in p.name.lower())
+                        and p.name.lower().endswith(".png")
+                    ):
                         pm = QPixmap(str(p))
                         if not pm.isNull():
                             return pm
@@ -175,12 +180,24 @@ class WindRoseWidget(QWidget):
             w, h = fm.horizontalAdvance(text), fm.height()
             p.drawText(int(tx - w / 2.0), int(ty + h / 4.0), text)
 
-        for txt, deg, diag in [("N", 0, False), ("NO", 45, True), ("O", 90, False), ("SO", 135, True),
-                               ("S", 180, False), ("SW", 225, True), ("W", 270, False), ("NW", 315, True)]:
+        for txt, deg, diag in [
+            ("N", 0, False),
+            ("NO", 45, True),
+            ("O", 90, False),
+            ("SO", 135, True),
+            ("S", 180, False),
+            ("SW", 225, True),
+            ("W", 270, False),
+            ("NW", 315, True),
+        ]:
             _draw_cardinal(txt, deg, diag)
 
         if self._wind_dir_draw_deg is not None:
-            wd = wrap_deg(float(self._wind_dir_draw_deg) + 180.0) if self._wind_dir_mode == "to" else float(self._wind_dir_draw_deg)
+            wd = (
+                wrap_deg(float(self._wind_dir_draw_deg) + 180.0)
+                if self._wind_dir_mode == "to"
+                else float(self._wind_dir_draw_deg)
+            )
             if not self._arrow_pixmap.isNull():
                 self._draw_arrow_image(p, cx, cy, r * 0.72, wd)
             else:
@@ -201,11 +218,18 @@ class WindRoseWidget(QWidget):
         p.drawLine(int(x2), int(y2), int(xl), int(yl))
         p.drawLine(int(x2), int(y2), int(xr), int(yr))
 
-    def _draw_arrow_image(self, p: QPainter, cx: float, cy: float, length: float, deg: float) -> None:
+    def _draw_arrow_image(
+        self, p: QPainter, cx: float, cy: float, length: float, deg: float
+    ) -> None:
         if self._arrow_pixmap.isNull():
             return
         side = int(max(16.0, min(length * 1.35, 88.0) - 20.0))
-        scaled = self._arrow_pixmap.scaled(side, side, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        scaled = self._arrow_pixmap.scaled(
+            side,
+            side,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
         w, h = float(scaled.width()), float(scaled.height())
         p.save()
         p.translate(cx, cy)
@@ -221,8 +245,10 @@ class WeatherWindow(QDialog):
         self.ctrl = controller
         self.setWindowTitle(t("weather.title"))
         self.setWindowFlags(
-            Qt.WindowType.Window | Qt.WindowType.CustomizeWindowHint
-            | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowCloseButtonHint
+            Qt.WindowType.Window
+            | Qt.WindowType.CustomizeWindowHint
+            | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowCloseButtonHint
         )
         self.setWindowIcon(get_app_icon())
         self.setFixedSize(200, 290)
@@ -248,7 +274,13 @@ class WeatherWindow(QDialog):
         self.ed_beaufort = QLabel("--")
         self.ed_temp_a = QLabel("--.- °C")
         self.ed_temp_m = QLabel("--.- °C")
-        for v in (self.ed_wind_dir, self.ed_wind_speed, self.ed_beaufort, self.ed_temp_a, self.ed_temp_m):
+        for v in (
+            self.ed_wind_dir,
+            self.ed_wind_speed,
+            self.ed_beaufort,
+            self.ed_temp_a,
+            self.ed_temp_m,
+        ):
             v.setStyleSheet("font-weight: 700;")
         form.addRow(t("weather.wind_dir_label"), self.ed_wind_dir)
         form.addRow(t("weather.wind_speed_label"), self.ed_wind_speed)
@@ -268,7 +300,8 @@ class WeatherWindow(QDialog):
         if not wind_on and not wind_known and hasattr(self.ctrl, "az"):
             tel = getattr(self.ctrl.az, "telemetry", None)
             if tel is not None and (
-                getattr(tel, "wind_kmh", None) is not None or getattr(tel, "wind_dir_deg", None) is not None
+                getattr(tel, "wind_kmh", None) is not None
+                or getattr(tel, "wind_dir_deg", None) is not None
             ):
                 wind_on = True
         # Wenn Windanzeige deaktiviert → Fenster selbst schließen

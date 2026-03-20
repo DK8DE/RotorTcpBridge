@@ -68,11 +68,12 @@ class CompassWindow(QDialog):
         self.cb_antenna.currentIndexChanged.connect(self._on_antenna_changed)
         self.az_compass.set_top_center_widget(self.cb_antenna)
 
-
         az_info = QHBoxLayout()
         az_info.setContentsMargins(7, 0, 7, 0)
         self.lbl_az_current = QLabel(t("compass.ist_prefix") + "–")
-        self.lbl_az_current.setMinimumWidth(95)  # Platz für "Ist: 360.0°", damit STOP AZ nicht wandert
+        self.lbl_az_current.setMinimumWidth(
+            95
+        )  # Platz für "Ist: 360.0°", damit STOP AZ nicht wandert
         self.lbl_az_soll = QLabel(t("compass.soll_label"))
         self.ed_az_soll = QLineEdit()
         self.ed_az_soll.setPlaceholderText("–")
@@ -109,7 +110,9 @@ class CompassWindow(QDialog):
         el_info = QHBoxLayout()
         el_info.setContentsMargins(7, 0, 7, 0)
         self.lbl_el_current = QLabel(t("compass.ist_prefix") + "–")
-        self.lbl_el_current.setMinimumWidth(95)  # Platz für "Ist: 90.0°", damit STOP EL nicht wandert
+        self.lbl_el_current.setMinimumWidth(
+            95
+        )  # Platz für "Ist: 90.0°", damit STOP EL nicht wandert
         self.lbl_el_soll = QLabel(t("compass.soll_label"))
         self.ed_el_soll = QLineEdit()
         self.ed_el_soll.setPlaceholderText("–")
@@ -198,10 +201,7 @@ class CompassWindow(QDialog):
     def _request_antenna_offsets(self) -> None:
         """Antennenwerte abfragen – nur wenn noch nicht alle drei bekannt sind.
         Timer stoppt sich selbst, sobald alle Werte vorhanden sind."""
-        all_known = all(
-            getattr(self.ctrl.az, f"antoff{i}", None) is not None
-            for i in (1, 2, 3)
-        )
+        all_known = all(getattr(self.ctrl.az, f"antoff{i}", None) is not None for i in (1, 2, 3))
         if all_known:
             self._antenna_request_timer.stop()
         else:
@@ -220,9 +220,11 @@ class CompassWindow(QDialog):
 
     def _get_antenna_dropdown_items(self) -> list[str]:
         """Antennen-Namen mit Versatz in Klammern: 'Antenne 1 (0°)' etc."""
-        names = list(self.cfg.get("ui", {}).get("antenna_names", ["Antenne 1", "Antenne 2", "Antenne 3"]))
+        names = list(
+            self.cfg.get("ui", {}).get("antenna_names", ["Antenne 1", "Antenne 2", "Antenne 3"])
+        )
         while len(names) < 3:
-            names.append(f"Antenne {len(names)+1}")
+            names.append(f"Antenne {len(names) + 1}")
         offsets: list[float] = []
         for slot in (1, 2, 3):
             v = getattr(self.ctrl.az, f"antoff{slot}", None)
@@ -256,10 +258,7 @@ class CompassWindow(QDialog):
         # Zeiger (Position, Antenne) sofort mit höchster Priorität; Heatmap/Stats danach
         if hasattr(self.ctrl, "request_immediate_pos"):
             self.ctrl.request_immediate_pos()
-        all_known = all(
-            getattr(self.ctrl.az, f"antoff{i}", None) is not None
-            for i in (1, 2, 3)
-        )
+        all_known = all(getattr(self.ctrl.az, f"antoff{i}", None) is not None for i in (1, 2, 3))
         if not all_known:
             # Noch nicht alle Versätze bekannt → einmalig anfordern und Retry-Timer starten
             if hasattr(self.ctrl, "request_antenna_offsets"):
@@ -330,11 +329,13 @@ class CompassWindow(QDialog):
         for it in items:
             if isinstance(it, dict) and "name" in it:
                 try:
-                    out.append({
-                        "name": str(it["name"])[:15],
-                        "az": float(it.get("az", 0.0)),
-                        "el": clamp_el(float(it.get("el", 0.0))),
-                    })
+                    out.append(
+                        {
+                            "name": str(it["name"])[:15],
+                            "az": float(it.get("az", 0.0)),
+                            "el": clamp_el(float(it.get("el", 0.0))),
+                        }
+                    )
                 except (TypeError, ValueError):
                     pass
         return out
@@ -342,10 +343,13 @@ class CompassWindow(QDialog):
     def _refresh_favorites_dropdown(self) -> None:
         """Dropdown mit Favoriten füllen, sortiert: erst 0–9, dann a–z."""
         favs = self._get_favorites()
-        favs = sorted(favs, key=lambda f: (
-            0 if f["name"] and f["name"][0].isdigit() else 1,
-            f["name"].lower(),
-        ))
+        favs = sorted(
+            favs,
+            key=lambda f: (
+                0 if f["name"] and f["name"][0].isdigit() else 1,
+                f["name"].lower(),
+            ),
+        )
         self.cb_fav.blockSignals(True)
         self.cb_fav.clear()
         if not favs:
@@ -427,11 +431,15 @@ class CompassWindow(QDialog):
         sel_name = data.get("name")
         sel_az = data.get("az")
         sel_el = data.get("el")
-        favs = [f for f in favs if not (
-            f.get("name") == sel_name
-            and abs(float(f.get("az", 0) or 0) - float(sel_az or 0)) < 0.01
-            and abs(float(f.get("el", 0) or 0) - float(sel_el or 0)) < 0.01
-        )]
+        favs = [
+            f
+            for f in favs
+            if not (
+                f.get("name") == sel_name
+                and abs(float(f.get("az", 0) or 0) - float(sel_az or 0)) < 0.01
+                and abs(float(f.get("el", 0) or 0) - float(sel_el or 0)) < 0.01
+            )
+        ]
         if "ui" not in self.cfg:
             self.cfg["ui"] = {}
         self.cfg["ui"]["compass_favorites"] = favs
@@ -561,11 +569,14 @@ class CompassWindow(QDialog):
         if not wind_on and not wind_known and hasattr(self.ctrl, "az"):
             tel = getattr(self.ctrl.az, "telemetry", None)
             if tel is not None and (
-                getattr(tel, "wind_kmh", None) is not None or getattr(tel, "wind_dir_deg", None) is not None
+                getattr(tel, "wind_kmh", None) is not None
+                or getattr(tel, "wind_dir_deg", None) is not None
             ):
                 wind_on = True
         try:
-            wd_mode = str(self.cfg.get("ui", {}).get("wind_dir_display", "to") or "to").strip().lower()
+            wd_mode = (
+                str(self.cfg.get("ui", {}).get("wind_dir_display", "to") or "to").strip().lower()
+            )
         except Exception:
             wd_mode = "to"
         if wd_mode not in ("from", "to"):
@@ -868,4 +879,3 @@ class CompassWindow(QDialog):
             event.ignore()
             return
         super().keyPressEvent(event)
-

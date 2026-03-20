@@ -1,4 +1,5 @@
 """Achsen-Panel (AZ/EL) mit Position, LEDs, Fehler, PWM-Slider."""
+
 from __future__ import annotations
 
 import math
@@ -49,7 +50,9 @@ def _make_axis_panel(
         h.addWidget(field, 1)
         return w, lab
 
-    def row2(a_label: str, a_field: QWidget, b_label: str, b_field: QWidget) -> tuple[QWidget, QLabel, QLabel]:
+    def row2(
+        a_label: str, a_field: QWidget, b_label: str, b_field: QWidget
+    ) -> tuple[QWidget, QLabel, QLabel]:
         w = QWidget()
         h = QHBoxLayout(w)
         h.setContentsMargins(0, 0, 0, 0)
@@ -159,6 +162,7 @@ def _make_axis_panel(
 
     send_timer.timeout.connect(_flush_send)
     try:
+
         def _on_released():
             _set_hold()  # Nach Loslassen Hold verlängern
             pending["v"] = float(pwm_slider.value())  # Aktuellen Wert senden
@@ -167,12 +171,15 @@ def _make_axis_panel(
             except Exception:
                 pass
             _flush_send()
+
         pwm_slider.sliderReleased.connect(_on_released)
     except Exception:
         pass
     try:
+
         def _on_action(_action: int):
             _on_user_set(pwm_slider.value())
+
         pwm_slider.actionTriggered.connect(_on_action)
     except Exception:
         pass
@@ -238,8 +245,10 @@ def _make_axis_panel(
         form.addRow(env_row)
     else:
         el_row, lbl_ta, lbl_tm = row2(
-            t("axis.temp_ambient_label"), fields["tempa"],
-            t("axis.temp_motor_label"), fields["tempm"],
+            t("axis.temp_ambient_label"),
+            fields["tempa"],
+            t("axis.temp_motor_label"),
+            fields["tempm"],
         )
         i18n_pairs.extend(
             [
@@ -251,8 +260,10 @@ def _make_axis_panel(
 
     form.addRow(t("axis.motorspeed_label"), pwm_w)
     msg_row, lbl_err, lbl_warn = row2(
-        t("axis.err_label"), fields["err"],
-        t("axis.warn_label"), fields["warn"],
+        t("axis.err_label"),
+        fields["err"],
+        t("axis.warn_label"),
+        fields["warn"],
     )
     form.addRow(t("axis.messages_label"), msg_row)
     i18n_pairs.extend(
@@ -406,7 +417,11 @@ def fill_axis_panel(fields: dict, axis_state) -> None:
             pwm_slider.setEnabled(bool(axis_state.online) and (not offline) and bool(min_ok))
 
         hold_until = float(fields.get("_pwm_hold_until", 0.0) or 0.0)
-        if pwm_slider is not None and (not pwm_slider.isSliderDown()) and (_time_mod.time() >= hold_until):
+        if (
+            pwm_slider is not None
+            and (not pwm_slider.isSliderDown())
+            and (_time_mod.time() >= hold_until)
+        ):
             if tel.pwm_max_pct is not None:
                 v = float(tel.pwm_max_pct)
                 iv = 100 if v >= 99.5 else int(round(v))

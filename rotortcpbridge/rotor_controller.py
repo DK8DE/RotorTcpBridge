@@ -15,8 +15,16 @@ class RotorController:
     - UI-Kommandos bekommen hohe Priorität, damit Buttons sofort senden
     """
 
-    def __init__(self, hw:HardwareClient, master_id:int, slave_az:int, slave_el:int, log,
-                 enable_az:bool=True, enable_el:bool=True):
+    def __init__(
+        self,
+        hw: HardwareClient,
+        master_id: int,
+        slave_az: int,
+        slave_el: int,
+        log,
+        enable_az: bool = True,
+        enable_el: bool = True,
+    ):
         self.hw = hw
         self.log = log
         self.master_id = master_id
@@ -108,17 +116,17 @@ class RotorController:
         # Fahrt  : nur GETPOSDG + GETERR
         # Idle   : alle weiteren Abfragen mit unterschiedlichem Takt
         self._cfg_poll = {
-            "pos_fast": 100,    # 10 Hz  (Fahrt)
+            "pos_fast": 100,  # 10 Hz  (Fahrt)
             "pos_slow": 10000,  # 10 s   (Idle)
             "err_moving": 5000,  # 5 s    (während Fahrt)
-            "err_idle":  10000,  # 10 s   (Idle)
-            "warn":     10000,  # 10 s   (nur Idle)
-            "pwm":      10000,  # 10 s   (nur Idle)
-            "minpwm":   10000,  # 10 s   (nur Idle, ändert sich kaum)
-            "telemetry": 10000, # 10 s   (nur Idle: GETTEMPA/GETTEMPM)
-            "ref":       300,   # 300 ms (Referenzfahrt: schnell)
-            "ref_idle":  5000,  # 5 s    (Idle: Referenzstatus)
-            "windenable": 10000,# 10 s   (Idle: Sensor angesteckt/abgesteckt)
+            "err_idle": 10000,  # 10 s   (Idle)
+            "warn": 10000,  # 10 s   (nur Idle)
+            "pwm": 10000,  # 10 s   (nur Idle)
+            "minpwm": 10000,  # 10 s   (nur Idle, ändert sich kaum)
+            "telemetry": 10000,  # 10 s   (nur Idle: GETTEMPA/GETTEMPM)
+            "ref": 300,  # 300 ms (Referenzfahrt: schnell)
+            "ref_idle": 5000,  # 5 s    (Idle: Referenzstatus)
+            "windenable": 10000,  # 10 s   (Idle: Sensor angesteckt/abgesteckt)
             "offline_timeout": 2000,
         }
 
@@ -129,7 +137,14 @@ class RotorController:
         except Exception:
             pass
 
-    def update_ids(self, master_id:int, slave_az:int, slave_el:int, enable_az:bool=True, enable_el:bool=True):
+    def update_ids(
+        self,
+        master_id: int,
+        slave_az: int,
+        slave_el: int,
+        enable_az: bool = True,
+        enable_el: bool = True,
+    ):
         self.master_id = master_id
         self.slave_az = slave_az
         self.slave_el = slave_el
@@ -177,10 +192,26 @@ class RotorController:
                 prio = 0
                 if self.enable_az:
                     line = build(self.master_id, self.slave_az, "GETPOSDG", "0")
-                    self.hw.send_request(HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=prio))
+                    self.hw.send_request(
+                        HwRequest(
+                            line=line,
+                            expect_prefix=None,
+                            timeout_s=0.8,
+                            on_done=None,
+                            priority=prio,
+                        )
+                    )
                 if self.enable_el:
                     line = build(self.master_id, self.slave_el, "GETPOSDG", "0")
-                    self.hw.send_request(HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=prio))
+                    self.hw.send_request(
+                        HwRequest(
+                            line=line,
+                            expect_prefix=None,
+                            timeout_s=0.8,
+                            on_done=None,
+                            priority=prio,
+                        )
+                    )
             except Exception:
                 pass
 
@@ -188,25 +219,29 @@ class RotorController:
         """AZ-Antennenversätze vom Rotor lesen (GETANTOFF1–3). EL-Versatz entfällt."""
         if self.enable_az:
             for cmd in ("GETANTOFF1", "GETANTOFF2", "GETANTOFF3"):
-                self.hw.send_request(HwRequest(
-                    line=build(self.master_id, self.slave_az, cmd, "0"),
-                    expect_prefix=None,
-                    timeout_s=0.5,
-                    on_done=None,
-                    priority=4,
-                ))
+                self.hw.send_request(
+                    HwRequest(
+                        line=build(self.master_id, self.slave_az, cmd, "0"),
+                        expect_prefix=None,
+                        timeout_s=0.5,
+                        on_done=None,
+                        priority=4,
+                    )
+                )
 
     def request_antenna_angles(self) -> None:
         """AZ-Antennen-Öffnungswinkel vom Rotor lesen (GETANGLE1–3)."""
         if self.enable_az:
             for cmd in ("GETANGLE1", "GETANGLE2", "GETANGLE3"):
-                self.hw.send_request(HwRequest(
-                    line=build(self.master_id, self.slave_az, cmd, "0"),
-                    expect_prefix=None,
-                    timeout_s=0.5,
-                    on_done=None,
-                    priority=4,
-                ))
+                self.hw.send_request(
+                    HwRequest(
+                        line=build(self.master_id, self.slave_az, cmd, "0"),
+                        expect_prefix=None,
+                        timeout_s=0.5,
+                        on_done=None,
+                        priority=4,
+                    )
+                )
 
     def set_antenna_offset(
         self,
@@ -262,13 +297,15 @@ class RotorController:
             if on_done:
                 on_done(ok)
 
-        self.hw.send_request(HwRequest(
-            line=line,
-            expect_prefix=expect,
-            timeout_s=1.2,
-            on_done=done,
-            priority=2,
-        ))
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix=expect,
+                timeout_s=1.2,
+                on_done=done,
+                priority=2,
+            )
+        )
 
     def set_antenna_angle(
         self,
@@ -324,13 +361,15 @@ class RotorController:
             if on_done:
                 on_done(ok)
 
-        self.hw.send_request(HwRequest(
-            line=line,
-            expect_prefix=expect,
-            timeout_s=1.2,
-            on_done=done,
-            priority=2,
-        ))
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix=expect,
+                timeout_s=1.2,
+                on_done=done,
+                priority=2,
+            )
+        )
 
     def request_immediate_stats(self) -> None:
         """Statistik-Abfrage sofort auslösen (beim Öffnen des Statistik-Fensters). Priorität 0 = vor allem anderen.
@@ -361,7 +400,7 @@ class RotorController:
             except Exception:
                 pass
 
-    def update_polling(self, polling_ms:dict):
+    def update_polling(self, polling_ms: dict):
         self._cfg_poll.update(polling_ms or {})
         # Positionsabfrage: mindestens 10x/s (User-Wunsch). Größerer Wert = langsamer.
         try:
@@ -377,12 +416,20 @@ class RotorController:
                 pass
 
     # -------------------- UI-Helfer (Direktkommandos) --------------------
-    def build_line(self, dst:int, cmd:str, params:str) -> str:
+    def build_line(self, dst: int, cmd: str, params: str) -> str:
         """RS485-Telegramm mit aktueller Master-ID erzeugen."""
         return build(int(self.master_id), int(dst), str(cmd).strip(), str(params))
 
-    def send_ui_command(self, dst:int, cmd:str, params:str, expect_prefix:Optional[str]=None,
-                        timeout_s:float=0.8, priority:int=0, on_done=None) -> None:
+    def send_ui_command(
+        self,
+        dst: int,
+        cmd: str,
+        params: str,
+        expect_prefix: Optional[str] = None,
+        timeout_s: float = 0.8,
+        priority: int = 0,
+        on_done=None,
+    ) -> None:
         """Beliebiges RS485-Kommando mit hoher Priorität senden.
 
         Wird von UI-Fenstern (Kompass/Befehle) genutzt.
@@ -409,15 +456,17 @@ class RotorController:
         self._apply_local_state_for_ui_command(int(dst), str(cmd).strip().upper(), str(params))
 
         line = self.build_line(dst, cmd, params)
-        self.hw.send_request(HwRequest(
-            line=line,
-            expect_prefix=expect_prefix,
-            timeout_s=float(timeout_s),
-            on_done=on_done,
-            priority=int(priority),
-        ))
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix=expect_prefix,
+                timeout_s=float(timeout_s),
+                on_done=on_done,
+                priority=int(priority),
+            )
+        )
 
-    def _apply_local_state_for_ui_command(self, dst:int, cmd:str, params:str) -> None:
+    def _apply_local_state_for_ui_command(self, dst: int, cmd: str, params: str) -> None:
         """Setzt lokale Statusfelder für UI-Direktkommandos.
 
         Ziel:
@@ -484,7 +533,7 @@ class RotorController:
             # Keine harte Fehlerbehandlung: UI darf nicht wegen Status-Update abbrechen.
             return
 
-    def set_az_deg(self, deg:float, force:bool=True) -> None:
+    def set_az_deg(self, deg: float, force: bool = True) -> None:
         """AZ-Zielwinkel in Grad setzen.
 
         - Wenn force=True, wird der Entprell-Mechanismus ("gleiches Ziel") umgangen.
@@ -505,7 +554,7 @@ class RotorController:
             return
         self.set_az_from_spid(d10)
 
-    def set_el_deg(self, deg:float, force:bool=True) -> None:
+    def set_el_deg(self, deg: float, force: bool = True) -> None:
         """EL-Zielwinkel in Grad setzen.
 
         Analog zu :meth:`set_az_deg`.
@@ -543,14 +592,12 @@ class RotorController:
         if self.enable_el:
             self._poll_ref(self.slave_el, self.el, "EL")
 
-
-
     # -------------------- Kommandos von PstRotator (SPID) --------------------
-    def set_pos_from_spid(self, az_d10:int, el_d10:int):
+    def set_pos_from_spid(self, az_d10: int, el_d10: int):
         self.set_az_from_spid(az_d10)
         self.set_el_from_spid(el_d10)
 
-    def set_az_from_spid(self, az_d10:int):
+    def set_az_from_spid(self, az_d10: int):
         """Zielposition von PstRotator (0,1°) für AZ.
 
         PstRotator sendet bei manchen Einstellungen SET ständig erneut.
@@ -570,7 +617,10 @@ class RotorController:
             return
 
         # Gleiches Ziel wie zuletzt gesendet? -> nicht erneut senden
-        if self.az.last_set_sent_target_d10 is not None and az_d10 == self.az.last_set_sent_target_d10:
+        if (
+            self.az.last_set_sent_target_d10 is not None
+            and az_d10 == self.az.last_set_sent_target_d10
+        ):
             return
 
         if not self.az.referenced:
@@ -582,9 +632,7 @@ class RotorController:
         self.az.last_set_sent_ts = time.time()
         self.az.moving = True
 
-
-
-    def set_el_from_spid(self, el_d10:int):
+    def set_el_from_spid(self, el_d10: int):
         """Zielposition von PstRotator (0,1°) für EL.
 
         Siehe set_az_from_spid(): wir entprellen doppelte SET-Kommandos.
@@ -600,7 +648,10 @@ class RotorController:
         if (not self.el.moving) and (abs(self.el.pos_d10 - el_d10) <= 1):
             return
 
-        if self.el.last_set_sent_target_d10 is not None and el_d10 == self.el.last_set_sent_target_d10:
+        if (
+            self.el.last_set_sent_target_d10 is not None
+            and el_d10 == self.el.last_set_sent_target_d10
+        ):
             return
 
         if not self.el.referenced:
@@ -611,8 +662,6 @@ class RotorController:
         self.el.last_set_sent_target_d10 = el_d10
         self.el.last_set_sent_ts = time.time()
         self.el.moving = True
-
-
 
     def stop_all(self):
         self.stop_az()
@@ -678,7 +727,9 @@ class RotorController:
                 if _start_homing:
                     _axis_state.moving = True
             else:
-                _ctrl.log.write("WARN", f"AZ SETREF -> NAK/unbekannte Antwort: {tel.cmd if tel else 'None'}")
+                _ctrl.log.write(
+                    "WARN", f"AZ SETREF -> NAK/unbekannte Antwort: {tel.cmd if tel else 'None'}"
+                )
                 _axis_state.ref_poll_active = False
                 _axis_state.moving = False
                 if callable(_ctrl.on_ref_start_failed):
@@ -687,13 +738,15 @@ class RotorController:
                     except Exception:
                         pass
 
-        self.hw.send_request(HwRequest(
-            line=line,
-            expect_prefix="ACK_SETREF",
-            timeout_s=1.0,
-            on_done=_on_done_az,
-            priority=0,
-        ))
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix="ACK_SETREF",
+                timeout_s=1.0,
+                on_done=_on_done_az,
+                priority=0,
+            )
+        )
 
     def reference_el(self, start_homing: bool = True) -> None:
         """Referenziert nur EL.
@@ -734,7 +787,9 @@ class RotorController:
                 if _start_homing:
                     _axis_state.moving = True
             else:
-                _ctrl.log.write("WARN", f"EL SETREF -> NAK/unbekannte Antwort: {tel.cmd if tel else 'None'}")
+                _ctrl.log.write(
+                    "WARN", f"EL SETREF -> NAK/unbekannte Antwort: {tel.cmd if tel else 'None'}"
+                )
                 _axis_state.ref_poll_active = False
                 _axis_state.moving = False
                 if callable(_ctrl.on_ref_start_failed):
@@ -743,13 +798,15 @@ class RotorController:
                     except Exception:
                         pass
 
-        self.hw.send_request(HwRequest(
-            line=line,
-            expect_prefix="ACK_SETREF",
-            timeout_s=1.0,
-            on_done=_on_done_el,
-            priority=0,
-        ))
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix="ACK_SETREF",
+                timeout_s=1.0,
+                on_done=_on_done_el,
+                priority=0,
+            )
+        )
 
     def clear_warnings_all(self):
         if self.enable_az:
@@ -757,11 +814,11 @@ class RotorController:
         if self.enable_el:
             self._send_simple(self.slave_el, "DELWARN", "1", expect="ACK_DELWARN", prio=0)
 
-    def set_pwm_all(self, pwm_pct:float):
+    def set_pwm_all(self, pwm_pct: float):
         self.set_pwm_az(pwm_pct)
         self.set_pwm_el(pwm_pct)
 
-    def _set_pwm(self, dst:int, axis_state:AxisState, pwm_pct:float, axis_label:str):
+    def _set_pwm(self, dst: int, axis_state: AxisState, pwm_pct: float, axis_label: str):
         pwm_pct = max(0.0, min(100.0, float(pwm_pct)))
         v = f"{pwm_pct:.1f}".replace(".", ",")
         self._send_simple(dst, "SETPWM", v, expect="ACK_SETPWM", prio=0)
@@ -771,12 +828,12 @@ class RotorController:
         except Exception:
             pass
 
-    def set_pwm_az(self, pwm_pct:float):
+    def set_pwm_az(self, pwm_pct: float):
         if not self.enable_az:
             return
         self._set_pwm(self.slave_az, self.az, pwm_pct, "AZ")
 
-    def set_pwm_el(self, pwm_pct:float):
+    def set_pwm_el(self, pwm_pct: float):
         if not self.enable_el:
             return
         self._set_pwm(self.slave_el, self.el, pwm_pct, "EL")
@@ -855,34 +912,40 @@ class RotorController:
                 pass
         self._hw_prev_connected = hw_on
 
-        pos_fast_s      = self._cfg_poll["pos_fast"]    / 1000.0
-        pos_slow_s      = self._cfg_poll["pos_slow"]    / 1000.0
-        err_moving_s    = self._cfg_poll["err_moving"]   / 1000.0
-        err_idle_s      = self._cfg_poll["err_idle"]    / 1000.0
-        warn_s          = self._cfg_poll["warn"]        / 1000.0
-        pwm_s           = self._cfg_poll["pwm"]         / 1000.0
-        minpwm_s        = self._cfg_poll["minpwm"]      / 1000.0
-        tel_s           = self._cfg_poll["telemetry"]   / 1000.0
-        ref_s           = self._cfg_poll["ref"]         / 1000.0
-        ref_idle_s      = self._cfg_poll["ref_idle"]    / 1000.0
-        windenable_s    = self._cfg_poll["windenable"]  / 1000.0
+        pos_fast_s = self._cfg_poll["pos_fast"] / 1000.0
+        pos_slow_s = self._cfg_poll["pos_slow"] / 1000.0
+        err_moving_s = self._cfg_poll["err_moving"] / 1000.0
+        err_idle_s = self._cfg_poll["err_idle"] / 1000.0
+        warn_s = self._cfg_poll["warn"] / 1000.0
+        pwm_s = self._cfg_poll["pwm"] / 1000.0
+        minpwm_s = self._cfg_poll["minpwm"] / 1000.0
+        tel_s = self._cfg_poll["telemetry"] / 1000.0
+        ref_s = self._cfg_poll["ref"] / 1000.0
+        ref_idle_s = self._cfg_poll["ref_idle"] / 1000.0
+        windenable_s = self._cfg_poll["windenable"] / 1000.0
         offline_timeout_s = self._cfg_poll["offline_timeout"] / 1000.0
 
         # Dynamisches Polling:
         # - Fahrt  : nur GETPOSDG (10 Hz) + GETERR (5 s) → Bus frei für Position
         # - Idle   : GETPOSDG (10 s) + ERR/WARN/PWM/TEMP/MINPWM (10 s)
         #            + GETREF/GETWINDENABLE (5–10 s) + Wind (2 s)
-        moving = bool(self.az.moving or self.el.moving or self.az.ref_poll_active or self.el.ref_poll_active)
+        moving = bool(
+            self.az.moving or self.el.moving or self.az.ref_poll_active or self.el.ref_poll_active
+        )
 
         if hw_on:
             # Inflight-Sperren nach Request-Timeout freigeben (verhindert dauerhaftes Blockieren).
-            if self._wind_enable_inflight and ((now - self._wind_enable_sent_ts) > 1.5):  # now = time.time()
+            if self._wind_enable_inflight and (
+                (now - self._wind_enable_sent_ts) > 1.5
+            ):  # now = time.time()
                 self._wind_enable_inflight = False
             if self._wind_speed_inflight and ((now - float(self._wind_speed_sent_ts or 0.0)) > 0.9):
                 self._wind_speed_inflight = False
             if self._wind_dir_inflight and ((now - float(self._wind_dir_sent_ts or 0.0)) > 0.9):
                 self._wind_dir_inflight = False
-            if self._wind_beaufort_inflight and ((now - float(self._wind_beaufort_sent_ts or 0.0)) > 0.9):
+            if self._wind_beaufort_inflight and (
+                (now - float(self._wind_beaufort_sent_ts or 0.0)) > 0.9
+            ):
                 self._wind_beaufort_inflight = False
 
             pos_period = pos_fast_s if moving else pos_slow_s
@@ -892,9 +955,19 @@ class RotorController:
             if now - self._last_poll >= pos_period:
                 sent_any = False
                 if self.enable_az:
-                    sent_any = self._poll_pos(self.slave_az, self.az, "AZ", now, expected_period_s=pos_period) or sent_any
+                    sent_any = (
+                        self._poll_pos(
+                            self.slave_az, self.az, "AZ", now, expected_period_s=pos_period
+                        )
+                        or sent_any
+                    )
                 if self.enable_el:
-                    sent_any = self._poll_pos(self.slave_el, self.el, "EL", now, expected_period_s=pos_period) or sent_any
+                    sent_any = (
+                        self._poll_pos(
+                            self.slave_el, self.el, "EL", now, expected_period_s=pos_period
+                        )
+                        or sent_any
+                    )
                 # Nur wenn wirklich gesendet wurde, Zeitstempel fortschreiben.
                 # Sonst (inflight) würden wir unnötig lange warten, bis wir direkt nach dem ACK wieder senden.
                 if sent_any:
@@ -939,10 +1012,12 @@ class RotorController:
 
                 # GETWINDENABLE: Startphase alle 3 s, danach alle 10 s (Sensor an/ab)
                 if self.enable_az:
-                    wind_unknown_retry = (not self.wind_enabled_known
-                                         and (now - self._last_wind_enable_poll >= 3.0))
-                    wind_known_repoll  = (self.wind_enabled_known
-                                         and (now - self._last_wind_enable_poll >= windenable_s))
+                    wind_unknown_retry = not self.wind_enabled_known and (
+                        now - self._last_wind_enable_poll >= 3.0
+                    )
+                    wind_known_repoll = self.wind_enabled_known and (
+                        now - self._last_wind_enable_poll >= windenable_s
+                    )
                     if wind_unknown_retry or wind_known_repoll:
                         self._poll_wind_enable(self.slave_az, self.az, "AZ")
 
@@ -966,7 +1041,9 @@ class RotorController:
 
                 # ACCBINS wenn Statistik- oder Kompass-Fenster offen (Strom-Heatmap)
                 # Nach Bewegung 10s Cooldown (Dead-Man-Vermeidung)
-                if (self._statistics_window_open or self._compass_window_open) and now >= self._stats_cooldown_until:
+                if (
+                    self._statistics_window_open or self._compass_window_open
+                ) and now >= self._stats_cooldown_until:
                     acc_interval = 2.0 if (self.az.acc_bins_cw is None) else 10.0
                     if self.enable_az and (now - self._last_acc_bins_az >= acc_interval):
                         self._last_acc_bins_az = now
@@ -1029,10 +1106,18 @@ class RotorController:
                     if self.enable_el:
                         self._poll_ref(self.slave_el, self.el, "EL")
             # Referenzfahrt: GETREF unabhängig von Positions-ACKs pollen
-            if self.enable_az and self.az.ref_poll_active and (now - self._last_ref_active_az) >= ref_s:
+            if (
+                self.enable_az
+                and self.az.ref_poll_active
+                and (now - self._last_ref_active_az) >= ref_s
+            ):
                 self._last_ref_active_az = now
                 self._poll_ref(self.slave_az, self.az, "AZ")
-            if self.enable_el and self.el.ref_poll_active and (now - self._last_ref_active_el) >= ref_s:
+            if (
+                self.enable_el
+                and self.el.ref_poll_active
+                and (now - self._last_ref_active_el) >= ref_s
+            ):
                 self._last_ref_active_el = now
                 self._poll_ref(self.slave_el, self.el, "EL")
 
@@ -1111,15 +1196,19 @@ class RotorController:
             pass
 
     # -------------------- Send helpers --------------------
-    def _send_simple(self, dst:int, cmd:str, params:str, expect:str|None, prio:int=5):
+    def _send_simple(self, dst: int, cmd: str, params: str, expect: str | None, prio: int = 5):
         line = build(self.master_id, dst, cmd, params)
-        def done(tel:Optional[Telegram], err:Optional[str]):
+
+        def done(tel: Optional[Telegram], err: Optional[str]):
             if err:
                 self.log.write("WARN", f"{cmd} -> keine Antwort ({err})")
                 return
             if tel and not tel.ok:
                 self.log.write("WARN", f"{cmd} -> CS falsch: {tel}")
-        self.hw.send_request(HwRequest(line=line, expect_prefix=expect, timeout_s=0.8, on_done=done, priority=prio))
+
+        self.hw.send_request(
+            HwRequest(line=line, expect_prefix=expect, timeout_s=0.8, on_done=done, priority=prio)
+        )
 
     def _abort_stats_fetch_and_cooldown(self) -> None:
         """ACCBINS-Statistik abbrechen und 10s Cooldown setzen (Dead-Man-Vermeidung bei Bewegung)."""
@@ -1131,17 +1220,17 @@ class RotorController:
         self._acc_bins_temp_ccw_el = None
         self._stats_cooldown_until = time.time() + 10.0
 
-    def _send_setpos(self, dst:int, d10:int, axis:str, retry_count:int=0):
+    def _send_setpos(self, dst: int, d10: int, axis: str, retry_count: int = 0):
         """SETPOSDG senden. Bei fehlendem ACK nach ~250ms automatisch einmal erneut versuchen.
 
         Retry wegen möglicher RS485-Kollisionen; Verbindung bleibt bei Timeout erhalten.
         """
         self._abort_stats_fetch_and_cooldown()
-        deg = (d10/10.0)
+        deg = d10 / 10.0
         params = f"{deg:.2f}".replace(".", ",")
         line = build(self.master_id, dst, "SETPOSDG", params)
 
-        def done(tel:Optional[Telegram], err:Optional[str]):
+        def done(tel: Optional[Telegram], err: Optional[str]):
             if err:
                 if retry_count < 1:
                     self.log.write("INFO", f"{axis} SETPOSDG kein ACK ({err}), Retry...")
@@ -1152,17 +1241,21 @@ class RotorController:
             if tel and tel.cmd.startswith("NAK_SETPOSDG"):
                 self.log.write("WARN", f"{axis} SETPOSDG NAK: {tel.params}")
 
-        self.hw.send_request(HwRequest(
-            line=line,
-            expect_prefix="ACK_SETPOSDG",
-            timeout_s=0.25,
-            on_done=done,
-            priority=0,
-            dont_disconnect_on_timeout=True,
-        ))
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix="ACK_SETPOSDG",
+                timeout_s=0.25,
+                on_done=done,
+                priority=0,
+                dont_disconnect_on_timeout=True,
+            )
+        )
 
     # -------------------- Poll helpers --------------------
-    def _poll_pos(self, dst:int, axis_state:AxisState, axis:str, now_ts: float, expected_period_s: float) -> bool:
+    def _poll_pos(
+        self, dst: int, axis_state: AxisState, axis: str, now_ts: float, expected_period_s: float
+    ) -> bool:
         """Positionsabfrage mit Flow-Control.
 
         Wichtig: Wir senden GETPOSDG weiterhin ohne pending (blockiert nichts),
@@ -1188,118 +1281,209 @@ class RotorController:
         axis_state.pos_poll_expected_period_s = float(max(0.05, expected_period_s))
 
         line = build(self.master_id, dst, "GETPOSDG", "0")
-        self.hw.send_request(HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5))
+        self.hw.send_request(
+            HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5)
+        )
         return True
 
-    def _poll_warn(self, dst:int, axis_state:AxisState, axis:str):
+    def _poll_warn(self, dst: int, axis_state: AxisState, axis: str):
         # WICHTIG: Warn-/Error-/Telemetrie-Polls dürfen die Positionsanzeige nicht ausbremsen.
         # Daher: ohne expect_prefix senden (kein "pending"), Antworten kommen asynchron rein
         # und werden in _on_async_tel verarbeitet.
         line = build(self.master_id, dst, "GETWARN", "0")
-        self.hw.send_request(HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5))
+        self.hw.send_request(
+            HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5)
+        )
 
-    def _poll_err(self, dst:int, axis_state:AxisState, axis:str):
+    def _poll_err(self, dst: int, axis_state: AxisState, axis: str):
         line = build(self.master_id, dst, "GETERR", "0")
-        self.hw.send_request(HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5))
+        self.hw.send_request(
+            HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5)
+        )
 
-    def _poll_ref(self, dst:int, axis_state:AxisState, axis:str):
+    def _poll_ref(self, dst: int, axis_state: AxisState, axis: str):
         # WICHTIG: GETREF darf die restlichen Polls (Pos/Err/Warn/Telemetrie) nicht blockieren.
         # Daher ohne pending senden; Antwort wird in _on_async_tel verarbeitet.
         line = build(self.master_id, dst, "GETREF", "0")
-        self.hw.send_request(HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=2))
+        self.hw.send_request(
+            HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=2)
+        )
 
-    def _poll_telemetry(self, dst:int, axis_state:AxisState, axis:str):
+    def _poll_telemetry(self, dst: int, axis_state: AxisState, axis: str):
         # Telemetrie ist niedrige Priorität; außerdem ohne pending (siehe _poll_warn/_poll_err),
         # Verarbeitung erfolgt in _on_async_tel.
-        self.hw.send_request(HwRequest(line=build(self.master_id, dst, "GETTEMPA", "0"), expect_prefix=None, timeout_s=0.8, on_done=None, priority=6))
-        self.hw.send_request(HwRequest(line=build(self.master_id, dst, "GETTEMPM", "0"), expect_prefix=None, timeout_s=0.8, on_done=None, priority=6))
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, dst, "GETTEMPA", "0"),
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=6,
+            )
+        )
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, dst, "GETTEMPM", "0"),
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=6,
+            )
+        )
         self._poll_idle_wind(dst, axis_state, axis)
         # PWM wird separat über _poll_pwm() abgefragt (max. alle ~2s).
 
-    def _poll_idle_telemetry(self, dst:int, axis_state:AxisState, axis:str):
+    def _poll_idle_telemetry(self, dst: int, axis_state: AxisState, axis: str):
         """Telemetrie, die im Idle abgefragt werden darf (Temp/Wind).
 
         Während der Fahrt bewusst NICHT pollen, um die Positionsanzeige nicht auszubremsen.
         """
-        self.hw.send_request(HwRequest(line=build(self.master_id, dst, "GETTEMPA", "0"), expect_prefix=None, timeout_s=0.8, on_done=None, priority=6))
-        self.hw.send_request(HwRequest(line=build(self.master_id, dst, "GETTEMPM", "0"), expect_prefix=None, timeout_s=0.8, on_done=None, priority=6))
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, dst, "GETTEMPA", "0"),
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=6,
+            )
+        )
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, dst, "GETTEMPM", "0"),
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=6,
+            )
+        )
         # Wind wird separat mit eigener Taktung/Prio gepollt (siehe _poll_idle_wind()).
 
-    def _poll_idle_wind(self, dst:int, axis_state:AxisState, axis:str):
+    def _poll_idle_wind(self, dst: int, axis_state: AxisState, axis: str):
         """Windgeschwindigkeit im Idle pollen (AZ)."""
         # Winddaten kommen ausschließlich vom AZ-Rotor.
         if int(dst) != int(self.slave_az) or (not self.wind_enabled):
             return
         self._wind_speed_inflight = True
         self._wind_speed_sent_ts = time.time()
-        self.hw.send_request(HwRequest(line=build(self.master_id, dst, "GETANEMO", "0"), expect_prefix=None, timeout_s=0.8, on_done=None, priority=2))
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, dst, "GETANEMO", "0"),
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=2,
+            )
+        )
 
-    def _poll_idle_wind_dir(self, dst:int, axis_state:AxisState, axis:str):
+    def _poll_idle_wind_dir(self, dst: int, axis_state: AxisState, axis: str):
         """Windrichtung im Idle pollen (AZ), zeitversetzt zu GETANEMO."""
         if int(dst) != int(self.slave_az) or (not self.wind_enabled):
             return
         self._wind_dir_inflight = True
         self._wind_dir_sent_ts = time.time()
-        self.hw.send_request(HwRequest(
-            line=build(self.master_id, dst, "GETWINDDIR", "0"),
-            expect_prefix=None,
-            timeout_s=0.8,
-            on_done=None,
-            priority=2,
-        ))
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, dst, "GETWINDDIR", "0"),
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=2,
+            )
+        )
 
-    def _poll_idle_wind_beaufort(self, dst:int, axis_state:AxisState, axis:str):
+    def _poll_idle_wind_beaufort(self, dst: int, axis_state: AxisState, axis: str):
         """Windstärke in Beaufort (0–12) im Idle pollen (AZ)."""
         if int(dst) != int(self.slave_az) or (not self.wind_enabled):
             return
         self._wind_beaufort_inflight = True
         self._wind_beaufort_sent_ts = time.time()
-        self.hw.send_request(HwRequest(
-            line=build(self.master_id, dst, "GETBEAUFORT", "0"),
-            expect_prefix=None,
-            timeout_s=0.8,
-            on_done=None,
-            priority=2,
-        ))
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, dst, "GETBEAUFORT", "0"),
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=2,
+            )
+        )
 
-    def _poll_wind_enable(self, dst:int, axis_state:AxisState, axis:str):
+    def _poll_wind_enable(self, dst: int, axis_state: AxisState, axis: str):
         """Abfragen, ob Windsensor vorhanden ist (GETWINDENABLE). Inflight-Guard verhindert Doppelabfrage."""
         if int(dst) != int(self.slave_az):
             return
         if self._wind_enable_inflight:
             return
         self._wind_enable_inflight = True
-        self._wind_enable_sent_ts = time.time()    # muss time.time() sein – tick nutzt time.time() als 'now'
-        self._last_wind_enable_poll = time.time()  # muss time.time() sein – tick nutzt time.time() als 'now'
-        self.hw.send_request(HwRequest(
-            line=build(self.master_id, dst, "GETWINDENABLE", "0"),
-            expect_prefix=None,
-            timeout_s=0.8,
-            on_done=None,
-            priority=3,
-        ))
+        self._wind_enable_sent_ts = (
+            time.time()
+        )  # muss time.time() sein – tick nutzt time.time() als 'now'
+        self._last_wind_enable_poll = (
+            time.time()
+        )  # muss time.time() sein – tick nutzt time.time() als 'now'
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, dst, "GETWINDENABLE", "0"),
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=3,
+            )
+        )
 
-    def _poll_pwm(self, dst:int, axis_state:AxisState, axis:str):
+    def _poll_pwm(self, dst: int, axis_state: AxisState, axis: str):
         """PWM-Status abfragen (immer nur alle ~2s)."""
-        self.hw.send_request(HwRequest(line=build(self.master_id, dst, "GETPWM", "0"), expect_prefix=None, timeout_s=0.8, on_done=None, priority=6))
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, dst, "GETPWM", "0"),
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=6,
+            )
+        )
 
-    def _poll_minpwm(self, dst:int, axis_state:AxisState, axis:str):
+    def _poll_minpwm(self, dst: int, axis_state: AxisState, axis: str):
         """MINPWM abfragen (Untergrenze für PWM)."""
-        self.hw.send_request(HwRequest(line=build(self.master_id, dst, "GETMINPWM", "0"), expect_prefix=None, timeout_s=0.8, on_done=None, priority=6))
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, dst, "GETMINPWM", "0"),
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=6,
+            )
+        )
 
-    def _poll_cal_state(self, dst:int, axis_state:AxisState, priority: int = 5) -> None:
+    def _poll_cal_state(self, dst: int, axis_state: AxisState, priority: int = 5) -> None:
         """GETCALSTATE abfragen (state;progress). state: 0=IDLE,1=RUNNING,2=DONE,3=ABORT."""
-        self.hw.send_request(HwRequest(
-            line=build(self.master_id, dst, "GETCALSTATE", "0"),
-            expect_prefix=None, timeout_s=0.8, on_done=None, priority=priority,
-        ))
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, dst, "GETCALSTATE", "0"),
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=priority,
+            )
+        )
 
     _CAL_LIVE_BLOCKS = [
-        (1, 0), (1, 12), (1, 24), (1, 36), (1, 48), (1, 60),
-        (2, 0), (2, 12), (2, 24), (2, 36), (2, 48), (2, 60),
+        (1, 0),
+        (1, 12),
+        (1, 24),
+        (1, 36),
+        (1, 48),
+        (1, 60),
+        (2, 0),
+        (2, 12),
+        (2, 24),
+        (2, 36),
+        (2, 48),
+        (2, 60),
     ]
 
-    def _fetch_cal_bins(self, dst:int, axis_state:AxisState, axis_name:str, priority: int = 3) -> None:
+    def _fetch_cal_bins(
+        self, dst: int, axis_state: AxisState, axis_name: str, priority: int = 3
+    ) -> None:
         """CAL-Bins sequentiell abfragen (1 Block → warten → nächster), um Bus nicht zu überlasten."""
         if self._cal_bins_inflight_az:
             return
@@ -1310,10 +1494,14 @@ class RotorController:
         self._cal_bins_priority_az = priority
         self._send_next_cal_block(dst, axis_state, 0)
 
-    def _send_next_cal_block(self, dst:int, axis_state:AxisState, idx:int) -> None:
+    def _send_next_cal_block(self, dst: int, axis_state: AxisState, idx: int) -> None:
         if idx >= len(self._CAL_LIVE_BLOCKS):
             # Alle 12 Blöcke empfangen: Temp in axis_state übernehmen (nur wenn noch DONE)
-            if self._cal_bins_temp_cw and self._cal_bins_temp_ccw and getattr(axis_state, "cal_state", 0) == 2:
+            if (
+                self._cal_bins_temp_cw
+                and self._cal_bins_temp_ccw
+                and getattr(axis_state, "cal_state", 0) == 2
+            ):
                 axis_state.cal_bins_cw = list(self._cal_bins_temp_cw)
                 axis_state.cal_bins_ccw = list(self._cal_bins_temp_ccw)
             self._cal_bins_temp_cw = None
@@ -1330,12 +1518,12 @@ class RotorController:
         ctrl = self
         temp_cw, temp_ccw = self._cal_bins_temp_cw, self._cal_bins_temp_ccw
 
-        def on_done(tel:Optional[Telegram], err:Optional[str]):
+        def on_done(tel: Optional[Telegram], err: Optional[str]):
             if tel:
                 axis_state.last_rx_ts = time.time()
                 axis_state.online = True
             if err:
-                ctrl.log.write("WARN", f"AZ GETCALBINS Block {idx+1} fehlgeschlagen: {err}")
+                ctrl.log.write("WARN", f"AZ GETCALBINS Block {idx + 1} fehlgeschlagen: {err}")
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
@@ -1351,17 +1539,22 @@ class RotorController:
                                     bins[start_val + i] = int(v)
             ctrl._cal_bins_received_az = idx + 1
             ctrl._send_next_cal_block(dst, axis_state, idx + 1)
-        prio = getattr(self, "_cal_bins_priority_az", 3)
-        self.hw.send_request(HwRequest(
-            line=line,
-            expect_prefix="ACK_GETCALBINS",
-            timeout_s=0.5,
-            on_done=on_done,
-            priority=prio,
-            dont_disconnect_on_timeout=True,
-        ))
 
-    def _fetch_cal_bins_el(self, dst:int, axis_state:AxisState, axis_name:str, priority: int = 3) -> None:
+        prio = getattr(self, "_cal_bins_priority_az", 3)
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix="ACK_GETCALBINS",
+                timeout_s=0.5,
+                on_done=on_done,
+                priority=prio,
+                dont_disconnect_on_timeout=True,
+            )
+        )
+
+    def _fetch_cal_bins_el(
+        self, dst: int, axis_state: AxisState, axis_name: str, priority: int = 3
+    ) -> None:
         if self._cal_bins_inflight_el:
             return
         self._cal_bins_inflight_el = True
@@ -1370,9 +1563,13 @@ class RotorController:
         self._cal_bins_priority_el = priority
         self._send_next_cal_block_el(dst, axis_state, 0)
 
-    def _send_next_cal_block_el(self, dst:int, axis_state:AxisState, idx:int) -> None:
+    def _send_next_cal_block_el(self, dst: int, axis_state: AxisState, idx: int) -> None:
         if idx >= len(self._CAL_LIVE_BLOCKS):
-            if self._cal_bins_temp_cw_el and self._cal_bins_temp_ccw_el and getattr(axis_state, "cal_state", 0) == 2:
+            if (
+                self._cal_bins_temp_cw_el
+                and self._cal_bins_temp_ccw_el
+                and getattr(axis_state, "cal_state", 0) == 2
+            ):
                 axis_state.cal_bins_cw = list(self._cal_bins_temp_cw_el)
                 axis_state.cal_bins_ccw = list(self._cal_bins_temp_ccw_el)
             self._cal_bins_temp_cw_el = None
@@ -1389,12 +1586,12 @@ class RotorController:
         ctrl = self
         temp_cw, temp_ccw = self._cal_bins_temp_cw_el, self._cal_bins_temp_ccw_el
 
-        def on_done(tel:Optional[Telegram], err:Optional[str]):
+        def on_done(tel: Optional[Telegram], err: Optional[str]):
             if tel:
                 axis_state.last_rx_ts = time.time()
                 axis_state.online = True
             if err:
-                ctrl.log.write("WARN", f"EL GETCALBINS Block {idx+1} fehlgeschlagen: {err}")
+                ctrl.log.write("WARN", f"EL GETCALBINS Block {idx + 1} fehlgeschlagen: {err}")
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
@@ -1409,17 +1606,22 @@ class RotorController:
                                 if v is not None and start_val + i < 72:
                                     bins[start_val + i] = int(v)
             ctrl._send_next_cal_block_el(dst, axis_state, idx + 1)
-        prio = getattr(self, "_cal_bins_priority_el", 3)
-        self.hw.send_request(HwRequest(
-            line=line,
-            expect_prefix="ACK_GETCALBINS",
-            timeout_s=0.5,
-            on_done=on_done,
-            priority=prio,
-            dont_disconnect_on_timeout=True,
-        ))
 
-    def _fetch_live_bins(self, dst:int, axis_state:AxisState, axis_name:str, priority: int = 3) -> None:
+        prio = getattr(self, "_cal_bins_priority_el", 3)
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix="ACK_GETCALBINS",
+                timeout_s=0.5,
+                on_done=on_done,
+                priority=prio,
+                dont_disconnect_on_timeout=True,
+            )
+        )
+
+    def _fetch_live_bins(
+        self, dst: int, axis_state: AxisState, axis_name: str, priority: int = 3
+    ) -> None:
         """LIVE-Bins sequentiell abfragen (1 Block → warten → nächster)."""
         if self._live_bins_inflight_az:
             return
@@ -1430,7 +1632,7 @@ class RotorController:
         self._live_bins_priority_az = priority
         self._send_next_live_block(dst, axis_state, 0)
 
-    def _send_next_live_block(self, dst:int, axis_state:AxisState, idx:int) -> None:
+    def _send_next_live_block(self, dst: int, axis_state: AxisState, idx: int) -> None:
         if idx >= len(self._CAL_LIVE_BLOCKS):
             # Alle 12 Blöcke empfangen: Temp in axis_state übernehmen
             if self._live_bins_temp_cw and self._live_bins_temp_ccw:
@@ -1446,12 +1648,12 @@ class RotorController:
         ctrl = self
         temp_cw, temp_ccw = self._live_bins_temp_cw, self._live_bins_temp_ccw
 
-        def on_done(tel:Optional[Telegram], err:Optional[str]):
+        def on_done(tel: Optional[Telegram], err: Optional[str]):
             if tel:
                 axis_state.last_rx_ts = time.time()
                 axis_state.online = True
             if err:
-                ctrl.log.write("WARN", f"AZ GETLIVEBINS Block {idx+1} fehlgeschlagen: {err}")
+                ctrl.log.write("WARN", f"AZ GETLIVEBINS Block {idx + 1} fehlgeschlagen: {err}")
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
@@ -1466,17 +1668,22 @@ class RotorController:
                                 if v is not None and start_val + i < 72:
                                     bins[start_val + i] = int(v)
             ctrl._send_next_live_block(dst, axis_state, idx + 1)
-        prio = getattr(self, "_live_bins_priority_az", 3)
-        self.hw.send_request(HwRequest(
-            line=line,
-            expect_prefix="ACK_GETLIVEBINS",
-            timeout_s=0.5,
-            on_done=on_done,
-            priority=prio,
-            dont_disconnect_on_timeout=True,
-        ))
 
-    def _fetch_live_bins_el(self, dst:int, axis_state:AxisState, axis_name:str, priority: int = 3) -> None:
+        prio = getattr(self, "_live_bins_priority_az", 3)
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix="ACK_GETLIVEBINS",
+                timeout_s=0.5,
+                on_done=on_done,
+                priority=prio,
+                dont_disconnect_on_timeout=True,
+            )
+        )
+
+    def _fetch_live_bins_el(
+        self, dst: int, axis_state: AxisState, axis_name: str, priority: int = 3
+    ) -> None:
         if self._live_bins_inflight_el:
             return
         self._live_bins_inflight_el = True
@@ -1485,7 +1692,7 @@ class RotorController:
         self._live_bins_priority_el = priority
         self._send_next_live_block_el(dst, axis_state, 0)
 
-    def _send_next_live_block_el(self, dst:int, axis_state:AxisState, idx:int) -> None:
+    def _send_next_live_block_el(self, dst: int, axis_state: AxisState, idx: int) -> None:
         if idx >= len(self._CAL_LIVE_BLOCKS):
             if self._live_bins_temp_cw_el and self._live_bins_temp_ccw_el:
                 axis_state.live_bins_cw = list(self._live_bins_temp_cw_el)
@@ -1500,12 +1707,12 @@ class RotorController:
         ctrl = self
         temp_cw, temp_ccw = self._live_bins_temp_cw_el, self._live_bins_temp_ccw_el
 
-        def on_done(tel:Optional[Telegram], err:Optional[str]):
+        def on_done(tel: Optional[Telegram], err: Optional[str]):
             if tel:
                 axis_state.last_rx_ts = time.time()
                 axis_state.online = True
             if err:
-                ctrl.log.write("WARN", f"EL GETLIVEBINS Block {idx+1} fehlgeschlagen: {err}")
+                ctrl.log.write("WARN", f"EL GETLIVEBINS Block {idx + 1} fehlgeschlagen: {err}")
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
@@ -1520,17 +1727,22 @@ class RotorController:
                                 if v is not None and start_val + i < 72:
                                     bins[start_val + i] = int(v)
             ctrl._send_next_live_block_el(dst, axis_state, idx + 1)
-        prio = getattr(self, "_live_bins_priority_el", 3)
-        self.hw.send_request(HwRequest(
-            line=line,
-            expect_prefix="ACK_GETLIVEBINS",
-            timeout_s=0.5,
-            on_done=on_done,
-            priority=prio,
-            dont_disconnect_on_timeout=True,
-        ))
 
-    def _fetch_acc_bins(self, dst:int, axis_state:AxisState, axis_name:str, priority: int = 3) -> None:
+        prio = getattr(self, "_live_bins_priority_el", 3)
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix="ACK_GETLIVEBINS",
+                timeout_s=0.5,
+                on_done=on_done,
+                priority=prio,
+                dont_disconnect_on_timeout=True,
+            )
+        )
+
+    def _fetch_acc_bins(
+        self, dst: int, axis_state: AxisState, axis_name: str, priority: int = 3
+    ) -> None:
         """ACC-Bins sequentiell abfragen (wie LIVE, schnelle aktuelle Last)."""
         if self._acc_bins_inflight_az:
             return
@@ -1540,7 +1752,7 @@ class RotorController:
         self._acc_bins_priority_az = priority
         self._send_next_acc_block(dst, axis_state, 0)
 
-    def _send_next_acc_block(self, dst:int, axis_state:AxisState, idx:int) -> None:
+    def _send_next_acc_block(self, dst: int, axis_state: AxisState, idx: int) -> None:
         if time.time() < self._stats_cooldown_until:
             self._acc_bins_inflight_az = False
             self._acc_bins_temp_cw = None
@@ -1561,12 +1773,12 @@ class RotorController:
         temp_cw = self._acc_bins_temp_cw
         temp_ccw = self._acc_bins_temp_ccw
 
-        def on_done(tel:Optional[Telegram], err:Optional[str]):
+        def on_done(tel: Optional[Telegram], err: Optional[str]):
             if tel:
                 axis_state.last_rx_ts = time.time()
                 axis_state.online = True
             if err:
-                ctrl.log.write("WARN", f"AZ GETACCBINS Block {idx+1} fehlgeschlagen: {err}")
+                ctrl.log.write("WARN", f"AZ GETACCBINS Block {idx + 1} fehlgeschlagen: {err}")
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
@@ -1581,17 +1793,22 @@ class RotorController:
                                 if v is not None and start_val + i < 72:
                                     bins[start_val + i] = int(v)
             ctrl._send_next_acc_block(dst, axis_state, idx + 1)
-        prio = getattr(self, "_acc_bins_priority_az", 3)
-        self.hw.send_request(HwRequest(
-            line=line,
-            expect_prefix="ACK_GETACCBINS",
-            timeout_s=0.5,
-            on_done=on_done,
-            priority=prio,
-            dont_disconnect_on_timeout=True,
-        ))
 
-    def _fetch_acc_bins_el(self, dst:int, axis_state:AxisState, axis_name:str, priority: int = 3) -> None:
+        prio = getattr(self, "_acc_bins_priority_az", 3)
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix="ACK_GETACCBINS",
+                timeout_s=0.5,
+                on_done=on_done,
+                priority=prio,
+                dont_disconnect_on_timeout=True,
+            )
+        )
+
+    def _fetch_acc_bins_el(
+        self, dst: int, axis_state: AxisState, axis_name: str, priority: int = 3
+    ) -> None:
         if self._acc_bins_inflight_el:
             return
         self._acc_bins_inflight_el = True
@@ -1600,7 +1817,7 @@ class RotorController:
         self._acc_bins_priority_el = priority
         self._send_next_acc_block_el(dst, axis_state, 0)
 
-    def _send_next_acc_block_el(self, dst:int, axis_state:AxisState, idx:int) -> None:
+    def _send_next_acc_block_el(self, dst: int, axis_state: AxisState, idx: int) -> None:
         if time.time() < self._stats_cooldown_until:
             self._acc_bins_inflight_el = False
             self._acc_bins_temp_cw_el = None
@@ -1620,12 +1837,12 @@ class RotorController:
         ctrl = self
         temp_cw, temp_ccw = self._acc_bins_temp_cw_el, self._acc_bins_temp_ccw_el
 
-        def on_done(tel:Optional[Telegram], err:Optional[str]):
+        def on_done(tel: Optional[Telegram], err: Optional[str]):
             if tel:
                 axis_state.last_rx_ts = time.time()
                 axis_state.online = True
             if err:
-                ctrl.log.write("WARN", f"EL GETACCBINS Block {idx+1} fehlgeschlagen: {err}")
+                ctrl.log.write("WARN", f"EL GETACCBINS Block {idx + 1} fehlgeschlagen: {err}")
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
@@ -1640,15 +1857,18 @@ class RotorController:
                                 if v is not None and start_val + i < 72:
                                     bins[start_val + i] = int(v)
             ctrl._send_next_acc_block_el(dst, axis_state, idx + 1)
+
         prio = getattr(self, "_acc_bins_priority_el", 3)
-        self.hw.send_request(HwRequest(
-            line=line,
-            expect_prefix="ACK_GETACCBINS",
-            timeout_s=0.5,
-            on_done=on_done,
-            priority=prio,
-            dont_disconnect_on_timeout=True,
-        ))
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix="ACK_GETACCBINS",
+                timeout_s=0.5,
+                on_done=on_done,
+                priority=prio,
+                dont_disconnect_on_timeout=True,
+            )
+        )
 
     def _tel_dst_allowed(self, tel: Telegram) -> bool:
         """Eigene Antworten (dst = unsere Master-ID) oder Antworten der konfigurierten Slaves an einen fremden Master."""
@@ -1667,7 +1887,7 @@ class RotorController:
             return True
 
     # -------------------- Async telegram handler --------------------
-    def _on_async_tel(self, tel:Telegram):
+    def _on_async_tel(self, tel: Telegram):
         # Asynchrone ACK/NAK aus Polling (wenn Requests ohne pending gesendet werden).
         if not self._tel_dst_allowed(tel):
             return
@@ -1703,15 +1923,21 @@ class RotorController:
                         # Beim allerersten Sample nach Programmstart ist prev_pos nur Default (meist 0)
                         # und darf nicht als echte Bewegung interpretiert werden.
                         try:
-                            had_prev_sample = float(getattr(axis_state, "_last_sample_ts", 0.0) or 0.0) > 0.0
+                            had_prev_sample = (
+                                float(getattr(axis_state, "_last_sample_ts", 0.0) or 0.0) > 0.0
+                            )
                         except Exception:
                             had_prev_sample = False
 
                         try:
-                            exp = float(getattr(axis_state, "pos_poll_expected_period_s", 0.2) or 0.2)
+                            exp = float(
+                                getattr(axis_state, "pos_poll_expected_period_s", 0.2) or 0.2
+                            )
                         except Exception:
                             exp = 0.2
-                        axis_state.update_position_sample(d10, sample_ts=time.time(), expected_period_s=exp)
+                        axis_state.update_position_sample(
+                            d10, sample_ts=time.time(), expected_period_s=exp
+                        )
 
                         # Während aktiver Referenzfahrt darf "moving" NICHT auf False fallen,
                         # auch wenn temporär keine sauberen Positions-Samples ankommen.
@@ -1740,7 +1966,9 @@ class RotorController:
 
                         if stable:
                             try:
-                                axis_state.stop_confirm_samples = int(getattr(axis_state, "stop_confirm_samples", 0)) + 1
+                                axis_state.stop_confirm_samples = (
+                                    int(getattr(axis_state, "stop_confirm_samples", 0)) + 1
+                                )
                             except Exception:
                                 axis_state.stop_confirm_samples = 1
                         else:
@@ -1890,8 +2118,11 @@ class RotorController:
                     if v is not None and 0 <= v <= 12:
                         axis_state.telemetry.wind_beaufort = int(v)
                     return
-                if (tel.cmd.startswith("ACK_GETWINDENABLE") or tel.cmd.startswith("ACK_WINDENABLE")
-                        or tel.cmd.startswith("ACK_SETWINDENABLE")):
+                if (
+                    tel.cmd.startswith("ACK_GETWINDENABLE")
+                    or tel.cmd.startswith("ACK_WINDENABLE")
+                    or tel.cmd.startswith("ACK_SETWINDENABLE")
+                ):
                     self._wind_enable_inflight = False
                     v = parse_int(tel.params.strip())
                     if v is not None:
@@ -1944,7 +2175,8 @@ class RotorController:
                             self._cal_bins_fetched_el = False
                         elif state == 2 and axis_name == "AZ" and self._statistics_window_open:
                             if not self._cal_bins_inflight_az and (
-                                axis_state.cal_bins_cw is None or axis_state.cal_bins_ccw is None
+                                axis_state.cal_bins_cw is None
+                                or axis_state.cal_bins_ccw is None
                                 or not self._cal_bins_fetched_az
                             ):
                                 self._fetch_cal_bins(int(self.slave_az), axis_state, "AZ")
@@ -1954,7 +2186,8 @@ class RotorController:
                         elif state == 2 and axis_name == "EL" and self._statistics_window_open:
                             dst_el = int(self.slave_el)
                             if not self._cal_bins_inflight_el and (
-                                axis_state.cal_bins_cw is None or axis_state.cal_bins_ccw is None
+                                axis_state.cal_bins_cw is None
+                                or axis_state.cal_bins_ccw is None
                                 or not self._cal_bins_fetched_el
                             ):
                                 self._fetch_cal_bins_el(dst_el, axis_state, "EL")
@@ -1972,7 +2205,9 @@ class RotorController:
                         start_val = parse_int(parts[1])
                         count_val = parse_int(parts[2])
                         if dir_val is not None and start_val is not None and count_val is not None:
-                            bins = axis_state.cal_bins_cw if dir_val == 1 else axis_state.cal_bins_ccw
+                            bins = (
+                                axis_state.cal_bins_cw if dir_val == 1 else axis_state.cal_bins_ccw
+                            )
                             if bins is not None and 0 <= start_val < 72 and 1 <= count_val <= 12:
                                 for i in range(count_val):
                                     v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
@@ -1982,7 +2217,9 @@ class RotorController:
                                             bins[idx] = int(v)
                             # Fertig wenn alle 12 Blöcke angekommen
                             if axis_name == "AZ":
-                                self._cal_bins_received_az = int(getattr(self, "_cal_bins_received_az", 0)) + 1
+                                self._cal_bins_received_az = (
+                                    int(getattr(self, "_cal_bins_received_az", 0)) + 1
+                                )
                                 if self._cal_bins_received_az >= 12:
                                     self._cal_bins_inflight_az = False
                                     self._cal_bins_fetched_az = True
@@ -1996,7 +2233,11 @@ class RotorController:
                         start_val = parse_int(parts[1])
                         count_val = parse_int(parts[2])
                         if dir_val is not None and start_val is not None and count_val is not None:
-                            bins = axis_state.live_bins_cw if dir_val == 1 else axis_state.live_bins_ccw
+                            bins = (
+                                axis_state.live_bins_cw
+                                if dir_val == 1
+                                else axis_state.live_bins_ccw
+                            )
                             if bins is not None and 0 <= start_val < 72 and 1 <= count_val <= 12:
                                 for i in range(count_val):
                                     v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
@@ -2005,7 +2246,9 @@ class RotorController:
                                         if idx < 72:
                                             bins[idx] = int(v)
                             if axis_name == "AZ":
-                                self._live_bins_received_az = int(getattr(self, "_live_bins_received_az", 0)) + 1
+                                self._live_bins_received_az = (
+                                    int(getattr(self, "_live_bins_received_az", 0)) + 1
+                                )
                                 if self._live_bins_received_az >= 12:
                                     self._live_bins_inflight_az = False
                     return
@@ -2017,8 +2260,9 @@ class RotorController:
             if code is None:
                 return
             if tel.src == self.slave_az:
-                self.az.error_code = int(code); self.az.moving = False
+                self.az.error_code = int(code)
+                self.az.moving = False
             elif tel.src == self.slave_el:
-                self.el.error_code = int(code); self.el.moving = False
+                self.el.error_code = int(code)
+                self.el.moving = False
             self.log.write("ERROR", f"ERR vom Slave {tel.src}: {code}")
-

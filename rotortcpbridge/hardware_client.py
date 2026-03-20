@@ -13,15 +13,17 @@ try:
 except Exception:
     serial = None
 
+
 @dataclass
 class HwRequest:
-    line:str
+    line: str
     expect_prefix: Optional[str] = None  # z.B. "ACK_GETPOSDG"
     timeout_s: float = 0.8
     on_done: Optional[Callable[[Optional[Telegram], Optional[str]], None]] = None
     sent_ts: float = 0.0
     priority: int = 5  # 0 = höchste Priorität (UI), 5 = normal (Polling)
     dont_disconnect_on_timeout: bool = False  # True: bei Timeout nicht trennen (z.B. für Retry)
+
 
 class HardwareClient:
     """Spricht mit dem Hardware-Serial-Server (TCP oder COM).
@@ -32,7 +34,7 @@ class HardwareClient:
     - Prioritäten: UI-Befehle (SETREF/STOP/SETPOSDG) laufen vor Polling, damit Buttons sofort wirken.
     """
 
-    def __init__(self, cfg:dict, log:LogBuffer):
+    def __init__(self, cfg: dict, log: LogBuffer):
         # Eigene Kopie halten (nicht die externe Dict-Referenz),
         # damit spätere In-Place-Änderungen von außen erkannt werden.
         self.cfg = dict(cfg or {})
@@ -80,17 +82,19 @@ class HardwareClient:
     def stop(self):
         self._running = False
         try:
-            if self._sock: self._sock.close()
+            if self._sock:
+                self._sock.close()
         except Exception:
             pass
         try:
-            if self._ser: self._ser.close()
+            if self._ser:
+                self._ser.close()
         except Exception:
             pass
         self._sock = None
         self._ser = None
 
-    def is_connected(self)->bool:
+    def is_connected(self) -> bool:
         return self._sock is not None or self._ser is not None
 
     def _update_no_rx_timeout(self) -> None:
@@ -109,7 +113,7 @@ class HardwareClient:
         except Exception:
             self._pending_reply_dst = 0
 
-    def update_cfg(self, cfg:dict):
+    def update_cfg(self, cfg: dict):
         old = dict(self._applied_cfg or {})
         new = dict(cfg or {})
         self.cfg = new
@@ -123,7 +127,7 @@ class HardwareClient:
         if changed and self.is_connected():
             self._disconnect("cfg_changed")
 
-    def send_request(self, req:HwRequest):
+    def send_request(self, req: HwRequest):
         # Wenn keine Verbindung steht, Polling-Requests nicht aufstauen.
         # Sie würden beim Reconnect sonst in einem Burst gesendet und den Serial-Server
         # überfluten; außerdem sind alte Polls wertlos, da sofort neue erzeugt werden.
@@ -140,12 +144,12 @@ class HardwareClient:
 
     # ------------------ Connection helpers ------------------
     def _connect(self):
-        mode = self.cfg.get("mode","tcp")
+        mode = self.cfg.get("mode", "tcp")
         if mode == "tcp":
-            ip = self.cfg.get("tcp_ip","127.0.0.1")
-            port = int(self.cfg.get("tcp_port",23))
+            ip = self.cfg.get("tcp_ip", "127.0.0.1")
+            port = int(self.cfg.get("tcp_port", 23))
             try:
-                s = socket.create_connection((ip,port), timeout=1.0)
+                s = socket.create_connection((ip, port), timeout=1.0)
                 # TCP Keepalive hilft, harte Netzabbrüche zu erkennen (best effort).
                 try:
                     s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -169,8 +173,8 @@ class HardwareClient:
         else:
             if serial is None:
                 return
-            com = self.cfg.get("com_port","COM1")
-            baud = int(self.cfg.get("baudrate",115200))
+            com = self.cfg.get("com_port", "COM1")
+            baud = int(self.cfg.get("baudrate", 115200))
             try:
                 self._ser = serial.Serial(com, baud, timeout=0.2)
                 self._last_rx_any_ts = time.time()
@@ -180,7 +184,7 @@ class HardwareClient:
             except Exception:
                 self._ser = None
 
-    def _write(self, data:bytes):
+    def _write(self, data: bytes):
         if self._sock:
             self._sock.sendall(data)
             self._last_tx_any_ts = time.time()
@@ -188,7 +192,7 @@ class HardwareClient:
             self._ser.write(data)
             self._last_tx_any_ts = time.time()
 
-    def _read_some(self)->bytes:
+    def _read_some(self) -> bytes:
         if self._sock:
             try:
                 data = self._sock.recv(4096)
@@ -323,8 +327,8 @@ class HardwareClient:
                             if start > 0:
                                 self._rxbuf = self._rxbuf[start:]
                             break
-                        raw_bytes = self._rxbuf[start:end+1]
-                        self._rxbuf = self._rxbuf[end+1:]
+                        raw_bytes = self._rxbuf[start : end + 1]
+                        self._rxbuf = self._rxbuf[end + 1 :]
 
                         raw = raw_bytes.decode("ascii", errors="ignore").strip()
                         if not raw:
@@ -386,7 +390,12 @@ class HardwareClient:
                 now = time.time()
                 since = float(self._connected_since_ts or 0.0)
                 last_rx = float(self._last_rx_any_ts or 0.0)
-                if since > 0.0 and (now - since) > 3.0 and last_rx > 0.0 and (now - last_rx) > float(self._no_rx_timeout_s):
+                if (
+                    since > 0.0
+                    and (now - since) > 3.0
+                    and last_rx > 0.0
+                    and (now - last_rx) > float(self._no_rx_timeout_s)
+                ):
                     self._disconnect("no_rx")
                     time.sleep(0.1)
                     continue
@@ -439,11 +448,13 @@ class HardwareClient:
                         req.on_done(None, None)
             except Exception:
                 try:
-                    if self._sock: self._sock.close()
+                    if self._sock:
+                        self._sock.close()
                 except Exception:
                     pass
                 try:
-                    if self._ser: self._ser.close()
+                    if self._ser:
+                        self._ser.close()
                 except Exception:
                     pass
                 self._sock = None

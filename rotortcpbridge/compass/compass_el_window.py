@@ -56,9 +56,14 @@ class ElevationCompassWidget(QWidget):
         self._ref_lbl = QLabel(t("axis.ref_label"), self)
         self._ref_lbl.setStyleSheet(lbl_style)
 
-        for w in (self._moving_led, self._moving_lbl,
-                  self._online_led, self._online_lbl,
-                  self._ref_led,    self._ref_lbl):
+        for w in (
+            self._moving_led,
+            self._moving_lbl,
+            self._online_led,
+            self._online_lbl,
+            self._ref_led,
+            self._ref_lbl,
+        ):
             w.setVisible(True)
 
         self.setMinimumSize(280, 280)
@@ -91,32 +96,43 @@ class ElevationCompassWidget(QWidget):
         margin = 7
         top_y = 13
         if self._top_center_widget is not None:
-            w = self._top_center_widget.sizeHint().width() if self._top_center_widget.sizeHint().isValid() else 140
-            h = self._top_center_widget.sizeHint().height() if self._top_center_widget.sizeHint().isValid() else 24
+            w = (
+                self._top_center_widget.sizeHint().width()
+                if self._top_center_widget.sizeHint().isValid()
+                else 140
+            )
+            h = (
+                self._top_center_widget.sizeHint().height()
+                if self._top_center_widget.sizeHint().isValid()
+                else 24
+            )
             x = (self.width() - w) // 2
             y = 0
             self._top_center_widget.setGeometry(x, y, max(w, 120), max(h, 22))
             self._top_center_widget.raise_()
         # Moving / Online / Ref rechts – absolute Positionierung, LED-Spalte exakt auf einer Linie
-        led_d  = self._led_d
-        row_h  = 22
-        line2_y = top_y  + row_h
+        led_d = self._led_d
+        row_h = 22
+        line2_y = top_y + row_h
         line3_y = line2_y + row_h
-        lbl_w  = 80       # feste Label-Breite (reicht für alle drei Texte)
-        led_x  = self.width() - margin - lbl_w - 4 - led_d   # LED-Spalte
-        lbl_x  = led_x + led_d + 4                            # Label immer direkt nach LED
+        lbl_w = 80  # feste Label-Breite (reicht für alle drei Texte)
+        led_x = self.width() - margin - lbl_w - 4 - led_d  # LED-Spalte
+        lbl_x = led_x + led_d + 4  # Label immer direkt nach LED
 
-        self._moving_led.setGeometry(led_x, top_y   + 5, led_d, led_d)
-        self._moving_lbl.setGeometry(lbl_x, top_y,        lbl_w, row_h)
-        self._moving_led.raise_(); self._moving_lbl.raise_()
+        self._moving_led.setGeometry(led_x, top_y + 5, led_d, led_d)
+        self._moving_lbl.setGeometry(lbl_x, top_y, lbl_w, row_h)
+        self._moving_led.raise_()
+        self._moving_lbl.raise_()
 
         self._online_led.setGeometry(led_x, line2_y + 5, led_d, led_d)
-        self._online_lbl.setGeometry(lbl_x, line2_y,      lbl_w, row_h)
-        self._online_led.raise_(); self._online_lbl.raise_()
+        self._online_lbl.setGeometry(lbl_x, line2_y, lbl_w, row_h)
+        self._online_led.raise_()
+        self._online_lbl.raise_()
 
         self._ref_led.setGeometry(led_x, line3_y + 5, led_d, led_d)
-        self._ref_lbl.setGeometry(lbl_x, line3_y,      lbl_w, row_h)
-        self._ref_led.raise_(); self._ref_lbl.raise_()
+        self._ref_lbl.setGeometry(lbl_x, line3_y, lbl_w, row_h)
+        self._ref_led.raise_()
+        self._ref_lbl.raise_()
 
     def set_current_deg(self, deg: Optional[float]) -> None:
         self._current_deg = None if deg is None else clamp_el(deg)
@@ -274,7 +290,17 @@ class ElevationCompassWidget(QWidget):
 
         # ACCBINS-Heatmap-Ring (5px) um den Viertelkreis
         if self._heatmap_visible and (self._bins_cw or self._bins_ccw):
-            paint_bins_heatmap_ring(painter, cx, cy, r, self._bins_cw, self._bins_ccw, elevation=True, ring_width=5.0, offset_deg=self._heatmap_offset_deg)
+            paint_bins_heatmap_ring(
+                painter,
+                cx,
+                cy,
+                r,
+                self._bins_cw,
+                self._bins_ccw,
+                elevation=True,
+                ring_width=5.0,
+                offset_deg=self._heatmap_offset_deg,
+            )
 
         # SOLL (gestrichelt)
         if self._target_deg is not None:

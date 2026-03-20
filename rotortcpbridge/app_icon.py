@@ -23,4 +23,3 @@ def get_app_icon() -> QIcon:
     else:
         _CACHED_ICON = QIcon()
     return _CACHED_ICON
-

@@ -1,4 +1,5 @@
 """Fenster 'Befehle' für RotorTcpBridge."""
+
 from __future__ import annotations
 
 import re
@@ -78,25 +79,26 @@ def _BLOCK1():
 def _BLOCK2():
     return [(t(key), sc, gc) for key, sc, gc in _BLOCK2_DEFS]
 
+
 # Tupel: (min, max, unit, is_current_mA, is_timeout_s)
 # is_current_mA : Eingabe mA, Senden/Empfangen mV  (0–1300 mV = 0–10 A)
 # is_timeout_s  : Eingabe Sekunden, Senden/Empfangen ms
 _PARAM_SPEC = {
-    "SETID":           (1,   254,   "ID",  False, False),
-    "SETWINDENABLE":   (0,   1,     "0/1", False, False),
-    "SETWINDDIROF":    (0,   360,   "°",   False, False),
-    "SETTEMPM":        (0,   90,    "°C",  False, False),
-    "SETSWAPTEMP":     (0,   1,     "0/1", False, False),
-    "SETRAMP":         (0,   60,    "°",   False, False),
-    "SETPOSTIMEOUT":   (1,   600,   "s",   False, True),
-    "SETHOMETIMEOUT":  (1,   600,   "s",   False, True),
-    "SETHOMERETURN":   (0,   1,     "0/1", False, False),
-    "SETHOMEPWM":      (0,   100,   "%",   False, False),
-    "SETHOMESEEKPPWM": (0,   100,   "%",   False, False),
-    "SETMINPWM":       (15,  100,   "%",   False, False),
-    "SETMAXDG":        (0,   360,   "°",   False, False),
-    "SETIWARN":        (100, 10000, "mA",  True,  False),
-    "SETIMAX":         (100, 10000, "mA",  True,  False),
+    "SETID": (1, 254, "ID", False, False),
+    "SETWINDENABLE": (0, 1, "0/1", False, False),
+    "SETWINDDIROF": (0, 360, "°", False, False),
+    "SETTEMPM": (0, 90, "°C", False, False),
+    "SETSWAPTEMP": (0, 1, "0/1", False, False),
+    "SETRAMP": (0, 60, "°", False, False),
+    "SETPOSTIMEOUT": (1, 600, "s", False, True),
+    "SETHOMETIMEOUT": (1, 600, "s", False, True),
+    "SETHOMERETURN": (0, 1, "0/1", False, False),
+    "SETHOMEPWM": (0, 100, "%", False, False),
+    "SETHOMESEEKPPWM": (0, 100, "%", False, False),
+    "SETMINPWM": (15, 100, "%", False, False),
+    "SETMAXDG": (0, 360, "°", False, False),
+    "SETIWARN": (100, 10000, "mA", True, False),
+    "SETIMAX": (100, 10000, "mA", True, False),
 }
 
 _MV_PER_A = 130.0  # 1300 mV = 10 A
@@ -109,6 +111,7 @@ _PARAM_LABEL_MIN_WIDTH = 170
 
 class CommandButtonsWindow(QDialog):
     """Dialog mit Rotor-Parametern (Lesen/Schreiben) sowie Backup/Restore."""
+
     sig_get_result = Signal(str, str, str)
     sig_send_result = Signal(str, str, str, str)
     sig_backup_step_done = Signal(bool, str, str, int, str, str)
@@ -147,7 +150,9 @@ class CommandButtonsWindow(QDialog):
             mapped = _SET_TO_GET_SPECIAL_MAP.get(set_cmd)
             if mapped and mapped in self._all_spec_by_name:
                 get_cmds_hidden.add(mapped)
-        self._cmd_specs = [c for c in all_cmd_specs if not (c.name.startswith("GET") and c.name in get_cmds_hidden)]
+        self._cmd_specs = [
+            c for c in all_cmd_specs if not (c.name.startswith("GET") and c.name in get_cmds_hidden)
+        ]
         self._spec_by_name = {c.name: c for c in self._cmd_specs}
         self._param_rows: dict[str, tuple[QLineEdit, QPushButton]] = {}
         self._send_set_inflight: set[tuple[int, str]] = set()
@@ -171,7 +176,9 @@ class CommandButtonsWindow(QDialog):
             self.cb_cmd.addItem(spec.name)
             idx = self.cb_cmd.count() - 1
             self.cb_cmd.setItemData(idx, format_cmd_tooltip(spec), Qt.ItemDataRole.ToolTipRole)
-        last_cmd = str(self.cfg.get("ui", {}).get("last_cmd", "SETPOSDG") or "SETPOSDG").strip().upper()
+        last_cmd = (
+            str(self.cfg.get("ui", {}).get("last_cmd", "SETPOSDG") or "SETPOSDG").strip().upper()
+        )
         if last_cmd and last_cmd in self._spec_by_name:
             self.cb_cmd.setCurrentText(last_cmd)
         elif self.cb_cmd.count() > 0:
@@ -378,7 +385,11 @@ class CommandButtonsWindow(QDialog):
         if self._auto_query_inflight:
             self._auto_query_timer.start(120)
             return
-        params_to_send = str(spec.params_literal) if spec.kind == "none" and spec.params_literal is not None else "0"
+        params_to_send = (
+            str(spec.params_literal)
+            if spec.kind == "none" and spec.params_literal is not None
+            else "0"
+        )
         dst = self._current_dst()
         self._block_auto_send = True
         try:
@@ -396,7 +407,9 @@ class CommandButtonsWindow(QDialog):
 
         try:
             self.ctrl.send_ui_command(
-                dst, cmd, params_to_send,
+                dst,
+                cmd,
+                params_to_send,
                 expect_prefix=f"ACK_{cmd}",
                 priority=0,
                 on_done=done,
@@ -414,7 +427,11 @@ class CommandButtonsWindow(QDialog):
         if spec is not None:
             info = format_cmd_tooltip(spec)
             if cmd.startswith("GET") and params and params != "…":
-                lit = str(spec.params_literal).strip() if spec.kind == "none" and spec.params_literal is not None else None
+                lit = (
+                    str(spec.params_literal).strip()
+                    if spec.kind == "none" and spec.params_literal is not None
+                    else None
+                )
                 if lit is None or params != lit:
                     info = f"{info}\n{t('catalog.response')}: {params}"
             self.lbl_cmd_info.setText(info)
@@ -428,7 +445,12 @@ class CommandButtonsWindow(QDialog):
             self.ed_frame.setText("CMD ungültig (nur A-Z/0-9/_)")
             return
         params_for_preview = params
-        if spec is not None and cmd.startswith("GET") and spec.kind == "none" and spec.params_literal is not None:
+        if (
+            spec is not None
+            and cmd.startswith("GET")
+            and spec.kind == "none"
+            and spec.params_literal is not None
+        ):
             params_for_preview = str(spec.params_literal)
         try:
             self.ed_frame.setText(build(src, dst, cmd, params_for_preview))
@@ -451,16 +473,22 @@ class CommandButtonsWindow(QDialog):
             if cmd.startswith("GET") or self._get_query_cmd_for_selection(cmd) == "":
                 params = str(spec.params_literal)
         try:
+
             def done(tel, err):
                 if err or tel is None:
                     self.sig_send_result.emit(cmd, "", "", str(err or "keine Antwort"))
                 else:
                     self.sig_send_result.emit(
-                        cmd, str(getattr(tel, "cmd", "") or ""),
-                        str(getattr(tel, "params", "") or ""), ""
+                        cmd,
+                        str(getattr(tel, "cmd", "") or ""),
+                        str(getattr(tel, "params", "") or ""),
+                        "",
                     )
+
             self.ctrl.send_ui_command(
-                dst, cmd, params,
+                dst,
+                cmd,
+                params,
                 expect_prefix=f"ACK_{cmd}",
                 priority=0,
                 on_done=done,
@@ -471,11 +499,11 @@ class CommandButtonsWindow(QDialog):
     def _build_timeout_s_tooltip(self, set_cmd: str, min_s: float, max_s: float) -> str:
         """Tooltip für Timeout-Eingabefelder (Eingabe Sekunden, Hardware ms)."""
         key_map = {
-            "SETPOSTIMEOUT":  "cmd.tooltip_setpostimeout_s",
+            "SETPOSTIMEOUT": "cmd.tooltip_setpostimeout_s",
             "SETHOMETIMEOUT": "cmd.tooltip_sethometimeout_s",
         }
-        help_line  = t(key_map.get(set_cmd, "cmd.tooltip_setpostimeout_s"))
-        note_line  = t("cmd.tooltip_timeout_s_note")
+        help_line = t(key_map.get(set_cmd, "cmd.tooltip_setpostimeout_s"))
+        note_line = t("cmd.tooltip_timeout_s_note")
         range_line = f"{t('catalog.range')}: {int(min_s)} .. {int(max_s)} s"
         return "\n".join([set_cmd, help_line, note_line, range_line])
 
@@ -483,14 +511,16 @@ class CommandButtonsWindow(QDialog):
         """Tooltip für mA-Eingabefelder (SETIWARN / SETIMAX)."""
         key_map = {
             "SETIWARN": "cmd.tooltip_setiwarn_ma",
-            "SETIMAX":  "cmd.tooltip_setimax_ma",
+            "SETIMAX": "cmd.tooltip_setimax_ma",
         }
         help_line = t(key_map.get(set_cmd, "cmd.tooltip_setiwarn_ma"))
-        note_line  = t("cmd.tooltip_current_ma_note")
+        note_line = t("cmd.tooltip_current_ma_note")
         range_line = f"{t('catalog.range')}: {int(min_ma)} .. {int(max_ma)} mA"
         return "\n".join([set_cmd, help_line, note_line, range_line])
 
-    def _add_param_row_to_grid(self, grid: QGridLayout, row: int, label: str, set_cmd: str, get_cmd: str):
+    def _add_param_row_to_grid(
+        self, grid: QGridLayout, row: int, label: str, set_cmd: str, get_cmd: str
+    ):
         """Grid-Spalten: 0=Label (links), 1=Eingabe (100px), 2=Einheit (28px), 3=Button (55px)."""
         param_spec = _PARAM_SPEC.get(set_cmd, (None, None, "", False, False))
         min_v, max_v, unit, is_current_mA, is_timeout_s = param_spec
@@ -598,7 +628,9 @@ class CommandButtonsWindow(QDialog):
 
             try:
                 self.ctrl.send_ui_command(
-                    dst, get_cmd, params,
+                    dst,
+                    get_cmd,
+                    params,
                     expect_prefix=f"ACK_{get_cmd}",
                     timeout_s=0.8,
                     priority=0,
@@ -759,13 +791,17 @@ class CommandButtonsWindow(QDialog):
                     val = getattr(tel, "params", "") or params
                     self.ctrl.set_wind_enabled_from_value(val)
                 self.sig_send_result.emit(
-                    cmd, str(getattr(tel, "cmd", "") or ""),
-                    str(getattr(tel, "params", "") or ""), ""
+                    cmd,
+                    str(getattr(tel, "cmd", "") or ""),
+                    str(getattr(tel, "params", "") or ""),
+                    "",
                 )
 
         try:
             self.ctrl.send_ui_command(
-                dst, cmd, params,
+                dst,
+                cmd,
+                params,
                 expect_prefix=f"ACK_{cmd}",
                 timeout_s=1.0,
                 priority=0,
@@ -801,8 +837,7 @@ class CommandButtonsWindow(QDialog):
         if not dsts:
             dsts = [0]
         path, _ = QFileDialog.getSaveFileName(
-            self, t("cmd.backup_save_title"), str(backups_dir()),
-            t("cmd.file_filter_xml")
+            self, t("cmd.backup_save_title"), str(backups_dir()), t("cmd.file_filter_xml")
         )
         if not path:
             return
@@ -845,7 +880,9 @@ class CommandButtonsWindow(QDialog):
 
         try:
             self.ctrl.send_ui_command(
-                dst, get_cmd, params_to_send,
+                dst,
+                get_cmd,
+                params_to_send,
                 expect_prefix=f"ACK_{get_cmd}",
                 timeout_s=1.2,
                 priority=0,
@@ -855,7 +892,9 @@ class CommandButtonsWindow(QDialog):
             self.sig_backup_step_done.emit(False, "", str(e), dst, set_cmd, get_cmd)
 
     @Slot(bool, str, str, int, str, str)
-    def _on_backup_step_done(self, ok: bool, params_val: str, err: str, dst: int, set_cmd: str, get_cmd: str) -> None:
+    def _on_backup_step_done(
+        self, ok: bool, params_val: str, err: str, dst: int, set_cmd: str, get_cmd: str
+    ) -> None:
         if not self._backup_state:
             return
         s = self._backup_state
@@ -890,15 +929,16 @@ class CommandButtonsWindow(QDialog):
             QMessageBox.information(self, t("cmd.btn_restore"), t("cmd.msgbox_restore_running"))
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, t("cmd.backup_load_title"), str(backups_dir()),
-            t("cmd.file_filter_xml")
+            self, t("cmd.backup_load_title"), str(backups_dir()), t("cmd.file_filter_xml")
         )
         if not path:
             return
         try:
             entries, gui_config = load_rotor_config_xml(Path(path))
         except Exception as e:
-            QMessageBox.warning(self, t("cmd.btn_restore"), t("cmd.msgbox_restore_read_error", err=e))
+            QMessageBox.warning(
+                self, t("cmd.btn_restore"), t("cmd.msgbox_restore_read_error", err=e)
+            )
             return
         if not entries and not gui_config:
             QMessageBox.information(self, t("cmd.btn_restore"), t("cmd.msgbox_restore_empty"))
@@ -923,13 +963,19 @@ class CommandButtonsWindow(QDialog):
         params = str(e.get("params", "")).strip()
 
         def done(tel, err):
-            ok = err is None and tel is not None and str(getattr(tel, "cmd", "") or "").startswith("ACK_")
+            ok = (
+                err is None
+                and tel is not None
+                and str(getattr(tel, "cmd", "") or "").startswith("ACK_")
+            )
             err_s = "" if ok else (str(err or "keine Antwort") if err else "NAK")
             self.sig_restore_step_done.emit(ok, err_s, dst, cmd, params)
 
         try:
             self.ctrl.send_ui_command(
-                dst, cmd, params,
+                dst,
+                cmd,
+                params,
                 expect_prefix=f"ACK_{cmd}",
                 timeout_s=1.0,
                 priority=0,
@@ -968,6 +1014,10 @@ class CommandButtonsWindow(QDialog):
                 self._refresh_dst_dropdown()
                 self._read_all_params()
             except Exception as e:
-                QMessageBox.warning(self, t("cmd.btn_restore"), t("cmd.msgbox_restore_gui_error", err=e))
+                QMessageBox.warning(
+                    self, t("cmd.btn_restore"), t("cmd.msgbox_restore_gui_error", err=e)
+                )
         self.lbl_hint.setText(t("cmd.hint_restore_done", total=total))
-        QMessageBox.information(self, t("cmd.btn_restore"), t("cmd.msgbox_restore_done", total=total))
+        QMessageBox.information(
+            self, t("cmd.btn_restore"), t("cmd.msgbox_restore_done", total=total)
+        )

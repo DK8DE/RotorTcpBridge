@@ -1,4 +1,5 @@
 """Hauptfenster der RotorTcpBridge-Anwendung."""
+
 from __future__ import annotations
 
 import threading
@@ -38,7 +39,17 @@ from .axis_widget import _make_axis_panel, fill_axis_panel, retranslate_axis_pan
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, cfg: dict, controller, pst_server, hw_client, save_cfg_cb, logbuf, udp_ucxlog=None, udp_pst=None):
+    def __init__(
+        self,
+        cfg: dict,
+        controller,
+        pst_server,
+        hw_client,
+        save_cfg_cb,
+        logbuf,
+        udp_ucxlog=None,
+        udp_pst=None,
+    ):
         super().__init__()
         self.cfg = cfg
         self.ctrl = controller
@@ -183,7 +194,9 @@ class MainWindow(QMainWindow):
 
         try:
             srv_form.setVerticalSpacing(px_to_dip(self, 4))
-            srv_form.setContentsMargins(px_to_dip(self, 8), px_to_dip(self, 4), px_to_dip(self, 8), px_to_dip(self, 4))
+            srv_form.setContentsMargins(
+                px_to_dip(self, 8), px_to_dip(self, 4), px_to_dip(self, 8), px_to_dip(self, 4)
+            )
         except Exception:
             pass
 
@@ -219,7 +232,12 @@ class MainWindow(QMainWindow):
         self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
         self._map_win = MapWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
         self._settings_win = SettingsWindow(
-            self.cfg, self.ctrl, self.pst, self.hw, self.save_cfg_cb, self.logbuf,
+            self.cfg,
+            self.ctrl,
+            self.pst,
+            self.hw,
+            self.save_cfg_cb,
+            self.logbuf,
             after_apply_cb=self._after_settings_applied,
             rebuild_ui_cb=self._rebuild_all_windows,
             map_window=self._map_win,
@@ -227,7 +245,9 @@ class MainWindow(QMainWindow):
         )
         self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
         self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
-        self._commands_win = CommandButtonsWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+        self._commands_win = CommandButtonsWindow(
+            self.cfg, self.ctrl, self.save_cfg_cb, parent=None
+        )
 
         self.btn_open_compass.clicked.connect(self._open_compass)
         self.btn_open_map.clicked.connect(self._open_map)
@@ -340,7 +360,14 @@ class MainWindow(QMainWindow):
     def _rebuild_all_windows(self):
         """Alle Fenster schließen und neu erstellen (nach Sprachänderung)."""
         try:
-            for attr in ("_log_win", "_compass_win", "_map_win", "_statistics_win", "_weather_win", "_commands_win"):
+            for attr in (
+                "_log_win",
+                "_compass_win",
+                "_map_win",
+                "_statistics_win",
+                "_weather_win",
+                "_commands_win",
+            ):
                 w = getattr(self, attr, None)
                 if w is not None:
                     try:
@@ -352,12 +379,15 @@ class MainWindow(QMainWindow):
             from .weather_window import WeatherWindow
             from .command_buttons_window import CommandButtonsWindow
             from .log_window import LogWindow
+
             self._log_win = LogWindow(self.logbuf, parent=None)
             self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
             self._map_win = MapWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
             self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
             self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
-            self._commands_win = CommandButtonsWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+            self._commands_win = CommandButtonsWindow(
+                self.cfg, self.ctrl, self.save_cfg_cb, parent=None
+            )
         except Exception:
             pass
         self._after_settings_applied()
@@ -374,7 +404,12 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
             self._settings_win = SettingsWindow(
-                self.cfg, self.ctrl, self.pst, self.hw, self.save_cfg_cb, self.logbuf,
+                self.cfg,
+                self.ctrl,
+                self.pst,
+                self.hw,
+                self.save_cfg_cb,
+                self.logbuf,
                 after_apply_cb=self._after_settings_applied,
                 rebuild_ui_cb=self._rebuild_all_windows,
                 map_window=self._map_win,
@@ -418,7 +453,9 @@ class MainWindow(QMainWindow):
                 port=int(ui.get("udp_pst_port", 12000)),
             )
             if self._udp_pst.bind_error_msg:
-                QMessageBox.warning(self, t("main.pst_udp_error_title"), self._udp_pst.bind_error_msg)
+                QMessageBox.warning(
+                    self, t("main.pst_udp_error_title"), self._udp_pst.bind_error_msg
+                )
         # Hauptfenster-Texte (Server, AZ/EL, Menü, …) nach load_lang / Einstellungen synchronisieren
         self._retranslate_ui()
         if hasattr(self, "_compass_win") and self._compass_win.isVisible():
@@ -598,10 +635,15 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         try:
-            for w in (getattr(self, "_log_win", None), getattr(self, "_settings_win", None),
-                     getattr(self, "_compass_win", None), getattr(self, "_map_win", None),
-                     getattr(self, "_statistics_win", None), getattr(self, "_weather_win", None),
-                     getattr(self, "_commands_win", None)):
+            for w in (
+                getattr(self, "_log_win", None),
+                getattr(self, "_settings_win", None),
+                getattr(self, "_compass_win", None),
+                getattr(self, "_map_win", None),
+                getattr(self, "_statistics_win", None),
+                getattr(self, "_weather_win", None),
+                getattr(self, "_commands_win", None),
+            ):
                 try:
                     if w is not None:
                         w.close()
@@ -614,6 +656,7 @@ class MainWindow(QMainWindow):
     def _on_ref_start_failed(self, axis: str) -> None:
         """Wird aus Hintergrundthread aufgerufen – auf UI-Thread weiterleiten."""
         from PySide6.QtCore import QTimer as _QTimer
+
         _QTimer.singleShot(0, lambda: self._show_ref_failed_popup(str(axis)))
 
     def _show_ref_failed_popup(self, axis: str) -> None:
@@ -653,6 +696,7 @@ class MainWindow(QMainWindow):
 
     def _tick(self):
         import time as _time
+
         self.ctrl.tick_polling()
 
         pst_on = bool(self.pst.running)
@@ -718,15 +762,21 @@ class MainWindow(QMainWindow):
             self._log_exception("_tick led_hw / HW-Timeout-Anzeige", e)
             self.led_hw.set_state(hw_on)
 
-        self.ed_pst.setText(f"{t('main.pst_running') if pst_on else t('main.pst_stopped')}  AZ:{self.pst.port_az}  EL:{self.pst.port_el}  Host:{self.pst.host}")
+        self.ed_pst.setText(
+            f"{t('main.pst_running') if pst_on else t('main.pst_stopped')}  AZ:{self.pst.port_az}  EL:{self.pst.port_el}  Host:{self.pst.host}"
+        )
         mode = self.cfg["hardware_link"].get("mode", "tcp")
         if mode == "tcp":
             ip = self.cfg["hardware_link"].get("tcp_ip", "")
             port = self.cfg["hardware_link"].get("tcp_port", "")
-            self.ed_hw.setText(f"{t('main.hw_connected') if hw_on else t('main.hw_disconnected')}  TCP {ip}:{port}")
+            self.ed_hw.setText(
+                f"{t('main.hw_connected') if hw_on else t('main.hw_disconnected')}  TCP {ip}:{port}"
+            )
         else:
             com = self.cfg["hardware_link"].get("com_port", "")
-            self.ed_hw.setText(f"{t('main.hw_connected') if hw_on else t('main.hw_disconnected')}  COM {com} @ 115200")
+            self.ed_hw.setText(
+                f"{t('main.hw_connected') if hw_on else t('main.hw_disconnected')}  COM {com} @ 115200"
+            )
 
         self._update_axis_visibility()
         wind_on = self._update_wind_visibility()

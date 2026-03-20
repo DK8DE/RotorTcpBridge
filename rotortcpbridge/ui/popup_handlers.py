@@ -1,4 +1,5 @@
 """Fehler- und Warnungs-Popup-Logik (Cooldown, einmalige Anzeige)."""
+
 from __future__ import annotations
 
 from PySide6.QtWidgets import QWidget, QMessageBox
@@ -22,6 +23,7 @@ class ErrorPopupHandler:
 
     def maybe_show(self, parent: QWidget, axis_label: str, current_code: int) -> None:
         import time as _time
+
         now = float(_time.time())
         cooldown_s = 6.0
         clear_stable_s = 5.0
@@ -94,6 +96,7 @@ class WarningPopupHandler:
 
     def maybe_show(self, parent: QWidget, axis_label: str, axis_state) -> None:
         import time as _time
+
         now = float(_time.time())
         cooldown_s = 10.0
         stable_clear_s = 8.0
@@ -157,7 +160,9 @@ class WarningPopupHandler:
         lines = []
         for wid in new_ids:
             name, meaning, todo = warning_info(wid)
-            lines.append(f"{wid}: {name}\n{t('popup.warn_meaning', meaning=meaning)}\n{t('popup.warn_tip', todo=todo)}")
+            lines.append(
+                f"{wid}: {name}\n{t('popup.warn_meaning', meaning=meaning)}\n{t('popup.warn_tip', todo=todo)}"
+            )
 
         title = t("popup.warn_title", axis=axis_label.upper())
         msg = t("popup.warn_msg", lines="\n\n".join(lines))

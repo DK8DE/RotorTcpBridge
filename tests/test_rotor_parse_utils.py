@@ -1,4 +1,5 @@
 """Tests für rotor_parse_utils."""
+
 from __future__ import annotations
 
 import pytest

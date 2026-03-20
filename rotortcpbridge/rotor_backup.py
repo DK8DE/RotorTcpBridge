@@ -17,15 +17,32 @@ from .command_catalog import command_specs, CommandSpec
 
 # Config-Bereiche, die als GUI-Einstellungen mit gesichert werden
 _GUI_CONFIG_KEYS = (
-    "pst_server", "rotor_bus", "hardware_link", "ui",
-    "polling_ms", "spid", "pwm", "behavior",
+    "pst_server",
+    "rotor_bus",
+    "hardware_link",
+    "ui",
+    "polling_ms",
+    "spid",
+    "pwm",
+    "behavior",
 )
 
 # SET-Befehle ohne GET oder Steuerbefehle – nicht backupbar
-_EXCLUDED_SET = frozenset({
-    "STOP", "NSTOP", "SETREF", "SETPOSDG", "SETCAL", "ABORTCAL", "DELCAL",
-    "RESET", "CLRSTAT", "DELWARN", "JOG",
-})
+_EXCLUDED_SET = frozenset(
+    {
+        "STOP",
+        "NSTOP",
+        "SETREF",
+        "SETPOSDG",
+        "SETCAL",
+        "ABORTCAL",
+        "DELCAL",
+        "RESET",
+        "CLRSTAT",
+        "DELWARN",
+        "JOG",
+    }
+)
 
 # Spezielle Zuordnung SET -> GET (abweichende Namensgebung)
 _SET_TO_GET_SPECIAL = {
@@ -110,7 +127,9 @@ def _deep_merge(dst: dict, src: dict) -> None:
             dst[k] = v
 
 
-def save_rotor_config_xml(path: Path, entries: list[dict], gui_config: Optional[Dict[str, Any]] = None) -> None:
+def save_rotor_config_xml(
+    path: Path, entries: list[dict], gui_config: Optional[Dict[str, Any]] = None
+) -> None:
     """
     Speichert Einträge und optional GUI-Einstellungen als XML.
     Jeder Eintrag: {"dst": int, "cmd": str, "params": str}

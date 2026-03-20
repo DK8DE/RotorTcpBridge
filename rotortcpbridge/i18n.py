@@ -5,6 +5,7 @@ Verwendung:
     load_lang("de")          # einmalig beim Start
     label = t("main.btn_compass")
 """
+
 from __future__ import annotations
 
 import json

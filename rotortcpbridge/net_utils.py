@@ -1,4 +1,5 @@
 """Netzwerk-Utilities für RotorTcpBridge."""
+
 from __future__ import annotations
 
 import ctypes
@@ -20,9 +21,7 @@ def check_internet(timeout: float = 2.0) -> bool:
     if platform.system().lower() == "windows":
         try:
             flags = ctypes.c_ulong(0)
-            connected = ctypes.windll.wininet.InternetGetConnectedState(
-                ctypes.byref(flags), 0
-            )
+            connected = ctypes.windll.wininet.InternetGetConnectedState(ctypes.byref(flags), 0)
             if not connected:
                 return False  # Kein Netzwerkadapter aktiv → sofort False
         except Exception:
@@ -37,7 +36,7 @@ def check_internet(timeout: float = 2.0) -> bool:
             urllib.request.urlopen(url, timeout=timeout)
             return True
         except urllib.error.HTTPError:
-            return True   # HTTP-Fehlerantwort erhalten = trotzdem online
+            return True  # HTTP-Fehlerantwort erhalten = trotzdem online
         except Exception:
             pass
 

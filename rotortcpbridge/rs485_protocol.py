@@ -15,25 +15,29 @@ from dataclasses import dataclass
 
 NUM_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 
+
 @dataclass
 class Telegram:
-    src:int
-    dst:int
-    cmd:str
-    params:str
-    cs:float
-    ok:bool
+    src: int
+    dst: int
+    cmd: str
+    params: str
+    cs: float
+    ok: bool
 
-def _last_number(params:str)->float:
+
+def _last_number(params: str) -> float:
     m = NUM_RE.findall(params or "")
     if not m:
         return 0.0
     return float(m[-1].replace(",", "."))
 
-def calc_checksum(src:int, dst:int, params:str)->float:
+
+def calc_checksum(src: int, dst: int, params: str) -> float:
     return float(src + dst) + _last_number(params)
 
-def _fmt_cs(cs:float)->str:
+
+def _fmt_cs(cs: float) -> str:
     # Ganzzahl? -> ohne Nachkommastellen
     if abs(cs - round(cs)) < 0.005:
         return str(int(round(cs)))
@@ -44,11 +48,13 @@ def _fmt_cs(cs:float)->str:
         s = s.rstrip("0").rstrip(",")
     return s
 
-def build(src:int, dst:int, cmd:str, params:str)->str:
+
+def build(src: int, dst: int, cmd: str, params: str) -> str:
     cs = calc_checksum(src, dst, params)
     return f"#{src}:{dst}:{cmd}:{params}:{_fmt_cs(cs)}$"
 
-def parse(line:str)->Telegram|None:
+
+def parse(line: str) -> Telegram | None:
     line = line.strip()
     if not (line.startswith("#") and line.endswith("$")):
         return None

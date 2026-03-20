@@ -1,4 +1,5 @@
 """Karten-Fenster mit Leaflet und Antennen-Beam."""
+
 from __future__ import annotations
 
 import base64
@@ -207,10 +208,10 @@ class _TilesHTTPServer:
                     def do_GET(self):
                         path = self.path.lstrip("/")
                         if path.startswith("light/"):
-                            rel = path[len("light/"):]
+                            rel = path[len("light/") :]
                             base = light_dir
                         elif path.startswith("dark/"):
-                            rel = path[len("dark/"):]
+                            rel = path[len("dark/") :]
                             base = dark_dir
                         else:
                             self.send_error(404)
@@ -228,7 +229,12 @@ class _TilesHTTPServer:
                             self.send_header("Cache-Control", "no-store")
                             self.end_headers()
                             self.wfile.write(data)
-                        except (OSError, ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+                        except (
+                            OSError,
+                            ConnectionAbortedError,
+                            BrokenPipeError,
+                            ConnectionResetError,
+                        ):
                             pass
 
                 self._server = HTTPServer(("127.0.0.1", port), _Handler)
@@ -236,7 +242,9 @@ class _TilesHTTPServer:
                 self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
                 self._thread.start()
                 if _DEBUG_TILES:
-                    print(f"[TileHTTP] Server gestartet port={port} light={light_dir} dark={dark_dir}")
+                    print(
+                        f"[TileHTTP] Server gestartet port={port} light={light_dir} dark={dark_dir}"
+                    )
                 return port
             except OSError:
                 continue
@@ -290,7 +298,9 @@ def _offline_zoom_range(dark: bool = False) -> tuple[int, int]:
             for name in os.listdir(base):
                 if name.isdigit():
                     z_dir = base / name
-                    if z_dir.is_dir() and any((z_dir / n).is_dir() for n in os.listdir(z_dir) if n.isdigit()):
+                    if z_dir.is_dir() and any(
+                        (z_dir / n).is_dir() for n in os.listdir(z_dir) if n.isdigit()
+                    ):
                         zooms.append(int(name))
             if zooms:
                 return (min(zooms), max(zooms))
@@ -348,11 +358,23 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
     locator_overlay = bool(params.get("map_locator_overlay", False))
     offline_min_z, offline_max_z = _offline_zoom_range(dark)
     if offline:
-        tile_url = _offline_tile_url(dark) or ("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" if dark else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png")
-        tile_url_light = _offline_tile_url(False) or "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-        tile_url_dark = _offline_tile_url(True) or "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        tile_url = _offline_tile_url(dark) or (
+            "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+            if dark
+            else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+        )
+        tile_url_light = (
+            _offline_tile_url(False)
+            or "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+        )
+        tile_url_dark = (
+            _offline_tile_url(True)
+            or "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        )
         if _DEBUG_TILES:
-            print(f"[BuildHTML] dark={dark} tile={tile_url[:60]} light={tile_url_light[:60]} dark={tile_url_dark[:60]}")
+            print(
+                f"[BuildHTML] dark={dark} tile={tile_url[:60]} light={tile_url_light[:60]} dark={tile_url_dark[:60]}"
+            )
     elif dark:
         tile_url = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
         tile_url_light = tile_url_dark = tile_url
@@ -877,10 +899,19 @@ class MapWindOverlay(QFrame):
         cy = float(arrow_rect.center().y())
         r = float(min(arrow_rect.width(), arrow_rect.height())) / 2.0 * 0.85
         if self._wind_dir_draw_deg is not None:
-            wd = wrap_deg(float(self._wind_dir_draw_deg) + 180.0) if self._wind_dir_mode == "to" else float(self._wind_dir_draw_deg)
+            wd = (
+                wrap_deg(float(self._wind_dir_draw_deg) + 180.0)
+                if self._wind_dir_mode == "to"
+                else float(self._wind_dir_draw_deg)
+            )
             if not self._arrow_pixmap.isNull():
                 side = int(max(24.0, min(r * 1.6, 56.0)))
-                scaled = self._arrow_pixmap.scaled(side, side, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                scaled = self._arrow_pixmap.scaled(
+                    side,
+                    side,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
                 w, h = float(scaled.width()), float(scaled.height())
                 p.save()
                 p.translate(cx, cy)
@@ -1000,7 +1031,9 @@ class MapWindow(QDialog):
         map_layout = QVBoxLayout(map_container)
         map_layout.setContentsMargins(0, 0, 0, 0)
         self._view = QWebEngineView(map_container)
-        self._page = MapWebPage(self._on_map_click, on_tile_error_cb=self._on_tile_error, parent=self._view)
+        self._page = MapWebPage(
+            self._on_map_click, on_tile_error_cb=self._on_tile_error, parent=self._view
+        )
         self._view.setPage(self._page)
         self._view.loadFinished.connect(self._on_map_load_finished)
         map_layout.addWidget(self._view, 1)
@@ -1080,12 +1113,10 @@ class MapWindow(QDialog):
         # Zuletzt per Kartenklick gewähltes Ziel (aus cfg wiederherstellen)
         _saved_ui = self.cfg.get("ui", {})
         self._target_lat: Optional[float] = (
-            float(_saved_ui["map_target_lat"])
-            if "map_target_lat" in _saved_ui else None
+            float(_saved_ui["map_target_lat"]) if "map_target_lat" in _saved_ui else None
         )
         self._target_lon: Optional[float] = (
-            float(_saved_ui["map_target_lon"])
-            if "map_target_lon" in _saved_ui else None
+            float(_saved_ui["map_target_lon"]) if "map_target_lon" in _saved_ui else None
         )
         # Rotor-Azimut, der durch den letzten Kartenklick gesetzt wurde
         # (zum Erkennen von Fremd-Bewegungen)
@@ -1126,7 +1157,9 @@ class MapWindow(QDialog):
         # Horizontdistanz: d_h = sqrt(2*R*h), R=6371 km, h in m
         antenna_height_m = float(ui.get("antenna_height_m", 0.0))
         R_km = 6371.0
-        horizon_dist_km = math.sqrt(2.0 * R_km * (antenna_height_m / 1000.0)) if antenna_height_m > 0 else 0.0
+        horizon_dist_km = (
+            math.sqrt(2.0 * R_km * (antenna_height_m / 1000.0)) if antenna_height_m > 0 else 0.0
+        )
 
         return {
             "lat": lat,
@@ -1169,12 +1202,14 @@ class MapWindow(QDialog):
         polygon = beam_polygon_points(lat, lon, azimuth, opening, range_km)
         center_line = beam_center_line_points(lat, lon, azimuth, range_km)
         stroke, fill = _MAP_ANTENNA_BEAM_COLORS[i]
-        return [{
-            "polygon": [[p[0], p[1]] for p in polygon],
-            "centerLine": [[p[0], p[1]] for p in center_line],
-            "stroke": stroke,
-            "fill": fill,
-        }]
+        return [
+            {
+                "polygon": [[p[0], p[1]] for p in polygon],
+                "centerLine": [[p[0], p[1]] for p in center_line],
+                "stroke": stroke,
+                "fill": fill,
+            }
+        ]
 
     def _get_antenna_offset_az(self) -> float:
         """Versatz der gewählten Antenne (wie Compass)."""
@@ -1193,9 +1228,11 @@ class MapWindow(QDialog):
 
     def _get_antenna_dropdown_items(self) -> list[str]:
         """Antennen-Namen mit Versatz in Klammern (wie Kompass)."""
-        names = list(self.cfg.get("ui", {}).get("antenna_names", ["Antenne 1", "Antenne 2", "Antenne 3"]))
+        names = list(
+            self.cfg.get("ui", {}).get("antenna_names", ["Antenne 1", "Antenne 2", "Antenne 3"])
+        )
         while len(names) < 3:
-            names.append(f"Antenne {len(names)+1}")
+            names.append(f"Antenne {len(names) + 1}")
         az_axis = getattr(self.ctrl, "az", None)
         offsets: list[float] = []
         for slot in (1, 2, 3):
@@ -1229,11 +1266,13 @@ class MapWindow(QDialog):
         for it in items:
             if isinstance(it, dict) and "name" in it:
                 try:
-                    out.append({
-                        "name": str(it["name"])[:15],
-                        "az": float(it.get("az", 0.0)),
-                        "el": clamp_el(float(it.get("el", 0.0))),
-                    })
+                    out.append(
+                        {
+                            "name": str(it["name"])[:15],
+                            "az": float(it.get("az", 0.0)),
+                            "el": clamp_el(float(it.get("el", 0.0))),
+                        }
+                    )
                 except (TypeError, ValueError):
                     pass
         return out
@@ -1241,10 +1280,13 @@ class MapWindow(QDialog):
     def _refresh_favorites_dropdown(self) -> None:
         """Favoriten-Dropdown füllen (wie Kompass)."""
         favs = self._get_favorites()
-        favs = sorted(favs, key=lambda f: (
-            0 if f["name"] and f["name"][0].isdigit() else 1,
-            f["name"].lower(),
-        ))
+        favs = sorted(
+            favs,
+            key=lambda f: (
+                0 if f["name"] and f["name"][0].isdigit() else 1,
+                f["name"].lower(),
+            ),
+        )
         self._cb_fav.blockSignals(True)
         self._cb_fav.clear()
         if not favs:
@@ -1335,11 +1377,15 @@ class MapWindow(QDialog):
         sel_az = data.get("az")
         sel_el = data.get("el")
         favs = self._get_favorites()
-        favs = [f for f in favs if not (
-            f.get("name") == sel_name
-            and abs(float(f.get("az", 0) or 0) - float(sel_az or 0)) < 0.01
-            and abs(float(f.get("el", 0) or 0) - float(sel_el or 0)) < 0.01
-        )]
+        favs = [
+            f
+            for f in favs
+            if not (
+                f.get("name") == sel_name
+                and abs(float(f.get("az", 0) or 0) - float(sel_az or 0)) < 0.01
+                and abs(float(f.get("el", 0) or 0) - float(sel_el or 0)) < 0.01
+            )
+        ]
         if "ui" not in self.cfg:
             self.cfg["ui"] = {}
         self.cfg["ui"]["compass_favorites"] = favs
@@ -1438,10 +1484,17 @@ class MapWindow(QDialog):
         """Wind-Overlay aus Telemetrie aktualisieren."""
         dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", False))
         self._wind_overlay.set_dark_mode(dark)
-        wind_on = bool(getattr(self.ctrl, "wind_enabled", False)) if getattr(self.ctrl, "wind_enabled_known", False) else False
+        wind_on = (
+            bool(getattr(self.ctrl, "wind_enabled", False))
+            if getattr(self.ctrl, "wind_enabled_known", False)
+            else False
+        )
         if not wind_on and hasattr(self.ctrl, "az"):
             tel = getattr(self.ctrl.az, "telemetry", None)
-            if tel and (getattr(tel, "wind_kmh", None) is not None or getattr(tel, "wind_dir_deg", None) is not None):
+            if tel and (
+                getattr(tel, "wind_kmh", None) is not None
+                or getattr(tel, "wind_dir_deg", None) is not None
+            ):
                 wind_on = True
         mode = str(self.cfg.get("ui", {}).get("wind_dir_display", "to") or "to").strip().lower()
         if mode not in ("from", "to"):
@@ -1486,13 +1539,10 @@ class MapWindow(QDialog):
         except Exception:
             tgt = None
         # Bei unbekanntem Ziel (z.B. erste Öffnung): Soll = Ist
-        unknown_target = (
-            (tgt_d10 is None)
-            or (
-                int(tgt_d10 or 0) == 0
-                and float(getattr(az_axis, "last_set_sent_ts", 0.0) or 0.0) <= 0.0
-                and getattr(az_axis, "last_set_sent_target_d10", None) is None
-            )
+        unknown_target = (tgt_d10 is None) or (
+            int(tgt_d10 or 0) == 0
+            and float(getattr(az_axis, "last_set_sent_ts", 0.0) or 0.0) <= 0.0
+            and getattr(az_axis, "last_set_sent_target_d10", None) is None
         )
         if cur is not None and unknown_target:
             tgt = cur
@@ -1505,8 +1555,16 @@ class MapWindow(QDialog):
             tel = getattr(az_axis, "telemetry", None)
             ta = getattr(tel, "temp_ambient_c", None) if tel else None
             tm = getattr(tel, "temp_motor_c", None) if tel else None
-            self._lbl_temp_motor.setText(f"{t('weather.temp_motor_label')}: {float(tm):.1f} °C" if tm is not None else f"{t('weather.temp_motor_label')}: –")
-            self._lbl_temp_ambient.setText(f"{t('weather.temp_ambient_label')}: {float(ta):.1f} °C" if ta is not None else f"{t('weather.temp_ambient_label')}: –")
+            self._lbl_temp_motor.setText(
+                f"{t('weather.temp_motor_label')}: {float(tm):.1f} °C"
+                if tm is not None
+                else f"{t('weather.temp_motor_label')}: –"
+            )
+            self._lbl_temp_ambient.setText(
+                f"{t('weather.temp_ambient_label')}: {float(ta):.1f} °C"
+                if ta is not None
+                else f"{t('weather.temp_ambient_label')}: –"
+            )
         except Exception:
             self._lbl_temp_motor.setText(f"{t('weather.temp_motor_label')}: –")
             self._lbl_temp_ambient.setText(f"{t('weather.temp_ambient_label')}: –")
@@ -1569,11 +1627,11 @@ class MapWindow(QDialog):
             return
 
         ui = self.cfg.get("ui", {})
-        home_lat       = float(ui.get("location_lat", 49.502651))
-        home_lon       = float(ui.get("location_lon", 8.375019))
-        dark           = bool(ui.get("force_dark_mode", False))
+        home_lat = float(ui.get("location_lat", 49.502651))
+        home_lon = float(ui.get("location_lon", 8.375019))
+        dark = bool(ui.get("force_dark_mode", False))
         antenna_height = float(ui.get("antenna_height_m", 0.0))
-        freq_mhz       = float(ui.get("rf_freq_mhz", 145.0))
+        freq_mhz = float(ui.get("rf_freq_mhz", 145.0))
 
         # Kein Ziel gesetzt → Heimposition als Ziel (Entfernung = 0)
         target_lat = self._target_lat if self._target_lat is not None else home_lat
@@ -1651,16 +1709,26 @@ class MapWindow(QDialog):
         if self._map_loaded:
             if self._map_offline is not None and self._map_offline != offline:
                 if offline:
-                    tile_url_off = _offline_tile_url(dark) or ("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" if dark else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png")
+                    tile_url_off = _offline_tile_url(dark) or (
+                        "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                        if dark
+                        else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+                    )
                     js_off = f"if (typeof window.setMapOfflineMode === 'function') window.setMapOfflineMode(true, {json.dumps(tile_url_off)});"
                 else:
-                    tile_url_on = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" if dark else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+                    tile_url_on = (
+                        "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                        if dark
+                        else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+                    )
                     js_off = f"if (typeof window.setMapOfflineMode === 'function') window.setMapOfflineMode(false, {json.dumps(tile_url_on)});"
                 self._view.page().runJavaScript(js_off)
             elif self._map_dark_mode is not None and self._map_dark_mode != dark:
                 js_dark = f"if (typeof window.setMapDarkMode === 'function') window.setMapDarkMode({json.dumps(dark)});"
                 self._view.page().runJavaScript(js_dark)
-            if self._map_locator_overlay is not None and self._map_locator_overlay != params.get("map_locator_overlay", False):
+            if self._map_locator_overlay is not None and self._map_locator_overlay != params.get(
+                "map_locator_overlay", False
+            ):
                 loc_on = bool(params.get("map_locator_overlay", False))
                 js_loc = f"if (typeof window.setMapLocatorOverlay === 'function') window.setMapLocatorOverlay({json.dumps(loc_on)}, {json.dumps(dark)});"
                 self._view.page().runJavaScript(js_loc)

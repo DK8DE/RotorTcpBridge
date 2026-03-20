@@ -1,4 +1,5 @@
 """Kleiner Kompass ohne Zeiger für Statistik-Ringe (Last-Heatmap)."""
+
 from __future__ import annotations
 
 import math
@@ -19,6 +20,7 @@ BINS_SKIP_EDGE = 5
 AZ_N_TOTAL = 72
 AZ_N_USED = AZ_N_TOTAL - 2 * BINS_SKIP_EDGE  # 62
 EL_N_USED = EL_N_SEG - 2 * BINS_SKIP_EDGE  # 8
+
 
 def paint_bins_heatmap_ring(
     painter: QPainter,
@@ -95,16 +97,32 @@ def paint_bins_heatmap_ring(
             path.moveTo(cx + inner_r * math.cos(start_rad), cy - inner_r * math.sin(start_rad))
             path.arcTo(cx - outer_r, cy - outer_r, 2 * outer_r, 2 * outer_r, comp_start, comp_span)
             path.lineTo(cx + inner_r * math.cos(end_rad), cy - inner_r * math.sin(end_rad))
-            path.arcTo(cx - inner_r, cy - inner_r, 2 * inner_r, 2 * inner_r, comp_start + comp_span, -comp_span)
+            path.arcTo(
+                cx - inner_r,
+                cy - inner_r,
+                2 * inner_r,
+                2 * inner_r,
+                comp_start + comp_span,
+                -comp_span,
+            )
             path.closeSubpath()
         else:
             start_rad = math.radians(90.0 - comp_start)
             end_rad = math.radians(90.0 - (comp_start + comp_span))
             path = QPainterPath()
             path.moveTo(cx + inner_r * math.cos(start_rad), cy - inner_r * math.sin(start_rad))
-            path.arcTo(cx - outer_r, cy - outer_r, 2 * outer_r, 2 * outer_r, 90.0 - comp_start, -comp_span)
+            path.arcTo(
+                cx - outer_r, cy - outer_r, 2 * outer_r, 2 * outer_r, 90.0 - comp_start, -comp_span
+            )
             path.lineTo(cx + inner_r * math.cos(end_rad), cy - inner_r * math.sin(end_rad))
-            path.arcTo(cx - inner_r, cy - inner_r, 2 * inner_r, 2 * inner_r, 90.0 - (comp_start + comp_span), comp_span)
+            path.arcTo(
+                cx - inner_r,
+                cy - inner_r,
+                2 * inner_r,
+                2 * inner_r,
+                90.0 - (comp_start + comp_span),
+                comp_span,
+            )
             path.closeSubpath()
         painter.setBrush(seg_color)
         painter.drawPath(path)

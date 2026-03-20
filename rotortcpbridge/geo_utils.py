@@ -1,4 +1,5 @@
 """Geografische Hilfsfunktionen für Karten und Antennen-Beam."""
+
 from __future__ import annotations
 
 import math
@@ -70,10 +71,7 @@ def destination_point(
     br = math.radians(bearing_deg_val)
     lat_r = math.radians(lat)
     lon_r = math.radians(lon)
-    lat2_r = math.asin(
-        math.sin(lat_r) * math.cos(d)
-        + math.cos(lat_r) * math.sin(d) * math.cos(br)
-    )
+    lat2_r = math.asin(math.sin(lat_r) * math.cos(d) + math.cos(lat_r) * math.sin(d) * math.cos(br))
     lon2_r = lon_r + math.atan2(
         math.sin(br) * math.sin(d) * math.cos(lat_r),
         math.cos(d) - math.sin(lat_r) * math.sin(lat2_r),
@@ -150,8 +148,10 @@ def beam_polygon_points(
     # Bogen: zwischen aufeinanderfolgenden Bogenpunkten (Großkreis)
     for j in range(1, len(arc_pts)):
         segs = _points_along_great_circle(
-            arc_pts[j - 1][0], arc_pts[j - 1][1],
-            arc_pts[j][0], arc_pts[j][1],
+            arc_pts[j - 1][0],
+            arc_pts[j - 1][1],
+            arc_pts[j][0],
+            arc_pts[j][1],
             arc_seg,
         )
         for pt in segs[1:]:
@@ -167,4 +167,6 @@ def beam_center_line_points(
 ) -> list[tuple[float, float]]:
     """Punkte der Mittellinie (Großkreisbogen) für die gestrichelte Linie."""
     end_pt = destination_point(lat, lon, azimuth_deg, range_km)
-    return _points_along_great_circle(lat, lon, end_pt[0], end_pt[1], max(2, min(n_seg, int(range_km / 300) + 1)))
+    return _points_along_great_circle(
+        lat, lon, end_pt[0], end_pt[1], max(2, min(n_seg, int(range_km / 300) + 1))
+    )

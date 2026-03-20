@@ -1,4 +1,5 @@
 """Einstellungsfenster für Verbindung und UI-Optionen."""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QEvent, QEventLoop, QTimer
@@ -31,7 +32,19 @@ from .ui_utils import px_to_dip
 class SettingsWindow(QDialog):
     """Einstellungen + Server/Hardware Buttons."""
 
-    def __init__(self, cfg: dict, controller, pst_server, hw_client, save_cfg_cb, logbuf, after_apply_cb, rebuild_ui_cb=None, map_window=None, parent=None):
+    def __init__(
+        self,
+        cfg: dict,
+        controller,
+        pst_server,
+        hw_client,
+        save_cfg_cb,
+        logbuf,
+        after_apply_cb,
+        rebuild_ui_cb=None,
+        map_window=None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.cfg = cfg
         self.ctrl = controller
@@ -76,6 +89,7 @@ class SettingsWindow(QDialog):
         self.sp_master = QSpinBox()
         self.sp_master.setRange(0, 255)
         self.sp_master.setValue(int(cfg["rotor_bus"]["master_id"]))
+
         def _clamp_slave_id(v) -> int:
             try:
                 x = int(v)
@@ -263,11 +277,18 @@ class SettingsWindow(QDialog):
         self.sp_antenna_height.setToolTip(t("settings.antenna_height_tooltip"))
         form_ui.addRow(t("settings.antenna_height"), self.sp_antenna_height)
         # --- Linke Spalte: Verbindung ---
-        antenna_names = list(cfg.get("ui", {}).get("antenna_names", [t("settings.antenna_1"), t("settings.antenna_2"), t("settings.antenna_3")]))
+        antenna_names = list(
+            cfg.get("ui", {}).get(
+                "antenna_names",
+                [t("settings.antenna_1"), t("settings.antenna_2"), t("settings.antenna_3")],
+            )
+        )
         while len(antenna_names) < 3:
-            antenna_names.append(f"Antenne {len(antenna_names)+1}")
+            antenna_names.append(f"Antenne {len(antenna_names) + 1}")
 
-        def _antenna_row(name_text: str, sp_off: QSpinBox, sp_angle: QSpinBox, sp_range: QSpinBox) -> tuple[QWidget, QLineEdit]:
+        def _antenna_row(
+            name_text: str, sp_off: QSpinBox, sp_angle: QSpinBox, sp_range: QSpinBox
+        ) -> tuple[QWidget, QLineEdit]:
             name_ed = QLineEdit(name_text)
             name_ed.setMinimumWidth(90)
             sp_off.setRange(0, 360)
@@ -303,9 +324,15 @@ class SettingsWindow(QDialog):
         self.sp_az_range_1 = QSpinBox()
         self.sp_az_range_2 = QSpinBox()
         self.sp_az_range_3 = QSpinBox()
-        w1, self.ed_antenna_name_1 = _antenna_row(antenna_names[0], self.sp_az_antoff_1, self.sp_az_angle_1, self.sp_az_range_1)
-        w2, self.ed_antenna_name_2 = _antenna_row(antenna_names[1], self.sp_az_antoff_2, self.sp_az_angle_2, self.sp_az_range_2)
-        w3, self.ed_antenna_name_3 = _antenna_row(antenna_names[2], self.sp_az_antoff_3, self.sp_az_angle_3, self.sp_az_range_3)
+        w1, self.ed_antenna_name_1 = _antenna_row(
+            antenna_names[0], self.sp_az_antoff_1, self.sp_az_angle_1, self.sp_az_range_1
+        )
+        w2, self.ed_antenna_name_2 = _antenna_row(
+            antenna_names[1], self.sp_az_antoff_2, self.sp_az_angle_2, self.sp_az_range_2
+        )
+        w3, self.ed_antenna_name_3 = _antenna_row(
+            antenna_names[2], self.sp_az_antoff_3, self.sp_az_angle_3, self.sp_az_range_3
+        )
         _tt_an = t("settings.tooltip_antenna_name")
         _tt_off = t("settings.tooltip_antenna_offset")
         _tt_ang = t("settings.tooltip_antenna_angle")
@@ -345,16 +372,24 @@ class SettingsWindow(QDialog):
                 pass
 
         self._antenna_offset_spinboxes_az = [
-            self.sp_az_antoff_1, self.sp_az_antoff_2, self.sp_az_antoff_3,
+            self.sp_az_antoff_1,
+            self.sp_az_antoff_2,
+            self.sp_az_antoff_3,
         ]
         self._antenna_angle_spinboxes_az = [
-            self.sp_az_angle_1, self.sp_az_angle_2, self.sp_az_angle_3,
+            self.sp_az_angle_1,
+            self.sp_az_angle_2,
+            self.sp_az_angle_3,
         ]
         self._antenna_range_spinboxes_az = [
-            self.sp_az_range_1, self.sp_az_range_2, self.sp_az_range_3,
+            self.sp_az_range_1,
+            self.sp_az_range_2,
+            self.sp_az_range_3,
         ]
         self._antenna_name_edits_az = [
-            self.ed_antenna_name_1, self.ed_antenna_name_2, self.ed_antenna_name_3,
+            self.ed_antenna_name_1,
+            self.ed_antenna_name_2,
+            self.ed_antenna_name_3,
         ]
         left_col.addWidget(gb_conn, 1)
 
@@ -410,7 +445,6 @@ class SettingsWindow(QDialog):
         btnrow.addWidget(btn_save_close)
         main.addLayout(btnrow)
 
-
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         self._antenna_giveup_done = False
@@ -422,8 +456,16 @@ class SettingsWindow(QDialog):
         self._antenna_request_timer.start()
         self._antenna_giveup_timer.start()
         # Snapshot der aktuellen Spinbox-Werte – nur wenn User etwas ändert, wird ins EEPROM geschrieben
-        self._snapshot_antoff = [self.sp_az_antoff_1.value(), self.sp_az_antoff_2.value(), self.sp_az_antoff_3.value()]
-        self._snapshot_angle  = [self.sp_az_angle_1.value(),  self.sp_az_angle_2.value(),  self.sp_az_angle_3.value()]
+        self._snapshot_antoff = [
+            self.sp_az_antoff_1.value(),
+            self.sp_az_antoff_2.value(),
+            self.sp_az_antoff_3.value(),
+        ]
+        self._snapshot_angle = [
+            self.sp_az_angle_1.value(),
+            self.sp_az_angle_2.value(),
+            self.sp_az_angle_3.value(),
+        ]
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._antenna_refresh_timer.stop()
@@ -472,10 +514,16 @@ class SettingsWindow(QDialog):
         parts = []
         if self.chk_enable_az.isChecked():
             az_online = bool(getattr(self.ctrl.az, "online", False))
-            parts.append(t("settings.status_az_active") + (t("settings.status_online") if az_online else t("settings.status_offline")))
+            parts.append(
+                t("settings.status_az_active")
+                + (t("settings.status_online") if az_online else t("settings.status_offline"))
+            )
         if self.chk_enable_el.isChecked():
             el_online = bool(getattr(self.ctrl.el, "online", False))
-            parts.append(t("settings.status_el_active") + (t("settings.status_online") if el_online else t("settings.status_offline")))
+            parts.append(
+                t("settings.status_el_active")
+                + (t("settings.status_online") if el_online else t("settings.status_offline"))
+            )
         self.lbl_status.setText(" – ".join(parts) if parts else "")
 
     def _push_antenna_offsets_to_config(self) -> None:
@@ -563,11 +611,16 @@ class SettingsWindow(QDialog):
         try:
             if self.chk_enable_az.isChecked():
                 az = self.ctrl.az
-                az_ready = all(getattr(az, a, None) is not None for a in ("antoff1", "antoff2", "antoff3", "angle1", "angle2", "angle3"))
+                az_ready = all(
+                    getattr(az, a, None) is not None
+                    for a in ("antoff1", "antoff2", "antoff3", "angle1", "angle2", "angle3")
+                )
                 az_online = bool(getattr(az, "online", False))
         except Exception:
             pass
-        az_enabled = self.chk_enable_az.isChecked() and az_online and (az_ready or self._antenna_giveup_done)
+        az_enabled = (
+            self.chk_enable_az.isChecked() and az_online and (az_ready or self._antenna_giveup_done)
+        )
         for sp in self._antenna_offset_spinboxes_az:
             sp.setEnabled(az_enabled)
         for sp in self._antenna_angle_spinboxes_az:
@@ -601,13 +654,22 @@ class SettingsWindow(QDialog):
 
     def _refresh_antenna_data_once(self) -> None:
         """Versatz- und Öffnungswinkel-SpinBoxen aus Controller-State übernehmen."""
-        if any(s.hasFocus() for s in self._antenna_offset_spinboxes_az + self._antenna_angle_spinboxes_az + self._antenna_range_spinboxes_az):
+        if any(
+            s.hasFocus()
+            for s in self._antenna_offset_spinboxes_az
+            + self._antenna_angle_spinboxes_az
+            + self._antenna_range_spinboxes_az
+        ):
             return
         all_loaded = True
         try:
             if self.chk_enable_az.isChecked():
                 az = self.ctrl.az
-                for attr, sp in [("antoff1", self.sp_az_antoff_1), ("antoff2", self.sp_az_antoff_2), ("antoff3", self.sp_az_antoff_3)]:
+                for attr, sp in [
+                    ("antoff1", self.sp_az_antoff_1),
+                    ("antoff2", self.sp_az_antoff_2),
+                    ("antoff3", self.sp_az_antoff_3),
+                ]:
                     v = getattr(az, attr, None)
                     if v is None:
                         all_loaded = False
@@ -615,7 +677,11 @@ class SettingsWindow(QDialog):
                         sp.blockSignals(True)
                         sp.setValue(int(round(v)))
                         sp.blockSignals(False)
-                for attr, sp in [("angle1", self.sp_az_angle_1), ("angle2", self.sp_az_angle_2), ("angle3", self.sp_az_angle_3)]:
+                for attr, sp in [
+                    ("angle1", self.sp_az_angle_1),
+                    ("angle2", self.sp_az_angle_2),
+                    ("angle3", self.sp_az_angle_3),
+                ]:
                     v = getattr(az, attr, None)
                     if v is None:
                         all_loaded = False
@@ -630,8 +696,16 @@ class SettingsWindow(QDialog):
                 self._antenna_refresh_timer.stop()
                 self._antenna_request_timer.stop()
                 # Snapshot nach erstem vollständigen Poll aus Gerät aktualisieren
-                self._snapshot_antoff = [self.sp_az_antoff_1.value(), self.sp_az_antoff_2.value(), self.sp_az_antoff_3.value()]
-                self._snapshot_angle  = [self.sp_az_angle_1.value(),  self.sp_az_angle_2.value(),  self.sp_az_angle_3.value()]
+                self._snapshot_antoff = [
+                    self.sp_az_antoff_1.value(),
+                    self.sp_az_antoff_2.value(),
+                    self.sp_az_antoff_3.value(),
+                ]
+                self._snapshot_angle = [
+                    self.sp_az_angle_1.value(),
+                    self.sp_az_angle_2.value(),
+                    self.sp_az_angle_3.value(),
+                ]
             self._update_antenna_offset_enabled()
         except Exception:
             pass
@@ -682,16 +756,20 @@ class SettingsWindow(QDialog):
         self.cfg["hardware_link"]["tcp_ip"] = self.ed_hw_ip.text().strip()
         self.cfg["hardware_link"]["tcp_port"] = int(self.sp_hw_port.value())
         self.cfg["hardware_link"]["com_port"] = self.cb_hw_com.currentText().strip()
-        self.cfg.setdefault("ui", {})["wind_dir_display"] = str(self.cb_wind_dir_display.currentData() or "to")
-        self.cfg.setdefault("ui", {})["force_dark_mode"] = bool(self.chk_force_dark_mode.isChecked())
+        self.cfg.setdefault("ui", {})["wind_dir_display"] = str(
+            self.cb_wind_dir_display.currentData() or "to"
+        )
+        self.cfg.setdefault("ui", {})["force_dark_mode"] = bool(
+            self.chk_force_dark_mode.isChecked()
+        )
         self.cfg.setdefault("ui", {})["udp_ucxlog_enabled"] = bool(self.chk_udp_ucxlog.isChecked())
         self.cfg.setdefault("ui", {})["udp_pst_enabled"] = bool(self.chk_udp_pst.isChecked())
         self.cfg.setdefault("ui", {})["udp_pst_port"] = int(self.sp_udp_pst_port.value())
         new_lang = str(self.cb_language.currentData() or "de")
         lang_changed = self.cfg.get("ui", {}).get("language", "de") != new_lang
         self.cfg.setdefault("ui", {})["language"] = new_lang
-        self.cfg.setdefault("ui", {})["location_lat"]     = float(self.ed_location_lat.value())
-        self.cfg.setdefault("ui", {})["location_lon"]     = float(self.ed_location_lon.value())
+        self.cfg.setdefault("ui", {})["location_lat"] = float(self.ed_location_lat.value())
+        self.cfg.setdefault("ui", {})["location_lon"] = float(self.ed_location_lon.value())
         self.cfg.setdefault("ui", {})["antenna_height_m"] = float(self.sp_antenna_height.value())
         self.cfg.setdefault("ui", {})["antenna_names"] = [
             self.ed_antenna_name_1.text().strip() or t("settings.antenna_1"),
@@ -717,11 +795,15 @@ class SettingsWindow(QDialog):
         # AZ-Antennenversatz und Öffnungswinkel in den Rotor schreiben (SETANTOFF1–3, SETANGLE1–3)
         # Nur übertragen wenn Wert sich gegenüber dem Snapshot beim Öffnen tatsächlich geändert hat
         snapshot_antoff = getattr(self, "_snapshot_antoff", [None, None, None])
-        snapshot_angle  = getattr(self, "_snapshot_angle",  [None, None, None])
+        snapshot_angle = getattr(self, "_snapshot_angle", [None, None, None])
         if self.hw.is_connected() and hasattr(self.ctrl, "set_antenna_offset"):
             all_ok = True
             if self.chk_enable_az.isChecked():
-                for slot, sp in [(1, self.sp_az_antoff_1), (2, self.sp_az_antoff_2), (3, self.sp_az_antoff_3)]:
+                for slot, sp in [
+                    (1, self.sp_az_antoff_1),
+                    (2, self.sp_az_antoff_2),
+                    (3, self.sp_az_antoff_3),
+                ]:
                     new_val = int(sp.value())
                     old_val = snapshot_antoff[slot - 1]
                     if old_val is None or new_val != int(old_val):
@@ -731,20 +813,29 @@ class SettingsWindow(QDialog):
                             all_ok = False
                         else:
                             snapshot_antoff[slot - 1] = new_val
-                for slot, sp in [(1, self.sp_az_angle_1), (2, self.sp_az_angle_2), (3, self.sp_az_angle_3)]:
+                for slot, sp in [
+                    (1, self.sp_az_angle_1),
+                    (2, self.sp_az_angle_2),
+                    (3, self.sp_az_angle_3),
+                ]:
                     new_val = int(sp.value())
                     old_val = snapshot_angle[slot - 1]
                     if old_val is None or new_val != int(old_val):
                         self.lbl_status.setText(t("settings.status_angle_saving", slot=slot))
                         QApplication.processEvents()
-                        if hasattr(self.ctrl, "set_antenna_angle") and not self._set_antenna_angle_and_wait("az", slot, float(new_val)):
+                        if hasattr(
+                            self.ctrl, "set_antenna_angle"
+                        ) and not self._set_antenna_angle_and_wait("az", slot, float(new_val)):
                             all_ok = False
                         else:
                             snapshot_angle[slot - 1] = new_val
-            self.lbl_status.setText(t("settings.status_az_saved") if all_ok else t("settings.status_az_error"))
+            self.lbl_status.setText(
+                t("settings.status_az_saved") if all_ok else t("settings.status_az_error")
+            )
             QApplication.processEvents()
             if not all_ok:
                 from PySide6.QtWidgets import QMessageBox
+
                 QMessageBox.warning(
                     self,
                     t("settings.msgbox_az_title"),

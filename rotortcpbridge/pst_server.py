@@ -7,11 +7,13 @@ from dataclasses import dataclass
 from .spid_rot2prog import parse_command_packet, encode_reply, CMD_SET, CMD_STOP, CMD_STATUS
 from .logutil import LogBuffer
 
+
 @dataclass
 class _ServerCfg:
-    host:str
-    port:int
-    axis:str  # "az" oder "el"
+    host: str
+    port: int
+    axis: str  # "az" oder "el"
+
 
 class PstAxisServer:
     """Ein TCP-Server-Listener für genau eine Achse (AZ oder EL).
@@ -22,15 +24,15 @@ class PstAxisServer:
       damit ein blockierendes accept() sofort beendet wird.
     """
 
-    def __init__(self, host:str, port:int, axis:str, controller, log:LogBuffer):
+    def __init__(self, host: str, port: int, axis: str, controller, log: LogBuffer):
         self.host = host
         self.port = port
         self.axis = axis
         self.ctrl = controller
         self.log = log
         self.running = False
-        self._thread: threading.Thread|None = None
-        self._listen_sock: socket.socket|None = None
+        self._thread: threading.Thread | None = None
+        self._listen_sock: socket.socket | None = None
         # Timestamp des letzten gültigen RX-Pakets (für UI "PST Connect" LED)
         self.last_rx_ts: float = 0.0
 
@@ -40,7 +42,9 @@ class PstAxisServer:
         self.running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        self.log.write("INFO", f"PST-{self.axis.upper()} Server gestartet auf {self.host}:{self.port}")
+        self.log.write(
+            "INFO", f"PST-{self.axis.upper()} Server gestartet auf {self.host}:{self.port}"
+        )
 
     def stop(self):
         # Stop flag setzen + Listen-Socket schließen, damit accept() abbricht
@@ -114,7 +118,10 @@ class PstAxisServer:
                             cmd = parse_command_packet(pkt)
                             if cmd is None:
                                 # Unbekannte Pakete loggen, damit sichtbar ist, ob überhaupt Daten kommen
-                                self.log.write("PST", f"{self.axis.upper()} RX <unbekannt> len=13 raw={pkt.hex()}")
+                                self.log.write(
+                                    "PST",
+                                    f"{self.axis.upper()} RX <unbekannt> len=13 raw={pkt.hex()}",
+                                )
                                 continue
                             # gültiges Packet -> Aktivität merken
                             try:
@@ -123,7 +130,10 @@ class PstAxisServer:
                                 pass
 
                             # Log: PstRotator Anfrage
-                            self.log.write("PST", f"{self.axis.upper()} RX cmd={cmd.cmd} az_d10={cmd.az_d10} el_d10={cmd.el_d10} raw={pkt.hex()}")
+                            self.log.write(
+                                "PST",
+                                f"{self.axis.upper()} RX cmd={cmd.cmd} az_d10={cmd.az_d10} el_d10={cmd.el_d10} raw={pkt.hex()}",
+                            )
 
                             if cmd.cmd == CMD_SET:
                                 self._apply_set(cmd)
@@ -134,10 +144,21 @@ class PstAxisServer:
 
                             # Antwort: Position je Achse – deaktivierte oder unbekannte Achse liefert 0°.
                             # MacDoppler/HRD erwarten 0 für nicht vorhandene Achsen statt ungültiger Werte.
-                            az_d10 = (self.ctrl.az.pos_d10 or 0) if bool(getattr(self.ctrl, "enable_az", True)) else 0
-                            el_d10 = (self.ctrl.el.pos_d10 or 0) if bool(getattr(self.ctrl, "enable_el", True)) else 0
+                            az_d10 = (
+                                (self.ctrl.az.pos_d10 or 0)
+                                if bool(getattr(self.ctrl, "enable_az", True))
+                                else 0
+                            )
+                            el_d10 = (
+                                (self.ctrl.el.pos_d10 or 0)
+                                if bool(getattr(self.ctrl, "enable_el", True))
+                                else 0
+                            )
                             reply = encode_reply(az_d10, el_d10, ph=10, pv=10)
-                            self.log.write("PST", f"{self.axis.upper()} TX reply_len={len(reply)} az={az_d10} el={el_d10} hex={reply.hex()}")
+                            self.log.write(
+                                "PST",
+                                f"{self.axis.upper()} TX reply_len={len(reply)} az={az_d10} el={el_d10} hex={reply.hex()}",
+                            )
                             c.sendall(reply)
 
                     except socket.timeout:
@@ -154,9 +175,11 @@ class PstAxisServer:
         self._listen_sock = None
         self.running = False
 
+
 class PstDualServer:
     """Kapselt zwei Listener: AZ (port_az) und EL (port_el)."""
-    def __init__(self, host:str, port_az:int, port_el:int, controller, log:LogBuffer):
+
+    def __init__(self, host: str, port_az: int, port_el: int, controller, log: LogBuffer):
         self.host = host
         self.port_az = port_az
         self.port_el = port_el
@@ -166,7 +189,7 @@ class PstDualServer:
         self.el = PstAxisServer(host, port_el, "el", controller, log)
 
     @property
-    def running(self)->bool:
+    def running(self) -> bool:
         return self.az.running or self.el.running
 
     @property
@@ -184,8 +207,10 @@ class PstDualServer:
 
     def start(self):
         # host/ports evtl. aktualisieren
-        self.az.host = self.host; self.az.port = self.port_az
-        self.el.host = self.host; self.el.port = self.port_el
+        self.az.host = self.host
+        self.az.port = self.port_az
+        self.el.host = self.host
+        self.el.port = self.port_el
         self.az.start()
         self.el.start()
 
@@ -193,7 +218,7 @@ class PstDualServer:
         self.az.stop()
         self.el.stop()
 
-    def restart(self, host:str, port_az:int, port_el:int):
+    def restart(self, host: str, port_az: int, port_el: int):
         # Stop -> kurze Pause -> neu konfigurieren -> Start
         self.stop()
         time.sleep(0.2)

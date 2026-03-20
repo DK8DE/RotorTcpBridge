@@ -1,5 +1,14 @@
 """UI-Module für RotorTcpBridge."""
-__all__ = ["MainWindow", "Led", "LogWindow", "SettingsWindow", "CompassWindow", "WeatherWindow", "CommandButtonsWindow"]
+
+__all__ = [
+    "MainWindow",
+    "Led",
+    "LogWindow",
+    "SettingsWindow",
+    "CompassWindow",
+    "WeatherWindow",
+    "CommandButtonsWindow",
+]
 
 from .main_window import MainWindow
 from .led_widget import Led

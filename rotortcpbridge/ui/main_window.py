@@ -41,7 +41,7 @@ from .axis_widget import _make_axis_panel, fill_axis_panel
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, cfg: dict, controller, pst_server, hw_client, save_cfg_cb, logbuf, udp_ucxlog=None):
+    def __init__(self, cfg: dict, controller, pst_server, hw_client, save_cfg_cb, logbuf, udp_ucxlog=None, udp_pst=None):
         super().__init__()
         self.cfg = cfg
         self.ctrl = controller
@@ -50,11 +50,16 @@ class MainWindow(QMainWindow):
         self.save_cfg_cb = save_cfg_cb
         self.logbuf = logbuf
         self._udp_ucxlog = udp_ucxlog
+        self._udp_pst = udp_pst
         self._hw_off_since: float | None = None
         self._last_title: str = ""
         self._ucxlog_blink_phase = 0
         self._ucxlog_blink_active = False
         self._ucxlog_blink_sequence = (True, False, True, False, True, False, True, False, True)
+        self._last_pst_az_d10: int | None = None
+        self._pst_udp_blink_phase = 0
+        self._pst_udp_blink_active = False
+        self._pst_udp_blink_sequence = (True, False, True, False, True, False, True, False, True)
 
         self._update_title_bar()
         self.setWindowIcon(get_app_icon())
@@ -107,6 +112,7 @@ class MainWindow(QMainWindow):
         self.led_pst = Led(led_d, self)
         self.led_pst_conn = Led(led_d, self)
         self.led_ucxlog = Led(led_d, self)
+        self.led_pst_udp = Led(led_d, self)
         self.led_hw = Led(led_d, self)
 
         def _led_wrap(led) -> QWidget:
@@ -159,6 +165,16 @@ class MainWindow(QMainWindow):
         ucxlog_row_w.setLayout(ucxlog_row)
         srv_form.addRow(t("main.srv_ucxlog_prefix"), ucxlog_row_w)
 
+        pst_udp_row = QHBoxLayout()
+        pst_udp_row.setContentsMargins(0, 0, 0, 0)
+        pst_udp_row.setSpacing(px_to_dip(self, 6))
+        pst_udp_row.addWidget(_led_wrap(self.led_pst_udp))
+        pst_udp_row.addWidget(QLabel(t("main.srv_pst_udp_suffix")))
+        pst_udp_row.addStretch(1)
+        pst_udp_row_w = QWidget()
+        pst_udp_row_w.setLayout(pst_udp_row)
+        srv_form.addRow(t("main.srv_pst_udp_prefix"), pst_udp_row_w)
+
         try:
             srv_form.setVerticalSpacing(px_to_dip(self, 4))
             srv_form.setContentsMargins(px_to_dip(self, 8), px_to_dip(self, 4), px_to_dip(self, 8), px_to_dip(self, 4))
@@ -191,6 +207,7 @@ class MainWindow(QMainWindow):
         self._internet_check_timer.timeout.connect(self._on_internet_check_timer)
         self._internet_check_timer.start()
         QTimer.singleShot(300, self._on_internet_check_timer)
+        QTimer.singleShot(500, self._check_pst_udp_startup_error)
 
         self._log_win = LogWindow(self.logbuf, parent=None)
         self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
@@ -348,6 +365,14 @@ class MainWindow(QMainWindow):
                 enabled=bool(ui.get("udp_ucxlog_enabled", False)),
                 port=int(ui.get("udp_ucxlog_port", 12040)),
             )
+        if self._udp_pst is not None:
+            ui = self.cfg.get("ui", {})
+            self._udp_pst.start(
+                enabled=bool(ui.get("udp_pst_enabled", False)),
+                port=int(ui.get("udp_pst_port", 12000)),
+            )
+            if self._udp_pst.bind_error_msg:
+                QMessageBox.warning(self, t("main.pst_udp_error_title"), self._udp_pst.bind_error_msg)
         if hasattr(self, "_compass_win") and self._compass_win.isVisible():
             self._compass_win._update_groupbox_titles()
             if hasattr(self._compass_win, "_apply_label_colors_from_palette"):
@@ -533,6 +558,23 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _check_pst_udp_startup_error(self) -> None:
+        """Beim Programmstart einmalig prüfen ob PST-UDP-Port belegt war."""
+        if self._udp_pst is not None and self._udp_pst.bind_error_msg:
+            QMessageBox.warning(self, t("main.pst_udp_error_title"), self._udp_pst.bind_error_msg)
+
+    def _notify_pst_position(self) -> None:
+        """Sendet AZ-Position via PST-UDP wenn sie sich geändert hat."""
+        if self._udp_pst is None or not self._udp_pst.is_active:
+            return
+        try:
+            az_d10 = getattr(self.ctrl.az, "pos_d10", None)
+            if az_d10 is None:
+                return
+            self._udp_pst.notify_position(int(az_d10))
+        except Exception:
+            pass
+
     def _tick(self):
         import time as _time
         self.ctrl.tick_polling()
@@ -567,6 +609,24 @@ class MainWindow(QMainWindow):
                 self.led_ucxlog.set_state(udp.is_active)
         else:
             self.led_ucxlog.set_state(False)
+
+        pst_udp = getattr(self, "_udp_pst", None)
+        if pst_udp is not None:
+            if getattr(pst_udp, "packet_received_flag", False):
+                pst_udp.packet_received_flag = False
+                self._pst_udp_blink_phase = 0
+                self._pst_udp_blink_active = True
+            if self._pst_udp_blink_active:
+                seq = self._pst_udp_blink_sequence
+                if self._pst_udp_blink_phase < len(seq):
+                    self.led_pst_udp.set_state(seq[self._pst_udp_blink_phase])
+                    self._pst_udp_blink_phase += 1
+                else:
+                    self._pst_udp_blink_active = False
+            if not self._pst_udp_blink_active:
+                self.led_pst_udp.set_state(pst_udp.is_active)
+        else:
+            self.led_pst_udp.set_state(False)
 
         try:
             now = float(_time.time())
@@ -611,6 +671,7 @@ class MainWindow(QMainWindow):
             self._error_popup.maybe_show(self, "EL", getattr(self.ctrl.el, "error_code", 0))
             self._warning_popup.maybe_show(self, "EL", self.ctrl.el)
 
+        self._notify_pst_position()
         self._update_title_bar()
 
         if self._log_win.isVisible():

@@ -46,7 +46,7 @@ class SettingsWindow(QDialog):
         self.setWindowTitle(t("settings.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setFixedSize(px_to_dip(self, 820), px_to_dip(self, 475))
+        self.setFixedSize(px_to_dip(self, 820), px_to_dip(self, 550))
 
         main = QVBoxLayout(self)
         cols = QHBoxLayout()
@@ -133,6 +133,23 @@ class SettingsWindow(QDialog):
         self.chk_udp_ucxlog.setToolTip(t("settings.chk_udp_ucxlog_tooltip"))
         self.chk_udp_ucxlog.setChecked(bool(cfg.get("ui", {}).get("udp_ucxlog_enabled", False)))
         form_ui.addRow(self.chk_udp_ucxlog)
+
+        self.chk_udp_pst = QCheckBox(t("settings.chk_udp_pst"))
+        self.chk_udp_pst.setToolTip(t("settings.chk_udp_pst_tooltip"))
+        self.chk_udp_pst.setChecked(bool(cfg.get("ui", {}).get("udp_pst_enabled", False)))
+        self.sp_udp_pst_port = QSpinBox()
+        self.sp_udp_pst_port.setRange(1, 65534)
+        self.sp_udp_pst_port.setValue(int(cfg.get("ui", {}).get("udp_pst_port", 12000)))
+        self.sp_udp_pst_port.setToolTip(t("settings.udp_pst_port_tooltip"))
+        pst_row = QHBoxLayout()
+        pst_row.setContentsMargins(0, 0, 0, 0)
+        pst_row.addWidget(self.chk_udp_pst)
+        pst_row.addStretch(1)
+        pst_row.addWidget(QLabel(t("settings.udp_pst_port_label")))
+        pst_row.addWidget(self.sp_udp_pst_port)
+        pst_row_w = QWidget()
+        pst_row_w.setLayout(pst_row)
+        form_ui.addRow(pst_row_w)
 
         self.cb_wind_dir_display = QComboBox()
         self.cb_wind_dir_display.addItem(t("settings.wind_dir_from"), "from")
@@ -561,6 +578,8 @@ class SettingsWindow(QDialog):
         self.cfg.setdefault("ui", {})["wind_dir_display"] = str(self.cb_wind_dir_display.currentData() or "to")
         self.cfg.setdefault("ui", {})["force_dark_mode"] = bool(self.chk_force_dark_mode.isChecked())
         self.cfg.setdefault("ui", {})["udp_ucxlog_enabled"] = bool(self.chk_udp_ucxlog.isChecked())
+        self.cfg.setdefault("ui", {})["udp_pst_enabled"] = bool(self.chk_udp_pst.isChecked())
+        self.cfg.setdefault("ui", {})["udp_pst_port"] = int(self.sp_udp_pst_port.value())
         new_lang = str(self.cb_language.currentData() or "de")
         lang_changed = self.cfg.get("ui", {}).get("language", "de") != new_lang
         self.cfg.setdefault("ui", {})["language"] = new_lang

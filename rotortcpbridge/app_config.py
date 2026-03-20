@@ -77,7 +77,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
       # UDP UcxLog: Bei aktiviertem Häkchen lauscht die App auf 127.0.0.1:12040
       # und nimmt XML-Positionsdaten von UcxLog entgegen (<Rotor><Azimut>…</Azimut></Rotor>).
       "udp_ucxlog_enabled": False,
-      "udp_ucxlog_port": 12040
+      "udp_ucxlog_port": 12040,
+      # UDP PST-Rotator-Emulation: Emuliert das UDP-Protokoll von PstRotatorAz.
+      # Hört auf udp_pst_port, sendet Positionsmeldungen an udp_pst_port + 1.
+      "udp_pst_enabled": False,
+      "udp_pst_port": 12000
   }
 }
 

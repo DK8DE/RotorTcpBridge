@@ -57,7 +57,7 @@ def main():
     pst.start()
 
     # UDP UcxLog-Listener (wenn aktiviert)
-    udp_ucxlog = UdpUcxLogListener(ctrl, log)
+    udp_ucxlog = UdpUcxLogListener(ctrl, log, cfg=cfg)
     ui_cfg = cfg.get("ui", {})
     udp_ucxlog.start(
         enabled=bool(ui_cfg.get("udp_ucxlog_enabled", False)),

@@ -125,7 +125,11 @@ def _knife_edge_analysis(
     power_pct = 10.0 ** (-j_db / 10.0) * 100.0
 
     # Qualitative Bewertung
-    if nu <= -0.78 or j_db < 1.0:
+    # max_h <= 0: Terrain geometrisch UNTER der Sichtlinie → freie LOS, keine Beugung.
+    # Fresnel-Zonen-Effekte werden ignoriert wenn die Antenne niedriger als das Ziel
+    # ist und die Keule nach oben zeigt – die physikalisch relevante Aussage ist dann
+    # "freie Sichtlinie", auch wenn das Terrain knapp in die erste Fresnel-Zone ragt.
+    if max_h <= 0 or nu <= -0.78 or j_db < 1.0:
         quality_key   = "elevation.quality_none"
         quality_color = "#5cb85c"
         quality_grade = 5
@@ -1087,6 +1091,7 @@ html, body {{ height: 100%; background: {v['bg']}; color: {v['fg']};
         # ── Hover-Analyse: Punkt i als hypothetisches Ziel ───────────────
         # Für jeden Hover-Punkt i: schlechtestes Hindernis auf dem Teilpfad
         # von der Antenne bis zu diesem Punkt, als wäre i das Ziel.
+        # Zusätzlich: reale Clearance dieses Punktes zur echten Sichtlinie.
         lam_m_pp   = 3e8 / (self._freq_mhz * 1e6)
         los_start_pp = elevations[0] + self._antenna_height
         per_point: list = []
@@ -1099,7 +1104,10 @@ html, body {{ height: 100%; background: {v['bg']}; color: {v['fg']};
             dist_i   = dists[i]
             los_end_pp = elevations[i]   # Ziel-Höhe = Gelände an Punkt i
 
-            # Schlechtestes Hindernis auf dem Teilpfad 0 → i
+            # Reale Clearance dieses Punktes zur echten Sichtlinie (zum tatsächlichen Ziel)
+            real_clearance = round(los[i] - elevations[i], 1)  # positiv = unter LOS
+
+            # Schlechtestes Hindernis auf dem Teilpfad 0 → i (virtuelle LOS zum Hover-Punkt)
             max_h = -1e9
             max_j = 1
             for j in range(1, i):
@@ -1119,7 +1127,7 @@ html, body {{ height: 100%; background: {v['bg']}; color: {v['fg']};
             d1_m  = d1_km * 1000.0
             d2_m  = d2_km * 1000.0
             nu_pp = max_h * math.sqrt(2.0 * (d1_m + d2_m) / (lam_m_pp * d1_m * d2_m))
-            if nu_pp <= -0.78:
+            if nu_pp <= -0.78 or max_h <= 0:
                 j_pp = 0.0
             else:
                 arg_pp = math.sqrt((nu_pp - 0.1) ** 2 + 1.0) + nu_pp - 0.1
@@ -1127,12 +1135,14 @@ html, body {{ height: 100%; background: {v['bg']}; color: {v['fg']};
             pct_pp = 10.0 ** (-j_pp / 10.0) * 100.0
 
             per_point.append({
-                "h":       round(max_h, 1),
-                "nu":      round(nu_pp, 3),
-                "jdb":     round(j_pp, 1),
-                "pct":     round(pct_pp, 1),
-                "obsDist": round(dists[max_j], 1),
-                "dist":    round(dist_i, 1),
+                "h":            round(max_h, 1),
+                "nu":           round(nu_pp, 3),
+                "jdb":          round(j_pp, 1),
+                "pct":          round(pct_pp, 1),
+                "obsDist":      round(dists[max_j], 1),
+                "dist":         round(dist_i, 1),
+                "realClear":    real_clearance,   # Freistand zur echten Sichtlinie
+                "realLos":      round(los[i], 1), # Echte LOS-Höhe an diesem Punkt
             })
         per_point_json = json.dumps(per_point)
 
@@ -1298,22 +1308,34 @@ new Chart(document.getElementById('c'), {{
             const pp = perPoint[items[0].dataIndex];
             if (!pp) return [];
             const dot = ['🟢','🟡','🟠','🔴','🔴'];
-            const grade = pp.jdb < 1 ? 0 : pp.jdb < 6 ? 1 : pp.jdb < 10 ? 2 : pp.jdb < 16 ? 3 : 4;
+            const grade = (pp.h <= 0 || pp.jdb < 1) ? 0 : pp.jdb < 6 ? 1 : pp.jdb < 10 ? 2 : pp.jdb < 16 ? 3 : 4;
             const tooltipObstacle = {json.dumps(_tr("elevation.tooltip_obstacle", dist="__DIST__", h="__H__"))};
             const tooltipNoObs = {json.dumps("  " + _tr("elevation.tooltip_no_obstacle"))};
             const tooltipIfTarget = {json.dumps(_tr("elevation.tooltip_if_target", dist="__D__"))};
+            const lines = [''];
+            // ── Reale Clearance zur echten Ziel-Sichtlinie (primäre Information) ──
+            if (pp.realClear !== undefined) {{
+              const clr = pp.realClear;
+              if (clr >= 0) {{
+                lines.push('  ↓ Freistand zur Ziel-LOS:  +' + clr.toFixed(0) + ' m frei');
+              }} else {{
+                lines.push('  ↑ Hindernis für Ziel:  +' + Math.abs(clr).toFixed(0) + ' m über Ziel-LOS  ⚠');
+              }}
+            }}
+            // ── Hypothetische Analyse: virtuelles Ziel an diesem Punkt ──
             const obsNote = pp.h > 0
               ? tooltipObstacle.replace('__DIST__', pp.obsDist).replace('__H__', pp.h.toFixed(0))
               : tooltipNoObs;
-            return [
-              '',
-              tooltipIfTarget.replace('__D__', pp.dist),
-              obsNote,
+            lines.push('');
+            lines.push(tooltipIfTarget.replace('__D__', pp.dist));
+            lines.push(obsNote);
+            lines.push(
               '  ν = ' + pp.nu.toFixed(2) +
               '    J(ν) = ' + pp.jdb.toFixed(1) + ' dB' +
-              '    Signal = ' + pp.pct.toFixed(1) + ' %',
-              '  ' + dot[grade] + '  ' + qualityLabel(pp.jdb),
-            ];
+              '    Signal = ' + pp.pct.toFixed(1) + ' %'
+            );
+            lines.push('  ' + dot[grade] + '  ' + qualityLabel(pp.jdb));
+            return lines;
           }}
         }}
       }},

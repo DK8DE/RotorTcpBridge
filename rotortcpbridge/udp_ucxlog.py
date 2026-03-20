@@ -18,9 +18,10 @@ from .angle_utils import wrap_deg
 class UdpUcxLogListener:
     """Hört auf UDP-Port 12040 und setzt den Rotor gemäß Azimut aus UcxLog-XML."""
 
-    def __init__(self, controller, log):
+    def __init__(self, controller, log, cfg: dict | None = None):
         self.ctrl = controller
         self.log = log
+        self.cfg = cfg  # Für Antennenversatz-Berechnung
         self._enabled = False
         self._port = 12040
         self._sock: socket.socket | None = None
@@ -81,6 +82,26 @@ class UdpUcxLogListener:
         except ValueError:
             return None
 
+    def _get_antenna_offset_az(self) -> float:
+        """Versatz der aktuell gewählten Antenne (wie Kompass).
+        Liest zuerst den vom Rotor gemeldeten Versatz (antoff1/2/3),
+        fällt zurück auf Config-Wert wenn Rotor noch nicht geantwortet hat."""
+        try:
+            cfg = self.cfg or {}
+            ui = cfg.get("ui", {})
+            antenna_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
+            slot = antenna_idx + 1
+            # Vom Rotor gemeldeter Versatz hat Vorrang
+            az_axis = getattr(self.ctrl, "az", None)
+            v = getattr(az_axis, f"antoff{slot}", None) if az_axis else None
+            if v is not None:
+                return float(v)
+            # Fallback: Config
+            offsets = ui.get("antenna_offsets_az", [0.0, 0.0, 0.0])
+            return float(offsets[slot - 1]) if slot - 1 < len(offsets) else 0.0
+        except Exception:
+            return 0.0
+
     def _loop(self) -> None:
         while self._running and self._sock:
             try:
@@ -95,11 +116,18 @@ class UdpUcxLogListener:
             if az is None:
                 continue
             self.packet_received_flag = True
+            # az_deg ist die gewünschte Antennenrichtung (Display-Winkel).
+            # Rotor-Ziel = Antennenrichtung - Antennenversatz (wie im Kompass).
             az_deg = wrap_deg(az)
+            off_az = self._get_antenna_offset_az()
+            rotor_deg = wrap_deg(az_deg - off_az)
             sender = f"{addr[0]}:{addr[1]}" if addr else "?"
-            self.log.write("UDP", f"Position AZ {az_deg:.1f}° von {sender} → setze Rotor")
+            if off_az != 0.0:
+                self.log.write("UDP", f"Position AZ {az_deg:.1f}° (Versatz {off_az:+.1f}° → Rotor {rotor_deg:.1f}°) von {sender} → setze Rotor")
+            else:
+                self.log.write("UDP", f"Position AZ {az_deg:.1f}° von {sender} → setze Rotor")
             try:
                 if getattr(self.ctrl, "enable_az", True):
-                    self.ctrl.set_az_deg(az_deg, force=True)
+                    self.ctrl.set_az_deg(rotor_deg, force=True)
             except Exception as e:
                 self.log.write("WARN", f"UDP UcxLog set_az_deg: {e}")

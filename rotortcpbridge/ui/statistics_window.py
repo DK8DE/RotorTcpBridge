@@ -78,6 +78,8 @@ class StatisticsWindow(QDialog):
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
+        el_on = bool(getattr(self.ctrl, "enable_el", False))
+        self.resize(1000, 1080 if el_on else 540)
         if hasattr(self.ctrl, "set_statistics_window_open"):
             self.ctrl.set_statistics_window_open(True)
         if hasattr(self.ctrl, "request_immediate_stats"):

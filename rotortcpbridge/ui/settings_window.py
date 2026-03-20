@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QEvent, QEventLoop, QTimer
-from PySide6.QtGui import QCloseEvent, QKeyEvent, QShowEvent
+from PySide6.QtGui import QCloseEvent, QFont, QKeyEvent, QPalette, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..app_icon import get_app_icon
+from ..command_catalog import command_specs, format_cmd_tooltip
 from ..ports import list_serial_ports
 from ..i18n import t, load_lang
 from .ui_utils import px_to_dip
@@ -46,7 +47,7 @@ class SettingsWindow(QDialog):
         self.setWindowTitle(t("settings.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setFixedSize(px_to_dip(self, 820), px_to_dip(self, 550))
+        self.setFixedSize(px_to_dip(self, 820), px_to_dip(self, 590))
 
         main = QVBoxLayout(self)
         cols = QHBoxLayout()
@@ -75,12 +76,22 @@ class SettingsWindow(QDialog):
         self.sp_master = QSpinBox()
         self.sp_master.setRange(0, 255)
         self.sp_master.setValue(int(cfg["rotor_bus"]["master_id"]))
+        def _clamp_slave_id(v) -> int:
+            try:
+                x = int(v)
+            except (TypeError, ValueError):
+                x = 1
+            return max(1, min(254, x))
+
         self.sp_slave_az = QSpinBox()
-        self.sp_slave_az.setRange(0, 255)
-        self.sp_slave_az.setValue(int(cfg["rotor_bus"]["slave_az"]))
+        self.sp_slave_az.setRange(1, 254)
+        self.sp_slave_az.setValue(_clamp_slave_id(cfg["rotor_bus"]["slave_az"]))
         self.sp_slave_el = QSpinBox()
-        self.sp_slave_el.setRange(0, 255)
-        self.sp_slave_el.setValue(int(cfg["rotor_bus"]["slave_el"]))
+        self.sp_slave_el.setRange(1, 254)
+        self.sp_slave_el.setValue(_clamp_slave_id(cfg["rotor_bus"]["slave_el"]))
+        self.sp_master.setToolTip(t("settings.tooltip_master_id"))
+        self.sp_slave_az.setToolTip(t("settings.tooltip_slave_az"))
+        self.sp_slave_el.setToolTip(t("settings.tooltip_slave_el"))
         form_conn.addRow(t("settings.master_id"), self.sp_master)
         form_conn.addRow(t("settings.slave_id_az"), self.sp_slave_az)
         form_conn.addRow(t("settings.slave_id_el"), self.sp_slave_el)
@@ -88,6 +99,10 @@ class SettingsWindow(QDialog):
 
         self.chk_pst_enabled = QCheckBox(t("settings.chk_pst_enabled"))
         self.chk_pst_enabled.setChecked(bool(cfg["pst_server"].get("enabled", True)))
+        self.chk_pst_enabled.setToolTip(t("settings.chk_pst_enabled_tooltip"))
+        self.ed_listen_host.setToolTip(t("settings.pst_listen_host_tooltip"))
+        self.sp_listen_port_az.setToolTip(t("settings.pst_port_az_tooltip"))
+        self.sp_listen_port_el.setToolTip(t("settings.pst_port_el_tooltip"))
         form_conn.addRow(self.chk_pst_enabled)
         form_conn.addRow(t("settings.pst_listen_host"), self.ed_listen_host)
         form_conn.addRow(t("settings.pst_port_az"), self.sp_listen_port_az)
@@ -112,12 +127,19 @@ class SettingsWindow(QDialog):
         com_row_widget.setLayout(com_row)
 
         self.lbl_baud = QLabel(str(cfg["hardware_link"]["baudrate"]))
+        self.cb_hw_mode.setToolTip(t("settings.hw_mode_tooltip"))
+        self.ed_hw_ip.setToolTip(t("settings.hw_ip_tooltip"))
+        self.sp_hw_port.setToolTip(t("settings.hw_port_tooltip"))
+        self.cb_hw_com.setToolTip(t("settings.hw_com_tooltip"))
+        self.btn_com_refresh.setToolTip(t("settings.btn_com_refresh_tooltip"))
+        self.lbl_baud.setToolTip(t("settings.baudrate_tooltip"))
 
         form_conn.addRow(t("settings.hw_mode"), self.cb_hw_mode)
         form_conn.addRow(t("settings.hw_ip"), self.ed_hw_ip)
         form_conn.addRow(t("settings.hw_port"), self.sp_hw_port)
         form_conn.addRow(t("settings.hw_com"), com_row_widget)
         form_conn.addRow(t("settings.baudrate"), self.lbl_baud)
+        form_conn.addRow(_hsep())
 
         self.chk_enable_az = QCheckBox(t("settings.chk_enable_az"))
         self.chk_enable_el = QCheckBox(t("settings.chk_enable_el"))
@@ -125,11 +147,14 @@ class SettingsWindow(QDialog):
         self.chk_enable_el.setChecked(bool(cfg["rotor_bus"].get("enable_el", True)))
         if not self.chk_enable_az.isChecked() and not self.chk_enable_el.isChecked():
             self.chk_enable_az.setChecked(True)
-        form_ui.addRow(self.chk_enable_az)
-        form_ui.addRow(self.chk_enable_el)
+        self.chk_enable_az.setToolTip(t("settings.chk_enable_az_tooltip"))
+        self.chk_enable_el.setToolTip(t("settings.chk_enable_el_tooltip"))
+        form_conn.addRow(self.chk_enable_az)
+        form_conn.addRow(self.chk_enable_el)
 
         self.chk_force_dark_mode = QCheckBox(t("settings.chk_dark_mode"))
         self.chk_force_dark_mode.setChecked(bool(cfg.get("ui", {}).get("force_dark_mode", False)))
+        self.chk_force_dark_mode.setToolTip(t("settings.chk_dark_mode_tooltip"))
         form_ui.addRow(self.chk_force_dark_mode)
 
         self.chk_udp_ucxlog = QCheckBox(t("settings.chk_udp_ucxlog"))
@@ -146,13 +171,51 @@ class SettingsWindow(QDialog):
         self.sp_udp_pst_port.setToolTip(t("settings.udp_pst_port_tooltip"))
         pst_row = QHBoxLayout()
         pst_row.setContentsMargins(0, 0, 0, 0)
+        pst_row.setAlignment(Qt.AlignmentFlag.AlignLeft)
         pst_row.addWidget(self.chk_udp_pst)
-        pst_row.addStretch(1)
+        pst_row.addSpacing(12)
         pst_row.addWidget(QLabel(t("settings.udp_pst_port_label")))
         pst_row.addWidget(self.sp_udp_pst_port)
+        pst_row.addStretch(1)
         pst_row_w = QWidget()
         pst_row_w.setLayout(pst_row)
         form_ui.addRow(pst_row_w)
+
+        self.btn_cal_start = QPushButton(t("cmd.btn_start_cal"))
+        self.btn_cal_start.setAutoDefault(False)
+        self.btn_cal_start.setDefault(False)
+        self.btn_cal_reset = QPushButton(t("cmd.btn_reset_cal"))
+        self.btn_cal_reset.setAutoDefault(False)
+        self.btn_cal_reset.setDefault(False)
+        _all_cmd_spec = {s.name.upper(): s for s in command_specs()}
+        _spec_setcal = _all_cmd_spec.get("SETCAL")
+        if _spec_setcal:
+            self.btn_cal_start.setToolTip(format_cmd_tooltip(_spec_setcal))
+        _spec_clrstat = _all_cmd_spec.get("CLRSTAT")
+        if _spec_clrstat:
+            self.btn_cal_reset.setToolTip(format_cmd_tooltip(_spec_clrstat))
+        lbl_cal_title = QLabel(t("settings.cal_label"))
+        _f_cal = QFont(lbl_cal_title.font())
+        _f_cal.setBold(True)
+        lbl_cal_title.setFont(_f_cal)
+        lbl_cal_desc = QLabel(t("settings.cal_description"))
+        lbl_cal_desc.setWordWrap(True)
+        lbl_cal_desc.setForegroundRole(QPalette.ColorRole.WindowText)
+        cal_btns = QHBoxLayout()
+        cal_btns.setContentsMargins(0, 4, 0, 0)
+        cal_btns.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        cal_btns.addWidget(self.btn_cal_start)
+        cal_btns.addWidget(self.btn_cal_reset)
+        cal_btns.addStretch(1)
+        cal_outer = QVBoxLayout()
+        cal_outer.setContentsMargins(0, 0, 0, 0)
+        cal_outer.setSpacing(4)
+        cal_outer.addWidget(lbl_cal_title)
+        cal_outer.addWidget(lbl_cal_desc)
+        cal_outer.addLayout(cal_btns)
+        cal_row_w = QWidget()
+        cal_row_w.setLayout(cal_outer)
+        form_ui.addRow(cal_row_w)
 
         self.cb_wind_dir_display = QComboBox()
         self.cb_wind_dir_display.addItem(t("settings.wind_dir_from"), "from")
@@ -164,6 +227,7 @@ class SettingsWindow(QDialog):
         if idx < 0:
             idx = 1
         self.cb_wind_dir_display.setCurrentIndex(idx)
+        self.cb_wind_dir_display.setToolTip(t("settings.wind_dir_display_tooltip"))
         form_ui.addRow(t("settings.wind_dir_display"), self.cb_wind_dir_display)
 
         self.cb_language = QComboBox()
@@ -173,6 +237,7 @@ class SettingsWindow(QDialog):
         lang_idx = self.cb_language.findData(cur_lang)
         if lang_idx >= 0:
             self.cb_language.setCurrentIndex(lang_idx)
+        self.cb_language.setToolTip(t("settings.language_label_tooltip"))
         form_ui.addRow(t("settings.language_label"), self.cb_language)
 
         self.ed_location_lat = QDoubleSpinBox()
@@ -180,12 +245,14 @@ class SettingsWindow(QDialog):
         self.ed_location_lat.setDecimals(6)
         self.ed_location_lat.setValue(float(cfg.get("ui", {}).get("location_lat", 49.502651)))
         self.ed_location_lat.setSuffix("°")
+        self.ed_location_lat.setToolTip(t("settings.location_lat_tooltip"))
         form_ui.addRow(t("settings.location_lat"), self.ed_location_lat)
         self.ed_location_lon = QDoubleSpinBox()
         self.ed_location_lon.setRange(-180.0, 180.0)
         self.ed_location_lon.setDecimals(6)
         self.ed_location_lon.setValue(float(cfg.get("ui", {}).get("location_lon", 8.375019)))
         self.ed_location_lon.setSuffix("°")
+        self.ed_location_lon.setToolTip(t("settings.location_lon_tooltip"))
         form_ui.addRow(t("settings.location_lon"), self.ed_location_lon)
         self.sp_antenna_height = QDoubleSpinBox()
         self.sp_antenna_height.setRange(0.0, 500.0)
@@ -195,15 +262,6 @@ class SettingsWindow(QDialog):
         self.sp_antenna_height.setSuffix(" m")
         self.sp_antenna_height.setToolTip(t("settings.antenna_height_tooltip"))
         form_ui.addRow(t("settings.antenna_height"), self.sp_antenna_height)
-        self.sp_rf_freq = QDoubleSpinBox()
-        self.sp_rf_freq.setRange(0.1, 3000.0)
-        self.sp_rf_freq.setDecimals(3)
-        self.sp_rf_freq.setSingleStep(1.0)
-        self.sp_rf_freq.setValue(float(cfg.get("ui", {}).get("rf_freq_mhz", 145.0)))
-        self.sp_rf_freq.setSuffix(" MHz")
-        self.sp_rf_freq.setToolTip(t("settings.rf_freq_tooltip"))
-        form_ui.addRow(t("settings.rf_freq"), self.sp_rf_freq)
-
         # --- Linke Spalte: Verbindung ---
         antenna_names = list(cfg.get("ui", {}).get("antenna_names", [t("settings.antenna_1"), t("settings.antenna_2"), t("settings.antenna_3")]))
         while len(antenna_names) < 3:
@@ -248,6 +306,18 @@ class SettingsWindow(QDialog):
         w1, self.ed_antenna_name_1 = _antenna_row(antenna_names[0], self.sp_az_antoff_1, self.sp_az_angle_1, self.sp_az_range_1)
         w2, self.ed_antenna_name_2 = _antenna_row(antenna_names[1], self.sp_az_antoff_2, self.sp_az_angle_2, self.sp_az_range_2)
         w3, self.ed_antenna_name_3 = _antenna_row(antenna_names[2], self.sp_az_antoff_3, self.sp_az_angle_3, self.sp_az_range_3)
+        _tt_an = t("settings.tooltip_antenna_name")
+        _tt_off = t("settings.tooltip_antenna_offset")
+        _tt_ang = t("settings.tooltip_antenna_angle")
+        _tt_rng = t("settings.tooltip_antenna_range")
+        for ed in (self.ed_antenna_name_1, self.ed_antenna_name_2, self.ed_antenna_name_3):
+            ed.setToolTip(_tt_an)
+        for sp in (self.sp_az_antoff_1, self.sp_az_antoff_2, self.sp_az_antoff_3):
+            sp.setToolTip(_tt_off)
+        for sp in (self.sp_az_angle_1, self.sp_az_angle_2, self.sp_az_angle_3):
+            sp.setToolTip(_tt_ang)
+        for sp in (self.sp_az_range_1, self.sp_az_range_2, self.sp_az_range_3):
+            sp.setToolTip(_tt_rng)
         form_az.addRow(t("settings.antenna_1"), w1)
         form_az.addRow(t("settings.antenna_2"), w2)
         form_az.addRow(t("settings.antenna_3"), w3)
@@ -331,6 +401,8 @@ class SettingsWindow(QDialog):
         self.lbl_status = QLabel("")
         self.lbl_status.setStyleSheet("color: gray; font-style: italic;")
         self.lbl_status.setWordWrap(True)
+        self.btn_cal_start.clicked.connect(self._on_settings_cal_start)
+        self.btn_cal_reset.clicked.connect(self._on_settings_cal_reset)
         btnrow = QHBoxLayout()
         btnrow.addWidget(self.lbl_status, 1)
         btn_save_close = QPushButton(t("settings.btn_save_close"))
@@ -363,6 +435,37 @@ class SettingsWindow(QDialog):
         """Rotor nicht erreichbar – Felder nach kurzem Timeout trotzdem freigeben."""
         self._antenna_giveup_done = True
         self._update_antenna_offset_enabled()
+
+    def _cal_active_dsts_from_ui(self) -> list[int]:
+        """Slave-IDs der aktuell in der Maske aktivierten Achsen (wie Rotor-Konfiguration)."""
+        dsts: list[int] = []
+        if self.chk_enable_az.isChecked():
+            v = int(self.sp_slave_az.value())
+            if v not in dsts:
+                dsts.append(v)
+        if self.chk_enable_el.isChecked():
+            v = int(self.sp_slave_el.value())
+            if v not in dsts:
+                dsts.append(v)
+        return dsts or [0]
+
+    def _on_settings_cal_start(self) -> None:
+        """SETCAL an alle aktiven Achsen senden (wie im Rotor-Konfigurationsfenster)."""
+        for dst in self._cal_active_dsts_from_ui():
+            try:
+                self.ctrl.send_ui_command(dst, "SETCAL", "0", expect_prefix=None, priority=0)
+            except Exception:
+                pass
+        self.lbl_status.setText(t("cmd.hint_cal_start"))
+
+    def _on_settings_cal_reset(self) -> None:
+        """CLRSTAT an alle aktiven Achsen senden (wie im Rotor-Konfigurationsfenster)."""
+        for dst in self._cal_active_dsts_from_ui():
+            try:
+                self.ctrl.send_ui_command(dst, "CLRSTAT", "0", expect_prefix=None, priority=0)
+            except Exception:
+                pass
+        self.lbl_status.setText(t("cmd.hint_cal_reset"))
 
     def _update_status_on_open(self) -> None:
         """Statuszeile beim Öffnen: welche Achsen aktiv und online sind."""
@@ -590,7 +693,6 @@ class SettingsWindow(QDialog):
         self.cfg.setdefault("ui", {})["location_lat"]     = float(self.ed_location_lat.value())
         self.cfg.setdefault("ui", {})["location_lon"]     = float(self.ed_location_lon.value())
         self.cfg.setdefault("ui", {})["antenna_height_m"] = float(self.sp_antenna_height.value())
-        self.cfg.setdefault("ui", {})["rf_freq_mhz"]      = float(self.sp_rf_freq.value())
         self.cfg.setdefault("ui", {})["antenna_names"] = [
             self.ed_antenna_name_1.text().strip() or t("settings.antenna_1"),
             self.ed_antenna_name_2.text().strip() or t("settings.antenna_2"),

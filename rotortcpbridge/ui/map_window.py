@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QPainter, QPalette, QPen
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRect, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -46,6 +46,32 @@ from .elevation_window import ElevationProfileWindow
 
 # Custom URL-Scheme für Offline-Tiles (funktioniert ohne Netzwerkadapter)
 ROTORTILES_SCHEME = "rotortiles"
+
+# Strich / Füllung für die drei Antennen-Beams auf der Karte (Antenne 1–3)
+_MAP_ANTENNA_BEAM_COLORS: tuple[tuple[str, str], ...] = (
+    ("#5BA3D0", "#87CEEB"),  # 1: bisheriges Blau
+    ("#66BB6A", "#C8E6C9"),  # 2: helles Grün
+    ("#ae80d9", "#d8c4f0"),  # 3: Violett (Stroke #ae80d9)
+)
+
+
+def _map_antenna_swatch_icon(antenna_index: int, size_px: int = 14) -> QIcon:
+    """Kleines Quadrat in Beam-Farbe (Füllung + Rand) für das Antennen-Dropdown.
+    Farben wie auf der Karte, nur bewusst abgedunkelt (gleicher Farbton)."""
+    i = max(0, min(2, antenna_index))
+    stroke, fill = _MAP_ANTENNA_BEAM_COLORS[i]
+    # Qt: factor > 100 → dunkler (typ. 150–180 für sichtbar kräftigere Swatches)
+    fill_d = QColor(fill).darker(155)
+    stroke_d = QColor(stroke).darker(150)
+    pm = QPixmap(size_px, size_px)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(fill_d)
+    p.setPen(QPen(stroke_d, 1))
+    p.drawRect(1, 1, size_px - 3, size_px - 3)
+    p.end()
+    return QIcon(pm)
 
 
 def _static_lib_path() -> Path:
@@ -289,11 +315,9 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
     dark: expliziter Wert (hat Vorrang vor params['dark_mode'])."""
     lat = params["lat"]
     lon = params["lon"]
-    azimuth = params["azimuth"]
     opening = params["opening"]
     range_km = params["range_km"]
-    poly_json = json.dumps(params["polygon"])
-    center_line = params["center_line"]
+    beams_json = json.dumps(params.get("beams", []))
     grayline = params.get("grayline", [])
     # Am Antimeridian (±180°) aufteilen, damit Leaflet die Kurve korrekt zeichnet
     grayline_segments: list[list[list[float]]] = []
@@ -398,8 +422,7 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
   <script>
     const lat = {lat};
     const lon = {lon};
-    const polyCoords = {poly_json};
-    const centerLine = {json.dumps(center_line)};
+    const beamsInitial = {beams_json};
     const graylineCoords = {grayline_json};
     const graylineColor = {json.dumps(grayline_color)};
     const horizonDistKm = {params.get("horizon_dist_km", 0.0)};
@@ -462,17 +485,31 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
       }}).addTo(map);
     }}
 
-    let poly = L.polygon(polyCoords, {{
-      color: '#5BA3D0', fillColor: '#87CEEB', fillOpacity: 0.35, weight: 2,
-      interactive: false
-    }}).addTo(map);
+    let beamPolys = [];
+    let beamDashLines = [];
+    function clearBeamLayers() {{
+      beamPolys.forEach(function(p) {{ map.removeLayer(p); }});
+      beamDashLines.forEach(function(d) {{ map.removeLayer(d); }});
+      beamPolys = [];
+      beamDashLines = [];
+    }}
+    function drawBeamLayers(beamList) {{
+      clearBeamLayers();
+      if (!beamList || !beamList.length) return;
+      beamList.forEach(function(b) {{
+        const poly = L.polygon(b.polygon, {{
+          color: b.stroke, fillColor: b.fill, fillOpacity: 0.35, weight: 2, interactive: false
+        }}).addTo(map);
+        const dash = L.polyline(b.centerLine, {{
+          color: b.stroke, weight: 2, dashArray: '8, 8', interactive: false
+        }}).addTo(map);
+        beamPolys.push(poly);
+        beamDashLines.push(dash);
+      }});
+    }}
+    drawBeamLayers(beamsInitial);
 
-    let dashLine = L.polyline(centerLine, {{
-      color: 'blue', weight: 2, dashArray: '8, 8',
-      interactive: false
-    }}).addTo(map);
-
-    const allLayerItems = [marker, poly, dashLine];
+    const allLayerItems = [marker].concat(beamPolys, beamDashLines);
     if (horizonCircle) allLayerItems.push(horizonCircle);
     const allLayer = L.featureGroup(allLayerItems);
     map.fitBounds(allLayer.getBounds().pad(0.1));
@@ -504,13 +541,11 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
     window.updateBeam = function(data) {{
       if (!data) return;
       map.removeLayer(marker);
-      map.removeLayer(poly);
-      map.removeLayer(dashLine);
+      clearBeamLayers();
       if (horizonCircle) {{ map.removeLayer(horizonCircle); horizonCircle = null; }}
       marker = L.marker([data.lat, data.lon], antennaIcon ? {{ icon: antennaIcon }} : {{}}).addTo(map);
       marker.bindPopup(data.popup_antenna || popupAntenna);
-      poly = L.polygon(data.polygon, {{ color: '#5BA3D0', fillColor: '#87CEEB', fillOpacity: 0.35, weight: 2, interactive: false }}).addTo(map);
-      dashLine = L.polyline(data.centerLine, {{ color: 'blue', weight: 2, dashArray: '8, 8', interactive: false }}).addTo(map);
+      drawBeamLayers(data.beams || []);
       const hKm = data.horizon_dist_km || 0;
       if (hKm > 0.5) {{
         horizonCircle = L.circle([data.lat, data.lon], {{ radius: hKm * 1000, color: horizonColor, weight: 2, dashArray: '8, 8', fill: false, fillOpacity: 0, interactive: false }}).addTo(map);
@@ -741,6 +776,13 @@ class _MapContainer(QWidget):
 class MapWindOverlay(QFrame):
     """Kompaktes Wind-Overlay mit PNG-Pfeil wie im Wetterfenster."""
 
+    # Pfeil oben, km/h unten — extra Höhe + Abstand, damit der Richtungspfeil nicht an den Text stößt
+    _OVERLAY_W = 90
+    _OVERLAY_H = 100
+    _MARGIN = 4
+    _TEXT_STRIP_H = 24
+    _ARROW_TEXT_GAP = 10
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._wind_dir_deg: Optional[float] = None
@@ -753,7 +795,7 @@ class MapWindOverlay(QFrame):
         self._anim_timer = QTimer(self)
         self._anim_timer.setInterval(16)
         self._anim_timer.timeout.connect(self._animate_wind_dir)
-        self.setFixedSize(90, 90)
+        self.setFixedSize(self._OVERLAY_W, self._OVERLAY_H)
         self._dark_mode = False
         self._apply_theme()
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -816,10 +858,25 @@ class MapWindOverlay(QFrame):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        rect = self.rect().adjusted(4, 4, -4, -4)
-        cx = float(rect.center().x())
-        cy = float(rect.center().y())
-        r = float(min(rect.width(), rect.height())) / 2.0 * 0.85
+        m = self._MARGIN
+        full = self.rect().adjusted(m, m, -m, -m)
+        # Unteren Streifen für km/h; Pfeil nur im Bereich darüber (mehr Platz für die Richtung)
+        text_rect = QRect(
+            full.left(),
+            full.bottom() - self._TEXT_STRIP_H + 1,
+            full.width(),
+            self._TEXT_STRIP_H,
+        )
+        arrow_rect_h = max(32, full.height() - self._TEXT_STRIP_H - self._ARROW_TEXT_GAP)
+        arrow_rect = QRect(
+            full.left(),
+            full.top(),
+            full.width(),
+            arrow_rect_h,
+        )
+        cx = float(arrow_rect.center().x())
+        cy = float(arrow_rect.center().y())
+        r = float(min(arrow_rect.width(), arrow_rect.height())) / 2.0 * 0.85
         if self._wind_dir_draw_deg is not None:
             wd = wrap_deg(float(self._wind_dir_draw_deg) + 180.0) if self._wind_dir_mode == "to" else float(self._wind_dir_draw_deg)
             if not self._arrow_pixmap.isNull():
@@ -844,7 +901,7 @@ class MapWindOverlay(QFrame):
         txt = "--.- km/h"
         if self._wind_kmh is not None:
             txt = f"{self._wind_kmh:.1f} km/h"
-        p.drawText(rect, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, txt)
+        p.drawText(text_rect, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, txt)
 
 
 class MapWebPage(QWebEnginePage):
@@ -896,7 +953,9 @@ class MapWindow(QDialog):
         toolbar = QHBoxLayout()
         antenna_idx = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
         self._cb_antenna = QComboBox()
-        self._cb_antenna.addItems(self._get_antenna_dropdown_items())
+        sw = max(12, px_to_dip(self, 14))
+        self._cb_antenna.setIconSize(QSize(sw, sw))
+        self._populate_antenna_dropdown()
         self._cb_antenna.setMinimumWidth(160)
         self._cb_antenna.setCurrentIndex(antenna_idx)
         self._cb_antenna.currentIndexChanged.connect(self._on_antenna_changed)
@@ -924,6 +983,12 @@ class MapWindow(QDialog):
         toolbar.addWidget(self._btn_fav_save)
         toolbar.addWidget(self._btn_fav_delete)
         toolbar.addWidget(self._btn_elevation)
+        self._cb_antenna.setToolTip(t("map.tooltip_antenna"))
+        self._cb_fav.setToolTip(t("map.tooltip_favorites"))
+        self._ed_fav_name.setToolTip(t("map.tooltip_fav_name"))
+        self._btn_fav_save.setToolTip(t("map.tooltip_fav_save"))
+        self._btn_fav_delete.setToolTip(t("map.tooltip_fav_delete"))
+        self._btn_elevation.setToolTip(t("map.tooltip_elevation"))
         layout.addLayout(toolbar)
 
         self._cb_fav.activated.connect(self._on_fav_activated)
@@ -981,6 +1046,9 @@ class MapWindow(QDialog):
         self._btn_ref_az.setAutoDefault(False)
         self._btn_ref_az.setDefault(False)
         self._btn_ref_az.clicked.connect(self._on_ref_az)
+        self._chk_offline.setToolTip(t("map.tooltip_offline"))
+        self._chk_locator.setToolTip(t("map.tooltip_locator"))
+        self._btn_ref_az.setToolTip(t("map.tooltip_ref_az"))
 
         status_bar.addWidget(self._lbl_ist)
         status_bar.addWidget(self._lbl_soll)
@@ -1008,7 +1076,7 @@ class MapWindow(QDialog):
         self._map_dark_mode: Optional[bool] = None
         self._map_offline: Optional[bool] = None
         self._map_locator_overlay: Optional[bool] = None
-        self._smooth_azimuth: Optional[float] = None
+        self._smooth_rotor_az: Optional[float] = None
         self._SMOOTH_FACTOR = 0.25
         # Zuletzt per Kartenklick gewähltes Ziel (aus cfg wiederherstellen)
         _saved_ui = self.cfg.get("ui", {})
@@ -1051,10 +1119,9 @@ class MapWindow(QDialog):
             rotor_az = az_pos / 10.0
             azimuth = wrap_deg(rotor_az + offset)
         else:
+            rotor_az = 0.0
             azimuth = 0.0
 
-        polygon = beam_polygon_points(lat, lon, azimuth, opening, range_km)
-        center_line = beam_center_line_points(lat, lon, azimuth, range_km)
         grayline = grayline_points()
 
         # Horizontdistanz: d_h = sqrt(2*R*h), R=6371 km, h in m
@@ -1066,10 +1133,9 @@ class MapWindow(QDialog):
             "lat": lat,
             "lon": lon,
             "azimuth": azimuth,
+            "rotor_az_deg": float(rotor_az),
             "opening": opening,
             "range_km": range_km,
-            "polygon": [[p[0], p[1]] for p in polygon],
-            "center_line": [[p[0], p[1]] for p in center_line],
             "grayline": [[p[0], p[1]] for p in grayline],
             "location_str": f"{lat:.5f}, {lon:.5f}",
             "info_standort": t("map.info_standort"),
@@ -1082,6 +1148,34 @@ class MapWindow(QDialog):
             "popup_antenna": t("map.popup_antenna"),
             "popup_target": t("map.popup_target"),
         }
+
+    def _compute_beams(self, rotor_az_deg: float, antenna_idx: int) -> list[dict]:
+        """Nur der Beam der im Dropdown gewählten Antenne; Farbe je nach Slot 1–3; Richtung = Rotor + Offset."""
+        i = max(0, min(2, antenna_idx))
+        ui = self.cfg.get("ui", {})
+        lat = float(ui.get("location_lat", 49.502651))
+        lon = float(ui.get("location_lon", 8.375019))
+        offs = ui.get("antenna_offsets_az", [0.0, 0.0, 0.0])
+        angles = ui.get("antenna_angles_az", [0.0, 0.0, 0.0])
+        ranges = ui.get("antenna_ranges_az", [100.0, 100.0, 100.0])
+        offset = float(offs[i]) if i < len(offs) else 0.0
+        opening = float(angles[i]) if i < len(angles) else 30.0
+        if opening <= 0:
+            opening = 30.0
+        range_km = float(ranges[i]) if i < len(ranges) else 100.0
+        if range_km <= 0:
+            range_km = 100.0
+        range_km = min(4000.0, range_km)
+        azimuth = wrap_deg(rotor_az_deg + offset)
+        polygon = beam_polygon_points(lat, lon, azimuth, opening, range_km)
+        center_line = beam_center_line_points(lat, lon, azimuth, range_km)
+        stroke, fill = _MAP_ANTENNA_BEAM_COLORS[i]
+        return [{
+            "polygon": [[p[0], p[1]] for p in polygon],
+            "centerLine": [[p[0], p[1]] for p in center_line],
+            "stroke": stroke,
+            "fill": fill,
+        }]
 
     def _get_antenna_offset_az(self) -> float:
         """Versatz der gewählten Antenne (wie Compass)."""
@@ -1116,6 +1210,16 @@ class MapWindow(QDialog):
                 except (IndexError, TypeError, ValueError):
                     offsets.append(0.0)
         return [f"{names[i]} ({offsets[i]:.1f}°)" for i in range(3)]
+
+    def _populate_antenna_dropdown(self) -> None:
+        """Dropdown mit farbigem Quadrat (Beam-Farbe) vor dem Text."""
+        self._cb_antenna.clear()
+        labels = self._get_antenna_dropdown_items()
+        sw = self._cb_antenna.iconSize().width()
+        if sw <= 0:
+            sw = 14
+        for i in range(3):
+            self._cb_antenna.addItem(_map_antenna_swatch_icon(i, sw), labels[i])
 
     def _get_favorites(self) -> list[dict]:
         """Gespeicherte Favoriten aus Config (wie Kompass)."""
@@ -1155,8 +1259,7 @@ class MapWindow(QDialog):
         """Antennen-Dropdown mit aktuellen Werten aktualisieren."""
         idx = max(0, min(2, self._cb_antenna.currentIndex()))
         self._cb_antenna.blockSignals(True)
-        self._cb_antenna.clear()
-        self._cb_antenna.addItems(self._get_antenna_dropdown_items())
+        self._populate_antenna_dropdown()
         self._cb_antenna.setCurrentIndex(idx)
         self._cb_antenna.blockSignals(False)
 
@@ -1513,22 +1616,18 @@ class MapWindow(QDialog):
         # dark_mode immer direkt aus Config (force_dark_mode) – auch für Offline-Tiles
         dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", False))
         params["dark_mode"] = dark
-        target_az = params["azimuth"]
-        if self._smooth_azimuth is None:
-            self._smooth_azimuth = target_az
+        rotor_target = float(params.get("rotor_az_deg", 0.0))
+        if self._smooth_rotor_az is None:
+            self._smooth_rotor_az = rotor_target
         else:
-            delta = shortest_delta_deg(self._smooth_azimuth, target_az)
-            self._smooth_azimuth = wrap_deg(self._smooth_azimuth + delta * self._SMOOTH_FACTOR)
-        params["azimuth"] = self._smooth_azimuth
-        lat = params["lat"]
-        lon = params["lon"]
-        opening = params["opening"]
-        range_km = params["range_km"]
-        az = float(self._smooth_azimuth or 0.0)
-        polygon = beam_polygon_points(lat, lon, az, opening, range_km)
-        center_line = beam_center_line_points(lat, lon, az, range_km)
-        params["polygon"] = [[p[0], p[1]] for p in polygon]
-        params["center_line"] = [[p[0], p[1]] for p in center_line]
+            delta = shortest_delta_deg(self._smooth_rotor_az, rotor_target)
+            self._smooth_rotor_az = wrap_deg(self._smooth_rotor_az + delta * self._SMOOTH_FACTOR)
+        ui = self.cfg.get("ui", {})
+        antenna_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
+        params["beams"] = self._compute_beams(self._smooth_rotor_az, antenna_idx)
+        offs = ui.get("antenna_offsets_az", [0.0, 0.0, 0.0])
+        offset_sel = float(offs[antenna_idx]) if antenna_idx < len(offs) else 0.0
+        params["azimuth"] = wrap_deg(float(self._smooth_rotor_az or 0.0) + offset_sel)
         if self._map_loaded:
             data = {
                 "lat": params["lat"],
@@ -1536,8 +1635,7 @@ class MapWindow(QDialog):
                 "azimuth": params["azimuth"],
                 "opening": params["opening"],
                 "range_km": params["range_km"],
-                "polygon": params["polygon"],
-                "centerLine": params["center_line"],
+                "beams": params["beams"],
                 "location_str": params["location_str"],
                 "info_standort": params["info_standort"],
                 "info_offnung": params["info_offnung"],
@@ -1624,7 +1722,7 @@ class MapWindow(QDialog):
         self._map_dark_mode = None
         self._map_offline = None
         self._map_locator_overlay = None
-        self._smooth_azimuth = None
+        self._smooth_rotor_az = None
         self._refresh_map()
         self._refresh_timer.start()
         QTimer.singleShot(100, self._reposition_wind_overlay)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+from html import escape as html_escape
 from typing import Dict, List, Optional, Tuple
 from urllib.request import Request, urlopen
 
@@ -24,8 +25,22 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from ..i18n import t
 
+
+def _html_greek_nu(text: str) -> str:
+    """Greek nu (U+03BD) als HTML-Entity &#957;, damit WebEngine es nicht wie „N“ rendert."""
+    return text.replace("\u03bd", "&#957;")
+
+
 # Stützpunkte entlang der Strecke (max. 100 für opentopodata free tier)
 _N_POINTS = 80
+
+# Tooltip-Keys für Ionosphären-Karten (name_key → Übersetzung)
+_MODE_CARD_TOOLTIPS: Dict[str, str] = {
+    "elevation.groundwave": "elevation.tooltip_mode_groundwave",
+    "elevation.nvis": "elevation.tooltip_mode_nvis",
+    "elevation.e_layer": "elevation.tooltip_mode_e_layer",
+    "elevation.f2_layer": "elevation.tooltip_mode_f2_layer",
+}
 
 
 # ── Geometrie ──────────────────────────────────────────────────────────────
@@ -781,6 +796,18 @@ class ElevationProfileWindow(QDialog):
             horizon_color="#2e7d32",
         )
 
+    def _html_title_attr(self, key: str, **kwargs) -> str:
+        """HTML-Attribut title=\"…\" für native Browser-Tooltips beim Hover.
+
+        Kein json.dumps: das würde Zeilenumbrüche als \\n (sichtbar) ausgeben und
+        Unicode mit ensure_ascii als \\uXXXX (im title nicht als Zeichen lesbar).
+        Stattdessen: Zeilen mit HTML-Zeilenumbruch &#10; verbinden, Inhalt escapen.
+        """
+        text = t(key, **kwargs)
+        lines = text.split("\n")
+        safe = "&#10;".join(html_escape(line, quote=True) for line in lines)
+        return f' title="{safe}"'
+
     def _loading_html(self) -> str:
         v = self._css_vars()
         return (
@@ -816,8 +843,9 @@ class ElevationProfileWindow(QDialog):
         bc = best["color"]
         muf_note = f"&nbsp;·&nbsp;MUF ≈ {best['muf']} MHz" if best.get("muf") else ""
         opt_label = _tr("elevation.opt_band_mean")
+        _tt_opt = self._html_title_attr("elevation.tooltip_opt_band")
         opt_card = (
-            f'<div class="card" style="border-color:{bc};border-width:2px">'
+            f'<div class="card" style="border-color:{bc};border-width:2px"{_tt_opt}>'
             f'<div class="card-label" style="color:{bc}">{opt_label}</div>'
             f'<div class="card-value" style="font-size:18px">{best["band"]}</div>'
             f'<div style="font-size:10px;opacity:0.75;margin-top:2px">'
@@ -831,16 +859,20 @@ class ElevationProfileWindow(QDialog):
                 ok_col = "#5cb85c" if m["ok"] else "#f0ad4e"
                 name = _tr(m["name_key"], **m.get("name_params", {}))
                 sub = _tr(m["sub_key"], **m.get("sub_params", {}))
+                _tt_m = self._html_title_attr(
+                    _MODE_CARD_TOOLTIPS.get(m["name_key"], "elevation.tooltip_mode_generic")
+                )
                 mode_cards_html += (
-                    f'<div class="card">'
+                    f'<div class="card"{_tt_m}>'
                     f'<div class="card-label" style="color:{ok_col}">{name}</div>'
                     f'<div class="card-value">{sub}</div>'
                     f'</div>'
                 )
             if sky["skip_zone"] and not sky["modes"]:
                 skip_col = "#e07050" if self._dark else "#c0392b"
+                _tt_skip = self._html_title_attr("elevation.tooltip_skip_zone_card")
                 mode_cards_html += (
-                    f'<div class="card" style="border-color:{skip_col}55">'
+                    f'<div class="card" style="border-color:{skip_col}55"{_tt_skip}>'
                     f'<div class="card-label" style="color:{skip_col}">{_tr("elevation.skip_zone")}</div>'
                     f'<div class="card-value" style="color:{skip_col}">'
                     f'{_tr("elevation.skip_zone_desc")}</div></div>'
@@ -855,6 +887,9 @@ class ElevationProfileWindow(QDialog):
             else f'<div class="divider"></div><div class="cards">{opt_card}</div>'
         )
         offline_msg = _tr("elevation.offline_no_profile").replace("\n", "<br>")
+        _tt_hc = self._html_title_attr("elevation.tooltip_offline_home_coords")
+        _tt_tc = self._html_title_attr("elevation.tooltip_offline_target_coords")
+        _tt_d = self._html_title_attr("elevation.tooltip_card_distance")
         return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -867,7 +902,11 @@ html, body {{ height: 100%; background: {v['bg']}; color: {v['fg']};
 .cards {{ display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }}
 .card {{ background: {v['card_bg']}; border: 1px solid {v['card_border']};
   border-radius: 7px; padding: 6px 12px; flex: 1; min-width: 100px; }}
-.card-label {{ font-size: 10px; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.5px; }}
+.card-label {{
+  font-size: 10px; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.5px;
+  font-family: 'Segoe UI', 'Segoe UI Symbol', 'DejaVu Sans', sans-serif;
+}}
+.card-diff .card-label {{ text-transform: none; letter-spacing: 0.35px; }}
 .card-value {{ font-size: 16px; font-weight: bold; margin-top: 2px; }}
 .divider {{ width: 100%; height: 1px; background: {v['card_border']}; flex-shrink: 0; }}
 .chart-placeholder {{ flex: 1; display: flex; align-items: center; justify-content: center;
@@ -877,15 +916,15 @@ html, body {{ height: 100%; background: {v['bg']}; color: {v['fg']};
 </head>
 <body>
 <div class="cards">
-  <div class="card">
+  <div class="card"{_tt_hc}>
     <div class="card-label">{self._home_name}</div>
     <div class="card-value">{self._home_lat:.5f}, {self._home_lon:.5f}</div>
   </div>
-  <div class="card">
+  <div class="card"{_tt_tc}>
     <div class="card-label">{self._target_name}</div>
     <div class="card-value">{self._target_lat:.5f}, {self._target_lon:.5f}</div>
   </div>
-  <div class="card">
+  <div class="card"{_tt_d}>
     <div class="card-label">{_tr('elevation.card_distance')}</div>
     <div class="card-value">{self._dist_km:.1f} km</div>
   </div>
@@ -935,20 +974,28 @@ html, body {{ height: 100%; background: {v['bg']}; color: {v['fg']};
             obs_dist = f"{diff['obstacle_dist']:.1f}"
             h_str = f"{diff['h_m']:.0f}"
 
+            _tt_j = self._html_title_attr("elevation.tooltip_diff_j")
+            _tt_nu = self._html_title_attr("elevation.tooltip_diff_nu")
+            _tt_pw = self._html_title_attr("elevation.tooltip_diff_power")
+            _tt_rt = self._html_title_attr("elevation.tooltip_diff_rating")
+
+            _lbl_j = _html_greek_nu(_tr("elevation.diff_j"))
+            _lbl_nu = _html_greek_nu(_tr("elevation.diff_nu", dist=obs_dist))
+
             diff_cards = f"""
-  <div class="card card-diff" style="border-color:{qcol}33;">
-    <div class="card-label">{_tr('elevation.diff_j')}</div>
+  <div class="card card-diff" style="border-color:{qcol}33;"{_tt_j}>
+    <div class="card-label">{_lbl_j}</div>
     <div class="card-value">{j_str} dB</div>
   </div>
-  <div class="card card-diff" style="border-color:{qcol}33;">
-    <div class="card-label">{_tr('elevation.diff_nu', dist=obs_dist)}</div>
-    <div class="card-value">{nu_str}</div>
+  <div class="card card-diff" style="border-color:{qcol}33;"{_tt_nu}>
+    <div class="card-label">{_lbl_nu}</div>
+    <div class="card-value">&#957; = {nu_str}</div>
   </div>
-  <div class="card card-diff" style="border-color:{qcol}33;">
+  <div class="card card-diff" style="border-color:{qcol}33;"{_tt_pw}>
     <div class="card-label">{_tr('elevation.diff_power')}</div>
     <div class="card-value">{p_str} %</div>
   </div>
-  <div class="card card-diff" style="border-left: 3px solid {qcol}; border-color:{qcol};">
+  <div class="card card-diff" style="border-left: 3px solid {qcol}; border-color:{qcol};"{_tt_rt}>
     <div class="card-label">{_tr('elevation.diff_rating')}</div>
     <div class="card-value" style="font-size:13px;padding-top:3px;color:{qcol}">{_tr(diff['quality_key'])}</div>
   </div>"""
@@ -1028,6 +1075,12 @@ html, body {{ height: 100%; background: {v['bg']}; color: {v['fg']};
             f'<span style="color:#5cb85c">{_tr("elevation.los_free")}</span>'
         )
 
+        _tt_home = self._html_title_attr("elevation.tooltip_card_home")
+        _tt_target = self._html_title_attr("elevation.tooltip_card_target")
+        _tt_hmax = self._html_title_attr("elevation.tooltip_card_max_terrain")
+        _tt_dist = self._html_title_attr("elevation.tooltip_card_distance")
+        _tt_los = self._html_title_attr("elevation.tooltip_card_los")
+
         # ── Ionosphärische Ausbreitung (nur KW < 30 MHz) ─────────────────
         swpc = self._swpc_data
         fo_f2 = float(swpc["fo_f2"]) if swpc else None
@@ -1040,16 +1093,20 @@ html, body {{ height: 100%; background: {v['bg']}; color: {v['fg']};
                 ok_col = "#5cb85c" if m["ok"] else "#f0ad4e"
                 name = _tr(m["name_key"], **m.get("name_params", {}))
                 sub = _tr(m["sub_key"], **m.get("sub_params", {}))
+                _tt_m = self._html_title_attr(
+                    _MODE_CARD_TOOLTIPS.get(m["name_key"], "elevation.tooltip_mode_generic")
+                )
                 mode_cards_html += (
-                    f'<div class="card">'
+                    f'<div class="card"{_tt_m}>'
                     f'<div class="card-label" style="color:{ok_col}">{name}</div>'
                     f'<div class="card-value">{sub}</div>'
                     f'</div>'
                 )
             if sky["skip_zone"] and not sky["modes"]:
                 skip_col = "#e07050" if self._dark else "#c0392b"
+                _tt_skip = self._html_title_attr("elevation.tooltip_skip_zone_card")
                 mode_cards_html += (
-                    f'<div class="card" style="border-color:{skip_col}55">'
+                    f'<div class="card" style="border-color:{skip_col}55"{_tt_skip}>'
                     f'<div class="card-label" style="color:{skip_col}">{_tr("elevation.skip_zone")}</div>'
                     f'<div class="card-value" style="color:{skip_col}">'
                     f'{_tr("elevation.skip_zone_desc")}</div></div>'
@@ -1065,8 +1122,9 @@ html, body {{ height: 100%; background: {v['bg']}; color: {v['fg']};
         bc   = best["color"]
         muf_note = f"&nbsp;·&nbsp;MUF ≈ {best['muf']} MHz" if best.get("muf") else ""
         opt_label = _tr("elevation.opt_band_live") if fo_f2 is not None else _tr("elevation.opt_band_mean")
+        _tt_opt = self._html_title_attr("elevation.tooltip_opt_band")
         opt_card = (
-            f'<div class="card" style="border-color:{bc};border-width:2px">'
+            f'<div class="card" style="border-color:{bc};border-width:2px"{_tt_opt}>'
             f'<div class="card-label" style="color:{bc}">{opt_label}</div>'
             f'<div class="card-value" style="font-size:18px">{best["band"]}</div>'
             f'<div style="font-size:10px;opacity:0.75;margin-top:2px">'
@@ -1177,7 +1235,11 @@ html, body {{
   flex: 1;
   min-width: 100px;
 }}
-.card-label {{ font-size: 10px; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.5px; }}
+.card-label {{
+  font-size: 10px; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.5px;
+  font-family: 'Segoe UI', 'Segoe UI Symbol', 'DejaVu Sans', sans-serif;
+}}
+.card-diff .card-label {{ text-transform: none; letter-spacing: 0.35px; }}
 .card-value {{ font-size: 16px; font-weight: bold; margin-top: 2px; }}
 .section-title {{
   font-size: 10px;
@@ -1193,23 +1255,23 @@ canvas {{ position: absolute; top: 0; left: 0; width: 100% !important; height: 1
 </head>
 <body>
 <div class="cards">
-  <div class="card">
+  <div class="card"{_tt_home}>
     <div class="card-label">{self._home_name}{height_note}</div>
     <div class="card-value">{h0_antenna:.0f} m</div>
   </div>
-  <div class="card">
+  <div class="card"{_tt_target}>
     <div class="card-label">{self._target_name}</div>
     <div class="card-value">{hn:.0f} m</div>
   </div>
-  <div class="card">
+  <div class="card"{_tt_hmax}>
     <div class="card-label">{_tr('elevation.card_max_terrain')}</div>
     <div class="card-value">{hmax:.0f} m</div>
   </div>
-  <div class="card">
+  <div class="card"{_tt_dist}>
     <div class="card-label">{_tr('elevation.card_distance')}</div>
     <div class="card-value">{self._dist_km:.1f} km</div>
   </div>
-  <div class="card">
+  <div class="card"{_tt_los}>
     <div class="card-label">{_tr('elevation.card_los')}</div>
     <div class="card-value" style="font-size:13px;padding-top:3px;">{los_txt}</div>
   </div>

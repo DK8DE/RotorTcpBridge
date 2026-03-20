@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rotortcpbridge"
+version = "0.0.0"
+description = "Rotor TCP Bridge (Desktop)"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["rotortcpbridge", "tests"]
+
+[tool.ruff.lint]
+# pycodestyle (E) + pyflakes (F); ohne I/UP damit bestehendes Projekt ohne Massen-Refactor grün bleibt
+select = ["E4", "E7", "E9", "F"]
+ignore = [
+    "E402",   # Modul-Import nicht ganz oben (Qt/WebEngine, Docstrings)
+    "E701",   # Mehrere Statements in einer Zeile (colon) – teils bewusst kompakt
+    "E702",   # Semikolon-Zeilen
+    "E741",   # Variable `l` in bestehendem Code
+]
+
+[tool.ruff.format]
+quote-style = "double"

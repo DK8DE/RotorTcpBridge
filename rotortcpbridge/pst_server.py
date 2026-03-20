@@ -1,5 +1,7 @@
 from __future__ import annotations
-import socket, threading, time
+import socket
+import threading
+import time
 from dataclasses import dataclass
 
 from .spid_rot2prog import parse_command_packet, encode_reply, CMD_SET, CMD_STOP, CMD_STATUS

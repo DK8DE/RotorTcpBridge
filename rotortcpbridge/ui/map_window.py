@@ -5,7 +5,6 @@ import base64
 import json
 import math
 import os
-import socket
 import threading
 import time
 from pathlib import Path
@@ -96,7 +95,7 @@ class _TilesUrlSchemeHandler(QWebEngineUrlSchemeHandler):
             html = _pending_map_html
             if not html:
                 if _DEBUG_TILES:
-                    print(f"[rotortiles] FAIL (map): kein HTML gesetzt")
+                    print("[rotortiles] FAIL (map): kein HTML gesetzt")
                 job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
                 return
             data = html.encode("utf-8")

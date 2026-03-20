@@ -1,9 +1,10 @@
 
 from __future__ import annotations
-import time, zipfile, os
+import time
+import zipfile
 from pathlib import Path
-from .app_config import appdata_dir, config_path, APP_NAME
-from .logutil import log_path, LogBuffer
+from .app_config import appdata_dir, config_path
+from .logutil import log_path
 
 def backups_dir()->Path:
     p = appdata_dir() / "backups"

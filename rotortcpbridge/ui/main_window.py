@@ -4,7 +4,6 @@ from __future__ import annotations
 import threading
 
 from PySide6.QtWidgets import (
-    QSizePolicy,
     QMainWindow,
     QMessageBox,
     QWidget,
@@ -15,8 +14,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QLineEdit,
     QFormLayout,
-    QMenuBar,
-    QMenu,
 )
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt, QTimer
@@ -399,13 +396,13 @@ class MainWindow(QMainWindow):
                 self.pst.start()
             elif not pst_enabled and self.pst.running:
                 self.pst.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_exception("_after_settings_applied PST start/stop", e)
         if hasattr(self, "_map_win") and self._map_win is not None:
             try:
                 self._map_win.on_settings_applied()
-            except Exception:
-                pass
+            except Exception as e:
+                self._log_exception("_after_settings_applied MapWindow", e)
             if self._internet_online is not None:
                 self._map_win.apply_internet_status(self._internet_online)
         if self._udp_ucxlog is not None:
@@ -439,8 +436,15 @@ class MainWindow(QMainWindow):
         def do_check():
             try:
                 online = check_internet()
-            except Exception:
-                online = False
+            except Exception as e:
+                exc = e
+
+                def _apply_err() -> None:
+                    self._log_exception("check_internet (Hintergrund)", exc)
+                    self._handle_internet_result(False)
+
+                QTimer.singleShot(0, _apply_err)
+                return
             QTimer.singleShot(0, lambda o=online: self._handle_internet_result(o))
 
         threading.Thread(target=do_check, daemon=True).start()
@@ -628,6 +632,13 @@ class MainWindow(QMainWindow):
         if self._udp_pst is not None and self._udp_pst.bind_error_msg:
             QMessageBox.warning(self, t("main.pst_udp_error_title"), self._udp_pst.bind_error_msg)
 
+    def _log_exception(self, context: str, exc: BaseException) -> None:
+        """Unerwartete Ausnahme ins Logbuch schreiben (statt still zu schlucken)."""
+        try:
+            self.logbuf.write("WARN", f"{context}: {type(exc).__name__}: {exc}")
+        except Exception:
+            pass
+
     def _notify_pst_position(self) -> None:
         """Sendet AZ-Position via PST-UDP wenn sie sich geändert hat."""
         if self._udp_pst is None or not self._udp_pst.is_active:
@@ -637,8 +648,8 @@ class MainWindow(QMainWindow):
             if az_d10 is None:
                 return
             self._udp_pst.notify_position(int(az_d10))
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_exception("PST-UDP notify_position", e)
 
     def _tick(self):
         import time as _time
@@ -650,12 +661,13 @@ class MainWindow(QMainWindow):
         try:
             last_rx = float(getattr(self.pst, "last_rx_ts", 0.0) or 0.0)
             pst_recent = pst_on and (last_rx > 0.0) and ((_time.time() - last_rx) <= 2.0)
-        except Exception:
+        except Exception as e:
+            self._log_exception("_tick pst_recent", e)
             pst_recent = False
         try:
             self.led_pst_conn.set_state(bool(pst_recent))
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_exception("_tick led_pst_conn", e)
 
         udp = getattr(self, "_udp_ucxlog", None)
         if udp is not None:
@@ -702,7 +714,8 @@ class MainWindow(QMainWindow):
                 if self._hw_off_since is None:
                     self._hw_off_since = now
                 self.led_hw.set_state((now - float(self._hw_off_since)) < 3.0)
-        except Exception:
+        except Exception as e:
+            self._log_exception("_tick led_hw / HW-Timeout-Anzeige", e)
             self.led_hw.set_state(hw_on)
 
         self.ed_pst.setText(f"{t('main.pst_running') if pst_on else t('main.pst_stopped')}  AZ:{self.pst.port_az}  EL:{self.pst.port_el}  Host:{self.pst.host}")

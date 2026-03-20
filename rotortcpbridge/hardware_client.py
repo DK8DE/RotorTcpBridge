@@ -1,5 +1,8 @@
 from __future__ import annotations
-import threading, queue, time, socket
+import threading
+import queue
+import time
+import socket
 from dataclasses import dataclass
 from typing import Optional, Callable
 from .rs485_protocol import parse, Telegram
@@ -161,7 +164,7 @@ class HardwareClient:
                 self._last_tx_any_ts = 0.0
                 self._connected_since_ts = time.time()
                 self.log.write("INFO", f"Hardware TCP verbunden {ip}:{port}")
-            except Exception as e:
+            except Exception:
                 self._sock = None
         else:
             if serial is None:

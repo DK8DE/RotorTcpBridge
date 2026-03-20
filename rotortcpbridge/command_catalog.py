@@ -4,7 +4,7 @@ from __future__ import annotations
 Befehlskatalog (CMD) inkl. Kurzinfos/Tooltips.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 

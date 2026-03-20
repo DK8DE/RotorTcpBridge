@@ -1,5 +1,8 @@
 
-import threading, queue, time, socket
+import threading
+import queue
+import time
+import socket
 try:
     import serial
 except Exception:

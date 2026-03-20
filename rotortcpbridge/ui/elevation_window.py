@@ -946,7 +946,6 @@ html, body {{ height: 100%; background: {v['bg']}; color: {v['fg']};
         _tr = t
         v    = self._css_vars()
         hmax = max(elevations)
-        hmin = min(elevations)
 
         h0_antenna  = h0 + self._antenna_height
         height_note = f" (+{self._antenna_height:.0f} m Mast)" if self._antenna_height > 0 else ""

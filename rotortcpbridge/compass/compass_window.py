@@ -4,7 +4,7 @@ import time
 from typing import Optional
 
 from PySide6.QtCore import QEvent, QTimer, Qt, Slot
-from PySide6.QtGui import QCloseEvent, QColor, QPalette, QShowEvent
+from PySide6.QtGui import QCloseEvent, QPalette, QShowEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QVBoxLayout,
-    QWidget,
 )
 
 from ..app_icon import get_app_icon

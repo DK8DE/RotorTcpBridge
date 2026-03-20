@@ -21,7 +21,7 @@ from typing import Optional, List
 
 from PySide6.QtCore import Qt, QTimer, Signal, QPointF, QRectF
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPalette, QPen, QPolygonF
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QWidget
 
 from ..angle_utils import shortest_delta_deg, wrap_deg
 from ..i18n import t

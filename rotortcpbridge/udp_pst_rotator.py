@@ -19,6 +19,7 @@ import re
 import socket
 import threading
 from .angle_utils import wrap_deg
+from .pst_notify_logic import pst_notify_position_decision
 
 # Alle bekannten PST-Tags, die still ignoriert werden dürfen
 _KNOWN_SILENT = {
@@ -120,13 +121,13 @@ class UdpPstRotator:
         """
         if not self._enabled or self._sock_tx is None:
             return
-        if az_d10 == 0 and self._last_sent_d10 is not None and self._last_sent_d10 != 0:
-            self._zero_confirm += 1
-            if self._zero_confirm < _ZERO_CONFIRM_TICKS:
-                return
-        else:
-            self._zero_confirm = 0
-        if self._last_sent_d10 is not None and abs(az_d10 - self._last_sent_d10) < 1:
+        send, self._zero_confirm = pst_notify_position_decision(
+            az_d10,
+            self._last_sent_d10,
+            self._zero_confirm,
+            zero_confirm_ticks=_ZERO_CONFIRM_TICKS,
+        )
+        if not send:
             return
         self._last_sent_d10 = az_d10
         az_deg = az_d10 / 10.0
@@ -162,8 +163,8 @@ class UdpPstRotator:
                 ):
                     return self._last_sent_d10 / 10.0
                 return d10 / 10.0
-        except Exception:
-            pass
+        except Exception as e:
+            self.log.write("WARN", f"UDP PST-Rotator _current_az_deg: {e}")
         return 0.0
 
     def _target_az_deg(self) -> float:
@@ -172,8 +173,8 @@ class UdpPstRotator:
             d10 = getattr(self.ctrl.az, "target_d10", None)
             if d10 is not None:
                 return d10 / 10.0
-        except Exception:
-            pass
+        except Exception as e:
+            self.log.write("WARN", f"UDP PST-Rotator _target_az_deg: {e}")
         return self._current_az_deg()
 
     def _loop(self) -> None:

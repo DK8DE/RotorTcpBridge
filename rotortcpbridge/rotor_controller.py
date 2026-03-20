@@ -1,43 +1,11 @@
 from __future__ import annotations
 import time
-import re
 from typing import Callable, Optional
 from .rs485_protocol import build, Telegram
 from .hardware_client import HardwareClient, HwRequest
 from .rotor_model import AxisState
+from .rotor_parse_utils import parse_float, parse_float_any, parse_int
 
-def _parse_float(s:str)->Optional[float]:
-    try:
-        return float(s.strip().replace(",", "."))
-    except Exception:
-        return None
-
-def _parse_int(s:str)->Optional[int]:
-    try:
-        return int(float(s.strip().replace(",", ".")))
-    except Exception:
-        return None
-
-def _parse_float_any(s:str)->Optional[float]:
-    """Extrahiert den ersten Float aus beliebigem PARAMS-Text.
-
-    Hintergrund: Manche ACKs liefern nicht nur einen nackten Zahlenwert,
-    sondern zusätzliche Teile (z.B. mit ';'). Für die Windanzeige wollen wir
-    trotzdem robust den Messwert übernehmen.
-    """
-    try:
-        txt = str(s or "").strip()
-    except Exception:
-        return None
-    if not txt:
-        return None
-    m = re.search(r"[-+]?\d+(?:[.,]\d+)?", txt)
-    if not m:
-        return None
-    try:
-        return float(m.group(0).replace(",", "."))
-    except Exception:
-        return None
 
 class RotorController:
     """Fachlogik: übersetzt SPID-Kommandos in RS485-Befehle + Polling + Status.
@@ -1371,14 +1339,14 @@ class RotorController:
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
-                    dir_val = _parse_int(parts[0])
-                    start_val = _parse_int(parts[1])
-                    count_val = _parse_int(parts[2])
+                    dir_val = parse_int(parts[0])
+                    start_val = parse_int(parts[1])
+                    count_val = parse_int(parts[2])
                     if dir_val is not None and start_val is not None and count_val is not None:
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
                             for i in range(count_val):
-                                v = _parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
+                                v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
                                 if v is not None and start_val + i < 72:
                                     bins[start_val + i] = int(v)
             ctrl._cal_bins_received_az = idx + 1
@@ -1430,14 +1398,14 @@ class RotorController:
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
-                    dir_val = _parse_int(parts[0])
-                    start_val = _parse_int(parts[1])
-                    count_val = _parse_int(parts[2])
+                    dir_val = parse_int(parts[0])
+                    start_val = parse_int(parts[1])
+                    count_val = parse_int(parts[2])
                     if dir_val is not None and start_val is not None and count_val is not None:
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
                             for i in range(count_val):
-                                v = _parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
+                                v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
                                 if v is not None and start_val + i < 72:
                                     bins[start_val + i] = int(v)
             ctrl._send_next_cal_block_el(dst, axis_state, idx + 1)
@@ -1487,14 +1455,14 @@ class RotorController:
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
-                    dir_val = _parse_int(parts[0])
-                    start_val = _parse_int(parts[1])
-                    count_val = _parse_int(parts[2])
+                    dir_val = parse_int(parts[0])
+                    start_val = parse_int(parts[1])
+                    count_val = parse_int(parts[2])
                     if dir_val is not None and start_val is not None and count_val is not None:
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
                             for i in range(count_val):
-                                v = _parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
+                                v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
                                 if v is not None and start_val + i < 72:
                                     bins[start_val + i] = int(v)
             ctrl._send_next_live_block(dst, axis_state, idx + 1)
@@ -1541,14 +1509,14 @@ class RotorController:
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
-                    dir_val = _parse_int(parts[0])
-                    start_val = _parse_int(parts[1])
-                    count_val = _parse_int(parts[2])
+                    dir_val = parse_int(parts[0])
+                    start_val = parse_int(parts[1])
+                    count_val = parse_int(parts[2])
                     if dir_val is not None and start_val is not None and count_val is not None:
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
                             for i in range(count_val):
-                                v = _parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
+                                v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
                                 if v is not None and start_val + i < 72:
                                     bins[start_val + i] = int(v)
             ctrl._send_next_live_block_el(dst, axis_state, idx + 1)
@@ -1602,14 +1570,14 @@ class RotorController:
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
-                    dir_val = _parse_int(parts[0])
-                    start_val = _parse_int(parts[1])
-                    count_val = _parse_int(parts[2])
+                    dir_val = parse_int(parts[0])
+                    start_val = parse_int(parts[1])
+                    count_val = parse_int(parts[2])
                     if dir_val is not None and start_val is not None and count_val is not None:
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
                             for i in range(count_val):
-                                v = _parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
+                                v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
                                 if v is not None and start_val + i < 72:
                                     bins[start_val + i] = int(v)
             ctrl._send_next_acc_block(dst, axis_state, idx + 1)
@@ -1661,14 +1629,14 @@ class RotorController:
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
-                    dir_val = _parse_int(parts[0])
-                    start_val = _parse_int(parts[1])
-                    count_val = _parse_int(parts[2])
+                    dir_val = parse_int(parts[0])
+                    start_val = parse_int(parts[1])
+                    count_val = parse_int(parts[2])
                     if dir_val is not None and start_val is not None and count_val is not None:
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
                             for i in range(count_val):
-                                v = _parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
+                                v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
                                 if v is not None and start_val + i < 72:
                                     bins[start_val + i] = int(v)
             ctrl._send_next_acc_block_el(dst, axis_state, idx + 1)
@@ -1727,7 +1695,7 @@ class RotorController:
                         pass
                     axis_state.online = True
                     axis_state.last_rx_ts = time.time()
-                    v = _parse_float(tel.params.split(";")[-1])
+                    v = parse_float(tel.params.split(";")[-1])
                     if v is not None:
                         d10 = int(round(v * 10))
                         prev_pos = int(axis_state.pos_d10)
@@ -1808,7 +1776,7 @@ class RotorController:
                 # Referenz-Status (GETREF Polling ohne pending)
                 if tel.cmd.startswith("ACK_GETREF") or tel.cmd.startswith("ACK_REF"):
                     axis_state.last_rx_ts = time.time()
-                    v = _parse_int(tel.params.strip())
+                    v = parse_int(tel.params.strip())
                     if v == 1:
                         axis_state.referenced = True
                         axis_state.ref_poll_active = False
@@ -1839,7 +1807,7 @@ class RotorController:
                     axis_state.warnings.clear()
                     if p and p != "0":
                         for part in p.split(";"):
-                            n = _parse_int(part)
+                            n = parse_int(part)
                             if n is not None:
                                 axis_state.warnings.add(n)
                     return
@@ -1849,7 +1817,7 @@ class RotorController:
 
                 # Fehlercode
                 if tel.cmd.startswith("ACK_GETERR") or tel.cmd.startswith("ACK_ERR"):
-                    code = _parse_int(tel.params.strip())
+                    code = parse_int(tel.params.strip())
                     if code is not None:
                         axis_state.error_code = int(code)
                         if axis_state.error_code != 0:
@@ -1861,63 +1829,63 @@ class RotorController:
 
                 # Telemetrie
                 if tel.cmd.startswith("ACK_GETTEMPA"):
-                    v = _parse_float(tel.params.strip())
+                    v = parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.telemetry.temp_ambient_c = v
                     return
                 if tel.cmd.startswith("ACK_GETTEMPM"):
-                    v = _parse_float(tel.params.strip())
+                    v = parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.telemetry.temp_motor_c = v
                     return
 
                 # Antennen-Versätze (GETANTOFF1–3)
                 if tel.cmd.startswith("ACK_GETANTOFF1"):
-                    v = _parse_float(tel.params.strip())
+                    v = parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.antoff1 = max(0.0, min(360.0, v))
                     return
                 if tel.cmd.startswith("ACK_GETANTOFF2"):
-                    v = _parse_float(tel.params.strip())
+                    v = parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.antoff2 = max(0.0, min(360.0, v))
                     return
                 if tel.cmd.startswith("ACK_GETANTOFF3"):
-                    v = _parse_float(tel.params.strip())
+                    v = parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.antoff3 = max(0.0, min(360.0, v))
                     return
                 # Antennen-Öffnungswinkel (GETANGLE1–3)
                 if tel.cmd.startswith("ACK_GETANGLE1"):
-                    v = _parse_float(tel.params.strip())
+                    v = parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.angle1 = max(0.0, min(360.0, v))
                     return
                 if tel.cmd.startswith("ACK_GETANGLE2"):
-                    v = _parse_float(tel.params.strip())
+                    v = parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.angle2 = max(0.0, min(360.0, v))
                     return
                 if tel.cmd.startswith("ACK_GETANGLE3"):
-                    v = _parse_float(tel.params.strip())
+                    v = parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.angle3 = max(0.0, min(360.0, v))
                     return
                 if tel.cmd.startswith("ACK_GETANEMO") or tel.cmd.startswith("ACK_ANEMO"):
-                    v = _parse_float_any(tel.params)
+                    v = parse_float_any(tel.params)
                     self._wind_speed_inflight = False
                     if v is not None:
                         axis_state.telemetry.wind_kmh = v
                     return
                 if tel.cmd.startswith("ACK_WINDDIR") or tel.cmd.startswith("ACK_GETWINDDIR"):
-                    v = _parse_float_any(tel.params)
+                    v = parse_float_any(tel.params)
                     self._wind_dir_inflight = False
                     if v is not None:
                         axis_state.telemetry.wind_dir_deg = v
                     return
                 if tel.cmd.startswith("ACK_GETBEAUFORT") or tel.cmd.startswith("ACK_BEAUFORT"):
                     parts = (tel.params or "").strip().split(";")[0].split(":")
-                    v = _parse_int(parts[0].strip()) if parts else None
+                    v = parse_int(parts[0].strip()) if parts else None
                     self._wind_beaufort_inflight = False
                     if v is not None and 0 <= v <= 12:
                         axis_state.telemetry.wind_beaufort = int(v)
@@ -1925,7 +1893,7 @@ class RotorController:
                 if (tel.cmd.startswith("ACK_GETWINDENABLE") or tel.cmd.startswith("ACK_WINDENABLE")
                         or tel.cmd.startswith("ACK_SETWINDENABLE")):
                     self._wind_enable_inflight = False
-                    v = _parse_int(tel.params.strip())
+                    v = parse_int(tel.params.strip())
                     if v is not None:
                         self.wind_enabled = bool(int(v) != 0)
                         self.wind_enabled_known = True
@@ -1944,18 +1912,18 @@ class RotorController:
                                 pass
                     return
                 if tel.cmd.startswith("ACK_GETPWM"):
-                    v = _parse_float(tel.params.strip())
+                    v = parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.telemetry.pwm_max_pct = v
                     return
                 if tel.cmd.startswith("ACK_SETPWM"):
-                    v = _parse_float(tel.params.strip())
+                    v = parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.telemetry.pwm_max_pct = v
                     axis_state.last_rx_ts = time.time()
                     return
                 if tel.cmd.startswith("ACK_GETMINPWM") or tel.cmd.startswith("ACK_MINPWM"):
-                    v = _parse_float(tel.params.strip())
+                    v = parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.telemetry.pwm_min_pct = v
                     return
@@ -1963,7 +1931,7 @@ class RotorController:
                 # Kalibrier-Status (GETCALSTATE)
                 if tel.cmd.startswith("ACK_GETCALSTATE") or tel.cmd.startswith("ACK_CALSTATE"):
                     parts = (tel.params or "").strip().split(";")
-                    state = _parse_int(parts[0]) if parts else None
+                    state = parse_int(parts[0]) if parts else None
                     if state is not None:
                         axis_state.cal_state = int(state)
                         if state != 2 and axis_name == "AZ":
@@ -2000,14 +1968,14 @@ class RotorController:
                 if cmd_u.startswith("ACK_GETCALBINS") or cmd_u.startswith("ACK_CALBINS"):
                     parts = (tel.params or "").strip().split(";")
                     if len(parts) >= 4:
-                        dir_val = _parse_int(parts[0])
-                        start_val = _parse_int(parts[1])
-                        count_val = _parse_int(parts[2])
+                        dir_val = parse_int(parts[0])
+                        start_val = parse_int(parts[1])
+                        count_val = parse_int(parts[2])
                         if dir_val is not None and start_val is not None and count_val is not None:
                             bins = axis_state.cal_bins_cw if dir_val == 1 else axis_state.cal_bins_ccw
                             if bins is not None and 0 <= start_val < 72 and 1 <= count_val <= 12:
                                 for i in range(count_val):
-                                    v = _parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
+                                    v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
                                     if v is not None:
                                         idx = start_val + i
                                         if idx < 72:
@@ -2024,14 +1992,14 @@ class RotorController:
                 if cmd_u.startswith("ACK_GETLIVEBINS") or cmd_u.startswith("ACK_LIVEBINS"):
                     parts = (tel.params or "").strip().split(";")
                     if len(parts) >= 4:
-                        dir_val = _parse_int(parts[0])
-                        start_val = _parse_int(parts[1])
-                        count_val = _parse_int(parts[2])
+                        dir_val = parse_int(parts[0])
+                        start_val = parse_int(parts[1])
+                        count_val = parse_int(parts[2])
                         if dir_val is not None and start_val is not None and count_val is not None:
                             bins = axis_state.live_bins_cw if dir_val == 1 else axis_state.live_bins_ccw
                             if bins is not None and 0 <= start_val < 72 and 1 <= count_val <= 12:
                                 for i in range(count_val):
-                                    v = _parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
+                                    v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
                                     if v is not None:
                                         idx = start_val + i
                                         if idx < 72:
@@ -2045,7 +2013,7 @@ class RotorController:
             pass
 
         if tel.cmd == "ERR":
-            code = _parse_int(tel.params.strip())
+            code = parse_int(tel.params.strip())
             if code is None:
                 return
             if tel.src == self.slave_az:

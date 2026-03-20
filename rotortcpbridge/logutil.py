@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 from datetime import datetime
 from collections import deque
-from typing import Deque, Optional
+from typing import Deque
 
 APP_NAME = "RotorTcpBridge"
 LOG_MAX_BYTES = 20 * 1024 * 1024  # 20 MB

@@ -86,6 +86,9 @@ class SettingsWindow(QDialog):
         form_conn.addRow(t("settings.slave_id_el"), self.sp_slave_el)
         form_conn.addRow(_hsep())
 
+        self.chk_pst_enabled = QCheckBox(t("settings.chk_pst_enabled"))
+        self.chk_pst_enabled.setChecked(bool(cfg["pst_server"].get("enabled", True)))
+        form_conn.addRow(self.chk_pst_enabled)
         form_conn.addRow(t("settings.pst_listen_host"), self.ed_listen_host)
         form_conn.addRow(t("settings.pst_port_az"), self.sp_listen_port_az)
         form_conn.addRow(t("settings.pst_port_el"), self.sp_listen_port_el)
@@ -561,6 +564,7 @@ class SettingsWindow(QDialog):
         self.lbl_status.setText(t("settings.status_saving"))
         QApplication.processEvents()
 
+        self.cfg["pst_server"]["enabled"] = bool(self.chk_pst_enabled.isChecked())
         self.cfg["pst_server"]["listen_host"] = self.ed_listen_host.text().strip()
         self.cfg["pst_server"]["listen_port_az"] = int(self.sp_listen_port_az.value())
         self.cfg["pst_server"]["listen_port_el"] = int(self.sp_listen_port_el.value())

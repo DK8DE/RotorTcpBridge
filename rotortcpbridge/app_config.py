@@ -14,7 +14,7 @@ def config_path()->Path:
     return appdata_dir() / "config.json"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-  "pst_server": {"listen_host":"127.0.0.1","listen_port_az":4001,"listen_port_el":4002},
+  "pst_server": {"enabled":True,"listen_host":"127.0.0.1","listen_port_az":4001,"listen_port_el":4002},
   "hardware_link": {
       "mode":"tcp",
       "tcp_ip":"192.168.1.50",

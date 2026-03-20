@@ -73,6 +73,7 @@
   "settings.chk_enable_az": "AZ active (polling + send)",
   "settings.chk_enable_el": "EL active (polling + send)",
   "settings.chk_dark_mode": "Always force dark mode",
+  "settings.chk_pst_enabled": "Enable PST server",
   "settings.chk_udp_ucxlog": "UDP UcxLog",
   "settings.chk_udp_ucxlog_tooltip": "Listens on 127.0.0.1:12040. When 'Set Rotor' is clicked in UcxLog, the log sends UDP XML with Azimuth to drive the rotor.",
   "settings.chk_udp_pst": "UDP PST Rotator",

@@ -37,7 +37,7 @@ def _make_axis_panel(
         e.setReadOnly(True)
         return e
 
-    def pair(label_text: str, field: QWidget) -> QWidget:
+    def pair(label_text: str, field: QWidget) -> tuple[QWidget, QLabel]:
         w = QWidget()
         h = QHBoxLayout(w)
         h.setContentsMargins(0, 0, 0, 0)
@@ -47,18 +47,20 @@ def _make_axis_panel(
         lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         h.addWidget(lab, 0)
         h.addWidget(field, 1)
-        return w
+        return w, lab
 
-    def row2(a_label: str, a_field: QWidget, b_label: str, b_field: QWidget) -> QWidget:
+    def row2(a_label: str, a_field: QWidget, b_label: str, b_field: QWidget) -> tuple[QWidget, QLabel, QLabel]:
         w = QWidget()
         h = QHBoxLayout(w)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(10)
-        h.addWidget(pair(a_label, a_field), 1)
-        h.addWidget(pair(b_label, b_field), 1)
-        return w
+        pa, la = pair(a_label, a_field)
+        pb, lb = pair(b_label, b_field)
+        h.addWidget(pa, 1)
+        h.addWidget(pb, 1)
+        return w, la, lb
 
-    def status_widget(label_text: str) -> tuple[QWidget, Led]:
+    def status_widget(label_text: str) -> tuple[QWidget, Led, QLabel]:
         w = QWidget()
         h = QHBoxLayout(w)
         h.setContentsMargins(0, 0, 0, 0)
@@ -72,7 +74,7 @@ def _make_axis_panel(
         led_layout.addWidget(led)
         h.addWidget(led_wrap, 0)
         h.addWidget(lab, 0)
-        return w, led
+        return w, led, lab
 
     def pwm_widget() -> tuple[QWidget, QSlider, QLabel]:
         w = QWidget()
@@ -184,12 +186,14 @@ def _make_axis_panel(
     status_h = QHBoxLayout(status_row)
     status_h.setContentsMargins(0, 0, 0, 0)
     status_h.setSpacing(10)
-    status_h.addWidget(pair(t("axis.pos_label"), fields["pos"]), 2)
-    status_h.addWidget(pair(t("axis.target_label"), fields["target"]), 2)
+    pw_pos, lbl_pos = pair(t("axis.pos_label"), fields["pos"])
+    pw_tgt, lbl_target = pair(t("axis.target_label"), fields["target"])
+    status_h.addWidget(pw_pos, 2)
+    status_h.addWidget(pw_tgt, 2)
 
-    ref_w, ref_led = status_widget(t("axis.ref_label"))
-    mv_w, mv_led = status_widget(t("axis.moving_label"))
-    on_w, on_led = status_widget(t("axis.online_label"))
+    ref_w, ref_led, lbl_ref = status_widget(t("axis.ref_label"))
+    mv_w, mv_led, lbl_moving = status_widget(t("axis.moving_label"))
+    on_w, on_led, lbl_online = status_widget(t("axis.online_label"))
     fields["ref_led"] = ref_led
     fields["moving_led"] = mv_led
     fields["online_led"] = on_led
@@ -198,25 +202,118 @@ def _make_axis_panel(
     status_h.addWidget(on_w, 0)
     form.addRow(status_row)
 
+    # Explizite (QLabel, Übersetzungsschlüssel)-Liste — zuverlässiger als Dict-Lookups
+    # (Motor/Wind u. a. liegen in verschachtelten Zeilen).
+    i18n_pairs: list[tuple[QLabel, str]] = [
+        (lbl_pos, "axis.pos_label"),
+        (lbl_target, "axis.target_label"),
+        (lbl_ref, "axis.ref_label"),
+        (lbl_moving, "axis.moving_label"),
+        (lbl_online, "axis.online_label"),
+    ]
+
     if axis_l == "az":
         env_row = QWidget()
         env_h = QHBoxLayout(env_row)
         env_h.setContentsMargins(0, 0, 0, 0)
         env_h.setSpacing(10)
-        env_h.addWidget(pair(t("axis.temp_ambient_label"), fields["tempa"]), 1)
-        env_h.addWidget(pair(t("axis.temp_motor_label"), fields["tempm"]), 1)
-        fields["wind_pair_w"] = pair(t("axis.wind_label"), fields["wind"])
-        fields["winddir_pair_w"] = pair(t("axis.winddir_label"), fields["winddir"])
+        p_ta, lbl_ta = pair(t("axis.temp_ambient_label"), fields["tempa"])
+        p_tm, lbl_tm = pair(t("axis.temp_motor_label"), fields["tempm"])
+        env_h.addWidget(p_ta, 1)
+        env_h.addWidget(p_tm, 1)
+        pw_w, lbl_wind = pair(t("axis.wind_label"), fields["wind"])
+        pwd_w, lbl_wdir = pair(t("axis.winddir_label"), fields["winddir"])
+        fields["wind_pair_w"] = pw_w
+        fields["winddir_pair_w"] = pwd_w
+        i18n_pairs.extend(
+            [
+                (lbl_ta, "axis.temp_ambient_label"),
+                (lbl_tm, "axis.temp_motor_label"),
+                (lbl_wind, "axis.wind_label"),
+                (lbl_wdir, "axis.winddir_label"),
+            ]
+        )
         env_h.addWidget(fields["wind_pair_w"], 1)
         env_h.addWidget(fields["winddir_pair_w"], 1)
         form.addRow(env_row)
     else:
-        form.addRow(row2(t("axis.temp_ambient_label"), fields["tempa"], t("axis.temp_motor_label"), fields["tempm"]))
+        el_row, lbl_ta, lbl_tm = row2(
+            t("axis.temp_ambient_label"), fields["tempa"],
+            t("axis.temp_motor_label"), fields["tempm"],
+        )
+        i18n_pairs.extend(
+            [
+                (lbl_ta, "axis.temp_ambient_label"),
+                (lbl_tm, "axis.temp_motor_label"),
+            ]
+        )
+        form.addRow(el_row)
 
     form.addRow(t("axis.motorspeed_label"), pwm_w)
-    form.addRow(t("axis.messages_label"), row2(t("axis.err_label"), fields["err"], t("axis.warn_label"), fields["warn"]))
+    msg_row, lbl_err, lbl_warn = row2(
+        t("axis.err_label"), fields["err"],
+        t("axis.warn_label"), fields["warn"],
+    )
+    form.addRow(t("axis.messages_label"), msg_row)
+    i18n_pairs.extend(
+        [
+            (lbl_err, "axis.err_label"),
+            (lbl_warn, "axis.warn_label"),
+        ]
+    )
 
+    try:
+        lb_ms = form.labelForField(pwm_w)
+        lb_msg = form.labelForField(msg_row)
+        # labelForField liefert QWidget | None — für Typchecker explizit QLabel prüfen
+        if isinstance(lb_ms, QLabel):
+            i18n_pairs.append((lb_ms, "axis.motorspeed_label"))
+        if isinstance(lb_msg, QLabel):
+            i18n_pairs.append((lb_msg, "axis.messages_label"))
+    except Exception:
+        pass
+
+    fields["_i18n_pairs"] = i18n_pairs
     return fields
+
+
+def retranslate_axis_panel(fields: dict) -> None:
+    """Aktualisiert alle Achsen-Labels nach Sprachwechsel."""
+    pairs = fields.get("_i18n_pairs")
+    if isinstance(pairs, list) and pairs:
+        for lab, tkey in pairs:
+            try:
+                if lab is not None and isinstance(tkey, str):
+                    lab.setText(t(tkey))
+            except Exception:
+                pass
+        return
+    # Fallback: ältere Dict-Struktur (falls noch vorhanden)
+    m = fields.get("_i18n")
+    if not isinstance(m, dict):
+        return
+    mapping: list[tuple[str, str]] = [
+        ("pos", "axis.pos_label"),
+        ("target", "axis.target_label"),
+        ("ref", "axis.ref_label"),
+        ("moving", "axis.moving_label"),
+        ("online", "axis.online_label"),
+        ("tempa", "axis.temp_ambient_label"),
+        ("tempm", "axis.temp_motor_label"),
+        ("wind", "axis.wind_label"),
+        ("winddir", "axis.winddir_label"),
+        ("motorspeed_row", "axis.motorspeed_label"),
+        ("messages_row", "axis.messages_label"),
+        ("err", "axis.err_label"),
+        ("warn", "axis.warn_label"),
+    ]
+    for key, tkey in mapping:
+        lab = m.get(key)
+        if lab is not None:
+            try:
+                lab.setText(t(tkey))
+            except Exception:
+                pass
 
 
 def fill_axis_panel(fields: dict, axis_state) -> None:

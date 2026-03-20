@@ -54,8 +54,9 @@ def main():
         log,
     )
 
-    # PST-Server direkt beim Programmstart starten
-    pst.start()
+    # PST-Server beim Programmstart starten (wenn aktiviert)
+    if bool(cfg["pst_server"].get("enabled", True)):
+        pst.start()
 
     # UDP UcxLog-Listener (wenn aktiviert)
     udp_ucxlog = UdpUcxLogListener(ctrl, log, cfg=cfg)

@@ -37,7 +37,7 @@ from .command_buttons_window import CommandButtonsWindow
 from .ui_utils import px_to_dip
 from .theme import apply_theme_mode
 from .popup_handlers import ErrorPopupHandler, WarningPopupHandler
-from .axis_widget import _make_axis_panel, fill_axis_panel
+from .axis_widget import _make_axis_panel, fill_axis_panel, retranslate_axis_panel
 
 
 class MainWindow(QMainWindow):
@@ -104,9 +104,10 @@ class MainWindow(QMainWindow):
         top.addWidget(self.btn_open_weather, 1)
         main.addLayout(top)
 
-        gb_srv = QGroupBox(t("main.group_server"))
-        main.addWidget(gb_srv)
-        srv_form = QFormLayout(gb_srv)
+        self.gb_srv = QGroupBox(t("main.group_server"))
+        main.addWidget(self.gb_srv)
+        srv_form = QFormLayout(self.gb_srv)
+        self._srv_form = srv_form
 
         led_d = px_to_dip(self, 12)
         self.led_pst = Led(led_d, self)
@@ -135,6 +136,7 @@ class MainWindow(QMainWindow):
         pst_row_w = QWidget()
         pst_row_w.setLayout(pst_row)
         srv_form.addRow(t("main.srv_pst_label"), pst_row_w)
+        self._srv_row_pst_w = pst_row_w
 
         hw_row = QHBoxLayout()
         hw_row.setContentsMargins(0, 0, 0, 0)
@@ -144,36 +146,43 @@ class MainWindow(QMainWindow):
         hw_row_w = QWidget()
         hw_row_w.setLayout(hw_row)
         srv_form.addRow(t("main.srv_hw_label"), hw_row_w)
+        self._srv_row_hw_w = hw_row_w
 
         pst_conn_row = QHBoxLayout()
         pst_conn_row.setContentsMargins(0, 0, 0, 0)
         pst_conn_row.setSpacing(px_to_dip(self, 6))
         pst_conn_row.addWidget(_led_wrap(self.led_pst_conn))
-        pst_conn_row.addWidget(QLabel(t("main.srv_pst_conn_text")))
+        self._lbl_srv_pst_conn = QLabel(t("main.srv_pst_conn_text"))
+        pst_conn_row.addWidget(self._lbl_srv_pst_conn)
         pst_conn_row.addStretch(1)
         pst_conn_row_w = QWidget()
         pst_conn_row_w.setLayout(pst_conn_row)
         srv_form.addRow(t("main.srv_pst_conn_label"), pst_conn_row_w)
+        self._srv_row_pst_conn_w = pst_conn_row_w
 
         ucxlog_row = QHBoxLayout()
         ucxlog_row.setContentsMargins(0, 0, 0, 0)
         ucxlog_row.setSpacing(px_to_dip(self, 6))
         ucxlog_row.addWidget(_led_wrap(self.led_ucxlog))
-        ucxlog_row.addWidget(QLabel(t("main.srv_ucxlog_suffix")))
+        self._lbl_srv_ucxlog_suffix = QLabel(t("main.srv_ucxlog_suffix"))
+        ucxlog_row.addWidget(self._lbl_srv_ucxlog_suffix)
         ucxlog_row.addStretch(1)
         ucxlog_row_w = QWidget()
         ucxlog_row_w.setLayout(ucxlog_row)
         srv_form.addRow(t("main.srv_ucxlog_prefix"), ucxlog_row_w)
+        self._srv_row_ucxlog_w = ucxlog_row_w
 
         pst_udp_row = QHBoxLayout()
         pst_udp_row.setContentsMargins(0, 0, 0, 0)
         pst_udp_row.setSpacing(px_to_dip(self, 6))
         pst_udp_row.addWidget(_led_wrap(self.led_pst_udp))
-        pst_udp_row.addWidget(QLabel(t("main.srv_pst_udp_suffix")))
+        self._lbl_srv_pst_udp_suffix = QLabel(t("main.srv_pst_udp_suffix"))
+        pst_udp_row.addWidget(self._lbl_srv_pst_udp_suffix)
         pst_udp_row.addStretch(1)
         pst_udp_row_w = QWidget()
         pst_udp_row_w.setLayout(pst_udp_row)
         srv_form.addRow(t("main.srv_pst_udp_prefix"), pst_udp_row_w)
+        self._srv_row_pst_udp_w = pst_udp_row_w
 
         try:
             srv_form.setVerticalSpacing(px_to_dip(self, 4))
@@ -236,6 +245,7 @@ class MainWindow(QMainWindow):
 
         apply_theme_mode(self.cfg)
         self._update_axis_visibility()
+        self._update_srv_rows_visibility()
         self._apply_fixed_mainwindow_size()
 
     def _open_about(self):
@@ -299,6 +309,36 @@ class MainWindow(QMainWindow):
         self.btn_open_map.setText(t("main.btn_map"))
         self.btn_open_weather.setText(t("main.btn_weather"))
         self.btn_ref.setText(t("main.btn_ref"))
+        # Server-GroupBox: Überschriften + Beschriftungen der Formularzeilen
+        try:
+            self.gb_srv.setTitle(t("main.group_server"))
+            sf = self._srv_form
+            lab = sf.labelForField(self._srv_row_pst_w)
+            if lab is not None:
+                lab.setText(t("main.srv_pst_label"))
+            lab = sf.labelForField(self._srv_row_hw_w)
+            if lab is not None:
+                lab.setText(t("main.srv_hw_label"))
+            lab = sf.labelForField(self._srv_row_pst_conn_w)
+            if lab is not None:
+                lab.setText(t("main.srv_pst_conn_label"))
+            lab = sf.labelForField(self._srv_row_ucxlog_w)
+            if lab is not None:
+                lab.setText(t("main.srv_ucxlog_prefix"))
+            lab = sf.labelForField(self._srv_row_pst_udp_w)
+            if lab is not None:
+                lab.setText(t("main.srv_pst_udp_prefix"))
+            self._lbl_srv_pst_conn.setText(t("main.srv_pst_conn_text"))
+            self._lbl_srv_ucxlog_suffix.setText(t("main.srv_ucxlog_suffix"))
+            self._lbl_srv_pst_udp_suffix.setText(t("main.srv_pst_udp_suffix"))
+        except Exception:
+            pass
+        # AZ/EL-Achsenfelder
+        try:
+            retranslate_axis_panel(self.az_fields)
+            retranslate_axis_panel(self.el_fields)
+        except Exception:
+            pass
 
     def _rebuild_all_windows(self):
         """Alle Fenster schließen und neu erstellen (nach Sprachänderung)."""
@@ -321,7 +361,6 @@ class MainWindow(QMainWindow):
             self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
             self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
             self._commands_win = CommandButtonsWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
-            self._retranslate_ui()
         except Exception:
             pass
         self._after_settings_applied()
@@ -351,7 +390,17 @@ class MainWindow(QMainWindow):
         apply_theme_mode(self.cfg)
         self._update_groupbox_titles()
         self._update_axis_visibility()
+        self._update_srv_rows_visibility()
         self._apply_fixed_mainwindow_size()
+        # PST-Server starten oder stoppen je nach Einstellung
+        pst_enabled = bool(self.cfg.get("pst_server", {}).get("enabled", True))
+        try:
+            if pst_enabled and not self.pst.running:
+                self.pst.start()
+            elif not pst_enabled and self.pst.running:
+                self.pst.stop()
+        except Exception:
+            pass
         if hasattr(self, "_map_win") and self._map_win is not None:
             try:
                 self._map_win.on_settings_applied()
@@ -373,6 +422,8 @@ class MainWindow(QMainWindow):
             )
             if self._udp_pst.bind_error_msg:
                 QMessageBox.warning(self, t("main.pst_udp_error_title"), self._udp_pst.bind_error_msg)
+        # Hauptfenster-Texte (Server, AZ/EL, Menü, …) nach load_lang / Einstellungen synchronisieren
+        self._retranslate_ui()
         if hasattr(self, "_compass_win") and self._compass_win.isVisible():
             self._compass_win._update_groupbox_titles()
             if hasattr(self._compass_win, "_apply_label_colors_from_palette"):
@@ -465,6 +516,20 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, "_compass_win") and hasattr(self._compass_win, "refresh_visibility"):
                 self._compass_win.refresh_visibility()
+        except Exception:
+            pass
+
+    def _update_srv_rows_visibility(self) -> None:
+        """Server-GroupBox-Zeilen je nach aktivierten Diensten ein-/ausblenden."""
+        ui = self.cfg.get("ui", {})
+        pst_on = bool(self.cfg.get("pst_server", {}).get("enabled", True))
+        ucxlog_on = bool(ui.get("udp_ucxlog_enabled", False))
+        pst_udp_on = bool(ui.get("udp_pst_enabled", False))
+        try:
+            self._srv_form.setRowVisible(self._srv_row_pst_w, pst_on)
+            self._srv_form.setRowVisible(self._srv_row_pst_conn_w, pst_on)
+            self._srv_form.setRowVisible(self._srv_row_ucxlog_w, ucxlog_on)
+            self._srv_form.setRowVisible(self._srv_row_pst_udp_w, pst_udp_on)
         except Exception:
             pass
 

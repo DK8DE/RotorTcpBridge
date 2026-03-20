@@ -28,6 +28,10 @@ _KNOWN_SILENT = {
 
 _RE_TAG = re.compile(r"<([^/][^>]*)>(.*?)</\1>", re.DOTALL)
 
+# Mindestanzahl aufeinanderfolgender pos_d10==0-Samples, bevor AZ:0.0 gesendet wird,
+# wenn zuvor eine andere Position gemeldet wurde (verhindert kurze Leseglitches).
+_ZERO_CONFIRM_TICKS = 3
+
 
 class UdpPstRotator:
     """Emuliert die UDP-Schnittstelle von PstRotatorAz.
@@ -48,6 +52,8 @@ class UdpPstRotator:
         self._running = False
         # Zuletzt gesendete Position (in d10-Schritten), um Flooding zu vermeiden
         self._last_sent_d10: int | None = None
+        # Aufeinanderfolgende Samples mit pos_d10==0 nach einer anderen Position (gegen Leseglitch)
+        self._zero_confirm: int = 0
         # Wird auf True gesetzt wenn ein Steuerpaket eingeht → LED blinken
         self.packet_received_flag = False
         # Fehlermeldung wenn Port beim Start belegt war (None = kein Fehler)
@@ -68,6 +74,7 @@ class UdpPstRotator:
         self._enabled = bool(enabled)
         self._port = max(1, min(65534, int(port)))  # max 65534 weil port+1 noch frei sein muss
         self._last_sent_d10 = None
+        self._zero_confirm = 0
         if not self._enabled:
             return
         try:
@@ -107,9 +114,18 @@ class UdpPstRotator:
 
         Sendet AZ:xxx<CR> an listen_port+1, wenn der Wert sich um mindestens
         1 d10-Schritt (= 0,1°) geändert hat.
+
+        Einzelne pos_d10==0-Samples nach einer anderen Position werden ignoriert
+        (typische Leseglitch), bis 0° mehrere Ticks stabil ist.
         """
         if not self._enabled or self._sock_tx is None:
             return
+        if az_d10 == 0 and self._last_sent_d10 is not None and self._last_sent_d10 != 0:
+            self._zero_confirm += 1
+            if self._zero_confirm < _ZERO_CONFIRM_TICKS:
+                return
+        else:
+            self._zero_confirm = 0
         if self._last_sent_d10 is not None and abs(az_d10 - self._last_sent_d10) < 1:
             return
         self._last_sent_d10 = az_d10
@@ -130,10 +146,21 @@ class UdpPstRotator:
             self.log.write("WARN", f"UDP PST-Rotator Senden fehlgeschlagen: {e}")
 
     def _current_az_deg(self) -> float:
-        """Gibt die aktuelle AZ-Position in Grad zurück."""
+        """Gibt die aktuelle AZ-Position in Grad zurück.
+
+        Kurzes pos_d10==0 nach einer anderen Position: wie notify_position nicht
+        als 0° werten (AZ?-Antwort konsistent zur Positions-Push-Logik).
+        """
         try:
             d10 = getattr(self.ctrl.az, "pos_d10", None)
             if d10 is not None:
+                if (
+                    d10 == 0
+                    and self._last_sent_d10 is not None
+                    and self._last_sent_d10 != 0
+                    and self._zero_confirm < _ZERO_CONFIRM_TICKS
+                ):
+                    return self._last_sent_d10 / 10.0
                 return d10 / 10.0
         except Exception:
             pass

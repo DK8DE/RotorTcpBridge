@@ -2,8 +2,53 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 
 _EARTH_RADIUS_KM = 6371.0
+
+
+def grayline_points(n_points: int = 360) -> list[tuple[float, float]]:
+    """Punkte des Solar-Terminators (Grayline) für die aktuelle UTC-Zeit.
+
+    Die Grayline trennt Tag und Nacht. Parametrisierung entlang des Großkreises,
+    damit die Kurve auf der Karte glatt erscheint (keine Ecken).
+    """
+    now = datetime.now(timezone.utc)
+    day = now.timetuple().tm_yday
+    utc_hours = now.hour + now.minute / 60.0 + now.second / 3600.0
+
+    # Subsolar-Punkt: wo die Sonne senkrecht steht
+    sun_lon = 180.0 - 15.0 * utc_hours
+    sun_lon = ((sun_lon + 180.0) % 360.0) - 180.0
+    sun_lat = 23.44 * math.sin(2.0 * math.pi * (day - 81) / 365.0)
+
+    sun_lat_r = math.radians(sun_lat)
+    sun_lon_r = math.radians(sun_lon)
+
+    # Einheitsvektor zur Sonne
+    sx = math.cos(sun_lat_r) * math.cos(sun_lon_r)
+    sy = math.cos(sun_lat_r) * math.sin(sun_lon_r)
+    sz = math.sin(sun_lat_r)
+
+    # Zwei orthogonale Vektoren in der Terminator-Ebene (senkrecht zur Sonne)
+    ux = -math.sin(sun_lon_r)
+    uy = math.cos(sun_lon_r)
+    uz = 0.0
+    vx = sy * uz - sz * uy
+    vy = sz * ux - sx * uz
+    vz = sx * uy - sy * ux
+
+    result: list[tuple[float, float]] = []
+    for i in range(n_points + 1):
+        t = 2.0 * math.pi * i / n_points
+        # Punkt auf dem Großkreis (Einheitskugel)
+        x = math.cos(t) * ux + math.sin(t) * vx
+        y = math.cos(t) * uy + math.sin(t) * vy
+        z = math.cos(t) * uz + math.sin(t) * vz
+        lat = math.degrees(math.asin(max(-1.0, min(1.0, z))))
+        lon = math.degrees(math.atan2(y, x))
+        result.append((lat, lon))
+    return result
 
 
 def bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

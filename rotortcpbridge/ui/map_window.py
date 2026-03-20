@@ -40,7 +40,7 @@ from ..ui.led_widget import Led
 from ..ui.ui_utils import px_to_dip
 from ..ui.weather_window import WindRoseWidget
 from ..app_icon import get_app_icon
-from ..geo_utils import beam_center_line_points, beam_polygon_points, bearing_deg
+from ..geo_utils import beam_center_line_points, beam_polygon_points, bearing_deg, grayline_points
 from ..i18n import t
 from .elevation_window import ElevationProfileWindow
 
@@ -294,8 +294,27 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
     range_km = params["range_km"]
     poly_json = json.dumps(params["polygon"])
     center_line = params["center_line"]
+    grayline = params.get("grayline", [])
+    # Am Antimeridian (±180°) aufteilen, damit Leaflet die Kurve korrekt zeichnet
+    grayline_segments: list[list[list[float]]] = []
+    if len(grayline) >= 2:
+        seg: list[list[float]] = [[grayline[0][0], grayline[0][1]]]
+        for i in range(1, len(grayline)):
+            lon_prev, lon_curr = grayline[i - 1][1], grayline[i][1]
+            if abs(lon_curr - lon_prev) > 180:
+                if len(seg) >= 2:
+                    grayline_segments.append(seg)
+                seg = []
+            seg.append([grayline[i][0], grayline[i][1]])
+        if len(seg) >= 2:
+            grayline_segments.append(seg)
+    grayline_json = json.dumps(grayline_segments)
+    grayline_color = "#b8b8b8" if dark else "#505050"
+    horizon_color = "#7eb87e" if dark else "#2e7d32"
     loc_str = params["location_str"]
     info_standort = params.get("info_standort", "Standort")
+    popup_antenna = params.get("popup_antenna", "Antennenstandort")
+    popup_target = params.get("popup_target", "Ziel")
     info_offnung = params.get("info_offnung", "Öffnungswinkel")
     info_reichweite = params.get("info_reichweite", "Reichweite")
     if dark is None:
@@ -381,6 +400,12 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
     const lon = {lon};
     const polyCoords = {poly_json};
     const centerLine = {json.dumps(center_line)};
+    const graylineCoords = {grayline_json};
+    const graylineColor = {json.dumps(grayline_color)};
+    const horizonDistKm = {params.get("horizon_dist_km", 0.0)};
+    const horizonColor = {json.dumps(horizon_color)};
+    const popupAntenna = {json.dumps(popup_antenna)};
+    const popupTarget = {json.dumps(popup_target)};
 
     const TILE_URL_DARK = "https://{{s}}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}{{r}}.png";
     const TILE_URL_LIGHT = "https://{{s}}.basemaps.cartocdn.com/rastertiles/voyager/{{z}}/{{x}}/{{y}}{{r}}.png";
@@ -396,8 +421,9 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
     const initZoom = isOffline ? {offline_max_z} : 10;
     const map = L.map('map', {{ maxZoom: isOffline ? {offline_max_z} : 19, minZoom: isOffline ? {offline_max_z} : 3 }}).setView([lat, lon], initZoom);
     let tileLayer = L.tileLayer({json.dumps(tile_url)}, tileOpts).addTo(map);
-    tileLayer.on('tileerror', function(e) {{ console.error('[Map] Tile-Fehler:', e.tile?.src || e); }});
-    tileLayer.on('load', function() {{ console.log('[Map] Tiles geladen'); }});
+    tileLayer.on('tileerror', function(e) {{
+      if (!_currentOffline) console.error('ROTOR_TILEERROR');
+    }});
 
     const antennaIcon = {json.dumps(antenna_data_url)} ? L.icon({{
       iconUrl: {json.dumps(antenna_data_url)},
@@ -409,8 +435,32 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
       iconSize: [30, 30],
       iconAnchor: [15, 30]
     }}) : antennaIcon;
+    let graylineLayer = null;
+    if (graylineCoords && graylineCoords.length > 0) {{
+      const segments = graylineCoords.filter(function(s) {{ return s && s.length >= 2; }});
+      if (segments.length > 0) {{
+        graylineLayer = L.polyline(segments, {{
+          color: graylineColor, weight: 2, dashArray: '10, 8',
+          interactive: false
+        }}).addTo(map);
+      }}
+    }}
+
     let marker = L.marker([lat, lon], antennaIcon ? {{ icon: antennaIcon }} : {{}}).addTo(map);
-    marker.bindPopup("Antennenstandort").openPopup();
+    marker.bindPopup(popupAntenna).openPopup();
+
+    let horizonCircle = null;
+    if (horizonDistKm > 0.5) {{
+      horizonCircle = L.circle([lat, lon], {{
+        radius: horizonDistKm * 1000,
+        color: horizonColor,
+        weight: 2,
+        dashArray: '8, 8',
+        fill: false,
+        fillOpacity: 0,
+        interactive: false
+      }}).addTo(map);
+    }}
 
     let poly = L.polygon(polyCoords, {{
       color: '#5BA3D0', fillColor: '#87CEEB', fillOpacity: 0.35, weight: 2,
@@ -422,7 +472,9 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
       interactive: false
     }}).addTo(map);
 
-    const allLayer = L.featureGroup([marker, poly, dashLine]);
+    const allLayerItems = [marker, poly, dashLine];
+    if (horizonCircle) allLayerItems.push(horizonCircle);
+    const allLayer = L.featureGroup(allLayerItems);
     map.fitBounds(allLayer.getBounds().pad(0.1));
     if (isOffline) {{
       map.setMinZoom(offlineMaxZ);
@@ -435,7 +487,7 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
     window.setClickMarker = function(lat2, lon2) {{
       if (clickMarker) map.removeLayer(clickMarker);
       clickMarker = L.marker([lat2, lon2], antennaTargetIcon ? {{ icon: antennaTargetIcon }} : {{}}).addTo(map);
-      clickMarker.bindPopup("Ziel");
+      clickMarker.bindPopup(popupTarget);
     }};
 
     window.clearClickMarker = function() {{
@@ -454,10 +506,15 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
       map.removeLayer(marker);
       map.removeLayer(poly);
       map.removeLayer(dashLine);
+      if (horizonCircle) {{ map.removeLayer(horizonCircle); horizonCircle = null; }}
       marker = L.marker([data.lat, data.lon], antennaIcon ? {{ icon: antennaIcon }} : {{}}).addTo(map);
-      marker.bindPopup("Antennenstandort");
+      marker.bindPopup(data.popup_antenna || popupAntenna);
       poly = L.polygon(data.polygon, {{ color: '#5BA3D0', fillColor: '#87CEEB', fillOpacity: 0.35, weight: 2, interactive: false }}).addTo(map);
       dashLine = L.polyline(data.centerLine, {{ color: 'blue', weight: 2, dashArray: '8, 8', interactive: false }}).addTo(map);
+      const hKm = data.horizon_dist_km || 0;
+      if (hKm > 0.5) {{
+        horizonCircle = L.circle([data.lat, data.lon], {{ radius: hKm * 1000, color: horizonColor, weight: 2, dashArray: '8, 8', fill: false, fillOpacity: 0, interactive: false }}).addTo(map);
+      }}
       document.getElementById('info').innerHTML = '<div><strong>' + (data.info_standort || 'Standort') + ':</strong> ' + data.location_str + '</div>' +
         '<div><strong>' + (data.info_offnung || 'Öffnungswinkel') + ':</strong> ' + data.opening.toFixed(1) + '°</div>' +
         '<div><strong>' + (data.info_reichweite || 'Reichweite') + ':</strong> ' + data.range_km.toFixed(1) + ' km</div>';
@@ -472,6 +529,9 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
       const opts = offline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION }}
         : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }};
       tileLayer = L.tileLayer(tileUrl, opts).addTo(map);
+      if (!offline) {{
+        tileLayer.on('tileerror', function(e) {{ if (!_currentOffline) console.error('ROTOR_TILEERROR'); }});
+      }}
       if (offline) {{
         map.setMinZoom(offlineMaxZ);
         map.setMaxZoom(offlineMaxZ);
@@ -498,6 +558,12 @@ def _build_map_html(params: dict, dark: bool | None = None) -> str:
       if (info) {{
         info.style.background = dark ? '#2d2d2d' : 'white';
         info.style.color = dark ? '#e1e1e1' : 'inherit';
+      }}
+      if (graylineLayer) {{
+        graylineLayer.setStyle({{ color: dark ? '#b8b8b8' : '#505050' }});
+      }}
+      if (horizonCircle) {{
+        horizonCircle.setStyle({{ color: dark ? '#7eb87e' : '#2e7d32' }});
       }}
       if (locatorVisible) {{
         _mapDark = dark;
@@ -784,9 +850,14 @@ class MapWindOverlay(QFrame):
 class MapWebPage(QWebEnginePage):
     """WebEnginePage die rotorapp://-Navigations abfängt."""
 
-    def __init__(self, on_click_cb, parent=None):
+    def __init__(self, on_click_cb, on_tile_error_cb=None, parent=None):
         super().__init__(parent)
         self._on_click_cb = on_click_cb
+        self._on_tile_error_cb = on_tile_error_cb
+
+    def javaScriptConsoleMessage(self, level, message, line_number, source_id):
+        if message == "ROTOR_TILEERROR" and self._on_tile_error_cb:
+            self._on_tile_error_cb()
 
     def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
         u = url.toString()
@@ -843,13 +914,9 @@ class MapWindow(QDialog):
         self._btn_fav_delete = QPushButton(t("compass.fav_btn_delete"))
         self._btn_fav_delete.setAutoDefault(False)
         self._btn_fav_delete.setDefault(False)
-        self._btn_elevation = QPushButton("Höhenprofil")
+        self._btn_elevation = QPushButton(t("map.btn_elevation"))
         self._btn_elevation.setAutoDefault(False)
         self._btn_elevation.setDefault(False)
-        self._btn_elevation.setToolTip(
-            "Höhenprofil zwischen Antenne und Ziel anzeigen.\n"
-            "Kein Ziel gesetzt: Heimposition wird als Ziel verwendet."
-        )
 
         toolbar.addWidget(self._cb_antenna)
         toolbar.addWidget(self._cb_fav)
@@ -869,7 +936,7 @@ class MapWindow(QDialog):
         map_layout = QVBoxLayout(map_container)
         map_layout.setContentsMargins(0, 0, 0, 0)
         self._view = QWebEngineView(map_container)
-        self._page = MapWebPage(self._on_map_click, self._view)
+        self._page = MapWebPage(self._on_map_click, on_tile_error_cb=self._on_tile_error, parent=self._view)
         self._view.setPage(self._page)
         self._view.loadFinished.connect(self._on_map_load_finished)
         map_layout.addWidget(self._view, 1)
@@ -906,6 +973,7 @@ class MapWindow(QDialog):
         self._chk_offline = QCheckBox(t("map.chk_offline"))
         self._chk_offline.setChecked(bool(self.cfg.get("ui", {}).get("map_offline", False)))
         self._chk_offline.stateChanged.connect(self._on_offline_changed)
+        self._internet_online: Optional[bool] = None
         self._chk_locator = QCheckBox(t("map.chk_locator"))
         self._chk_locator.setChecked(bool(self.cfg.get("ui", {}).get("map_locator_overlay", False)))
         self._chk_locator.stateChanged.connect(self._on_locator_changed)
@@ -987,6 +1055,12 @@ class MapWindow(QDialog):
 
         polygon = beam_polygon_points(lat, lon, azimuth, opening, range_km)
         center_line = beam_center_line_points(lat, lon, azimuth, range_km)
+        grayline = grayline_points()
+
+        # Horizontdistanz: d_h = sqrt(2*R*h), R=6371 km, h in m
+        antenna_height_m = float(ui.get("antenna_height_m", 0.0))
+        R_km = 6371.0
+        horizon_dist_km = math.sqrt(2.0 * R_km * (antenna_height_m / 1000.0)) if antenna_height_m > 0 else 0.0
 
         return {
             "lat": lat,
@@ -996,6 +1070,7 @@ class MapWindow(QDialog):
             "range_km": range_km,
             "polygon": [[p[0], p[1]] for p in polygon],
             "center_line": [[p[0], p[1]] for p in center_line],
+            "grayline": [[p[0], p[1]] for p in grayline],
             "location_str": f"{lat:.5f}, {lon:.5f}",
             "info_standort": t("map.info_standort"),
             "info_offnung": t("map.info_offnung"),
@@ -1003,6 +1078,9 @@ class MapWindow(QDialog):
             "dark_mode": bool(self.cfg.get("ui", {}).get("force_dark_mode", False)),
             "offline": bool(self.cfg.get("ui", {}).get("map_offline", False)),
             "map_locator_overlay": bool(self.cfg.get("ui", {}).get("map_locator_overlay", False)),
+            "horizon_dist_km": horizon_dist_km,
+            "popup_antenna": t("map.popup_antenna"),
+            "popup_target": t("map.popup_target"),
         }
 
     def _get_antenna_offset_az(self) -> float:
@@ -1181,7 +1259,58 @@ class MapWindow(QDialog):
                 self.save_cfg_cb(self.cfg)
         except Exception:
             pass
+        # Interne State-Sync: manueller Wechsel auf Online → Schutzperiode starten
+        if not on:
+            self._internet_online = True
+            self._online_switch_ts = time.monotonic()
+            self._last_tile_error_ts = 0.0  # Cooldown zurücksetzen
+        else:
+            self._internet_online = False
         self._refresh_map()
+
+    def _on_tile_error(self) -> None:
+        """Wird von MapWebPage aufgerufen wenn Leaflet einen Tile-Fehler meldet.
+        Schutzperiode: Direkt nach Online-Wechsel Tile-Fehler ignorieren (DNS-Anlaufzeit).
+        Timestamp nur setzen wenn noch online, damit Timer später auf Online schalten kann."""
+        if self._internet_online is False:
+            return  # Bereits offline – nichts zu tun
+        # Schutzperiode nach Online-Wechsel: erste Tile-Fehler ignorieren
+        online_since = getattr(self, "_online_switch_ts", 0.0)
+        if time.monotonic() - online_since < 8.0:
+            return  # Frisch online geschaltet – kurze Fehler ignorieren
+        self._last_tile_error_ts = time.monotonic()
+        self._apply_internet_status(False)
+
+    def apply_internet_status(self, online: bool) -> None:
+        """Öffentlich: Kartenmodus je nach Internetstatus (von MainWindow aufgerufen)."""
+        if online:
+            last_err = getattr(self, "_last_tile_error_ts", 0.0)
+            if time.monotonic() - last_err < 6.0:
+                return
+        self._apply_internet_status(online)
+
+    def _apply_internet_status(self, online: bool) -> None:
+        """Kartenmodus und Checkbox je nach Internetstatus automatisch umschalten."""
+        if self._internet_online == online:
+            return
+        self._internet_online = online
+        if online:
+            self._online_switch_ts = time.monotonic()  # Schutzperiode starten
+        self._chk_offline.blockSignals(True)
+        self._chk_offline.setChecked(not online)
+        # Checkbox NICHT deaktivieren – Nutzer hat immer manuelle Kontrolle
+        self._chk_offline.blockSignals(False)
+        if "ui" not in self.cfg:
+            self.cfg["ui"] = {}
+        self.cfg["ui"]["map_offline"] = not online
+        try:
+            if self.save_cfg_cb:
+                self.save_cfg_cb(self.cfg)
+        except Exception:
+            pass
+        self._refresh_map()
+        if self._elevation_win is not None:
+            self._elevation_win.apply_internet_status(online)
 
     def _on_locator_changed(self) -> None:
         """Locator-Overlay ein/aus → Config speichern, Karte aktualisieren."""
@@ -1363,6 +1492,8 @@ class MapWindow(QDialog):
             dark=dark,
             parent=None,
         )
+        if self._internet_online is not None:
+            self._elevation_win.apply_internet_status(self._internet_online)
         self._elevation_win.show()
 
     def _refresh_map(self) -> None:
@@ -1411,6 +1542,9 @@ class MapWindow(QDialog):
                 "info_standort": params["info_standort"],
                 "info_offnung": params["info_offnung"],
                 "info_reichweite": params["info_reichweite"],
+                "horizon_dist_km": params.get("horizon_dist_km", 0.0),
+                "popup_antenna": params.get("popup_antenna", "Antennenstandort"),
+                "popup_target": params.get("popup_target", "Ziel"),
             }
             js = f"if (typeof window.updateBeam === 'function') window.updateBeam({json.dumps(data)});"
             self._view.page().runJavaScript(js)

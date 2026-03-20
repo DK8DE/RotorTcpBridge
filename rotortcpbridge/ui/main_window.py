@@ -1,6 +1,8 @@
 """Hauptfenster der RotorTcpBridge-Anwendung."""
 from __future__ import annotations
 
+import threading
+
 from PySide6.QtWidgets import (
     QSizePolicy,
     QMainWindow,
@@ -21,6 +23,7 @@ from PySide6.QtCore import Qt, QTimer
 
 from ..app_icon import get_app_icon
 from ..i18n import t
+from ..net_utils import check_internet
 from ..version import APP_VERSION
 from ..compass.compass_window import CompassWindow
 from .statistics_window import StatisticsWindow
@@ -192,6 +195,14 @@ class MainWindow(QMainWindow):
         self.t.timeout.connect(self._tick)
         self.t.start(100)
 
+        self._internet_online: bool | None = None
+        self._internet_checking: bool = False  # Verhindert gleichzeitige Prüfungen
+        self._internet_check_timer = QTimer(self)
+        self._internet_check_timer.setInterval(3_000)
+        self._internet_check_timer.timeout.connect(self._on_internet_check_timer)
+        self._internet_check_timer.start()
+        QTimer.singleShot(300, self._on_internet_check_timer)
+
         self._log_win = LogWindow(self.logbuf, parent=None)
         self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
         self._map_win = MapWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
@@ -342,6 +353,8 @@ class MainWindow(QMainWindow):
                 self._map_win.on_settings_applied()
             except Exception:
                 pass
+            if self._internet_online is not None:
+                self._map_win.apply_internet_status(self._internet_online)
         if self._udp_ucxlog is not None:
             ui = self.cfg.get("ui", {})
             self._udp_ucxlog.start(
@@ -352,6 +365,33 @@ class MainWindow(QMainWindow):
             self._compass_win._update_groupbox_titles()
             if hasattr(self._compass_win, "_apply_label_colors_from_palette"):
                 self._compass_win._apply_label_colors_from_palette()
+
+    def _on_internet_check_timer(self) -> None:
+        """Internet-Prüfung im Hintergrund, UI-Update auf Hauptthread.
+        Nur ein Thread gleichzeitig – verhindert Race Condition durch veraltete Ergebnisse."""
+        if self._internet_checking:
+            return  # Vorherige Prüfung noch aktiv → überspringen
+        self._internet_checking = True
+
+        def do_check():
+            try:
+                online = check_internet()
+            except Exception:
+                online = False
+            QTimer.singleShot(0, lambda o=online: self._handle_internet_result(o))
+
+        threading.Thread(target=do_check, daemon=True).start()
+
+    def _handle_internet_result(self, online: bool) -> None:
+        """Ergebnis der Internet-Prüfung auf Hauptthread verarbeiten."""
+        self._internet_checking = False  # Flag auf Main-Thread zurücksetzen (thread-safe)
+        self._apply_internet_status(online)
+
+    def _apply_internet_status(self, online: bool) -> None:
+        """Kartenmodus je nach Internetstatus an MapWindow weiterleiten."""
+        self._internet_online = online
+        if hasattr(self, "_map_win") and self._map_win is not None:
+            self._map_win.apply_internet_status(online)
 
     def _open_compass(self):
         try:

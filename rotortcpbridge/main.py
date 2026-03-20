@@ -7,6 +7,8 @@ import rotortcpbridge.webengine_schemes  # noqa: F401
 from PySide6.QtWidgets import QApplication
 
 from .app_config import load_config, save_config
+from .net_utils import check_internet
+
 from .ui.map_window import install_rotortiles_handler
 from .app_icon import get_app_icon
 from .i18n import load_lang
@@ -20,6 +22,11 @@ from .ui.main_window import MainWindow
 
 def main():
     cfg = load_config()
+    # Ohne Internet: Offline-Karte aktivieren (je nach Dark/Light), Live-SWPC deaktivieren
+    if not check_internet():
+        cfg.setdefault("ui", {})["map_offline"] = True
+        cfg["ui"]["elevation_live_swpc"] = False
+        save_config(cfg)
     load_lang(cfg.get("ui", {}).get("language", "de"))
     log = LogBuffer()
 

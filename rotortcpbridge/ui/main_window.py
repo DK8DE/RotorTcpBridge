@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLabel,
     QPushButton,
-    QLineEdit,
     QFormLayout,
 )
 from PySide6.QtGui import QAction
@@ -32,6 +31,7 @@ from .weather_window import WeatherWindow
 from .map_window import MapWindow
 from .about_window import AboutWindow
 from .command_buttons_window import CommandButtonsWindow
+from .warnings_errors_window import WarningsErrorsWindow
 from .ui_utils import px_to_dip
 from .theme import apply_theme_mode
 from .popup_handlers import ErrorPopupHandler, WarningPopupHandler
@@ -99,6 +99,9 @@ class MainWindow(QMainWindow):
         self._act_win_weather.triggered.connect(self._open_weather)
         self._menu_window.addAction(self._act_win_weather)
         self._act_win_weather.setVisible(False)
+        self._act_win_warnings_errors = QAction(t("main.menu_win_warnings_errors"), self)
+        self._act_win_warnings_errors.triggered.connect(self._open_warnings_errors)
+        self._menu_window.addAction(self._act_win_warnings_errors)
 
         self._menu_help = menubar.addMenu(t("main.menu_help"))
         self._act_version = QAction(t("main.menu_version"), self)
@@ -146,23 +149,16 @@ class MainWindow(QMainWindow):
             l.addWidget(led)
             return w
 
-        self.ed_pst = QLineEdit()
-        self.ed_pst.setReadOnly(True)
+        self.lbl_pst = QLabel("")
+        self.lbl_pst.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.lbl_pst.setWordWrap(False)
         self.lbl_hw = QLabel("")
         self.lbl_hw.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         self.lbl_hw.setWordWrap(False)
-
-        pst_row = QHBoxLayout()
-        pst_row.setContentsMargins(0, 0, 0, 0)
-        pst_row.setSpacing(px_to_dip(self, 6))
-        pst_row.addWidget(_led_wrap(self.led_pst))
-        pst_row.addWidget(self.ed_pst, 1)
-        pst_row_w = QWidget()
-        pst_row_w.setLayout(pst_row)
-        srv_form.addRow(t("main.srv_pst_label"), pst_row_w)
-        self._srv_row_pst_w = pst_row_w
 
         hw_row = QHBoxLayout()
         hw_row.setContentsMargins(0, 0, 0, 0)
@@ -173,6 +169,16 @@ class MainWindow(QMainWindow):
         hw_row_w.setLayout(hw_row)
         srv_form.addRow(t("main.srv_hw_label"), hw_row_w)
         self._srv_row_hw_w = hw_row_w
+
+        pst_row = QHBoxLayout()
+        pst_row.setContentsMargins(0, 0, 0, 0)
+        pst_row.setSpacing(px_to_dip(self, 6))
+        pst_row.addWidget(_led_wrap(self.led_pst))
+        pst_row.addWidget(self.lbl_pst, 1)
+        pst_row_w = QWidget()
+        pst_row_w.setLayout(pst_row)
+        srv_form.addRow(t("main.srv_pst_label"), pst_row_w)
+        self._srv_row_pst_w = pst_row_w
 
         pst_conn_row = QHBoxLayout()
         pst_conn_row.setContentsMargins(0, 0, 0, 0)
@@ -264,6 +270,7 @@ class MainWindow(QMainWindow):
         )
         self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
         self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
+        self._warnings_errors_win = WarningsErrorsWindow(self.ctrl, parent=None)
         self._commands_win = CommandButtonsWindow(
             self.cfg, self.ctrl, self.save_cfg_cb, parent=None
         )
@@ -321,6 +328,7 @@ class MainWindow(QMainWindow):
         self._act_win_compass.setText(t("main.btn_compass"))
         self._act_win_map.setText(t("main.btn_map"))
         self._act_win_weather.setText(t("main.btn_weather"))
+        self._act_win_warnings_errors.setText(t("main.menu_win_warnings_errors"))
         self._menu_help.setTitle(t("main.menu_help"))
         self._act_version.setText(t("main.menu_version"))
         self._act_log.setText(t("main.btn_log"))
@@ -335,12 +343,12 @@ class MainWindow(QMainWindow):
         try:
             self.gb_srv.setTitle(t("main.group_server"))
             sf = self._srv_form
-            lab = sf.labelForField(self._srv_row_pst_w)
-            if isinstance(lab, QLabel):
-                lab.setText(t("main.srv_pst_label"))
             lab = sf.labelForField(self._srv_row_hw_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_hw_label"))
+            lab = sf.labelForField(self._srv_row_pst_w)
+            if isinstance(lab, QLabel):
+                lab.setText(t("main.srv_pst_label"))
             lab = sf.labelForField(self._srv_row_pst_conn_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_pst_conn_label"))
@@ -361,6 +369,11 @@ class MainWindow(QMainWindow):
             retranslate_axis_panel(self.el_fields)
         except Exception:
             pass
+        try:
+            if hasattr(self, "_warnings_errors_win") and self._warnings_errors_win is not None:
+                self._warnings_errors_win.retranslate_ui()
+        except Exception:
+            pass
 
     def _rebuild_all_windows(self):
         """Alle Fenster schließen und neu erstellen (nach Sprachänderung)."""
@@ -371,6 +384,7 @@ class MainWindow(QMainWindow):
                 "_map_win",
                 "_statistics_win",
                 "_weather_win",
+                "_warnings_errors_win",
                 "_commands_win",
             ):
                 w = getattr(self, attr, None)
@@ -384,12 +398,14 @@ class MainWindow(QMainWindow):
             from .weather_window import WeatherWindow
             from .command_buttons_window import CommandButtonsWindow
             from .log_window import LogWindow
+            from .warnings_errors_window import WarningsErrorsWindow
 
             self._log_win = LogWindow(self.logbuf, parent=None)
             self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
             self._map_win = MapWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
             self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
             self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
+            self._warnings_errors_win = WarningsErrorsWindow(self.ctrl, parent=None)
             self._commands_win = CommandButtonsWindow(
                 self.cfg, self.ctrl, self.save_cfg_cb, parent=None
             )
@@ -522,6 +538,14 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _open_warnings_errors(self):
+        try:
+            self._warnings_errors_win.show()
+            self._warnings_errors_win.raise_()
+            self._warnings_errors_win.activateWindow()
+        except Exception:
+            pass
+
     def _open_map(self):
         try:
             self._map_win.show()
@@ -642,6 +666,7 @@ class MainWindow(QMainWindow):
                 getattr(self, "_map_win", None),
                 getattr(self, "_statistics_win", None),
                 getattr(self, "_weather_win", None),
+                getattr(self, "_warnings_errors_win", None),
                 getattr(self, "_commands_win", None),
             ):
                 try:
@@ -762,21 +787,23 @@ class MainWindow(QMainWindow):
             self._log_exception("_tick led_hw / HW-Timeout-Anzeige", e)
             self.led_hw.set_state(hw_on)
 
-        self.ed_pst.setText(
+        self.lbl_pst.setText(
             f"{t('main.pst_running') if pst_on else t('main.pst_stopped')}  AZ:{self.pst.port_az}  EL:{self.pst.port_el}  Host:{self.pst.host}"
         )
         mode = self.cfg["hardware_link"].get("mode", "tcp")
         if mode == "tcp":
             ip = self.cfg["hardware_link"].get("tcp_ip", "")
             port = self.cfg["hardware_link"].get("tcp_port", "")
-            self.lbl_hw.setText(
-                f"{t('main.hw_connected') if hw_on else t('main.hw_disconnected')}  TCP {ip}:{port}"
-            )
+            detail = f"TCP {ip}:{port}"
         else:
             com = self.cfg["hardware_link"].get("com_port", "")
-            self.lbl_hw.setText(
-                f"{t('main.hw_connected') if hw_on else t('main.hw_disconnected')}  COM {com} @ 115200"
-            )
+            detail = f"COM {com} @ 115200"
+        if hw_on and pst_on:
+            self.lbl_hw.setText(f"{t('main.hw_connected_via_pst')}  {detail}")
+        elif hw_on:
+            self.lbl_hw.setText(f"{t('main.hw_connected')}  {detail}")
+        else:
+            self.lbl_hw.setText(f"{t('main.hw_disconnected')}  {detail}")
 
         self._update_axis_visibility()
         wind_on = self._update_wind_visibility()

@@ -193,6 +193,12 @@ class SettingsWindow(QDialog):
         pst_row_w.setLayout(pst_row)
         form_ui.addRow(pst_row_w)
 
+        # SPID BIG-RAS (TCP) und UDP PST-Rotator schließen sich aus; beide aus ist erlaubt.
+        if self.chk_pst_enabled.isChecked() and self.chk_udp_pst.isChecked():
+            self.chk_udp_pst.setChecked(False)
+        self.chk_pst_enabled.stateChanged.connect(self._on_spid_vs_udp_pst_exclusive)
+        self.chk_udp_pst.stateChanged.connect(self._on_udp_pst_vs_spid_exclusive)
+
         self.ed_udp_pst_send_host = QLineEdit()
         _pst_auto_host = ipv4_subnet_broadcast_default()
         _pst_saved = str(cfg.get("ui", {}).get("udp_pst_send_host", "")).strip()
@@ -474,8 +480,8 @@ class SettingsWindow(QDialog):
         vl_ant.addStretch(1)
 
         self._tab_widget = QTabWidget()
-        self._tab_widget.addTab(_scroll_page(pg_conn), t("settings.group_connection"))
         self._tab_widget.addTab(_scroll_page(pg_ui), t("settings.group_ui"))
+        self._tab_widget.addTab(_scroll_page(pg_conn), t("settings.group_connection"))
         self._tab_antenna_index = self._tab_widget.addTab(_scroll_page(pg_ant), t("settings.tab_antenna"))
         main.addWidget(self._tab_widget, 1)
 
@@ -585,6 +591,20 @@ class SettingsWindow(QDialog):
             except Exception:
                 pass
         self.lbl_status.setText(t("cmd.hint_cal_reset"))
+
+    def _on_spid_vs_udp_pst_exclusive(self, _state: int) -> None:
+        """Nur eines aktiv: SPID BIG-RAS vs. UDP PST-Rotator."""
+        if self.chk_pst_enabled.isChecked():
+            self.chk_udp_pst.blockSignals(True)
+            self.chk_udp_pst.setChecked(False)
+            self.chk_udp_pst.blockSignals(False)
+
+    def _on_udp_pst_vs_spid_exclusive(self, _state: int) -> None:
+        """Nur eines aktiv: UDP PST-Rotator vs. SPID BIG-RAS."""
+        if self.chk_udp_pst.isChecked():
+            self.chk_pst_enabled.blockSignals(True)
+            self.chk_pst_enabled.setChecked(False)
+            self.chk_pst_enabled.blockSignals(False)
 
     def _update_status_on_open(self) -> None:
         """Statuszeile beim Öffnen: welche Achsen aktiv und online sind."""

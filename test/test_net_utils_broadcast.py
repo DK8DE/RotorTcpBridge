@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import socket
 
-import pytest
-
 from rotortcpbridge.net_utils import ipv4_subnet_broadcast_default
 
 

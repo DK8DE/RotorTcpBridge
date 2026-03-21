@@ -49,6 +49,7 @@
 - **Antennenstandort**, **Beam**-Darstellung (Sektor) für die gewählte Antenne, **Grayline** (Tag-/Nacht-Grenze).
 - **Klick auf die Karte**: Berechnung der **Peilung** zum Punkt und Vorgabe an den Rotor (Azimut).
 - Optional: **Maidenhead-Locator**-Overlay, **Höhenprofil**-Fenster (Terrain, Sichtlinie – je nach Konfiguration und Datenquellen).
+- **Offline vorbereiten** (optional): Hilfsskripte im Ordner **`tools/`** – z. B. `python tools/karten_download.py` (OSM-Tiles → `rotortcpbridge/KartenLight`), `python tools/karten_dark_download.py` (CARTO Dark → `KartenDark`), `python tools/leaflet_download.py` (Leaflet/Maidenhead → `rotortcpbridge/static`).
 
 ---
 
@@ -109,6 +110,8 @@ python -m rotortcpbridge
 
 ## Tests (Entwicklung)
 
+Die Testdateien liegen unter **`test/`** im Projektroot (Konfiguration: **`pytest.ini`**).
+
 ```bash
 pip install -r requirements-dev.txt
 pytest
@@ -130,13 +133,13 @@ Die Tests prüfen u. a. Winkel-Hilfen, Geografie, PST-UDP-Positionslogik, RS48
 Konfiguration in **`pyproject.toml`** (Tool: **Ruff**):
 
 ```bash
-ruff check rotortcpbridge tests
+ruff check rotortcpbridge test
 ```
 
 Optional formatieren:
 
 ```bash
-ruff format rotortcpbridge tests
+ruff format rotortcpbridge test
 ```
 
 ---

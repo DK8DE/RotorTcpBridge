@@ -8,7 +8,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from PySide6.QtCore import QRect, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QPainter, QPalette, QPen, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QFrame, QWidget
 from PySide6.QtWebEngineCore import QWebEnginePage
 

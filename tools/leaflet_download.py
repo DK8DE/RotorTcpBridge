@@ -2,7 +2,8 @@
 import urllib.request
 from pathlib import Path
 
-STATIC = Path(__file__).parent / "rotortcpbridge" / "static"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+STATIC = _REPO_ROOT / "rotortcpbridge" / "static"
 URLS = [
     ("https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js", "leaflet.min.js"),
     ("https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css", "leaflet.css"),

@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["rotortcpbridge", "tests"]
+src = ["rotortcpbridge", "test"]
 
 [tool.ruff.lint]
 # pycodestyle (E) + pyflakes (F); ohne I/UP damit bestehendes Projekt ohne Massen-Refactor grün bleibt

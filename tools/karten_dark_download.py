@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """
-Lädt OSM-Kartenkacheln für die Offline-Karte der RotorTcpBridge.
-Speichert im Standard-Format z/x/y.png in rotortcpbridge/KartenLight.
+Lädt CARTO-Dark-Kartenkacheln für die Offline-Karte der RotorTcpBridge.
+Speichert im Standard-Format z/x/y.png in rotortcpbridge/KartenDark.
+Für Dark-Mode in der Offline-Karte.
 """
-import os
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
 
-ZIEL_ORDNER = Path(__file__).parent / "rotortcpbridge" / "KartenLight"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+ZIEL_ORDNER = _REPO_ROOT / "rotortcpbridge" / "KartenDark"
 ZOOMSTUFE = 4
-PAUSE_ZWISCHEN_DOWNLOADS = 0.5
+PAUSE_ZWISCHEN_DOWNLOADS = 0.2
 USER_AGENT = "RotorTcpBridge/1.0 (Offline-Karte)"
+# CARTO Dark – gleiche Quelle wie in der Karten-HTML (Online/Offline-Fallback)
+TILE_SERVER = "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
 
 
 def baue_tile_url(z, x, y):
-    return f"https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    return TILE_SERVER.format(z=z, x=x, y=y)
 
 
 def baue_dateipfad(basisordner, z, x, y):
@@ -37,19 +40,19 @@ def lade_datei_herunter(url, dateipfad, user_agent):
 
 def schreibe_attribution(basisordner):
     (basisordner / "ATTRIBUTION.txt").write_text(
-        "© OpenStreetMap-Mitwirkende\n"
-        "https://tile.openstreetmap.org/{z}/{x}/{y}.png\n",
+        "© OpenStreetMap-Mitwirkende © CARTO\n"
+        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png\n",
         encoding="utf-8",
     )
 
 
-def lade_weltkarte():
+def lade_dark_karte():
     basis = Path(ZIEL_ORDNER)
-    n = 2 ** ZOOMSTUFE
+    n = 2**ZOOMSTUFE
     gesamt = n * n
     zaehler = erfolge = fehlschlaege = 0
 
-    print("Download Offline-Karte für RotorTcpBridge")
+    print("Download CARTO-Dark-Offline-Karte für RotorTcpBridge")
     print(f"Zoomstufe: {ZOOMSTUFE}, Tiles: {gesamt}")
     print(f"Ziel: {basis.resolve()}\n")
 
@@ -75,4 +78,4 @@ def lade_weltkarte():
 
 
 if __name__ == "__main__":
-    lade_weltkarte()
+    lade_dark_karte()

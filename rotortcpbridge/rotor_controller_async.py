@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 from .rs485_protocol import Telegram
 from .rotor_model import AxisState

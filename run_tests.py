@@ -3,7 +3,7 @@
 
   python run_tests.py
   python run_tests.py -v
-  python run_tests.py tests/test_angle_utils.py -k wrap
+  python run_tests.py test/test_angle_utils.py -k wrap
 
 Weitere Argumente werden an pytest durchgereicht.
 """
@@ -17,9 +17,9 @@ import pytest
 
 def main() -> int:
     root = Path(__file__).resolve().parent
-    test_dir = root / "tests"
+    test_dir = root / "test"
     if not test_dir.is_dir():
-        print("ERROR: Ordner tests/ nicht gefunden.", file=sys.stderr)
+        print("ERROR: Ordner test/ nicht gefunden.", file=sys.stderr)
         return 1
     args = [str(test_dir)]
     if len(sys.argv) > 1:

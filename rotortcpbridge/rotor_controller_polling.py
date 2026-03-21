@@ -8,7 +8,7 @@ from typing import Optional
 from .rs485_protocol import build, Telegram
 from .hardware_client import HwRequest
 from .rotor_model import AxisState
-from .rotor_parse_utils import parse_float, parse_float_any, parse_int
+from .rotor_parse_utils import parse_int
 
 
 class RotorControllerPollingMixin:

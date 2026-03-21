@@ -53,6 +53,7 @@ a = Analysis(
         ('rotortcpbridge\\windPfeil.png',            'rotortcpbridge'),
         ('rotortcpbridge\\Antenne.png',              'rotortcpbridge'),
         ('rotortcpbridge\\Antenne_T.png',            'rotortcpbridge'),
+        ('rotortcpbridge\\User.PNG',                 'rotortcpbridge'),
         # Sprachdateien
         ('rotortcpbridge\\locales\\de.json',         'rotortcpbridge\\locales'),
         ('rotortcpbridge\\locales\\en.json',         'rotortcpbridge\\locales'),

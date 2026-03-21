@@ -227,6 +227,27 @@ class MapWindow(QDialog):
         self._map_click_rotor_az: Optional[float] = None
         # Referenz auf offenes Höhenprofil-Fenster (None = nicht offen)
         self._elevation_win: Optional[ElevationProfileWindow] = None
+        # ASWATCHLIST (AirScout/KST): andere Stationen auf der Karte
+        self._aswatch_last: list = []
+        # True erst nach loadFinished – sonst existiert setAswatchMarkers in JS noch nicht
+        self._map_page_ready = False
+
+    def update_aswatch_users(self, items: list) -> None:
+        """Zeigt andere User-Marker (User.png + Rufzeichen) aus UDP ASWATCHLIST/ASSETPATH."""
+        try:
+            self._aswatch_last = list(items) if items else []
+        except Exception:
+            self._aswatch_last = []
+        if not self._view or not getattr(self, "_map_page_ready", False):
+            return
+        try:
+            js = (
+                f"if (typeof window.setAswatchMarkers === 'function') "
+                f"window.setAswatchMarkers({json.dumps(self._aswatch_last)});"
+            )
+            self._view.page().runJavaScript(js)
+        except Exception:
+            pass
 
     def _get_params(self) -> dict:
         """Aktuelle Parameter für die Karte."""
@@ -862,12 +883,22 @@ class MapWindow(QDialog):
         """Wird aufgerufen sobald die Leaflet-Seite vollständig geladen ist."""
         if not ok or not self._map_loaded:
             return
+        self._map_page_ready = True
         if self._target_lat is not None and self._target_lon is not None:
             js = (
                 f"if (typeof window.setClickMarker === 'function') "
                 f"window.setClickMarker({self._target_lat}, {self._target_lon});"
             )
             self._view.page().runJavaScript(js)
+        if self._aswatch_last:
+            self.update_aswatch_users(self._aswatch_last)
+            # WebEngine: JS manchmal erst einen Tick später zuverlässig – erneut anwenden
+            QTimer.singleShot(
+                200,
+                lambda: self.update_aswatch_users(self._aswatch_last)
+                if getattr(self, "_aswatch_last", None)
+                else None,
+            )
 
     def on_settings_applied(self) -> None:
         """Wird von main_window nach dem Speichern der Einstellungen aufgerufen."""
@@ -889,6 +920,7 @@ class MapWindow(QDialog):
         self._refresh_antenna_dropdown()
         self._refresh_favorites_dropdown()
         self._map_loaded = False
+        self._map_page_ready = False
         self._map_dark_mode = None
         self._map_offline = None
         self._map_locator_overlay = None
@@ -914,6 +946,7 @@ class MapWindow(QDialog):
         if not self._view or not self._view.page():
             return
         self._map_loaded = False
+        self._map_page_ready = False
         self._map_dark_mode = None
         self._map_offline = None
         self._map_locator_overlay = None

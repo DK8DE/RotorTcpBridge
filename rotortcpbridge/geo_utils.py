@@ -63,6 +63,69 @@ def bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return (b + 360.0) % 360.0
 
 
+def maidenhead_to_lat_lon(grid: str) -> tuple[float, float] | None:
+    """Maidenhead-Locator (2–10 Zeichen) → (Breite, Länge) Zentrum der Zelle in Grad.
+
+    Dekodierung wie üblich (untere linke Ecke der Felder, dann Zentrum der Zelle).
+    Vorheriger Fehler: Bei 4+ Zeichen wurde die Feldmittel (+10°/+5°) zur Quadrat-
+    Position addiert, was die Position um ~ein halbes Feld verschoben hat.
+
+    Gibt ``None`` zurück bei ungültigem Format.
+    """
+    s = "".join(grid.strip().upper().split())
+    if len(s) < 2:
+        return None
+    if len(s) % 2 == 1:
+        s = s[:-1]
+    try:
+        if not ("A" <= s[0] <= "R" and "A" <= s[1] <= "R"):
+            return None
+        # Südwest-Ecke des Feldes (2 Zeichen)
+        lon = -180.0 + (ord(s[0]) - ord("A")) * 20
+        lat = -90.0 + (ord(s[1]) - ord("A")) * 10
+        n = len(s)
+        if n >= 4:
+            if not (s[2].isdigit() and s[3].isdigit()):
+                return None
+            lon += int(s[2]) * 2
+            lat += int(s[3]) * 1
+        if n >= 6:
+            if not ("A" <= s[4] <= "X" and "A" <= s[5] <= "X"):
+                return None
+            lon += (ord(s[4]) - ord("A")) * (2.0 / 24)
+            lat += (ord(s[5]) - ord("A")) * (1.0 / 24)
+        if n >= 8:
+            if not (s[6].isdigit() and s[7].isdigit()):
+                return None
+            lon += int(s[6]) * (2.0 / 240)
+            lat += int(s[7]) * (1.0 / 240)
+        if n >= 10:
+            if not ("A" <= s[8] <= "X" and "A" <= s[9] <= "X"):
+                return None
+            lon += (ord(s[8]) - ord("A")) * (2.0 / 5760)
+            lat += (ord(s[9]) - ord("A")) * (1.0 / 5760)
+
+        # Zentrum der Zelle (je nach Präzision)
+        if n == 2:
+            lon += 10
+            lat += 5
+        elif n == 4:
+            lon += 1
+            lat += 0.5
+        elif n == 6:
+            lon += (2.0 / 24) / 2
+            lat += (1.0 / 24) / 2
+        elif n == 8:
+            lon += (2.0 / 240) / 2
+            lat += (1.0 / 240) / 2
+        elif n == 10:
+            lon += (2.0 / 5760) / 2
+            lat += (1.0 / 5760) / 2
+        return lat, lon
+    except Exception:
+        return None
+
+
 def destination_point(
     lat: float, lon: float, bearing_deg_val: float, dist_km: float
 ) -> tuple[float, float]:

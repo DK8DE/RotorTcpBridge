@@ -49,6 +49,8 @@ class MainWindow(QMainWindow):
         logbuf,
         udp_ucxlog=None,
         udp_pst=None,
+        udp_aswatch=None,
+        aswatch_bridge=None,
     ):
         super().__init__()
         self.cfg = cfg
@@ -59,6 +61,14 @@ class MainWindow(QMainWindow):
         self.logbuf = logbuf
         self._udp_ucxlog = udp_ucxlog
         self._udp_pst = udp_pst
+        self._udp_aswatch = udp_aswatch
+        if aswatch_bridge is not None:
+            try:
+                aswatch_bridge.users.connect(
+                    self._on_aswatch_users, Qt.ConnectionType.QueuedConnection
+                )
+            except Exception:
+                pass
         self._hw_off_since: float | None = None
         self._last_title: str = ""
         self._ucxlog_blink_phase = 0
@@ -68,6 +78,9 @@ class MainWindow(QMainWindow):
         self._pst_udp_blink_phase = 0
         self._pst_udp_blink_active = False
         self._pst_udp_blink_sequence = (True, False, True, False, True, False, True, False, True)
+        self._aswatch_blink_phase = 0
+        self._aswatch_blink_active = False
+        self._aswatch_blink_sequence = (True, False, True, False, True, False, True, False, True)
 
         self._update_title_bar()
         self.setWindowIcon(get_app_icon())
@@ -140,6 +153,7 @@ class MainWindow(QMainWindow):
         self.led_pst_conn = Led(led_d, self)
         self.led_ucxlog = Led(led_d, self)
         self.led_pst_udp = Led(led_d, self)
+        self.led_aswatch = Led(led_d, self)
         self.led_hw = Led(led_d, self)
 
         def _led_wrap(led) -> QWidget:
@@ -215,6 +229,25 @@ class MainWindow(QMainWindow):
         pst_udp_row_w.setLayout(pst_udp_row)
         srv_form.addRow(t("main.srv_pst_udp_prefix"), pst_udp_row_w)
         self._srv_row_pst_udp_w = pst_udp_row_w
+
+        aswatch_row = QHBoxLayout()
+        aswatch_row.setContentsMargins(0, 0, 0, 0)
+        aswatch_row.setSpacing(px_to_dip(self, 6))
+        aswatch_row.addWidget(_led_wrap(self.led_aswatch))
+        self._lbl_srv_aswatch_suffix = QLabel("")
+        self._lbl_srv_aswatch_suffix.setWordWrap(False)
+        aswatch_row.addWidget(self._lbl_srv_aswatch_suffix)
+        aswatch_row.addStretch(1)
+        aswatch_row_w = QWidget()
+        aswatch_row_w.setLayout(aswatch_row)
+        srv_form.addRow(t("main.srv_aswatch_label"), aswatch_row_w)
+        self._srv_row_aswatch_w = aswatch_row_w
+        try:
+            _ui0 = self.cfg.get("ui", {})
+            _p0 = int(_ui0.get("aswatch_udp_port", 9872))
+            self._lbl_srv_aswatch_suffix.setText(t("main.srv_aswatch_suffix", port=_p0))
+        except Exception:
+            pass
 
         try:
             srv_form.setVerticalSpacing(px_to_dip(self, 4))
@@ -358,9 +391,15 @@ class MainWindow(QMainWindow):
             lab = sf.labelForField(self._srv_row_pst_udp_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_pst_udp_prefix"))
+            lab = sf.labelForField(self._srv_row_aswatch_w)
+            if isinstance(lab, QLabel):
+                lab.setText(t("main.srv_aswatch_label"))
             self._lbl_srv_pst_conn.setText(t("main.srv_pst_conn_text"))
             self._lbl_srv_ucxlog_suffix.setText(t("main.srv_ucxlog_suffix"))
             self._lbl_srv_pst_udp_suffix.setText(t("main.srv_pst_udp_suffix"))
+            ui = self.cfg.get("ui", {})
+            _p = int(ui.get("aswatch_udp_port", 9872))
+            self._lbl_srv_aswatch_suffix.setText(t("main.srv_aswatch_suffix", port=_p))
         except Exception:
             pass
         # AZ/EL-Achsenfelder
@@ -477,6 +516,12 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(
                     self, t("main.pst_udp_error_title"), self._udp_pst.bind_error_msg
                 )
+        if self._udp_aswatch is not None:
+            ui = self.cfg.get("ui", {})
+            self._udp_aswatch.start(
+                enabled=bool(ui.get("aswatch_udp_enabled", False)),
+                port=int(ui.get("aswatch_udp_port", 9872)),
+            )
         # Hauptfenster-Texte (Server, AZ/EL, Menü, …) nach load_lang / Einstellungen synchronisieren
         self._retranslate_ui()
         if hasattr(self, "_compass_win") and self._compass_win.isVisible():
@@ -517,6 +562,14 @@ class MainWindow(QMainWindow):
         self._internet_online = online
         if hasattr(self, "_map_win") and self._map_win is not None:
             self._map_win.apply_internet_status(online)
+
+    def _on_aswatch_users(self, items: list) -> None:
+        """UDP ASWATCHLIST → Karten-Marker (Hauptthread)."""
+        try:
+            if hasattr(self, "_map_win") and self._map_win is not None:
+                self._map_win.update_aswatch_users(items)
+        except Exception:
+            pass
 
     def _open_compass(self):
         try:
@@ -595,11 +648,13 @@ class MainWindow(QMainWindow):
         pst_on = bool(self.cfg.get("pst_server", {}).get("enabled", True))
         ucxlog_on = bool(ui.get("udp_ucxlog_enabled", False))
         pst_udp_on = bool(ui.get("udp_pst_enabled", False))
+        aswatch_on = bool(ui.get("aswatch_udp_enabled", False))
         try:
             self._srv_form.setRowVisible(self._srv_row_pst_w, pst_on)
             self._srv_form.setRowVisible(self._srv_row_pst_conn_w, pst_on)
             self._srv_form.setRowVisible(self._srv_row_ucxlog_w, ucxlog_on)
             self._srv_form.setRowVisible(self._srv_row_pst_udp_w, pst_udp_on)
+            self._srv_form.setRowVisible(self._srv_row_aswatch_w, aswatch_on)
         except Exception:
             pass
 
@@ -774,6 +829,24 @@ class MainWindow(QMainWindow):
         else:
             self.led_pst_udp.set_state(False)
 
+        asw = getattr(self, "_udp_aswatch", None)
+        if asw is not None:
+            if getattr(asw, "packet_received_flag", False):
+                asw.packet_received_flag = False
+                self._aswatch_blink_phase = 0
+                self._aswatch_blink_active = True
+            if self._aswatch_blink_active:
+                seq = self._aswatch_blink_sequence
+                if self._aswatch_blink_phase < len(seq):
+                    self.led_aswatch.set_state(seq[self._aswatch_blink_phase])
+                    self._aswatch_blink_phase += 1
+                else:
+                    self._aswatch_blink_active = False
+            if not self._aswatch_blink_active:
+                self.led_aswatch.set_state(asw.is_active)
+        else:
+            self.led_aswatch.set_state(False)
+
         try:
             now = float(_time.time())
             if hw_on:
@@ -804,6 +877,14 @@ class MainWindow(QMainWindow):
             self.lbl_hw.setText(f"{t('main.hw_connected')}  {detail}")
         else:
             self.lbl_hw.setText(f"{t('main.hw_disconnected')}  {detail}")
+
+        try:
+            ui = self.cfg.get("ui", {})
+            if bool(ui.get("aswatch_udp_enabled", False)):
+                _ap = int(ui.get("aswatch_udp_port", 9872))
+                self._lbl_srv_aswatch_suffix.setText(t("main.srv_aswatch_suffix", port=_ap))
+        except Exception:
+            pass
 
         self._update_axis_visibility()
         wind_on = self._update_wind_visibility()

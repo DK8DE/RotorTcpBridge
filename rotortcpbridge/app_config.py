@@ -95,6 +95,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "udp_pst_port": 12000,
         # Leer = automatisch Subnetz-Broadcast (x.y.z.255) siehe net_utils.ipv4_subnet_broadcast_default
         "udp_pst_send_host": "",
+        # AirScout/KST: ASWATCHLIST per UDP (Broadcast), andere Stationen auf der Karte
+        "aswatch_udp_enabled": False,
+        "aswatch_udp_port": 9872,
     },
 }
 

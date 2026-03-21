@@ -96,6 +96,16 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         antenna_target_data_url = "data:image/png;base64," + base64.b64encode(data).decode("ascii")
     except OSError:
         pass
+    user_watch_data_url = ""
+    for _uname in ("User.PNG", "User.png"):
+        try:
+            _up = _pkg_root / _uname
+            user_watch_data_url = "data:image/png;base64," + base64.b64encode(_up.read_bytes()).decode(
+                "ascii"
+            )
+            break
+        except OSError:
+            continue
 
     # Leaflet und Maidenhead inline einbetten (rotortiles:-URLs werden bei about:blank blockiert)
     def _read_static(name: str) -> str:
@@ -126,6 +136,11 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       background: {info_bg}; color: {info_color}; padding: 10px 14px; border-radius: 8px;
       font: 13px/1.4 sans-serif; }}
     #info div {{ margin: 2px 0; }}
+    .leaflet-div-icon.rotor-aswatch-marker {{ border: none; background: transparent; }}
+    /* Sicherstellen, dass Hover/Tooltip am User-Marker ankommen (Leaflet setzt sonst oft pointer-events:none) */
+    .leaflet-marker-icon.rotor-aswatch-marker {{
+      pointer-events: auto !important;
+    }}
   </style>
 </head>
 <body>
@@ -161,6 +176,45 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     console.log('[Map] Init isOffline=' + isOffline + ' tileUrl=' + {json.dumps(tile_url)} + ' origin=' + (document.location && document.location.origin ? document.location.origin : '?'));
     const initZoom = isOffline ? {offline_max_z} : 10;
     const map = L.map('map', {{ maxZoom: isOffline ? {offline_max_z} : 19, minZoom: isOffline ? {offline_max_z} : 3 }}).setView([lat, lon], initZoom);
+    const userWatchIconUrl = {json.dumps(user_watch_data_url)};
+    let aswatchLayer = L.layerGroup().addTo(map);
+    let _lastAswatch = [];
+    let _mapDarkAswatch = {str(dark).lower()};
+    function _escapeHtmlAswatch(s) {{
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+    }}
+    window.setAswatchMarkers = function(arr) {{
+      _lastAswatch = (arr && arr.length) ? arr.slice() : [];
+      aswatchLayer.clearLayers();
+      if (!_lastAswatch.length) return;
+      const bubbleBg = _mapDarkAswatch ? 'rgba(40,40,40,0.95)' : 'rgba(255,255,255,0.95)';
+      const bubbleFg = _mapDarkAswatch ? '#f0f0f0' : '#111';
+      const bubbleBr = _mapDarkAswatch ? '#888' : '#333';
+      _lastAswatch.forEach(function(m) {{
+        const call = _escapeHtmlAswatch(m.call || '');
+        const qrgRaw = (m.qrg != null && String(m.qrg).trim()) ? String(m.qrg).trim() : '';
+        const qrgHtml = qrgRaw
+          ? ('<div style="font-size:10px;font-weight:600;line-height:1.15;margin-top:2px;white-space:nowrap;text-align:center;color:' + bubbleFg + ';">' + _escapeHtmlAswatch(qrgRaw) + '</div>')
+          : '';
+        let symbol = '';
+        if (userWatchIconUrl) {{
+          symbol = '<img src="' + userWatchIconUrl + '" width="28" height="28" alt="" style="display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.45));pointer-events:auto;"/>';
+        }} else {{
+          symbol = '<div style="width:28px;height:28px;border-radius:50%;background:#5B9BD5;border:2px solid #2e6da4;box-shadow:0 1px 3px rgba(0,0,0,0.4);pointer-events:auto;"></div>';
+        }}
+        const bubbleInner = '<div style="white-space:nowrap;text-align:center;line-height:1.15;">' + call + '</div>' + qrgHtml;
+        const html = '<div style="display:flex;flex-direction:column;align-items:center;">'
+          + '<div style="background:' + bubbleBg + ';border:1px solid ' + bubbleBr + ';border-radius:7px;padding:2px 6px;font-size:10px;font-weight:600;line-height:1.15;margin-bottom:3px;color:' + bubbleFg + ';">' + bubbleInner + '</div>'
+          + symbol + '</div>';
+        const hasQrg = !!qrgRaw;
+        const iconH = hasQrg ? 72 : 56;
+        const icon = L.divIcon({{ html: html, iconSize: [120, iconH], iconAnchor: [60, iconH], className: 'rotor-aswatch-marker' }});
+        L.marker([m.lat, m.lon], {{ icon: icon, interactive: true }}).addTo(aswatchLayer);
+      }});
+      // Kein fitBounds bei ASWATCH-Updates: sonst zoomt die Karte bei jedem UDP-
+      // Tick heraus, sobald ein Marker außerhalb des Viewports liegt. Zoom und
+      // Pan bleiben in der Hand des Nutzers.
+    }};
     let tileLayer = L.tileLayer({json.dumps(tile_url)}, tileOpts).addTo(map);
     tileLayer.on('tileerror', function(e) {{
       if (!_currentOffline) console.error('ROTOR_TILEERROR');
@@ -318,6 +372,8 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       if (horizonCircle) {{
         horizonCircle.setStyle({{ color: dark ? '#7eb87e' : '#2e7d32' }});
       }}
+      _mapDarkAswatch = dark;
+      if (typeof window.setAswatchMarkers === 'function') window.setAswatchMarkers(_lastAswatch);
       if (locatorVisible) {{
         _mapDark = dark;
         _currentLocatorKey = '';

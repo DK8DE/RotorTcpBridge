@@ -81,7 +81,7 @@
   "settings.udp_pst_port_label": "Port",
   "settings.udp_pst_port_tooltip": "Listen port (default: 12000). Position reports are sent to target IP:port+1.",
   "settings.udp_pst_send_host_label": "Target (UDP replies)",
-  "settings.udp_pst_send_host_tooltip": "IPv4 for outgoing AZ:/TGA: datagrams (port remains port+1).\n127.0.0.1 = this PC only.\nAnother host on the LAN, e.g. 192.168.1.50.\n255.255.255.255 = subnet broadcast (all listeners on port+1).",
+  "settings.udp_pst_send_host_tooltip": "IPv4 for outgoing AZ:/TGA: datagrams (port remains port+1).\nEmpty / new: automatic subnet broadcast (e.g. 192.168.1.255).\n127.0.0.1 = this PC only.\nAnother host: its IP, e.g. 192.168.1.50.\n255.255.255.255 = subnet-wide broadcast.",
   "settings.wind_dir_display": "Wind direction compass",
   "settings.wind_dir_from": "Where the wind comes from",
   "settings.wind_dir_to": "Where the wind blows to",

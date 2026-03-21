@@ -26,6 +26,7 @@ from ..app_icon import get_app_icon
 from ..command_catalog import command_specs, format_cmd_tooltip
 from ..ports import list_serial_ports
 from ..i18n import t, load_lang
+from ..net_utils import ipv4_subnet_broadcast_default
 from .ui_utils import px_to_dip
 
 
@@ -60,7 +61,7 @@ class SettingsWindow(QDialog):
         self.setWindowTitle(t("settings.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setFixedSize(px_to_dip(self, 820), px_to_dip(self, 590))
+        self.setFixedSize(px_to_dip(self, 820), px_to_dip(self, 610))
 
         main = QVBoxLayout(self)
         cols = QHBoxLayout()
@@ -196,10 +197,10 @@ class SettingsWindow(QDialog):
         form_ui.addRow(pst_row_w)
 
         self.ed_udp_pst_send_host = QLineEdit()
-        self.ed_udp_pst_send_host.setText(
-            str(cfg.get("ui", {}).get("udp_pst_send_host", "127.0.0.1"))
-        )
-        self.ed_udp_pst_send_host.setPlaceholderText("127.0.0.1")
+        _pst_auto_host = ipv4_subnet_broadcast_default()
+        _pst_saved = str(cfg.get("ui", {}).get("udp_pst_send_host", "")).strip()
+        self.ed_udp_pst_send_host.setText(_pst_saved if _pst_saved else _pst_auto_host)
+        self.ed_udp_pst_send_host.setPlaceholderText(_pst_auto_host)
         self.ed_udp_pst_send_host.setToolTip(t("settings.udp_pst_send_host_tooltip"))
         self.ed_udp_pst_send_host.setMaximumWidth(200)
         pst_send_row = QHBoxLayout()
@@ -783,9 +784,7 @@ class SettingsWindow(QDialog):
         self.cfg.setdefault("ui", {})["udp_ucxlog_enabled"] = bool(self.chk_udp_ucxlog.isChecked())
         self.cfg.setdefault("ui", {})["udp_pst_enabled"] = bool(self.chk_udp_pst.isChecked())
         self.cfg.setdefault("ui", {})["udp_pst_port"] = int(self.sp_udp_pst_port.value())
-        self.cfg.setdefault("ui", {})["udp_pst_send_host"] = (
-            self.ed_udp_pst_send_host.text().strip() or "127.0.0.1"
-        )
+        self.cfg.setdefault("ui", {})["udp_pst_send_host"] = self.ed_udp_pst_send_host.text().strip()
         new_lang = str(self.cb_language.currentData() or "de")
         lang_changed = self.cfg.get("ui", {}).get("language", "de") != new_lang
         self.cfg.setdefault("ui", {})["language"] = new_lang

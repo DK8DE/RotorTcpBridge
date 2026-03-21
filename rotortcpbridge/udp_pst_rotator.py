@@ -9,7 +9,7 @@ Protokoll-Übersicht:
     <PST>TGA?</PST>                    → Ziel-Azimut zurückschicken
     (alle anderen Felder werden geparst, aber ignoriert bzw. geloggt)
 
-  Senden  (Ziel konfigurierbar, Standard 127.0.0.1 : listen_port + 1):
+  Senden  (Ziel konfigurierbar; leer = Subnetz-Broadcast x.y.z.255 : listen_port + 1):
     AZ:xxx<CR>   bei Positionsänderung und auf Anfrage AZ?
     TGA:xxx<CR>  auf Anfrage TGA?
 """
@@ -20,6 +20,7 @@ import re
 import socket
 import threading
 from .angle_utils import wrap_deg
+from .net_utils import ipv4_subnet_broadcast_default
 from .pst_notify_logic import pst_notify_position_decision
 
 # Alle bekannten PST-Tags, die still ignoriert werden dürfen
@@ -57,7 +58,7 @@ class UdpPstRotator:
     """Emuliert die UDP-Schnittstelle von PstRotatorAz.
 
     Hört auf ``listen_port`` (Standard: 12000) und sendet Positionsmeldungen
-    an ``send_host : listen_port + 1`` (Standard: 127.0.0.1 nur lokal).
+    an ``send_host : listen_port + 1`` (nicht konfiguriert: Subnetz-Broadcast x.y.z.255).
     """
 
     def __init__(self, controller, log, cfg: dict | None = None):
@@ -97,17 +98,21 @@ class UdpPstRotator:
         """Listener starten oder mit neuer Konfiguration neu starten.
 
         send_host: IPv4 für ausgehende AZ:/TGA:-Datagramme (Port ist weiter port+1).
-        Wenn None, wird ui.udp_pst_send_host aus cfg gelesen (Default 127.0.0.1).
+        Wenn None, wird ui.udp_pst_send_host aus cfg gelesen; leerer Wert →
+        automatisch Subnetz-Broadcast (``ipv4_subnet_broadcast_default``).
         """
         self.stop()
         self.bind_error_msg = None
         self._enabled = bool(enabled)
         self._port = max(1, min(65534, int(port)))  # max 65534 weil port+1 noch frei sein muss
         if send_host is not None:
-            self._send_host = _parse_ipv4_send_host(send_host, self.log)
+            raw = str(send_host).strip()
         else:
-            ui = (self.cfg or {}).get("ui", {})
-            self._send_host = _parse_ipv4_send_host(str(ui.get("udp_pst_send_host", "127.0.0.1")), self.log)
+            raw = str((self.cfg or {}).get("ui", {}).get("udp_pst_send_host", "")).strip()
+        if not raw:
+            self._send_host = _parse_ipv4_send_host(ipv4_subnet_broadcast_default(), self.log)
+        else:
+            self._send_host = _parse_ipv4_send_host(raw, self.log)
         self._last_sent_d10 = None
         self._zero_confirm = 0
         if not self._enabled:

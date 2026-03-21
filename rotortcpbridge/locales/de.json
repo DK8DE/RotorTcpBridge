@@ -81,7 +81,7 @@
   "settings.udp_pst_port_label": "Port",
   "settings.udp_pst_port_tooltip": "Empfangsport (Standard: 12000). Positionsmeldungen werden an Ziel-IP:Port+1 gesendet.",
   "settings.udp_pst_send_host_label": "Ziel (UDP-Antworten)",
-  "settings.udp_pst_send_host_tooltip": "IPv4 für ausgehende AZ:/TGA:-Datagramme (Port bleibt Port+1).\n127.0.0.1 = nur dieser PC.\nIP eines anderen Rechners im LAN, z. B. 192.168.1.50.\n255.255.255.255 = Broadcast im Subnetz (alle Lauschenden auf Port+1).",
+  "settings.udp_pst_send_host_tooltip": "IPv4 für ausgehende AZ:/TGA:-Datagramme (Port bleibt Port+1).\nLeer oder neu: automatisch Subnetz-Broadcast (z. B. 192.168.1.255).\n127.0.0.1 = nur dieser PC.\nAnderer Rechner: dessen IP, z. B. 192.168.1.50.\n255.255.255.255 = Broadcast im Subnetz.",
   "settings.wind_dir_display": "Windrichtung Kompass",
   "settings.wind_dir_from": "Woher der Wind kommt",
   "settings.wind_dir_to": "Wohin der Wind weht",

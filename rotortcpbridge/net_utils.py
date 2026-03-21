@@ -52,3 +52,50 @@ def check_internet(timeout: float = 2.0) -> bool:
             pass
 
     return False
+
+
+def ipv4_subnet_broadcast_default() -> str:
+    """Best-effort-Broadcast-Adresse für das lokale IPv4-Subnetz (meist /24: x.y.z.255).
+
+    Ermittelt die primäre lokale IPv4 über das ausgehende UDP-Interface (connect zu
+    öffentlicher IP ohne Datenversand). Ohne nutzbares Netzwerk oder bei Loopback
+    nur 127.x → ``127.0.0.1`` (nur dieser Rechner).
+
+    Hinweis: Streng genommen hängt die echte Broadcast-Adresse vom Präfix (/24, /23, …)
+    ab; für typische Heimnetze ist x.y.z.255 üblich.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.35)
+        try:
+            s.connect(("8.8.8.8", 80))
+        except OSError:
+            try:
+                s.connect(("1.1.1.1", 80))
+            except OSError:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+                return "127.0.0.1"
+        local_ip = s.getsockname()[0]
+        try:
+            s.close()
+        except OSError:
+            pass
+    except OSError:
+        return "127.0.0.1"
+
+    if local_ip.startswith("127."):
+        return "127.0.0.1"
+
+    parts = local_ip.split(".")
+    if len(parts) != 4:
+        return "127.0.0.1"
+    try:
+        socket.inet_pton(socket.AF_INET, local_ip)
+    except OSError:
+        return "127.0.0.1"
+
+    # Typisches Class-C-/24-Heimnetz: Hostanteil → 255
+    return f"{parts[0]}.{parts[1]}.{parts[2]}.255"

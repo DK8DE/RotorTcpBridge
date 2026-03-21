@@ -451,7 +451,6 @@ class MainWindow(QMainWindow):
             self._udp_pst.start(
                 enabled=bool(ui.get("udp_pst_enabled", False)),
                 port=int(ui.get("udp_pst_port", 12000)),
-                send_host=str(ui.get("udp_pst_send_host", "127.0.0.1")),
             )
             if self._udp_pst.bind_error_msg:
                 QMessageBox.warning(

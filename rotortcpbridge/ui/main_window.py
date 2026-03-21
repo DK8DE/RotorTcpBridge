@@ -100,7 +100,14 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         main = QVBoxLayout(root)
 
-        top = QHBoxLayout()
+        self.gb_control = QGroupBox(t("main.group_control"))
+        top = QHBoxLayout(self.gb_control)
+        try:
+            top.setContentsMargins(
+                px_to_dip(self, 8), px_to_dip(self, 6), px_to_dip(self, 8), px_to_dip(self, 6)
+            )
+        except Exception:
+            pass
         self.btn_open_compass = QPushButton(t("main.btn_compass"))
         self.btn_open_map = QPushButton(t("main.btn_map"))
         self.btn_ref = QPushButton(t("main.btn_ref"))
@@ -110,7 +117,7 @@ class MainWindow(QMainWindow):
         top.addWidget(self.btn_open_map, 1)
         top.addWidget(self.btn_ref, 1)
         top.addWidget(self.btn_open_weather, 1)
-        main.addLayout(top)
+        main.addWidget(self.gb_control)
 
         self.gb_srv = QGroupBox(t("main.group_server"))
         main.addWidget(self.gb_srv)
@@ -326,6 +333,10 @@ class MainWindow(QMainWindow):
         self.btn_open_map.setText(t("main.btn_map"))
         self.btn_open_weather.setText(t("main.btn_weather"))
         self.btn_ref.setText(t("main.btn_ref"))
+        try:
+            self.gb_control.setTitle(t("main.group_control"))
+        except Exception:
+            pass
         # Server-GroupBox: Überschriften + Beschriftungen der Formularzeilen
         try:
             self.gb_srv.setTitle(t("main.group_server"))

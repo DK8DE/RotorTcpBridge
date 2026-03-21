@@ -61,10 +61,11 @@ class SettingsWindow(QDialog):
         self.setWindowTitle(t("settings.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setFixedSize(px_to_dip(self, 820), px_to_dip(self, 610))
+        self.setFixedSize(px_to_dip(self, 780), px_to_dip(self, 660))
 
         main = QVBoxLayout(self)
         cols = QHBoxLayout()
+        cols.setSpacing(14)
         left_col = QVBoxLayout()
         right_col = QVBoxLayout()
 
@@ -308,32 +309,50 @@ class SettingsWindow(QDialog):
         def _antenna_row(
             name_text: str, sp_off: QSpinBox, sp_angle: QSpinBox, sp_range: QSpinBox
         ) -> tuple[QWidget, QLineEdit]:
+            """Zweizeilig: Name volle Breite, darunter Versatz/Öffnung/Reichweite (nicht stauchen)."""
             name_ed = QLineEdit(name_text)
-            name_ed.setMinimumWidth(90)
+            name_ed.setMinimumWidth(120)
             sp_off.setRange(0, 360)
             sp_off.setValue(0)
-            sp_off.setFixedWidth(55)
+            sp_off.setMinimumWidth(50)
+            sp_off.setMaximumWidth(64)
             sp_angle.setRange(0, 360)
             sp_angle.setValue(0)
-            sp_angle.setFixedWidth(55)
+            sp_angle.setMinimumWidth(50)
+            sp_angle.setMaximumWidth(64)
             sp_range.setRange(1, 4000)
             sp_range.setValue(100)
-            sp_range.setFixedWidth(60)
             sp_range.setSuffix(" km")
+            # Bis 4 Stellen + Suffix — war bei 60px abgeschnitten
+            sp_range.setMinimumWidth(px_to_dip(self, 82))
+            lbl_rng = QLabel(t("settings.antenna_range_label"))
+            lbl_rng.setToolTip(t("settings.tooltip_antenna_range"))
+            row_vals = QHBoxLayout()
+            row_vals.setSpacing(8)
+            row_vals.setContentsMargins(0, 0, 0, 0)
+            row_vals.addWidget(QLabel(t("settings.antenna_offset_unit")))
+            row_vals.addWidget(sp_off)
+            row_vals.addWidget(QLabel(t("settings.antenna_angle_unit")))
+            row_vals.addWidget(sp_angle)
+            row_vals.addWidget(lbl_rng)
+            row_vals.addWidget(sp_range)
+            row_vals.addStretch(1)
+            row_name = QHBoxLayout()
+            row_name.setContentsMargins(0, 0, 0, 0)
+            row_name.addWidget(name_ed, 1)
+            outer = QVBoxLayout()
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(6)
+            outer.addLayout(row_name)
+            outer.addLayout(row_vals)
             w = QWidget()
-            h = QHBoxLayout(w)
-            h.setContentsMargins(0, 0, 0, 0)
-            h.addWidget(name_ed)
-            h.addWidget(QLabel(t("settings.antenna_offset_unit")))
-            h.addWidget(sp_off)
-            h.addWidget(QLabel(t("settings.antenna_angle_unit")))
-            h.addWidget(sp_angle)
-            h.addWidget(sp_range)
-            h.addStretch(1)
+            w.setLayout(outer)
             return w, name_ed
 
         self.gb_antenna_az = QGroupBox(t("settings.group_antenna_az"))
         form_az = QFormLayout(self.gb_antenna_az)
+        form_az.setHorizontalSpacing(10)
+        form_az.setVerticalSpacing(8)
         self.sp_az_antoff_1 = QSpinBox()
         self.sp_az_antoff_2 = QSpinBox()
         self.sp_az_antoff_3 = QSpinBox()
@@ -411,6 +430,15 @@ class SettingsWindow(QDialog):
             self.ed_antenna_name_3,
         ]
         left_col.addWidget(gb_conn, 1)
+
+        # Verbindungen-Bereich etwas schmaler (~30 px, DIP-skalieren)
+        def _apply_conn_group_max_width() -> None:
+            w = gb_conn.sizeHint().width()
+            if w > 0:
+                gb_conn.setMaximumWidth(max(200, w - px_to_dip(self, 5)))
+
+        _apply_conn_group_max_width()
+        QTimer.singleShot(0, _apply_conn_group_max_width)
 
         # --- Rechte Spalte: Einstellungen, AZ/EL Antennen ---
         right_col.addWidget(gb_ui, 0)

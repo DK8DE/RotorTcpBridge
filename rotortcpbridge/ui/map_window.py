@@ -165,7 +165,7 @@ class MapWindow(QDialog):
         self._lbl_online = QLabel(t("axis.online_label"))
         self._lbl_online.setStyleSheet(lbl_style)
         self._led_ref = Led(led_d, self)
-        self._lbl_ref = QLabel(t("axis.ref_label"))
+        self._lbl_ref = QLabel(t("compass.ref_led_label_az"))
         self._lbl_ref.setStyleSheet(lbl_style)
         self._lbl_temp_motor = QLabel("–")
         self._lbl_temp_motor.setStyleSheet(lbl_style)

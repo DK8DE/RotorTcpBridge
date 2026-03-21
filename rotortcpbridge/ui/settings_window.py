@@ -12,12 +12,13 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -61,18 +62,13 @@ class SettingsWindow(QDialog):
         self.setWindowTitle(t("settings.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setFixedSize(px_to_dip(self, 780), px_to_dip(self, 660))
+        self.setFixedSize(px_to_dip(self, 400), px_to_dip(self, 550))
 
         main = QVBoxLayout(self)
-        cols = QHBoxLayout()
-        cols.setSpacing(14)
-        left_col = QVBoxLayout()
-        right_col = QVBoxLayout()
 
-        # --- Linke Spalte: Verbindung + Einstellungen ---
-        gb_conn = QGroupBox(t("settings.group_connection"))
+        gb_conn = QWidget()
         form_conn = QFormLayout(gb_conn)
-        gb_ui = QGroupBox(t("settings.group_ui"))
+        gb_ui = QWidget()
         form_ui = QFormLayout(gb_ui)
 
         def _hsep() -> QFrame:
@@ -307,9 +303,17 @@ class SettingsWindow(QDialog):
             antenna_names.append(f"Antenne {len(antenna_names) + 1}")
 
         def _antenna_row(
-            name_text: str, sp_off: QSpinBox, sp_angle: QSpinBox, sp_range: QSpinBox
+            title: str,
+            name_text: str,
+            sp_off: QSpinBox,
+            sp_angle: QSpinBox,
+            sp_range: QSpinBox,
         ) -> tuple[QWidget, QLineEdit]:
-            """Zweizeilig: Name volle Breite, darunter Versatz/Öffnung/Reichweite (nicht stauchen)."""
+            """Titel über dem Namen; dann Name; darunter Versatz/Öffnung/Reichweite."""
+            lbl_title = QLabel(title)
+            _f = QFont(lbl_title.font())
+            _f.setBold(True)
+            lbl_title.setFont(_f)
             name_ed = QLineEdit(name_text)
             name_ed.setMinimumWidth(120)
             sp_off.setRange(0, 360)
@@ -343,13 +347,14 @@ class SettingsWindow(QDialog):
             outer = QVBoxLayout()
             outer.setContentsMargins(0, 0, 0, 0)
             outer.setSpacing(6)
+            outer.addWidget(lbl_title)
             outer.addLayout(row_name)
             outer.addLayout(row_vals)
             w = QWidget()
             w.setLayout(outer)
             return w, name_ed
 
-        self.gb_antenna_az = QGroupBox(t("settings.group_antenna_az"))
+        self.gb_antenna_az = QWidget()
         form_az = QFormLayout(self.gb_antenna_az)
         form_az.setHorizontalSpacing(10)
         form_az.setVerticalSpacing(8)
@@ -363,13 +368,25 @@ class SettingsWindow(QDialog):
         self.sp_az_range_2 = QSpinBox()
         self.sp_az_range_3 = QSpinBox()
         w1, self.ed_antenna_name_1 = _antenna_row(
-            antenna_names[0], self.sp_az_antoff_1, self.sp_az_angle_1, self.sp_az_range_1
+            t("settings.antenna_1"),
+            antenna_names[0],
+            self.sp_az_antoff_1,
+            self.sp_az_angle_1,
+            self.sp_az_range_1,
         )
         w2, self.ed_antenna_name_2 = _antenna_row(
-            antenna_names[1], self.sp_az_antoff_2, self.sp_az_angle_2, self.sp_az_range_2
+            t("settings.antenna_2"),
+            antenna_names[1],
+            self.sp_az_antoff_2,
+            self.sp_az_angle_2,
+            self.sp_az_range_2,
         )
         w3, self.ed_antenna_name_3 = _antenna_row(
-            antenna_names[2], self.sp_az_antoff_3, self.sp_az_angle_3, self.sp_az_range_3
+            t("settings.antenna_3"),
+            antenna_names[2],
+            self.sp_az_antoff_3,
+            self.sp_az_angle_3,
+            self.sp_az_range_3,
         )
         _tt_an = t("settings.tooltip_antenna_name")
         _tt_off = t("settings.tooltip_antenna_offset")
@@ -383,9 +400,9 @@ class SettingsWindow(QDialog):
             sp.setToolTip(_tt_ang)
         for sp in (self.sp_az_range_1, self.sp_az_range_2, self.sp_az_range_3):
             sp.setToolTip(_tt_rng)
-        form_az.addRow(t("settings.antenna_1"), w1)
-        form_az.addRow(t("settings.antenna_2"), w2)
-        form_az.addRow(t("settings.antenna_3"), w3)
+        form_az.addRow(w1)
+        form_az.addRow(w2)
+        form_az.addRow(w3)
         # Initial aus Config (Fallback wenn Rotor noch nicht geantwortet)
         for i, sp in enumerate([self.sp_az_antoff_1, self.sp_az_antoff_2, self.sp_az_antoff_3]):
             try:
@@ -429,25 +446,38 @@ class SettingsWindow(QDialog):
             self.ed_antenna_name_2,
             self.ed_antenna_name_3,
         ]
-        left_col.addWidget(gb_conn, 1)
 
-        # Verbindungen-Bereich etwas schmaler (~30 px, DIP-skalieren)
-        def _apply_conn_group_max_width() -> None:
-            w = gb_conn.sizeHint().width()
-            if w > 0:
-                gb_conn.setMaximumWidth(max(200, w - px_to_dip(self, 5)))
+        def _scroll_page(inner: QWidget) -> QScrollArea:
+            sc = QScrollArea()
+            sc.setWidgetResizable(True)
+            sc.setFrameShape(QFrame.Shape.NoFrame)
+            sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            sc.setWidget(inner)
+            return sc
 
-        _apply_conn_group_max_width()
-        QTimer.singleShot(0, _apply_conn_group_max_width)
+        pg_conn = QWidget()
+        vl_conn = QVBoxLayout(pg_conn)
+        vl_conn.setContentsMargins(0, 0, 0, 0)
+        vl_conn.addWidget(gb_conn)
+        vl_conn.addStretch(1)
 
-        # --- Rechte Spalte: Einstellungen, AZ/EL Antennen ---
-        right_col.addWidget(gb_ui, 0)
-        right_col.addWidget(self.gb_antenna_az, 0)
-        right_col.addStretch(1)
+        pg_ui = QWidget()
+        vl_ui = QVBoxLayout(pg_ui)
+        vl_ui.setContentsMargins(0, 0, 0, 0)
+        vl_ui.addWidget(gb_ui)
+        vl_ui.addStretch(1)
 
-        cols.addLayout(left_col)
-        cols.addLayout(right_col)
-        main.addLayout(cols)
+        pg_ant = QWidget()
+        vl_ant = QVBoxLayout(pg_ant)
+        vl_ant.setContentsMargins(0, 0, 0, 0)
+        vl_ant.addWidget(self.gb_antenna_az)
+        vl_ant.addStretch(1)
+
+        self._tab_widget = QTabWidget()
+        self._tab_widget.addTab(_scroll_page(pg_conn), t("settings.group_connection"))
+        self._tab_widget.addTab(_scroll_page(pg_ui), t("settings.group_ui"))
+        self._tab_antenna_index = self._tab_widget.addTab(_scroll_page(pg_ant), t("settings.tab_antenna"))
+        main.addWidget(self._tab_widget, 1)
 
         self.chk_enable_az.installEventFilter(self)
         self.chk_enable_el.installEventFilter(self)
@@ -648,7 +678,12 @@ class SettingsWindow(QDialog):
         return super().eventFilter(obj, event)
 
     def _update_antenna_visibility(self) -> None:
-        self.gb_antenna_az.setVisible(self.chk_enable_az.isChecked())
+        show = self.chk_enable_az.isChecked()
+        self.gb_antenna_az.setVisible(show)
+        try:
+            self._tab_widget.setTabVisible(self._tab_antenna_index, show)
+        except Exception:
+            pass
         self._update_antenna_offset_enabled()
 
     def _update_antenna_offset_enabled(self) -> None:

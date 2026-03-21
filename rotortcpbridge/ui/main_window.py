@@ -88,6 +88,18 @@ class MainWindow(QMainWindow):
         self._act_delwarn.triggered.connect(self.ctrl.clear_warnings_all)
         self._menu_setup.addAction(self._act_delwarn)
 
+        self._menu_window = menubar.addMenu(t("main.menu_window"))
+        self._act_win_compass = QAction(t("main.btn_compass"), self)
+        self._act_win_compass.triggered.connect(self._open_compass)
+        self._menu_window.addAction(self._act_win_compass)
+        self._act_win_map = QAction(t("main.btn_map"), self)
+        self._act_win_map.triggered.connect(self._open_map)
+        self._menu_window.addAction(self._act_win_map)
+        self._act_win_weather = QAction(t("main.btn_weather"), self)
+        self._act_win_weather.triggered.connect(self._open_weather)
+        self._menu_window.addAction(self._act_win_weather)
+        self._act_win_weather.setVisible(False)
+
         self._menu_help = menubar.addMenu(t("main.menu_help"))
         self._act_version = QAction(t("main.menu_version"), self)
         self._act_version.triggered.connect(self._open_about)
@@ -111,13 +123,9 @@ class MainWindow(QMainWindow):
         self.btn_open_compass = QPushButton(t("main.btn_compass"))
         self.btn_open_map = QPushButton(t("main.btn_map"))
         self.btn_ref = QPushButton(t("main.btn_ref"))
-        self.btn_open_weather = QPushButton(t("main.btn_weather"))
-        self.btn_open_weather.setVisible(False)
         top.addWidget(self.btn_open_compass, 1)
         top.addWidget(self.btn_open_map, 1)
         top.addWidget(self.btn_ref, 1)
-        top.addWidget(self.btn_open_weather, 1)
-        main.addWidget(self.gb_control)
 
         self.gb_srv = QGroupBox(t("main.group_server"))
         main.addWidget(self.gb_srv)
@@ -140,8 +148,11 @@ class MainWindow(QMainWindow):
 
         self.ed_pst = QLineEdit()
         self.ed_pst.setReadOnly(True)
-        self.ed_hw = QLineEdit()
-        self.ed_hw.setReadOnly(True)
+        self.lbl_hw = QLabel("")
+        self.lbl_hw.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.lbl_hw.setWordWrap(False)
 
         pst_row = QHBoxLayout()
         pst_row.setContentsMargins(0, 0, 0, 0)
@@ -157,7 +168,7 @@ class MainWindow(QMainWindow):
         hw_row.setContentsMargins(0, 0, 0, 0)
         hw_row.setSpacing(px_to_dip(self, 6))
         hw_row.addWidget(_led_wrap(self.led_hw))
-        hw_row.addWidget(self.ed_hw, 1)
+        hw_row.addWidget(self.lbl_hw, 1)
         hw_row_w = QWidget()
         hw_row_w.setLayout(hw_row)
         srv_form.addRow(t("main.srv_hw_label"), hw_row_w)
@@ -213,6 +224,7 @@ class MainWindow(QMainWindow):
         self.gb_el = QGroupBox(f"EL ID:{slave_el}")
         main.addWidget(self.gb_az)
         main.addWidget(self.gb_el)
+        main.addWidget(self.gb_control)
 
         self.az_fields = _make_axis_panel(self.gb_az, "az", self.ctrl)
         self.el_fields = _make_axis_panel(self.gb_el, "el", self.ctrl)
@@ -258,7 +270,6 @@ class MainWindow(QMainWindow):
 
         self.btn_open_compass.clicked.connect(self._open_compass)
         self.btn_open_map.clicked.connect(self._open_map)
-        self.btn_open_weather.clicked.connect(self._open_weather)
 
         self._fixed_w = None
         self._fixed_h = None
@@ -291,28 +302,8 @@ class MainWindow(QMainWindow):
             self._log_win.refresh()
 
     def _update_title_bar(self) -> None:
-        """Titelleiste dynamisch aktualisieren: Basis + aktuelle Position."""
-        base = f"{t('app.title')} v{APP_VERSION}"
-        try:
-            hw_on = bool(self.hw.is_connected())
-            if hw_on:
-                parts: list[str] = []
-                if bool(getattr(self.ctrl, "enable_az", True)):
-                    az_d10 = getattr(self.ctrl.az, "pos_d10", None)
-                    if az_d10 is not None:
-                        parts.append(f"AZ: {az_d10 / 10:.1f}°")
-                if bool(getattr(self.ctrl, "enable_el", True)):
-                    el_d10 = getattr(self.ctrl.el, "pos_d10", None)
-                    if el_d10 is not None:
-                        parts.append(f"EL: {el_d10 / 10:.1f}°")
-                if parts:
-                    title = f"{base} \u2014 {' '.join(parts)}"
-                else:
-                    title = base
-            else:
-                title = base
-        except Exception:
-            title = base
+        """Titelleiste: App-Name und Version (ohne Live-AZ/EL)."""
+        title = f"{t('app.title')} v{APP_VERSION}"
         if title != self._last_title:
             self._last_title = title
             self.setWindowTitle(title)
@@ -326,12 +317,15 @@ class MainWindow(QMainWindow):
         self._act_commands.setText(t("main.btn_commands"))
         self._act_statistics.setText(t("main.menu_statistics"))
         self._act_delwarn.setText(t("main.menu_delwarn"))
+        self._menu_window.setTitle(t("main.menu_window"))
+        self._act_win_compass.setText(t("main.btn_compass"))
+        self._act_win_map.setText(t("main.btn_map"))
+        self._act_win_weather.setText(t("main.btn_weather"))
         self._menu_help.setTitle(t("main.menu_help"))
         self._act_version.setText(t("main.menu_version"))
         self._act_log.setText(t("main.btn_log"))
         self.btn_open_compass.setText(t("main.btn_compass"))
         self.btn_open_map.setText(t("main.btn_map"))
-        self.btn_open_weather.setText(t("main.btn_weather"))
         self.btn_ref.setText(t("main.btn_ref"))
         try:
             self.gb_control.setTitle(t("main.group_control"))
@@ -601,20 +595,14 @@ class MainWindow(QMainWindow):
                 if has_wind:
                     wind_on = True
         try:
-            w1 = self.az_fields.get("wind_pair_w")
-            if w1 is not None:
-                w1.setVisible(wind_on)
-            w2 = self.az_fields.get("winddir_pair_w")
-            if w2 is not None:
-                w2.setVisible(wind_on)
             w3 = self.az_fields.get("wind_bft_pair_w")
             if w3 is not None:
                 w3.setVisible(wind_on)
         except Exception:
             pass
         try:
-            if hasattr(self, "btn_open_weather"):
-                self.btn_open_weather.setVisible(wind_on)
+            if hasattr(self, "_act_win_weather"):
+                self._act_win_weather.setVisible(wind_on)
             if (not wind_on) and hasattr(self, "_weather_win") and self._weather_win.isVisible():
                 self._weather_win.hide()
         except Exception:
@@ -622,7 +610,8 @@ class MainWindow(QMainWindow):
         return wind_on
 
     def _apply_fixed_mainwindow_size(self):
-        width = px_to_dip(self, 460)
+        # Feste Fensterbreite (DIP) — schmales Hauptfenster; Achsen-Layout nutzt Stretch in den Wert-Spalten
+        width = px_to_dip(self, 345)
         try:
             lay = self.centralWidget().layout()
             if lay:
@@ -780,12 +769,12 @@ class MainWindow(QMainWindow):
         if mode == "tcp":
             ip = self.cfg["hardware_link"].get("tcp_ip", "")
             port = self.cfg["hardware_link"].get("tcp_port", "")
-            self.ed_hw.setText(
+            self.lbl_hw.setText(
                 f"{t('main.hw_connected') if hw_on else t('main.hw_disconnected')}  TCP {ip}:{port}"
             )
         else:
             com = self.cfg["hardware_link"].get("com_port", "")
-            self.ed_hw.setText(
+            self.lbl_hw.setText(
                 f"{t('main.hw_connected') if hw_on else t('main.hw_disconnected')}  COM {com} @ 115200"
             )
 

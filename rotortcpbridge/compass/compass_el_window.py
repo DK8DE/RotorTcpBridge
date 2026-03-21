@@ -53,7 +53,7 @@ class ElevationCompassWidget(QWidget):
         self._online_lbl.setStyleSheet(lbl_style)
 
         self._ref_led = Led(self._led_d, self)
-        self._ref_lbl = QLabel(t("axis.ref_label"), self)
+        self._ref_lbl = QLabel(t("compass.ref_led_label_el"), self)
         self._ref_lbl.setStyleSheet(lbl_style)
 
         for w in (

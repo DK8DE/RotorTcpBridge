@@ -331,19 +331,19 @@ class MainWindow(QMainWindow):
             self.gb_srv.setTitle(t("main.group_server"))
             sf = self._srv_form
             lab = sf.labelForField(self._srv_row_pst_w)
-            if lab is not None:
+            if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_pst_label"))
             lab = sf.labelForField(self._srv_row_hw_w)
-            if lab is not None:
+            if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_hw_label"))
             lab = sf.labelForField(self._srv_row_pst_conn_w)
-            if lab is not None:
+            if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_pst_conn_label"))
             lab = sf.labelForField(self._srv_row_ucxlog_w)
-            if lab is not None:
+            if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_ucxlog_prefix"))
             lab = sf.labelForField(self._srv_row_pst_udp_w)
-            if lab is not None:
+            if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_pst_udp_prefix"))
             self._lbl_srv_pst_conn.setText(t("main.srv_pst_conn_text"))
             self._lbl_srv_ucxlog_suffix.setText(t("main.srv_ucxlog_suffix"))

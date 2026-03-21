@@ -3,19 +3,100 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from .rs485_protocol import build, Telegram
-from .hardware_client import HwRequest
+from .hardware_client import HardwareClient, HwRequest
 from .rotor_model import AxisState
 from .rotor_parse_utils import parse_int
 
 
-class RotorControllerPollingMixin:
+class _RotorPollingHost:
+    """Nur Typannotationen: Instanzattribute setzt ``RotorController.__init__`` (Mixin-Kombination)."""
+
+    hw: HardwareClient
+    az: AxisState
+    el: AxisState
+    master_id: int
+    slave_az: int
+    slave_el: int
+    enable_az: bool
+    enable_el: bool
+    log: Any
+    wind_enabled: bool
+    wind_enabled_known: bool
+    _cfg_poll: dict[str, int]
+    _statistics_window_open: bool
+    _compass_window_open: bool
+    _stats_cooldown_until: float
+    _hw_prev_connected: bool
+    _startup_burst_until: float
+    _last_poll: float
+    _last_warn: float
+    _last_err: float
+    _last_tel: float
+    _last_wind: float
+    _last_wind_dir: float
+    _last_wind_beaufort: float
+    _wind_dir_due_ts: float
+    _wind_beaufort_due_ts: float
+    _wind_speed_inflight: bool
+    _wind_speed_sent_ts: float
+    _wind_dir_inflight: bool
+    _wind_dir_sent_ts: float
+    _wind_beaufort_inflight: bool
+    _wind_beaufort_sent_ts: float
+    _last_pwm: float
+    _last_minpwm: float
+    _last_ref_idle: float
+    _last_ref_active_az: float
+    _last_ref_active_el: float
+    _last_cal_state_az: float
+    _last_cal_state_el: float
+    _cal_bins_inflight_az: bool
+    _cal_bins_fetched_az: bool
+    _cal_bins_received_az: int
+    _last_live_bins_az: float
+    _live_bins_inflight_az: bool
+    _live_bins_received_az: int
+    _cal_bins_temp_cw: list[Any] | None
+    _cal_bins_temp_ccw: list[Any] | None
+    _live_bins_temp_cw: list[Any] | None
+    _live_bins_temp_ccw: list[Any] | None
+    _last_acc_bins_az: float
+    _acc_bins_inflight_az: bool
+    _acc_bins_temp_cw: list[Any] | None
+    _acc_bins_temp_ccw: list[Any] | None
+    _cal_bins_inflight_el: bool
+    _cal_bins_fetched_el: bool
+    _cal_bins_temp_cw_el: list[Any] | None
+    _cal_bins_temp_ccw_el: list[Any] | None
+    _last_live_bins_el: float
+    _live_bins_inflight_el: bool
+    _live_bins_temp_cw_el: list[Any] | None
+    _live_bins_temp_ccw_el: list[Any] | None
+    _last_acc_bins_el: float
+    _acc_bins_inflight_el: bool
+    _acc_bins_temp_cw_el: list[Any] | None
+    _acc_bins_temp_ccw_el: list[Any] | None
+    _last_wind_enable_poll: float
+    _wind_enable_inflight: bool
+    _wind_enable_sent_ts: float
+    _cal_bins_priority_az: int
+    _cal_bins_priority_el: int
+    _live_bins_priority_az: int
+    _live_bins_priority_el: int
+    _acc_bins_priority_az: int
+    _acc_bins_priority_el: int
+    request_antenna_offsets: Callable[[], None]
+    request_antenna_angles: Callable[[], None]
+
+
+class RotorControllerPollingMixin(_RotorPollingHost):
     """Polling-Logik: ``tick_polling``, ``_poll_*``, sequentielle Bins-Abfragen."""
 
     # -------------------- Polling --------------------
-    def tick_polling(self):
+    def tick_polling(self: _RotorPollingHost) -> None:
         now = time.time()
         hw_on = False
         try:

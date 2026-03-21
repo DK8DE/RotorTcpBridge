@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication
 from .app_config import load_config, save_config
 from .net_utils import check_internet
 
-from .ui.map_window import install_rotortiles_handler
+from .ui.map_tiles import install_rotortiles_handler
 from .app_icon import get_app_icon
 from .i18n import load_lang
 from .logutil import LogBuffer

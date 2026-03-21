@@ -144,6 +144,21 @@ ruff format rotortcpbridge test
 
 ---
 
+## Installer bauen (Windows)
+
+Zum Erzeugen des **Setup-Programms** (nach dem PyInstaller-Build) ist der **[Inno Setup Compiler](https://jrsoftware.org/isinfo.php)** erforderlich – er muss installiert sein und im **PATH** verfügbar sein (Aufruf `ISCC.exe`).
+
+- **Aktuelle Version** (Stand Projekt): **Inno Setup 6.7.1** – andere 6.x-Versionen sind in der Regel kompatibel; bei Skriptfehlern die hier genannte Version verwenden.
+
+Das PowerShell-Skript **`build.ps1`** führt **PyInstaller** und anschließend **Inno Setup** aus (optional nur PyInstaller mit `-SkipInstaller`).
+
+```powershell
+.\build.ps1
+.\build.ps1 -SkipInstaller   # nur PyInstaller, kein Installer
+```
+
+---
+
 ## Lizenz
 
 Siehe **`LICENSE.txt`** im Projektverzeichnis.

@@ -33,7 +33,7 @@
 | **Karte** | **Leaflet** (Qt **WebEngine**), Standort, **Antennen-Beams**, Grayline, **Offline-Karten**, Klick → **Peilung** an den Rotor, optional **Maidenhead-Locator**. |
 | **PST (TCP)** | Integrierter **PST-kompatibler TCP-Server** (getrennte Ports AZ/EL) für Software wie **PstRotator** – in den Einstellungen **ein-/ausschaltbar**. |
 | **UDP UcxLog** | Empfängt **XML** von UcxLog (Standard-Port **12040**), um den Rotor aus der Log-/Contest-Software anzufahren. |
-| **UDP PST-Emulator** | Emuliert das **UDP-Protokoll** von PstRotatorAz (Steuerung, **AZ:/TGA:**-Antworten), konfigurierbarer Port (Standard **12000**). |
+| **UDP PST-Emulator** | **Ersatz für PstRotator** auf der UDP-Seite: dasselbe Protokoll wie **PstRotatorAz** – Programme, die per UDP mit **PstRotator** sprechen, funktionieren mit RotorTcpBridge **ohne** installierten PstRotator (Standard-Port **12000**). |
 | **UDP AirScout/KST** | Empfängt **ASWATCHLIST** / **ASSETPATH** (z. B. AirScout), Anzeige auf der Karte. |
 | **Internationalisierung** | Sprache **Deutsch** / **Englisch** (Einstellungen). |
 
@@ -121,8 +121,12 @@ Diese Werte gelten für **neue** Installationen bzw. fehlende Felder nach Update
 
 ### UDP PST-Emulator
 
+Die Emulation ist **nicht** nur eine technische Nachbildung des PST-UDP-Protokolls – ihr **Zweck** ist: **Sie benötigen keinen PstRotator mehr**, um Software anzubinden, die für die Kommunikation mit **PstRotator** über **UDP** ausgelegt ist. **Jedes Programm**, das auf dieselbe Weise per UDP mit **PstRotator** spricht, ist mit **RotorTcpBridge** kompatibel; die Bridge übernimmt die Rolle des UDP-Gegenparts und leitet zur echten Rotor-Hardware.
+
+Technisch:
+
 - **UDP**-Listener auf **`udp_pst_port`** (Standard **12000**).
-- Steuerbefehle und Antworten im Stil von **PstRotatorAz**; Positionsmeldungen u. a. an **Ziel-IP:Port+1**.
+- Steuerbefehle und Antworten wie bei **PstRotatorAz**; Positionsmeldungen u. a. an **Ziel-IP:Port+1**.
 - **Ziel-IP:** leer → Laufzeit **Subnetz-Broadcast**; manuell IPv4 oder `127.0.0.1` möglich.
 - **Standard:** in den Defaults **aktiviert** (`udp_pst_enabled`), unabhängig vom PST-**TCP**-Server.
 

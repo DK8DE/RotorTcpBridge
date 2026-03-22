@@ -1,106 +1,67 @@
 # RotorTcpBridge
 
-**RotorTcpBridge** ist eine Desktop-Anwendung (Python, **Qt/PySide6**), die als **Brücke** zwischen eurer **Rotor-Hardware** (typisch **RS485** / SPID-kompatibles Protokoll) und **PC-Software** fungiert. Ihr könnt **Azimut- und Elevationsachsen** ansteuern, den Status einsehen, **Karten und Kompass** nutzen und mit Programmen wie **PstRotator** oder **UcxLog** zusammenarbeiten – ohne jedes Mal dieselbe Schnittstelle neu zu bauen.
+**RotorTcpBridge** ist eine Desktop-Anwendung (**Python 3.10+**, **Qt 6 / PySide6**), die als **Brücke** zwischen **Rotor-Hardware** (typisch **RS485**, SPID-kompatibles ASCII-Telegramm-Protokoll) und **PC-Software** arbeitet. Azimut- und optional Elevationsachsen lassen sich steuern und überwachen; **Kompass**, **Karte**, **Statistik**, **Wetter**, **Logging** und Anbindungen an **UcxLog**, **AirScout/KST**, **PstRotator** (TCP oder UDP) sind integriert.
+
+**Version:** siehe `rotortcpbridge/version.py` (z. B. für Anzeige/Installer).
 
 ---
 
-## Was das Programm macht (Überblick)
+## Inhaltsverzeichnis
 
-| Bereich | Kurzbeschreibung |
-|--------|-------------------|
-| **Hardware** | Verbindung per **TCP** oder **seriell (COM)** zum RS485-Bus; konfigurierbare **Master-/Slave-IDs** für AZ und EL. |
-| **Rotor steuern** | Positionsvorgaben, Referenz (**SETREF**), Stopp, PWM, Befehle aus dem Protokoll – zentral über den **RotorController** und das **Hardware-Backend**. |
-| **Oberfläche** | Hauptfenster mit Status (Verbindung, PST, ggf. UDP), Achsen-Anzeigen, Menüs zu **Kompass**, **Karte**, **Einstellungen**, **Befehle**, **Statistik**, **Wetter**, **Log**. |
-| **Kompass** | Visuelle **IST-/SOLL-Anzeige**, Favoriten, mehrere **Antennen** mit Versatz, optional **Windrose** / Strom-Heatmap. |
-| **Landkarte** | **Leaflet**-Karte mit Standort, **Antennen-Beams** (Öffnung, Reichweite), Grayline, optional **Offline-Karten**, Klick → **Rotor auf Peilung**. |
-| **Fremdsoftware** | **PST-TCP-Server** (wie PstRotatorAz), **UDP-PST-Emulation**, **UDP UcxLog**-Anbindung. |
-| **Konfiguration** | Persistente **`config.json`** unter den Anwendungsdaten; Sprache **DE/EN**. |
-
----
-
-## Hardware und Bus
-
-- Anbindung an den Rotor über **`hardware_link`**: **TCP** (IP + Port) oder **COM** (Port + Baudrate).
-- **`rotor_bus`**: Master-ID, Slave-IDs für **Azimut** und **Elevations**-Achse; Achsen können einzeln deaktiviert werden (`enable_az` / `enable_el`).
-- Das Programm sendet **Telegramme im RS485-ASCII-Format** (`#SRC:DST:CMD:PARAMS:CS$`) und pollt regelmäßig Position, Fehler, Warnungen, Telemetrie (konfigurierbare Intervalle in **`polling_ms`**).
+1. [Funktionen im Überblick](#funktionen-im-überblick)  
+2. [Systemvoraussetzungen](#systemvoraussetzungen)  
+3. [Installation und Start](#installation-und-start)  
+4. [Konfiguration (`config.json`)](#konfiguration-configjson)  
+5. [Hardware](#hardware)  
+6. [Schnittstellen zu anderer Software](#schnittstellen-zu-anderer-software)  
+7. [Benutzeroberfläche](#benutzeroberfläche)  
+8. [Kompass und Karte](#kompass-und-karte)  
+9. [Entwicklung & Qualität](#entwicklung--qualität)  
+10. [Windows-Build (Installer)](#windows-build-installer)  
+11. [Lizenz](#lizenz)
 
 ---
 
-## Rotor bedienen und einstellen
+## Funktionen im Überblick
 
-- **Hauptfenster**: Verbindungs-LEDs (Hardware, PST, optional UcxLog- und PST-UDP-LED), Textfelder für Server/Ports, **AZ/EL-Gruppen** mit Ist-, Soll- und Statusanzeigen (je nach Konfiguration sichtbar).
-- **Einstellungen**: Hardware, PST-Ports, UI (Sprache, Dark Mode, Karte, UDP-Features), Antennen-Namen und **Versätze**, Standort für Karte/Kompass, u. a.
-- **Befehle** („Command Buttons“): Schnellzugriff auf frei konfigurierbare **RS485-Befehle** (Ziel-Slave, Kommando, Parameter).
-- **Referenz / Homing**, Fehler- und Warnungs-Popups, Logging in Datei und **Log-Fenster**.
-
----
-
-## Kompass
-
-- Eigens **Kompass-Fenster** mit Peilung, Antennenwahl (bis zu **drei Antennen** mit individuellem **Azimut-Versatz** in der Anzeige).
-- **Favoriten** (gespeicherte Ziele), Abgleich mit der echten Rotorposition.
-- Optional: **Wind**-Einbindung, Darstellung von **Last/Strom** (Bins) am Kompassrand.
-
----
-
-## Landkarte (Map)
-
-- **Interaktive Karte** (OpenStreetMap/CARTO oder **Offline-Tiles** aus lokalen Ordnern).
-- **Antennenstandort**, **Beam**-Darstellung (Sektor) für die gewählte Antenne, **Grayline** (Tag-/Nacht-Grenze).
-- **Klick auf die Karte**: Berechnung der **Peilung** zum Punkt und Vorgabe an den Rotor (Azimut).
-- Optional: **Maidenhead-Locator**-Overlay, **Höhenprofil**-Fenster (Terrain, Sichtlinie – je nach Konfiguration und Datenquellen).
-- **Offline vorbereiten** (optional): Hilfsskripte im Ordner **`tools/`** – z. B. `python tools/karten_download.py` (OSM-Tiles → `rotortcpbridge/KartenLight`), `python tools/karten_dark_download.py` (CARTO Dark → `KartenDark`), `python tools/leaflet_download.py` (Leaflet/Maidenhead → `rotortcpbridge/static`).
+| Bereich | Beschreibung |
+|--------|----------------|
+| **Hardware** | Verbindung per **TCP** (IP + Port) oder **seriell (COM)** zum Bus/Adapter; **Master-/Slave-IDs** für AZ und EL. |
+| **Rotor steuern** | Position, Referenz (**SETREF**), Stopp, PWM, frei **konfigurierbare RS485-Befehle** (Befehlsfenster). |
+| **Oberfläche** | Hauptfenster mit Status (Hardware, PST-TCP, UDP-Dienste), Achsen-AZ/EL, Menüs: **Kompass**, **Karte**, **Einstellungen**, **Befehle**, **Statistik**, **Wetter**, **Log**, **Warnungen/Fehler**. |
+| **Kompass** | IST-/SOLL-Anzeige, mehrere **Antennen** mit Versatz/Öffnung/Reichweite, optional **Wind**, **Strom-Heatmap** (ACCBINS). |
+| **Karte** | **Leaflet** (Qt **WebEngine**), Standort, **Antennen-Beams**, Grayline, **Offline-Karten**, Klick → **Peilung** an den Rotor, optional **Maidenhead-Locator**. |
+| **PST (TCP)** | Integrierter **PST-kompatibler TCP-Server** (getrennte Ports AZ/EL) für Software wie **PstRotator** – in den Einstellungen **ein-/ausschaltbar**. |
+| **UDP UcxLog** | Empfängt **XML** von UcxLog (Standard-Port **12040**), um den Rotor aus der Log-/Contest-Software anzufahren. |
+| **UDP PST-Emulator** | Emuliert das **UDP-Protokoll** von PstRotatorAz (Steuerung, **AZ:/TGA:**-Antworten), konfigurierbarer Port (Standard **12000**). |
+| **UDP AirScout/KST** | Empfängt **ASWATCHLIST** / **ASSETPATH** (z. B. AirScout), Anzeige auf der Karte. |
+| **Internationalisierung** | Sprache **Deutsch** / **Englisch** (Einstellungen). |
 
 ---
 
-## Kommunikation mit anderen Programmen
+## Systemvoraussetzungen
 
-### PST-TCP-Server (PstRotatorAz-kompatibel)
-
-- Die Bridge kann einen **TCP-Server** starten (getrennte Ports für **AZ** und **EL**), der das erwartete **binäre PST-Protokoll** spricht – vergleichbar mit **PstRotatorAz**.
-- So können **PstRotator** oder andere Clients den Rotor **über localhost** steuern, während die Bridge die **echte RS485-Verbindung** zum Antrieb übernimmt.
-- In den **Einstellungen** kann der PST-Server **ein- und ausgeschaltet** werden.
-
-### UDP – PstRotatorAz-Emulation („UDP PST-Rotator“)
-
-- Optional: **UDP**-Listener auf konfigurierbarem Port (Standard z. B. **12000**).
-- Versteht typische **PST-XML**-Telegramme (`<PST><AZIMUTH>…</AZIMUTH></PST>`, STOP, PARK, Abfragen `AZ?` / `TGA?` …).
-- Sendet Positionsmeldungen im Stil **`AZ:xxx` / `TGA:xxx`** an **Ziel-IP : Port+1**.
-  - **Nichts konfiguriert / leeres Feld**: automatisch **Subnetz-Broadcast** in der Form **`x.y.z.255`** (aus der lokalen IPv4 abgeleitet, typisch /24-Heimnetz).
-  - **`127.0.0.1`** – nur der **gleiche PC** wie die Bridge.
-  - **Anderer Rechner im LAN**: Ziel-IP **manuell eintragen** (IPv4 des Empfängers), oder **`255.255.255.255`** für **Broadcast** im lokalen Subnetz (Router leiten Broadcast in der Regel **nicht** zwischen Subnetzen).
-- **Aktivierung**, **Port** und **Ziel-IP** in den Einstellungen (`udp_pst_enabled`, `udp_pst_port`, `udp_pst_send_host`).
-
-### UDP – UcxLog
-
-- Optional: Listener für **XML-Positionsdaten** von **UcxLog** (konfigurierbarer Port, z. B. **12040**), um den Rotor aus der Log-/Contest-Software heraus zu fahren.
+- **Python** ≥ **3.10** (siehe `pyproject.toml`: `requires-python = ">=3.10"`).
+- **Abhängigkeiten:** siehe `requirements.txt` (u. a. **PySide6**, **pyserial**). Die Kartenansicht nutzt **Qt WebEngine** (Bestandteil der PySide6-Pakete).
+- **Betrieb:** primär **Windows**; Konfigurationspfad nutzt u. a. `%APPDATA%` (siehe unten).
 
 ---
 
-## Technische Grundlagen
+## Installation und Start
 
-- **Sprache**: Python 3.10+ empfohlen.
-- **GUI**: **PySide6** (Qt6).
-- **Konfiguration**: `%APPDATA%\RotorTcpBridge\config.json` (Windows) bzw. entsprechend unter Linux/macOS.
-- **Protokoll / Logik**: u. a. `rotor_controller`, `rs485_protocol`, `hardware_client`.
-
----
-
-## Start
-
-Voraussetzung: Abhängigkeiten installieren:
+Abhängigkeiten installieren:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Applikation starten (Projektroot):
+Applikation aus dem **Projektroot** starten:
 
 ```bash
 python run.py
 ```
 
-Oder Modul:
+Alternativ als Modul:
 
 ```bash
 python -m rotortcpbridge
@@ -108,57 +69,152 @@ python -m rotortcpbridge
 
 ---
 
-## Tests (Entwicklung)
+## Konfiguration (`config.json`)
 
-Die Testdateien liegen unter **`test/`** im Projektroot (Konfiguration: **`pytest.ini`**).
+### Speicherort
+
+- **Windows:** `%APPDATA%\RotorTcpBridge\config.json`  
+- **Linux/macOS:** typisch `~/.config/RotorTcpBridge/config.json` (über `APPDATA` bzw. Home-Logik in `app_config.py`).
+
+Die Datei wird beim **ersten Start** angelegt, falls sie nicht existiert. Anschließend werden **fehlende Schlüssel** bei jedem Laden mit den **aktuellen Programm-Defaults** ergänzt (Merge).
+
+### Erste Installation (ohne bestehende `config.json`)
+
+Beim **allerersten** Speichern werden u. a. gesetzt:
+
+- Alle **UDP-Listen-Adressen** auf **`0.0.0.0`** (alle Schnittstellen).
+- **Ziel-IP** für den **UDP PST-Emulator** (`udp_pst_send_host`) auf die **Subnetz-Broadcast-Adresse** des Rechners (typisch `x.y.z.255`, siehe `net_utils.ipv4_subnet_broadcast_default()`). Ohne nutzbares IPv4-Netzwerk kann das Fallback **`127.0.0.1`** sein.
+
+### Standardwerte (Auszug aus `DEFAULT_CONFIG` in `app_config.py`)
+
+Diese Werte gelten für **neue** Installationen bzw. fehlende Felder nach Updates (Stand Code – bei Abweichungen immer `app_config.py` als Quelle nutzen):
+
+| Bereich | Einstellung | Standard (Kurz) |
+|--------|-------------|-------------------|
+| **UI** | `force_dark_mode` | **ein** |
+| | `language` | `de` |
+| | UDP **UcxLog** / **AirScout** / **PST-Emulator** | jeweils **aktiviert** (`*_enabled`: true) |
+| **PST (TCP)** | `pst_server.enabled` | **aus** (SPID BIG-RAS-Emulation über TCP getrennt vom UDP-Emulator) |
+| **Hardware** | `hardware_link.mode` | **`com`** (seriell) |
+| **Rotor-Bus** | `enable_az` / `enable_el` | **AZ an**, **EL aus** |
+| **UDP-Ports** | UcxLog / AirScout / PST-UDP | **12040** / **9872** / **12000** |
+
+**Hinweis:** In den Einstellungen schließen sich **PST TCP-Server** (SPID BIG-RAS) und **UDP PST-Emulator** gegenseitig aus – es darf nur jeweils einer aktiv sein (oder beide aus).
+
+---
+
+## Hardware
+
+- Konfiguration unter **`hardware_link`**: Modus **`tcp`** oder **`com`**, dazu IP/Port bzw. COM-Port und **Baudrate**.
+- **`rotor_bus`**: **Master-ID**, Slave-IDs für **Azimut** und **Elevation**, **enable_az** / **enable_el**.
+- Kommunikation über **RS485-ASCII-Telegramme** (`#…$`), Polling-Intervalle in **`polling_ms`**.
+
+---
+
+## Schnittstellen zu anderer Software
+
+### PST-TCP-Server (PstRotator-kompatibel)
+
+- **TCP-Server** mit getrennten Ports für **AZ** und **EL** (Defaults z. B. **4001** / **4002**, Host konfigurierbar).
+- **Binäres PST-Protokoll** – Anpassung für Software wie **PstRotator** (Rotor-Typ z. B. **SPID BIG-RAS** in der PstRotator-Konfiguration).
+- **Standard nach Erstinstallation:** **deaktiviert** (`pst_server.enabled`: false). In den Einstellungen einschalten, wenn benötigt.
+
+### UDP PST-Emulator
+
+- **UDP**-Listener auf **`udp_pst_port`** (Standard **12000**).
+- Steuerbefehle und Antworten im Stil von **PstRotatorAz**; Positionsmeldungen u. a. an **Ziel-IP:Port+1**.
+- **Ziel-IP:** leer → Laufzeit **Subnetz-Broadcast**; manuell IPv4 oder `127.0.0.1` möglich.
+- **Standard:** in den Defaults **aktiviert** (`udp_pst_enabled`), unabhängig vom PST-**TCP**-Server.
+
+### UDP UcxLog
+
+- Lauscht auf konfigurierbare **Listen-IP** und **Port** (`udp_ucxlog_listen_host`, `udp_ucxlog_port`; Standard **0.0.0.0:12040**).
+- XML von UcxLog (z. B. `<Rotor><Azimut>…</Azimut></Rotor>`).
+
+### UDP AirScout / KST
+
+- Empfängt **ASWATCHLIST** / **ASSETPATH** (Standard **0.0.0.0:9872**).
+- Stationen können auf der **Karte** dargestellt werden.
+
+---
+
+## Benutzeroberfläche
+
+- **Hauptfenster:** LEDs und Statuszeilen für **Hardware**, **PST (TCP)**, **UDP UcxLog**, **UDP PST-Emulator**, **AirScout/KST**.
+- **Hardware-Status:** bei TCP-Verbindung mit laufendem PST-TCP z. B. **„Verbunden über TCP“** + IP:Port (ohne veraltete „PST-Server“-Bezeichnung in dieser Zeile); bei nur Hardware **„verbunden“** / **„getrennt“** mit Details.
+- **Einstellungen:** Tabs u. a. **Oberfläche** (Dark Mode, Sprache, UDP-Blöcke, Kalibrierung, Standort, Karte), **Verbindung** (PST-TCP, Hardware, Achsen aktiv), **Antenne** (Namen, Versätze).
+
+---
+
+## Kompass und Karte
+
+- **Kompass:** eigenes Fenster, **Azimut** (und optional **Elevation**), Favoriten, Antennenwahl.
+- **Karte:** OSM/CARTO oder **Offline-Tiles** (Ordner **KartenLight** / **KartenDark** unter `rotortcpbridge/` – je nach Theme/Dark-Mode).
+- **Offline-Karten vorbereiten** (optional): Skripte im Ordner **`tools/`**:
+  - `python tools/karten_download.py` – helle Tiles  
+  - `python tools/karten_dark_download.py` – dunkle Tiles  
+  - `python tools/leaflet_download.py` – Leaflet/Maidenhead-Assets in `rotortcpbridge/static`  
+  - `python tools/make_backup.py` – Backup-Hilfe (siehe Skript)
+
+---
+
+## Entwicklung & Qualität
+
+### Tests
 
 ```bash
 pip install -r requirements-dev.txt
 pytest
 ```
 
-Alle Tests in einem Aufruf:
+oder:
 
 ```bash
 python run_tests.py
 python run_tests.py -v
 ```
 
-Die Tests prüfen u. a. Winkel-Hilfen, Geografie, PST-UDP-Positionslogik, RS485-Telegramme und Parser – **ohne** echte Hardware und **ohne** GUI.
+Konfiguration: **`pytest.ini`**, Tests unter **`test/`** (ohne echte Hardware/GUI).
 
----
+### Linting (Ruff)
 
-## Code-Qualität (optional, vor Commit)
-
-Konfiguration in **`pyproject.toml`** (Tool: **Ruff**):
+Konfiguration in **`pyproject.toml`**:
 
 ```bash
 ruff check rotortcpbridge test
-```
-
-Optional formatieren:
-
-```bash
 ruff format rotortcpbridge test
 ```
 
 ---
 
-## Installer bauen (Windows)
+## Windows-Build (Installer)
 
-Zum Erzeugen des **Setup-Programms** (nach dem PyInstaller-Build) ist der **[Inno Setup Compiler](https://jrsoftware.org/isinfo.php)** erforderlich – er muss installiert sein und im **PATH** verfügbar sein (Aufruf `ISCC.exe`).
-
-- **Aktuelle Version** (Stand Projekt): **Inno Setup 6.7.1** – andere 6.x-Versionen sind in der Regel kompatibel; bei Skriptfehlern die hier genannte Version verwenden.
-
-Das PowerShell-Skript **`build.ps1`** führt **PyInstaller** und anschließend **Inno Setup** aus (optional nur PyInstaller mit `-SkipInstaller`).
+- **PyInstaller**-Spezifikation: **`RotorTcpBridge.spec`** (Einstieg `run.py`).
+- **Inno Setup** für das Setup-Programm – **ISCC** muss verfügbar sein (siehe Projekt-`build.ps1`).
 
 ```powershell
 .\build.ps1
 .\build.ps1 -SkipInstaller   # nur PyInstaller, kein Installer
 ```
 
+Details und Versionen ggf. im Skript bzw. in der Inno-Setup-Datei nachlesen.
+
 ---
 
 ## Lizenz
 
 Siehe **`LICENSE.txt`** im Projektverzeichnis.
+
+---
+
+## Projektstruktur (Kurz)
+
+| Pfad | Inhalt |
+|------|--------|
+| `rotortcpbridge/` | Hauptcode (UI, Protokoll, UDP-Listener, PST-Server, …) |
+| `rotortcpbridge/locales/` | `de.json` / `en.json` |
+| `test/` | Unit-Tests |
+| `tools/` | Hilfsskripte (Karten, Backup, …) |
+| `run.py` | Startskript |
+
+Bei Abweichungen zwischen dieser README und dem **Code** gilt immer der **Code** als maßgeblich.

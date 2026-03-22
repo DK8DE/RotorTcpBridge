@@ -907,16 +907,21 @@ class MainWindow(QMainWindow):
         self.lbl_pst.setText(
             f"{t('main.pst_running') if pst_on else t('main.pst_stopped')}  AZ:{self.pst.port_az}  EL:{self.pst.port_el}  Host:{self.pst.host}"
         )
-        mode = self.cfg["hardware_link"].get("mode", "tcp")
+        hl = self.cfg["hardware_link"]
+        mode = hl.get("mode", "tcp")
         if mode == "tcp":
-            ip = self.cfg["hardware_link"].get("tcp_ip", "")
-            port = self.cfg["hardware_link"].get("tcp_port", "")
+            ip = hl.get("tcp_ip", "")
+            port = hl.get("tcp_port", "")
             detail = f"TCP {ip}:{port}"
         else:
-            com = self.cfg["hardware_link"].get("com_port", "")
-            detail = f"COM {com} @ 115200"
+            com = hl.get("com_port", "")
+            baud = hl.get("baudrate", 115200)
+            detail = f"COM {com} @ {baud}"
         if hw_on and pst_on:
-            self.lbl_hw.setText(f"{t('main.hw_connected_via_pst')}  {detail}")
+            if mode == "tcp":
+                self.lbl_hw.setText(f"{t('main.hw_connected_via_tcp')}  {ip}:{port}")
+            else:
+                self.lbl_hw.setText(f"{t('main.hw_connected_via_com')}  {com} @ {baud}")
         elif hw_on:
             self.lbl_hw.setText(f"{t('main.hw_connected')}  {detail}")
         else:

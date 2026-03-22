@@ -112,7 +112,7 @@ class SettingsWindow(QDialog):
         form_conn.addRow(_hsep())
 
         self.chk_pst_enabled = QCheckBox(t("settings.chk_pst_enabled"))
-        self.chk_pst_enabled.setChecked(bool(cfg["pst_server"].get("enabled", True)))
+        self.chk_pst_enabled.setChecked(bool(cfg["pst_server"].get("enabled", False)))
         self.chk_pst_enabled.setToolTip(t("settings.chk_pst_enabled_tooltip"))
         self.ed_listen_host.setToolTip(t("settings.pst_listen_host_tooltip"))
         self.sp_listen_port_az.setToolTip(t("settings.pst_port_az_tooltip"))
@@ -167,7 +167,7 @@ class SettingsWindow(QDialog):
         form_conn.addRow(self.chk_enable_el)
 
         self.chk_force_dark_mode = QCheckBox(t("settings.chk_dark_mode"))
-        self.chk_force_dark_mode.setChecked(bool(cfg.get("ui", {}).get("force_dark_mode", False)))
+        self.chk_force_dark_mode.setChecked(bool(cfg.get("ui", {}).get("force_dark_mode", True)))
         self.chk_force_dark_mode.setToolTip(t("settings.chk_dark_mode_tooltip"))
         form_ui.addRow(self.chk_force_dark_mode)
 
@@ -181,9 +181,9 @@ class SettingsWindow(QDialog):
 
         self.chk_udp_ucxlog = QCheckBox(t("settings.chk_udp_ucxlog"))
         self.chk_udp_ucxlog.setToolTip(t("settings.chk_udp_ucxlog_tooltip"))
-        self.chk_udp_ucxlog.setChecked(bool(_ui0.get("udp_ucxlog_enabled", False)))
+        self.chk_udp_ucxlog.setChecked(bool(_ui0.get("udp_ucxlog_enabled", True)))
         self.ed_udp_ucxlog_listen = QLineEdit()
-        self.ed_udp_ucxlog_listen.setText(str(_ui0.get("udp_ucxlog_listen_host", "127.0.0.1")))
+        self.ed_udp_ucxlog_listen.setText(str(_ui0.get("udp_ucxlog_listen_host", "0.0.0.0")))
         self.ed_udp_ucxlog_listen.setFixedWidth(_udp_ip_field_w)
         self.ed_udp_ucxlog_listen.setToolTip(t("settings.ucxlog_udp_listen_tooltip"))
         self.sp_udp_ucxlog_port = QSpinBox()
@@ -194,7 +194,7 @@ class SettingsWindow(QDialog):
 
         self.chk_aswatch_udp = QCheckBox(t("settings.chk_aswatch_udp"))
         self.chk_aswatch_udp.setToolTip(t("settings.chk_aswatch_udp_tooltip"))
-        self.chk_aswatch_udp.setChecked(bool(_ui0.get("aswatch_udp_enabled", False)))
+        self.chk_aswatch_udp.setChecked(bool(_ui0.get("aswatch_udp_enabled", True)))
         self.ed_aswatch_udp_listen = QLineEdit()
         self.ed_aswatch_udp_listen.setText(str(_ui0.get("aswatch_udp_listen_host", "0.0.0.0")))
         self.ed_aswatch_udp_listen.setFixedWidth(_udp_ip_field_w)
@@ -207,7 +207,7 @@ class SettingsWindow(QDialog):
 
         self.chk_udp_pst = QCheckBox(t("settings.chk_udp_pst"))
         self.chk_udp_pst.setToolTip(t("settings.chk_udp_pst_tooltip"))
-        self.chk_udp_pst.setChecked(bool(_ui0.get("udp_pst_enabled", False)))
+        self.chk_udp_pst.setChecked(bool(_ui0.get("udp_pst_enabled", True)))
         self.ed_udp_pst_listen = QLineEdit()
         self.ed_udp_pst_listen.setText(str(_ui0.get("udp_pst_listen_host", "0.0.0.0")))
         self.ed_udp_pst_listen.setFixedWidth(_udp_ip_field_w)

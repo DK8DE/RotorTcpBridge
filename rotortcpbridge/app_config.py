@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from .net_utils import ipv4_subnet_broadcast_default
+
 APP_NAME = "RotorTcpBridge"
 
 
@@ -19,13 +21,14 @@ def config_path() -> Path:
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "pst_server": {
-        "enabled": True,
+        # SPID BIG-RAS (TCP): Standard aus; UDP-PST-Emulator ist separat (ui.udp_pst_enabled).
+        "enabled": False,
         "listen_host": "127.0.0.1",
         "listen_port_az": 4001,
         "listen_port_el": 4002,
     },
     "hardware_link": {
-        "mode": "tcp",
+        "mode": "com",
         "tcp_ip": "192.168.1.50",
         "tcp_port": 8886,
         "com_port": "COM1",
@@ -62,7 +65,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "wind_dir_display": "to",
         # Wenn True: Darkmode immer erzwingen (unabhängig von Windows).
         # Wenn False: System-/Windows-Theme verwenden.
-        "force_dark_mode": False,
+        "force_dark_mode": True,
         # Wenn True: ACCBINS-Heatmap (Strom/Last) als 5px-Ring um den Kompass anzeigen.
         "compass_strom_az": False,
         "compass_strom_el": False,
@@ -83,22 +86,23 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "map_offline": False,
         # Amateurfunk-Locator: True = Maidenhead-Grid als Overlay einblenden
         "map_locator_overlay": False,
-        # UDP UcxLog: Lauscht auf udp_ucxlog_listen_host:udp_ucxlog_port (Standard 127.0.0.1:12040).
+        # UDP UcxLog: Lauscht auf udp_ucxlog_listen_host:udp_ucxlog_port (Standard 0.0.0.0:12040).
         # XML von UcxLog (<Rotor><Azimut>…</Azimut></Rotor>).
-        "udp_ucxlog_enabled": False,
+        "udp_ucxlog_enabled": True,
         "udp_ucxlog_port": 12040,
-        "udp_ucxlog_listen_host": "127.0.0.1",
+        "udp_ucxlog_listen_host": "0.0.0.0",
         # UDP PST-Rotator-Emulation: Emuliert das UDP-Protokoll von PstRotatorAz.
         # Hört auf udp_pst_port, sendet Positionsmeldungen an udp_pst_port + 1.
         # Ziel für AZ:/TGA:-Antworten. Leer = automatisch Subnetz-Broadcast (x.y.z.255);
         # 127.0.0.1 = nur dieser PC; 255.255.255.255 = globaler Broadcast; sonst konkrete IPv4.
-        "udp_pst_enabled": False,
+        "udp_pst_enabled": True,
         "udp_pst_port": 12000,
         "udp_pst_listen_host": "0.0.0.0",
-        # Leer = automatisch Subnetz-Broadcast (x.y.z.255) siehe net_utils.ipv4_subnet_broadcast_default
+        # Neuinstallation: in load_config beim ersten Speichern als Subnetz-Broadcast (x.y.z.255) gesetzt.
+        # Leer = zur Laufzeit automatisch ipv4_subnet_broadcast_default()
         "udp_pst_send_host": "",
         # AirScout/KST: ASWATCHLIST/ASSETPATH auf aswatch_udp_listen_host:aswatch_udp_port
-        "aswatch_udp_enabled": False,
+        "aswatch_udp_enabled": True,
         "aswatch_udp_port": 9872,
         "aswatch_udp_listen_host": "0.0.0.0",
     },
@@ -116,8 +120,15 @@ def _merge(dst: Dict[str, Any], src: Dict[str, Any]):
 def load_config() -> Dict[str, Any]:
     p = config_path()
     if not p.exists():
-        save_config(DEFAULT_CONFIG)
-        return json.loads(json.dumps(DEFAULT_CONFIG))
+        initial = json.loads(json.dumps(DEFAULT_CONFIG))
+        ui = initial.setdefault("ui", {})
+        # Erste Installation: alle UDP-Listen-IPs 0.0.0.0 (DEFAULT), PST-Ziel = Subnetz-Broadcast (…255)
+        ui["udp_ucxlog_listen_host"] = "0.0.0.0"
+        ui["udp_pst_listen_host"] = "0.0.0.0"
+        ui["aswatch_udp_listen_host"] = "0.0.0.0"
+        ui["udp_pst_send_host"] = ipv4_subnet_broadcast_default()
+        save_config(initial)
+        return json.loads(json.dumps(initial))
     with open(p, "r", encoding="utf-8") as f:
         cfg = json.load(f)
 

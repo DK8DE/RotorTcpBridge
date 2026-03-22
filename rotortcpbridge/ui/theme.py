@@ -32,7 +32,7 @@ def apply_theme_mode(cfg: dict) -> None:
         return
     app = app_obj
     ui_cfg = cfg.setdefault("ui", {})
-    force_dark = bool(ui_cfg.get("force_dark_mode", False))
+    force_dark = bool(ui_cfg.get("force_dark_mode", True))
     if not hasattr(app, "_rtb_default_palette"):
         setattr(app, "_rtb_default_palette", QPalette(app.palette()))
     if force_dark:

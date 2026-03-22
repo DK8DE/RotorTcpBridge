@@ -103,7 +103,7 @@ class HardwareClient:
         TCP: 5s (Serial-Server antwortet bei jeder Anfrage).
         COM: 30s (RS485-Bus kann still sein, wenn kein Rotor angeschlossen).
         """
-        mode = str(self.cfg.get("mode", "tcp") or "tcp").strip().lower()
+        mode = str(self.cfg.get("mode", "com") or "com").strip().lower()
         self._no_rx_timeout_s = 30.0 if mode == "com" else 5.0
 
     def set_expected_response_dst(self, master_id: int) -> None:
@@ -144,7 +144,7 @@ class HardwareClient:
 
     # ------------------ Connection helpers ------------------
     def _connect(self):
-        mode = self.cfg.get("mode", "tcp")
+        mode = self.cfg.get("mode", "com")
         if mode == "tcp":
             ip = self.cfg.get("tcp_ip", "127.0.0.1")
             port = int(self.cfg.get("tcp_port", 23))
@@ -417,7 +417,7 @@ class HardwareClient:
                     # Bei COM ohne RS485-Bus kommen keine Antworten -> kein Disconnect.
                     # Bei TCP deutet Timeout auf hängende Verbindung -> disconnect/reconnect.
                     # dont_disconnect_on_timeout: Retry-Logik soll Verbindung behalten (z.B. SETPOSDG)
-                    mode = str(self.cfg.get("mode", "tcp") or "tcp").strip().lower()
+                    mode = str(self.cfg.get("mode", "com") or "com").strip().lower()
                     if mode != "com" and not getattr(pending, "dont_disconnect_on_timeout", False):
                         self._disconnect("timeout")
                 time.sleep(0.01)

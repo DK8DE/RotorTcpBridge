@@ -220,7 +220,7 @@ class MainWindow(QMainWindow):
         try:
             self._lbl_srv_ucxlog_suffix.setText(
                 self._udp_bind_status_text(
-                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "127.0.0.1", 12040
+                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "0.0.0.0", 12040
                 )
             )
         except Exception:
@@ -430,7 +430,7 @@ class MainWindow(QMainWindow):
             ui = self.cfg.get("ui", {})
             self._lbl_srv_ucxlog_suffix.setText(
                 self._udp_bind_status_text(
-                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "127.0.0.1", 12040
+                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "0.0.0.0", 12040
                 )
             )
             self._lbl_srv_pst_udp_suffix.setText(
@@ -526,7 +526,7 @@ class MainWindow(QMainWindow):
         self._update_srv_rows_visibility()
         self._apply_fixed_mainwindow_size()
         # PST-Server starten oder stoppen je nach Einstellung
-        pst_enabled = bool(self.cfg.get("pst_server", {}).get("enabled", True))
+        pst_enabled = bool(self.cfg.get("pst_server", {}).get("enabled", False))
         try:
             if pst_enabled and not self.pst.running:
                 self.pst.start()
@@ -544,14 +544,14 @@ class MainWindow(QMainWindow):
         if self._udp_ucxlog is not None:
             ui = self.cfg.get("ui", {})
             self._udp_ucxlog.start(
-                enabled=bool(ui.get("udp_ucxlog_enabled", False)),
+                enabled=bool(ui.get("udp_ucxlog_enabled", True)),
                 port=int(ui.get("udp_ucxlog_port", 12040)),
-                listen_host=str(ui.get("udp_ucxlog_listen_host", "127.0.0.1")),
+                listen_host=str(ui.get("udp_ucxlog_listen_host", "0.0.0.0")),
             )
         if self._udp_pst is not None:
             ui = self.cfg.get("ui", {})
             self._udp_pst.start(
-                enabled=bool(ui.get("udp_pst_enabled", False)),
+                enabled=bool(ui.get("udp_pst_enabled", True)),
                 port=int(ui.get("udp_pst_port", 12000)),
                 listen_host=str(ui.get("udp_pst_listen_host", "0.0.0.0")),
             )
@@ -562,7 +562,7 @@ class MainWindow(QMainWindow):
         if self._udp_aswatch is not None:
             ui = self.cfg.get("ui", {})
             self._udp_aswatch.start(
-                enabled=bool(ui.get("aswatch_udp_enabled", False)),
+                enabled=bool(ui.get("aswatch_udp_enabled", True)),
                 port=int(ui.get("aswatch_udp_port", 9872)),
                 listen_host=str(ui.get("aswatch_udp_listen_host", "0.0.0.0")),
             )
@@ -689,10 +689,10 @@ class MainWindow(QMainWindow):
     def _update_srv_rows_visibility(self) -> None:
         """Server-GroupBox-Zeilen je nach aktivierten Diensten ein-/ausblenden."""
         ui = self.cfg.get("ui", {})
-        pst_on = bool(self.cfg.get("pst_server", {}).get("enabled", True))
-        ucxlog_on = bool(ui.get("udp_ucxlog_enabled", False))
-        pst_udp_on = bool(ui.get("udp_pst_enabled", False))
-        aswatch_on = bool(ui.get("aswatch_udp_enabled", False))
+        pst_on = bool(self.cfg.get("pst_server", {}).get("enabled", False))
+        ucxlog_on = bool(ui.get("udp_ucxlog_enabled", True))
+        pst_udp_on = bool(ui.get("udp_pst_enabled", True))
+        aswatch_on = bool(ui.get("aswatch_udp_enabled", True))
         try:
             self._srv_form.setRowVisible(self._srv_row_pst_w, pst_on)
             self._srv_form.setRowVisible(self._srv_row_pst_conn_w, pst_on)
@@ -926,7 +926,7 @@ class MainWindow(QMainWindow):
             ui = self.cfg.get("ui", {})
             self._lbl_srv_ucxlog_suffix.setText(
                 self._udp_bind_status_text(
-                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "127.0.0.1", 12040
+                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "0.0.0.0", 12040
                 )
             )
             self._lbl_srv_pst_udp_suffix.setText(

@@ -298,7 +298,7 @@ class MapWindow(QDialog):
             "info_standort": t("map.info_standort"),
             "info_offnung": t("map.info_offnung"),
             "info_reichweite": t("map.info_reichweite"),
-            "dark_mode": bool(self.cfg.get("ui", {}).get("force_dark_mode", False)),
+            "dark_mode": bool(self.cfg.get("ui", {}).get("force_dark_mode", True)),
             "offline": bool(self.cfg.get("ui", {}).get("map_offline", False)),
             "map_locator_overlay": bool(self.cfg.get("ui", {}).get("map_locator_overlay", False)),
             "horizon_dist_km": horizon_dist_km,
@@ -607,7 +607,7 @@ class MapWindow(QDialog):
 
     def _update_wind_overlay(self) -> None:
         """Wind-Overlay aus Telemetrie aktualisieren."""
-        dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", False))
+        dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", True))
         self._wind_overlay.set_dark_mode(dark)
         wind_on = (
             bool(getattr(self.ctrl, "wind_enabled", False))
@@ -754,7 +754,7 @@ class MapWindow(QDialog):
         ui = self.cfg.get("ui", {})
         home_lat = float(ui.get("location_lat", 49.502651))
         home_lon = float(ui.get("location_lon", 8.375019))
-        dark = bool(ui.get("force_dark_mode", False))
+        dark = bool(ui.get("force_dark_mode", True))
         antenna_height = float(ui.get("antenna_height_m", 0.0))
         freq_mhz = float(ui.get("rf_freq_mhz", 145.0))
 
@@ -796,7 +796,7 @@ class MapWindow(QDialog):
 
         params = self._get_params()
         # dark_mode immer direkt aus Config (force_dark_mode) – auch für Offline-Tiles
-        dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", False))
+        dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", True))
         params["dark_mode"] = dark
         rotor_target = float(params.get("rotor_az_deg", 0.0))
         if self._smooth_rotor_az is None:
@@ -902,7 +902,7 @@ class MapWindow(QDialog):
 
     def on_settings_applied(self) -> None:
         """Wird von main_window nach dem Speichern der Einstellungen aufgerufen."""
-        dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", False))
+        dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", True))
         if self._elevation_win is not None and self._elevation_win.isVisible():
             self._elevation_win.apply_theme(dark)
 

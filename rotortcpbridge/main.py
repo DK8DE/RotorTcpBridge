@@ -57,22 +57,22 @@ def main():
     )
 
     # PST-Server beim Programmstart starten (wenn aktiviert)
-    if bool(cfg["pst_server"].get("enabled", True)):
+    if bool(cfg["pst_server"].get("enabled", False)):
         pst.start()
 
     # UDP UcxLog-Listener (wenn aktiviert)
     udp_ucxlog = UdpUcxLogListener(ctrl, log, cfg=cfg)
     ui_cfg = cfg.get("ui", {})
     udp_ucxlog.start(
-        enabled=bool(ui_cfg.get("udp_ucxlog_enabled", False)),
+        enabled=bool(ui_cfg.get("udp_ucxlog_enabled", True)),
         port=int(ui_cfg.get("udp_ucxlog_port", 12040)),
-        listen_host=str(ui_cfg.get("udp_ucxlog_listen_host", "127.0.0.1")),
+        listen_host=str(ui_cfg.get("udp_ucxlog_listen_host", "0.0.0.0")),
     )
 
     # UDP PST-Rotator-Emulation (wenn aktiviert)
     udp_pst = UdpPstRotator(ctrl, log, cfg=cfg)
     udp_pst.start(
-        enabled=bool(ui_cfg.get("udp_pst_enabled", False)),
+        enabled=bool(ui_cfg.get("udp_pst_enabled", True)),
         port=int(ui_cfg.get("udp_pst_port", 12000)),
         listen_host=str(ui_cfg.get("udp_pst_listen_host", "0.0.0.0")),
     )
@@ -98,7 +98,7 @@ def main():
     aswatch_bridge = AswatchBridge(app)
     udp_aswatch = UdpAswatchlistListener(log, cfg, emit_fn=aswatch_bridge.users.emit)
     udp_aswatch.start(
-        enabled=bool(ui_cfg.get("aswatch_udp_enabled", False)),
+        enabled=bool(ui_cfg.get("aswatch_udp_enabled", True)),
         port=int(ui_cfg.get("aswatch_udp_port", 9872)),
         listen_host=str(ui_cfg.get("aswatch_udp_listen_host", "0.0.0.0")),
     )

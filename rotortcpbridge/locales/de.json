@@ -91,7 +91,7 @@
   "settings.chk_udp_ucxlog_tooltip": "Lauscht auf der gewählten IP und Port (Standard 127.0.0.1:12040).\nIn UcxLog müssen dieselbe IP/Port eingetragen sein.\nBei „Setze Rotor“ sendet UcxLog UDP-XML mit Azimut zum Anfahren.",
   "settings.udp_listen_ip_label": "IP:",
   "settings.udp_listen_port_label": "Port:",
-  "settings.ucxlog_udp_listen_tooltip": "IPv4 für den Empfang (typisch 127.0.0.1).",
+  "settings.ucxlog_udp_listen_tooltip": "IPv4 für den Empfang (0.0.0.0 = alle Schnittstellen).",
   "settings.ucxlog_udp_port_tooltip": "Standard 12040.",
   "settings.aswatch_udp_listen_tooltip": "IPv4 für den Empfang (0.0.0.0 = alle Schnittstellen).",
   "settings.udp_pst_listen_tooltip": "IPv4 für den Empfang (0.0.0.0 = alle Schnittstellen).",

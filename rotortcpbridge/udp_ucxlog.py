@@ -14,6 +14,7 @@ import socket
 import threading
 import xml.etree.ElementTree as ET
 from .angle_utils import wrap_deg
+from .net_utils import normalize_udp_bind_host
 
 
 class UdpUcxLogListener:
@@ -35,22 +36,28 @@ class UdpUcxLogListener:
         """True wenn Listener aktiv lauscht."""
         return bool(self._enabled and self._running and self._sock is not None)
 
-    def start(self, enabled: bool, port: int = 12040) -> None:
+    def start(
+        self,
+        enabled: bool,
+        port: int = 12040,
+        listen_host: str | None = None,
+    ) -> None:
         """Listener starten oder mit neuer Konfiguration neu starten."""
         self.stop()
         self._enabled = bool(enabled)
         self._port = max(1, min(65535, int(port)))
+        bind_host = normalize_udp_bind_host(listen_host, "127.0.0.1")
         if not self._enabled:
             return
         try:
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self._sock.bind(("127.0.0.1", self._port))
+            self._sock.bind((bind_host, self._port))
             self._sock.settimeout(0.5)
             self._running = True
             self._thread = threading.Thread(target=self._loop, daemon=True)
             self._thread.start()
-            self.log.write("INFO", f"UDP UcxLog Listener gestartet auf 127.0.0.1:{self._port}")
+            self.log.write("INFO", f"UDP UcxLog Listener gestartet auf {bind_host}:{self._port}")
         except OSError as e:
             self.log.write("ERROR", f"UDP UcxLog bind fehlgeschlagen: {e}")
 

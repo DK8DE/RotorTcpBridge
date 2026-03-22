@@ -210,25 +210,39 @@ class MainWindow(QMainWindow):
         ucxlog_row.setContentsMargins(0, 0, 0, 0)
         ucxlog_row.setSpacing(px_to_dip(self, 6))
         ucxlog_row.addWidget(_led_wrap(self.led_ucxlog))
-        self._lbl_srv_ucxlog_suffix = QLabel(t("main.srv_ucxlog_suffix"))
+        self._lbl_srv_ucxlog_suffix = QLabel("")
         ucxlog_row.addWidget(self._lbl_srv_ucxlog_suffix)
         ucxlog_row.addStretch(1)
         ucxlog_row_w = QWidget()
         ucxlog_row_w.setLayout(ucxlog_row)
         srv_form.addRow(t("main.srv_ucxlog_prefix"), ucxlog_row_w)
         self._srv_row_ucxlog_w = ucxlog_row_w
+        try:
+            self._lbl_srv_ucxlog_suffix.setText(
+                self._udp_bind_status_text(
+                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "127.0.0.1", 12040
+                )
+            )
+        except Exception:
+            pass
 
         pst_udp_row = QHBoxLayout()
         pst_udp_row.setContentsMargins(0, 0, 0, 0)
         pst_udp_row.setSpacing(px_to_dip(self, 6))
         pst_udp_row.addWidget(_led_wrap(self.led_pst_udp))
-        self._lbl_srv_pst_udp_suffix = QLabel(t("main.srv_pst_udp_suffix"))
+        self._lbl_srv_pst_udp_suffix = QLabel("")
         pst_udp_row.addWidget(self._lbl_srv_pst_udp_suffix)
         pst_udp_row.addStretch(1)
         pst_udp_row_w = QWidget()
         pst_udp_row_w.setLayout(pst_udp_row)
         srv_form.addRow(t("main.srv_pst_udp_prefix"), pst_udp_row_w)
         self._srv_row_pst_udp_w = pst_udp_row_w
+        try:
+            self._lbl_srv_pst_udp_suffix.setText(
+                self._udp_bind_status_text("udp_pst_listen_host", "udp_pst_port", "0.0.0.0", 12000)
+            )
+        except Exception:
+            pass
 
         aswatch_row = QHBoxLayout()
         aswatch_row.setContentsMargins(0, 0, 0, 0)
@@ -243,9 +257,11 @@ class MainWindow(QMainWindow):
         srv_form.addRow(t("main.srv_aswatch_label"), aswatch_row_w)
         self._srv_row_aswatch_w = aswatch_row_w
         try:
-            _ui0 = self.cfg.get("ui", {})
-            _p0 = int(_ui0.get("aswatch_udp_port", 9872))
-            self._lbl_srv_aswatch_suffix.setText(t("main.srv_aswatch_suffix", port=_p0))
+            self._lbl_srv_aswatch_suffix.setText(
+                self._udp_bind_status_text(
+                    "aswatch_udp_listen_host", "aswatch_udp_port", "0.0.0.0", 9872
+                )
+            )
         except Exception:
             pass
 
@@ -348,6 +364,22 @@ class MainWindow(QMainWindow):
             self._last_title = title
             self.setWindowTitle(title)
 
+    def _udp_bind_status_text(
+        self,
+        host_key: str,
+        port_key: str,
+        default_host: str,
+        default_port: int,
+    ) -> str:
+        """Kurzinfo „IP:Port“ für UDP-Zeilen in der Server-Gruppe."""
+        ui = self.cfg.get("ui", {})
+        h = str(ui.get(host_key, default_host) or default_host).strip() or default_host
+        try:
+            p = int(ui.get(port_key, default_port))
+        except Exception:
+            p = default_port
+        return t("main.srv_udp_bind_suffix", host=h, port=p)
+
     def _retranslate_ui(self):
         """Alle Texte des Hauptfensters auf die aktuelle Sprache aktualisieren."""
         self._last_title = ""  # Cache zurücksetzen damit Neuaufbau greift
@@ -395,11 +427,20 @@ class MainWindow(QMainWindow):
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_aswatch_label"))
             self._lbl_srv_pst_conn.setText(t("main.srv_pst_conn_text"))
-            self._lbl_srv_ucxlog_suffix.setText(t("main.srv_ucxlog_suffix"))
-            self._lbl_srv_pst_udp_suffix.setText(t("main.srv_pst_udp_suffix"))
             ui = self.cfg.get("ui", {})
-            _p = int(ui.get("aswatch_udp_port", 9872))
-            self._lbl_srv_aswatch_suffix.setText(t("main.srv_aswatch_suffix", port=_p))
+            self._lbl_srv_ucxlog_suffix.setText(
+                self._udp_bind_status_text(
+                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "127.0.0.1", 12040
+                )
+            )
+            self._lbl_srv_pst_udp_suffix.setText(
+                self._udp_bind_status_text("udp_pst_listen_host", "udp_pst_port", "0.0.0.0", 12000)
+            )
+            self._lbl_srv_aswatch_suffix.setText(
+                self._udp_bind_status_text(
+                    "aswatch_udp_listen_host", "aswatch_udp_port", "0.0.0.0", 9872
+                )
+            )
         except Exception:
             pass
         # AZ/EL-Achsenfelder
@@ -505,12 +546,14 @@ class MainWindow(QMainWindow):
             self._udp_ucxlog.start(
                 enabled=bool(ui.get("udp_ucxlog_enabled", False)),
                 port=int(ui.get("udp_ucxlog_port", 12040)),
+                listen_host=str(ui.get("udp_ucxlog_listen_host", "127.0.0.1")),
             )
         if self._udp_pst is not None:
             ui = self.cfg.get("ui", {})
             self._udp_pst.start(
                 enabled=bool(ui.get("udp_pst_enabled", False)),
                 port=int(ui.get("udp_pst_port", 12000)),
+                listen_host=str(ui.get("udp_pst_listen_host", "0.0.0.0")),
             )
             if self._udp_pst.bind_error_msg:
                 QMessageBox.warning(
@@ -521,6 +564,7 @@ class MainWindow(QMainWindow):
             self._udp_aswatch.start(
                 enabled=bool(ui.get("aswatch_udp_enabled", False)),
                 port=int(ui.get("aswatch_udp_port", 9872)),
+                listen_host=str(ui.get("aswatch_udp_listen_host", "0.0.0.0")),
             )
         # Hauptfenster-Texte (Server, AZ/EL, Menü, …) nach load_lang / Einstellungen synchronisieren
         self._retranslate_ui()
@@ -880,9 +924,19 @@ class MainWindow(QMainWindow):
 
         try:
             ui = self.cfg.get("ui", {})
-            if bool(ui.get("aswatch_udp_enabled", False)):
-                _ap = int(ui.get("aswatch_udp_port", 9872))
-                self._lbl_srv_aswatch_suffix.setText(t("main.srv_aswatch_suffix", port=_ap))
+            self._lbl_srv_ucxlog_suffix.setText(
+                self._udp_bind_status_text(
+                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "127.0.0.1", 12040
+                )
+            )
+            self._lbl_srv_pst_udp_suffix.setText(
+                self._udp_bind_status_text("udp_pst_listen_host", "udp_pst_port", "0.0.0.0", 12000)
+            )
+            self._lbl_srv_aswatch_suffix.setText(
+                self._udp_bind_status_text(
+                    "aswatch_udp_listen_host", "aswatch_udp_port", "0.0.0.0", 9872
+                )
+            )
         except Exception:
             pass
 

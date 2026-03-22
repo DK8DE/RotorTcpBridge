@@ -31,6 +31,7 @@ from collections import defaultdict
 from typing import Any, Callable
 
 from .geo_utils import destination_point, maidenhead_to_lat_lon
+from .net_utils import normalize_udp_bind_host
 
 
 def format_qrg_display(raw: str | None) -> str | None:
@@ -236,11 +237,17 @@ class UdpAswatchlistListener:
         """True wenn Listener gebunden ist und Empfangsthread läuft."""
         return bool(self._enabled and self._running and self._sock is not None)
 
-    def start(self, enabled: bool, port: int = 9872) -> None:
+    def start(
+        self,
+        enabled: bool,
+        port: int = 9872,
+        listen_host: str | None = None,
+    ) -> None:
         """Listener starten oder mit neuer Konfiguration neu starten."""
         self.stop()
         self._enabled = bool(enabled)
         self._port = max(1, min(65535, int(port)))
+        bind_host = normalize_udp_bind_host(listen_host, "0.0.0.0")
         if not self._enabled:
             return
         try:
@@ -251,7 +258,7 @@ class UdpAswatchlistListener:
                     self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
                 except OSError:
                     pass
-            self._sock.bind(("", self._port))
+            self._sock.bind((bind_host, self._port))
             self._sock.settimeout(0.5)
             self._running = True
             self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -261,7 +268,7 @@ class UdpAswatchlistListener:
             self._call_to_qrg.clear()
             self.log.write(
                 "INFO",
-                f"UDP AirScout/KST: lausche auf 0.0.0.0:{self._port} (ASWATCHLIST + ASSETPATH → Karte)",
+                f"UDP AirScout/KST: lausche auf {bind_host}:{self._port} (ASWATCHLIST + ASSETPATH → Karte)",
             )
         except OSError as e:
             self.log.write("ERROR", f"UDP ASWATCHLIST bind fehlgeschlagen: {e}")

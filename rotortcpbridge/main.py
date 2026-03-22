@@ -66,6 +66,7 @@ def main():
     udp_ucxlog.start(
         enabled=bool(ui_cfg.get("udp_ucxlog_enabled", False)),
         port=int(ui_cfg.get("udp_ucxlog_port", 12040)),
+        listen_host=str(ui_cfg.get("udp_ucxlog_listen_host", "127.0.0.1")),
     )
 
     # UDP PST-Rotator-Emulation (wenn aktiviert)
@@ -73,6 +74,7 @@ def main():
     udp_pst.start(
         enabled=bool(ui_cfg.get("udp_pst_enabled", False)),
         port=int(ui_cfg.get("udp_pst_port", 12000)),
+        listen_host=str(ui_cfg.get("udp_pst_listen_host", "0.0.0.0")),
     )
 
     # Beim Start einmal prüfen, ob die Rotoren bereits referenziert sind
@@ -98,6 +100,7 @@ def main():
     udp_aswatch.start(
         enabled=bool(ui_cfg.get("aswatch_udp_enabled", False)),
         port=int(ui_cfg.get("aswatch_udp_port", 9872)),
+        listen_host=str(ui_cfg.get("aswatch_udp_listen_host", "0.0.0.0")),
     )
 
     w = MainWindow(

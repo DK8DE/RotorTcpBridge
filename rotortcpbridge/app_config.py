@@ -83,21 +83,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "map_offline": False,
         # Amateurfunk-Locator: True = Maidenhead-Grid als Overlay einblenden
         "map_locator_overlay": False,
-        # UDP UcxLog: Bei aktiviertem Häkchen lauscht die App auf 127.0.0.1:12040
-        # und nimmt XML-Positionsdaten von UcxLog entgegen (<Rotor><Azimut>…</Azimut></Rotor>).
+        # UDP UcxLog: Lauscht auf udp_ucxlog_listen_host:udp_ucxlog_port (Standard 127.0.0.1:12040).
+        # XML von UcxLog (<Rotor><Azimut>…</Azimut></Rotor>).
         "udp_ucxlog_enabled": False,
         "udp_ucxlog_port": 12040,
+        "udp_ucxlog_listen_host": "127.0.0.1",
         # UDP PST-Rotator-Emulation: Emuliert das UDP-Protokoll von PstRotatorAz.
         # Hört auf udp_pst_port, sendet Positionsmeldungen an udp_pst_port + 1.
         # Ziel für AZ:/TGA:-Antworten. Leer = automatisch Subnetz-Broadcast (x.y.z.255);
         # 127.0.0.1 = nur dieser PC; 255.255.255.255 = globaler Broadcast; sonst konkrete IPv4.
         "udp_pst_enabled": False,
         "udp_pst_port": 12000,
+        "udp_pst_listen_host": "0.0.0.0",
         # Leer = automatisch Subnetz-Broadcast (x.y.z.255) siehe net_utils.ipv4_subnet_broadcast_default
         "udp_pst_send_host": "",
-        # AirScout/KST: ASWATCHLIST per UDP (Broadcast), andere Stationen auf der Karte
+        # AirScout/KST: ASWATCHLIST/ASSETPATH auf aswatch_udp_listen_host:aswatch_udp_port
         "aswatch_udp_enabled": False,
         "aswatch_udp_port": 9872,
+        "aswatch_udp_listen_host": "0.0.0.0",
     },
 }
 

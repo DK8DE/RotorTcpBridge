@@ -20,7 +20,7 @@ import re
 import socket
 import threading
 from .angle_utils import wrap_deg
-from .net_utils import ipv4_subnet_broadcast_default
+from .net_utils import ipv4_subnet_broadcast_default, normalize_udp_bind_host
 from .pst_notify_logic import pst_notify_position_decision
 
 # Alle bekannten PST-Tags, die still ignoriert werden dürfen
@@ -94,8 +94,11 @@ class UdpPstRotator:
         enabled: bool,
         port: int = 12000,
         send_host: str | None = None,
+        listen_host: str | None = None,
     ) -> None:
         """Listener starten oder mit neuer Konfiguration neu starten.
+
+        listen_host: IPv4 für eingehende PST-UDP (Standard 0.0.0.0).
 
         send_host: IPv4 für ausgehende AZ:/TGA:-Datagramme (Port ist weiter port+1).
         Wenn None, wird ui.udp_pst_send_host aus cfg gelesen; leerer Wert →
@@ -105,6 +108,7 @@ class UdpPstRotator:
         self.bind_error_msg = None
         self._enabled = bool(enabled)
         self._port = max(1, min(65534, int(port)))  # max 65534 weil port+1 noch frei sein muss
+        bind_listen = normalize_udp_bind_host(listen_host, "0.0.0.0")
         if send_host is not None:
             raw = str(send_host).strip()
         else:
@@ -120,7 +124,7 @@ class UdpPstRotator:
         try:
             self._sock_rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._sock_rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self._sock_rx.bind(("0.0.0.0", self._port))
+            self._sock_rx.bind((bind_listen, self._port))
             self._sock_rx.settimeout(0.5)
             self._sock_tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             # Broadcast (255.255.255.255 oder Subnetz-x.x.x.255) erfordert explizit SO_BROADCAST
@@ -133,7 +137,7 @@ class UdpPstRotator:
             self._thread.start()
             self.log.write(
                 "INFO",
-                f"UDP PST-Rotator Listener auf 0.0.0.0:{self._port}, "
+                f"UDP PST-Rotator Listener auf {bind_listen}:{self._port}, "
                 f"Sende an {self._send_host}:{self._port + 1}",
             )
         except OSError as e:

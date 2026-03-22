@@ -99,3 +99,15 @@ def ipv4_subnet_broadcast_default() -> str:
 
     # Typisches Class-C-/24-Heimnetz: Hostanteil → 255
     return f"{parts[0]}.{parts[1]}.{parts[2]}.255"
+
+
+def normalize_udp_bind_host(raw: str | None, default: str) -> str:
+    """IPv4-Adresse für ``socket.bind``; leer oder ungültig → ``default``."""
+    s = (raw or "").strip()
+    if not s:
+        return default
+    try:
+        socket.inet_pton(socket.AF_INET, s)
+        return s
+    except OSError:
+        return default

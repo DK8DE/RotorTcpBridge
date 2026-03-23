@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 from ..app_icon import get_app_icon
 from ..i18n import t
-from ..compass.statistic_compass_widget import StatisticCompassWidget
+from ..compass.statistic_compass_widget import StatisticCompassWidget, parse_heatmap_scale
 
 
 def _make_stat_row(
@@ -116,6 +116,13 @@ class StatisticsWindow(QDialog):
     def _tick(self) -> None:
         try:
             self._update_el_visibility()
+            ui0 = self.cfg.get("ui", {})
+            az_sc = parse_heatmap_scale(ui0, "az")
+            el_sc = parse_heatmap_scale(ui0, "el")
+            for w in (self.stat_cal, self.stat_live, self.stat_placeholder):
+                w.set_heatmap_scale(az_sc)
+            for w in (self.stat_cal_el, self.stat_live_el, self.stat_placeholder_el):
+                w.set_heatmap_scale(el_sc)
 
             az = self.ctrl.az
             cal_state = getattr(az, "cal_state", 0)

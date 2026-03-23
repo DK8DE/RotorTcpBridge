@@ -96,6 +96,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._acc_bins_temp_ccw_el: Optional[list] = None
         # Statistik-Fenster offen: nur dann CAL/LIVE/ACC pollen (Bus entlasten)
         self._statistics_window_open: bool = False
+        # Einstellungen offen: CAL/LIVE wie Statistik pollen (Tab Statistik / „aus Kalibrierung“)
+        self._settings_window_open: bool = False
         # Kompass-Fenster offen: ACCBINS pollen für Strom-Heatmap
         self._compass_window_open: bool = False
         # Nach Bewegung: ACCBINS sofort abbrechen, erst nach 10s Idle wieder starten (Dead-Man-Vermeidung)
@@ -164,6 +166,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
     def set_statistics_window_open(self, open: bool) -> None:
         """Statistik-Fenster offen/geschlossen. Nur wenn offen: CAL/LIVE/ACC pollen."""
         self._statistics_window_open = bool(open)
+
+    def set_settings_window_open(self, open: bool) -> None:
+        """Einstellungen offen/geschlossen. Wenn offen: CAL/LIVE wie beim Statistik-Fenster pollen."""
+        self._settings_window_open = bool(open)
 
     def set_compass_window_open(self, open: bool) -> None:
         """Kompass-Fenster offen/geschlossen. Wenn offen: ACCBINS pollen für Strom-Heatmap."""

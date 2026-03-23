@@ -315,7 +315,9 @@ class RotorControllerAsyncMixin:
                             axis_state.cal_bins_cw = None
                             axis_state.cal_bins_ccw = None
                             self._cal_bins_fetched_el = False
-                        elif state == 2 and axis_name == "AZ" and self._statistics_window_open:
+                        elif state == 2 and axis_name == "AZ" and (
+                            self._statistics_window_open or self._settings_window_open
+                        ):
                             if not self._cal_bins_inflight_az and (
                                 axis_state.cal_bins_cw is None
                                 or axis_state.cal_bins_ccw is None
@@ -325,7 +327,9 @@ class RotorControllerAsyncMixin:
                             elif not self._live_bins_inflight_az and self._cal_bins_fetched_az:
                                 self._fetch_live_bins(int(self.slave_az), axis_state, "AZ")
                                 self._last_live_bins_az = time.time()
-                        elif state == 2 and axis_name == "EL" and self._statistics_window_open:
+                        elif state == 2 and axis_name == "EL" and (
+                            self._statistics_window_open or self._settings_window_open
+                        ):
                             dst_el = int(self.slave_el)
                             if not self._cal_bins_inflight_el and (
                                 axis_state.cal_bins_cw is None

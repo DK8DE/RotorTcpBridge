@@ -1,27 +1,32 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtCore import QEvent, QTimer, Qt, Slot
-from PySide6.QtGui import QCloseEvent, QPalette, QShowEvent
+from PySide6.QtGui import QAction, QCloseEvent, QPalette, QShowEvent
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from ..app_icon import get_app_icon
 from ..angle_utils import clamp_el, fmt_deg, wrap_deg
+from ..geo_utils import bearing_deg
 from ..i18n import t
+from ..ui.ui_utils import px_to_dip
 from .compass_az_window import CompassWidget
 from .compass_el_window import ElevationCompassWidget
+from .statistic_compass_widget import parse_heatmap_scale
 
 
 class CompassWindow(QDialog):
@@ -41,11 +46,15 @@ class CompassWindow(QDialog):
         self._target_az: Optional[float] = None
         self._target_el: Optional[float] = None
         self._last_axes_vis: tuple[bool, bool] | None = None
+        self._aswatch_marker_fn: Optional[Callable[[], list]] = None
         # Nach STOP: Soll springt auf STOP-Position und bleibt fix; nach ~3s einmal nachziehen
         self._stop_az_ts: Optional[float] = None
         self._stop_el_ts: Optional[float] = None
         self._STOP_PULL_DELAY_S = 3.0
         self._last_label_color: Optional[str] = None
+        # AZ Standzeit-Ring (nur Session, bis App-Neustart)
+        self._dwell_az_seconds: list[float] = []
+        self._dwell_prev_mono: Optional[float] = None
 
         root = QVBoxLayout(self)
 
@@ -57,8 +66,6 @@ class CompassWindow(QDialog):
         slave_el = cfg.get("rotor_bus", {}).get("slave_el", "?")
         self.gb_az = QGroupBox(f"AZ ID:{slave_az}")
         az_l = QVBoxLayout(self.gb_az)
-        self.az_compass = CompassWidget(self.gb_az)
-        az_l.addWidget(self.az_compass, 1)
 
         antenna_idx = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
         self.cb_antenna = QComboBox()
@@ -66,36 +73,70 @@ class CompassWindow(QDialog):
         self.cb_antenna.setMinimumWidth(160)
         self.cb_antenna.setCurrentIndex(antenna_idx)
         self.cb_antenna.currentIndexChanged.connect(self._on_antenna_changed)
-        self.az_compass.set_top_center_widget(self.cb_antenna)
+        az_antenna_row = QHBoxLayout()
+        az_antenna_row.addStretch(1)
+        az_antenna_row.addWidget(self.cb_antenna)
+        az_antenna_row.addStretch(1)
+        az_l.addLayout(az_antenna_row)
 
-        az_info = QHBoxLayout()
-        az_info.setContentsMargins(7, 0, 7, 0)
-        self.lbl_az_current = QLabel(t("compass.ist_prefix") + "–")
-        self.lbl_az_current.setMinimumWidth(
-            95
-        )  # Platz für "Ist: 360.0°", damit STOP AZ nicht wandert
         self.lbl_az_soll = QLabel(t("compass.soll_label"))
         self.ed_az_soll = QLineEdit()
         self.ed_az_soll.setPlaceholderText("–")
         self.ed_az_soll.setFixedWidth(70)
         self.ed_az_soll.setMaxLength(7)
-        self._style_compass_info_label(self.lbl_az_current)
         self._style_compass_info_label(self.lbl_az_soll)
+        self.w_az_soll = QWidget()
+        _h_az_soll = QHBoxLayout(self.w_az_soll)
+        _h_az_soll.setContentsMargins(0, 0, 0, 0)
+        _h_az_soll.setSpacing(4)
+        _h_az_soll.addWidget(self.lbl_az_soll)
+        _h_az_soll.addWidget(self.ed_az_soll)
+
+        self.az_compass = CompassWidget(self.gb_az)
+        self.az_compass.set_top_center_widget(None)
+        self.az_compass.set_soll_overlay_widget(self.w_az_soll)
+        az_l.addWidget(self.az_compass, 1)
+
+        az_info = QHBoxLayout()
+        az_info.setContentsMargins(7, 0, 7, 0)
         self.btn_stop_az = QPushButton(t("compass.btn_stop_az"))
         self.btn_stop_az.setAutoDefault(False)
         self.btn_stop_az.setDefault(False)
         self.btn_ref_az = QPushButton(t("compass.btn_ref_az"))
         self.btn_ref_az.setAutoDefault(False)
         self.btn_ref_az.setDefault(False)
-        self.chk_strom_az = QCheckBox(t("compass.chk_heatmap"))
-        az_info.addWidget(self.lbl_az_current)
+        self.menu_heatmap_az = QMenu(self)
+        self._act_heatmap_strom = QAction(t("compass.heatmap_strom"), self)
+        self._act_heatmap_strom.setCheckable(True)
+        self._act_heatmap_strom.setData("strom")
+        self._act_heatmap_om = QAction(t("compass.heatmap_om_radar"), self)
+        self._act_heatmap_om.setCheckable(True)
+        self._act_heatmap_om.setData("om_radar")
+        self._act_heatmap_dwell = QAction(t("compass.heatmap_dwell"), self)
+        self._act_heatmap_dwell.setCheckable(True)
+        self._act_heatmap_dwell.setData("dwell")
+        self.menu_heatmap_az.addAction(self._act_heatmap_strom)
+        self.menu_heatmap_az.addAction(self._act_heatmap_om)
+        self.menu_heatmap_az.addAction(self._act_heatmap_dwell)
+        for _a in (self._act_heatmap_strom, self._act_heatmap_om, self._act_heatmap_dwell):
+            _a.toggled.connect(self._on_heatmap_az_action_toggled)
+        self.btn_heatmap_az = QToolButton()
+        self.btn_heatmap_az.setToolTip(t("compass.heatmap_az_rings_tooltip"))
+        self.btn_heatmap_az.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.btn_heatmap_az.setMenu(self.menu_heatmap_az)
+        self.btn_heatmap_az.setMinimumWidth(px_to_dip(self, 120))
+        self._update_heatmap_az_button_text()
+        self.btn_reset_dwell_az = QPushButton(t("compass.btn_reset_dwell"))
+        self.btn_reset_dwell_az.setToolTip(t("compass.btn_reset_dwell_tooltip"))
+        self.btn_reset_dwell_az.setAutoDefault(False)
+        self.btn_reset_dwell_az.setDefault(False)
+        self.btn_reset_dwell_az.clicked.connect(self._on_reset_dwell_az)
         az_info.addStretch(1)
         az_info.addWidget(self.btn_stop_az)
         az_info.addWidget(self.btn_ref_az)
-        az_info.addWidget(self.chk_strom_az)
+        az_info.addWidget(self.btn_heatmap_az)
+        az_info.addWidget(self.btn_reset_dwell_az)
         az_info.addStretch(1)
-        az_info.addWidget(self.lbl_az_soll)
-        az_info.addWidget(self.ed_az_soll)
         self.ed_az_soll.returnPressed.connect(self._on_az_soll_entered)
         az_l.addLayout(az_info)
 
@@ -104,37 +145,38 @@ class CompassWindow(QDialog):
         # ---------------- EL ----------------
         self.gb_el = QGroupBox(f"EL ID:{slave_el}")
         el_l = QVBoxLayout(self.gb_el)
-        self.el_compass = ElevationCompassWidget(self.gb_el)
-        el_l.addWidget(self.el_compass, 1)
-
-        el_info = QHBoxLayout()
-        el_info.setContentsMargins(7, 0, 7, 0)
-        self.lbl_el_current = QLabel(t("compass.ist_prefix") + "–")
-        self.lbl_el_current.setMinimumWidth(
-            95
-        )  # Platz für "Ist: 90.0°", damit STOP EL nicht wandert
         self.lbl_el_soll = QLabel(t("compass.soll_label"))
         self.ed_el_soll = QLineEdit()
         self.ed_el_soll.setPlaceholderText("–")
         self.ed_el_soll.setFixedWidth(70)
         self.ed_el_soll.setMaxLength(6)
-        self._style_compass_info_label(self.lbl_el_current)
         self._style_compass_info_label(self.lbl_el_soll)
+        self.w_el_soll = QWidget()
+        _h_el_soll = QHBoxLayout(self.w_el_soll)
+        _h_el_soll.setContentsMargins(0, 0, 0, 0)
+        _h_el_soll.setSpacing(4)
+        _h_el_soll.addWidget(self.lbl_el_soll)
+        _h_el_soll.addWidget(self.ed_el_soll)
+
+        self.el_compass = ElevationCompassWidget(self.gb_el)
+        self.el_compass.set_soll_overlay_widget(self.w_el_soll)
+        el_l.addWidget(self.el_compass, 1)
+
+        el_info = QHBoxLayout()
+        el_info.setContentsMargins(7, 0, 7, 0)
         self.btn_stop_el = QPushButton(t("compass.btn_stop_el"))
         self.btn_stop_el.setAutoDefault(False)
         self.btn_stop_el.setDefault(False)
         self.btn_ref_el = QPushButton(t("compass.btn_ref_el"))
         self.btn_ref_el.setAutoDefault(False)
         self.btn_ref_el.setDefault(False)
-        self.chk_strom_el = QCheckBox(t("compass.chk_heatmap"))
-        el_info.addWidget(self.lbl_el_current)
+        self.cb_heatmap_el = QComboBox()
+        self.cb_heatmap_el.setMinimumWidth(140)
         el_info.addStretch(1)
         el_info.addWidget(self.btn_stop_el)
         el_info.addWidget(self.btn_ref_el)
-        el_info.addWidget(self.chk_strom_el)
+        el_info.addWidget(self.cb_heatmap_el)
         el_info.addStretch(1)
-        el_info.addWidget(self.lbl_el_soll)
-        el_info.addWidget(self.ed_el_soll)
         self.ed_el_soll.returnPressed.connect(self._on_el_soll_entered)
         el_l.addLayout(el_info)
 
@@ -166,15 +208,11 @@ class CompassWindow(QDialog):
         self.btn_stop_el.clicked.connect(self._on_stop_el)
         self.btn_ref_az.clicked.connect(lambda: self.ctrl.reference_az(True))
         self.btn_ref_el.clicked.connect(lambda: self.ctrl.reference_el(True))
-        ui = self.cfg.get("ui", {})
-        strom_az = ui.get("compass_strom_az", ui.get("compass_strom", False))
-        strom_el = ui.get("compass_strom_el", ui.get("compass_strom", False))
-        self.chk_strom_az.setChecked(bool(strom_az))
-        self.chk_strom_el.setChecked(bool(strom_el))
-        self.az_compass.set_heatmap_visible(bool(strom_az))
-        self.el_compass.set_heatmap_visible(bool(strom_el))
-        self.chk_strom_az.stateChanged.connect(self._on_strom_az_toggled)
-        self.chk_strom_el.stateChanged.connect(self._on_strom_el_toggled)
+        self._migrate_heatmap_ui_keys()
+        self._fill_heatmap_az_list()
+        self._fill_heatmap_el_combo()
+        self._apply_heatmap_combo_selection_to_widgets()
+        self.cb_heatmap_el.currentIndexChanged.connect(self._on_heatmap_el_changed)
         self.az_compass.targetPicked.connect(self._on_target_picked_az)
         self.el_compass.targetPicked.connect(self._on_target_picked_el)
 
@@ -255,6 +293,7 @@ class CompassWindow(QDialog):
         self._refresh_antenna_dropdown()
         if hasattr(self.ctrl, "set_compass_window_open"):
             self.ctrl.set_compass_window_open(True)
+        self.sync_heatmap_controls_from_cfg()
         # Zeiger (Position, Antenne) sofort mit höchster Priorität; Heatmap/Stats danach
         if hasattr(self.ctrl, "request_immediate_pos"):
             self.ctrl.request_immediate_pos()
@@ -294,31 +333,264 @@ class CompassWindow(QDialog):
             pass
         self._refresh_after_antenna_changed()
 
-    @Slot()
-    def _on_strom_az_toggled(self) -> None:
-        """Strom-Checkbox AZ geändert → Config speichern und AZ-Kompass aktualisieren."""
-        on = bool(self.chk_strom_az.isChecked())
-        if "ui" not in self.cfg:
-            self.cfg["ui"] = {}
-        self.cfg["ui"]["compass_strom_az"] = on
+    def _migrate_heatmap_ui_keys(self) -> None:
+        """Alte bool-Flags → compass_heatmap_az/el."""
+        ui = self.cfg.setdefault("ui", {})
+        if "compass_heatmap_az" not in ui:
+            if ui.get("compass_strom_az", ui.get("compass_strom", False)):
+                ui["compass_heatmap_az"] = "strom"
+            else:
+                ui["compass_heatmap_az"] = "off"
+        if "compass_heatmap_el" not in ui:
+            if ui.get("compass_strom_el", ui.get("compass_strom", False)):
+                ui["compass_heatmap_el"] = "strom"
+            else:
+                ui["compass_heatmap_el"] = "off"
+        self._migrate_heatmap_az_modes_cfg()
+
+    def _migrate_heatmap_az_modes_cfg(self) -> None:
+        """Einzel-Modus-String → Liste compass_heatmap_az_modes (max. 2 Ringe)."""
+        ui = self.cfg.setdefault("ui", {})
+        if "compass_heatmap_az_modes" in ui and isinstance(ui.get("compass_heatmap_az_modes"), list):
+            return
+        old = str(ui.get("compass_heatmap_az", "off")).lower()
+        if old in ("strom", "om_radar"):
+            ui["compass_heatmap_az_modes"] = [old]
+        else:
+            ui["compass_heatmap_az_modes"] = []
+
+    def _aswatch_enabled(self) -> bool:
+        return bool(self.cfg.get("ui", {}).get("aswatch_udp_enabled", True))
+
+    def _heatmap_az_actions(self) -> list[QAction]:
+        return [self._act_heatmap_strom, self._act_heatmap_om, self._act_heatmap_dwell]
+
+    def _fill_heatmap_az_list(self) -> None:
+        """OM-Radar-Eintrag nur wenn AirScout/KST aktiv."""
+        show_om = self._aswatch_enabled()
+        self._act_heatmap_om.setVisible(show_om)
+        if not show_om and self._act_heatmap_om.isChecked():
+            self._act_heatmap_om.setChecked(False)
+
+    def _get_heatmap_az_modes_from_list(self) -> list[str]:
+        modes: list[str] = []
+        for act in self._heatmap_az_actions():
+            if not act.isVisible():
+                continue
+            if act.isChecked():
+                m = str(act.data() or "")
+                if m in ("strom", "om_radar", "dwell"):
+                    modes.append(m)
+        return CompassWidget._sort_ring_modes(modes)
+
+    def _sync_heatmap_az_list_checks_from_cfg(self) -> None:
+        """Haken aus compass_heatmap_az_modes; OM-Radar ggf. abwählen."""
+        self._migrate_heatmap_az_modes_cfg()
+        ui = self.cfg.setdefault("ui", {})
+        raw = ui.get("compass_heatmap_az_modes", [])
+        modes: list[str] = (
+            [str(m) for m in raw if str(m) in ("strom", "om_radar", "dwell")]
+            if isinstance(raw, list)
+            else []
+        )
+        modes = CompassWidget._sort_ring_modes(modes)
+        want = set(modes)
+        if "om_radar" in want and not self._aswatch_enabled():
+            want.discard("om_radar")
+        if len(want) > 2:
+            for drop in ("dwell", "om_radar", "strom"):
+                if drop in want and len(want) > 2:
+                    want.discard(drop)
+        for act in self._heatmap_az_actions():
+            act.blockSignals(True)
+        try:
+            for act in self._heatmap_az_actions():
+                mid = str(act.data() or "")
+                if not act.isVisible():
+                    act.setChecked(False)
+                    continue
+                act.setChecked(mid in want)
+        finally:
+            for act in self._heatmap_az_actions():
+                act.blockSignals(False)
+        ui["compass_heatmap_az_modes"] = CompassWidget._sort_ring_modes(list(want))
+        self._update_heatmap_az_button_text()
+
+    def _update_heatmap_az_button_text(self) -> None:
+        """Kurzer Button-Text je nach gewählten Ringen."""
+        modes = self._get_heatmap_az_modes_from_list()
+        labels = {
+            "strom": t("compass.heatmap_strom"),
+            "om_radar": t("compass.heatmap_om_radar"),
+            "dwell": t("compass.heatmap_dwell"),
+        }
+        if not modes:
+            self.btn_heatmap_az.setText(t("compass.heatmap_az_rings_none"))
+        else:
+            self.btn_heatmap_az.setText(" · ".join(labels[m] for m in modes))
+
+    def _apply_heatmap_az_modes_to_widget(self) -> None:
+        modes = self._get_heatmap_az_modes_from_list()
+        self.az_compass.set_heatmap_modes(modes)
+        self.az_compass.set_om_radar_sector_count(self._om_radar_sector_count())
+        if "om_radar" in modes:
+            self.az_compass.set_om_radar_counts(self._compute_om_radar_counts())
+        else:
+            self.az_compass.set_om_radar_counts(None)
+        self.az_compass.set_dwell_ring_data(
+            self._dwell_az_seconds,
+            self._dwell_full_seconds(),
+            self._dwell_sector_count(),
+        )
+
+    def _fill_heatmap_el_combo(self) -> None:
+        self.cb_heatmap_el.blockSignals(True)
+        self.cb_heatmap_el.clear()
+        self.cb_heatmap_el.addItem(t("compass.heatmap_off"), "off")
+        self.cb_heatmap_el.addItem(t("compass.heatmap_strom"), "strom")
+        self.cb_heatmap_el.blockSignals(False)
+
+    def _set_heatmap_el_combo_to_mode(self, mode: str) -> None:
+        m = str(mode or "off").lower()
+        if m not in ("off", "strom"):
+            m = "off"
+        for i in range(self.cb_heatmap_el.count()):
+            if self.cb_heatmap_el.itemData(i) == m:
+                self.cb_heatmap_el.setCurrentIndex(i)
+                return
+        self.cb_heatmap_el.setCurrentIndex(0)
+
+    def _apply_heatmap_combo_selection_to_widgets(self) -> None:
+        ui = self.cfg.setdefault("ui", {})
+        self._fill_heatmap_az_list()
+        self._sync_heatmap_az_list_checks_from_cfg()
+        self._apply_heatmap_az_modes_to_widget()
+        modes = self._get_heatmap_az_modes_from_list()
+        ui["compass_heatmap_az_modes"] = modes
+        if len(modes) == 1:
+            ui["compass_heatmap_az"] = modes[0]
+        elif not modes:
+            ui["compass_heatmap_az"] = "off"
+        else:
+            ui["compass_heatmap_az"] = modes[0]
+
+        mode_el = str(ui.get("compass_heatmap_el", "off"))
+        self._set_heatmap_el_combo_to_mode(mode_el)
+        self.el_compass.set_heatmap_visible(str(self.cb_heatmap_el.currentData() or "off") == "strom")
+
+    def set_aswatch_marker_provider(self, fn: Optional[Callable[[], list]]) -> None:
+        """Liefert die letzte AirScout/KST-Markerliste [{lat, lon, ...}, ...]."""
+        self._aswatch_marker_fn = fn
+
+    def refresh_om_radar_from_aswatch(self) -> None:
+        """Bei neuen ASWATCHLIST-Daten sofort neu zeichnen (User kommen/gehen ohne Timer-Verzögerung)."""
+        if not self.isVisible():
+            return
+        try:
+            if "om_radar" not in self._get_heatmap_az_modes_from_list():
+                return
+            self.az_compass.set_om_radar_sector_count(self._om_radar_sector_count())
+            self.az_compass.set_om_radar_counts(self._compute_om_radar_counts())
+        except Exception:
+            pass
+
+    def sync_heatmap_controls_from_cfg(self) -> None:
+        """Nach Einstellungen (z. B. UDP AirScout an/aus): Liste neu und Modus validieren."""
+        self._fill_heatmap_az_list()
+        self._sync_heatmap_az_list_checks_from_cfg()
+        self._apply_heatmap_az_modes_to_widget()
+
+    def _om_radar_sector_count(self) -> int:
+        try:
+            n = int(self.cfg.get("ui", {}).get("compass_om_radar_sectors", 60))
+        except (TypeError, ValueError):
+            n = 60
+        return max(10, min(100, n))
+
+    def _compute_om_radar_counts(self) -> list[int]:
+        n = self._om_radar_sector_count()
+        counts = [0] * n
+        ui = self.cfg.get("ui", {})
+        try:
+            lat0 = float(ui.get("location_lat", 49.502651))
+            lon0 = float(ui.get("location_lon", 8.375019))
+        except (TypeError, ValueError):
+            return counts
+        fn = self._aswatch_marker_fn
+        markers = fn() if fn else []
+        if not markers:
+            return counts
+        step = 360.0 / float(n)
+        for m in markers:
+            if not isinstance(m, dict):
+                continue
+            try:
+                lat = float(m.get("lat"))
+                lon = float(m.get("lon"))
+            except (TypeError, ValueError):
+                continue
+            b = bearing_deg(lat0, lon0, lat, lon)
+            idx = int(b / step) % n
+            counts[idx] += 1
+        return counts
+
+    def _dwell_sector_count(self) -> int:
+        try:
+            n = int(self.cfg.get("ui", {}).get("compass_dwell_sectors", 60))
+        except (TypeError, ValueError):
+            n = 60
+        return max(10, min(100, n))
+
+    def _dwell_full_seconds(self) -> float:
+        try:
+            m = float(self.cfg.get("ui", {}).get("compass_dwell_full_minutes", 5.0))
+        except (TypeError, ValueError):
+            m = 5.0
+        m = max(0.05, m)
+        return m * 60.0
+
+    def _on_heatmap_az_action_toggled(self, _checked: bool) -> None:
+        act = self.sender()
+        if not isinstance(act, QAction):
+            return
+        checked_actions = [a for a in self._heatmap_az_actions() if a.isVisible() and a.isChecked()]
+        if len(checked_actions) > 2:
+            act.blockSignals(True)
+            try:
+                act.setChecked(False)
+            finally:
+                act.blockSignals(False)
+        modes = self._get_heatmap_az_modes_from_list()
+        ui = self.cfg.setdefault("ui", {})
+        ui["compass_heatmap_az_modes"] = modes
+        if len(modes) == 1:
+            ui["compass_heatmap_az"] = modes[0]
+        elif not modes:
+            ui["compass_heatmap_az"] = "off"
+        else:
+            ui["compass_heatmap_az"] = modes[0]
+        self._update_heatmap_az_button_text()
         try:
             self.save_cfg_cb(self.cfg)
         except Exception:
             pass
-        self.az_compass.set_heatmap_visible(on)
+        self._apply_heatmap_az_modes_to_widget()
+
+    def _on_reset_dwell_az(self) -> None:
+        """Kumulative Standzeiten pro Sektor (Session) auf 0 setzen."""
+        n = self._dwell_sector_count()
+        self._dwell_az_seconds = [0.0] * n
+        self._apply_heatmap_az_modes_to_widget()
 
     @Slot()
-    def _on_strom_el_toggled(self) -> None:
-        """Strom-Checkbox EL geändert → Config speichern und EL-Kompass aktualisieren."""
-        on = bool(self.chk_strom_el.isChecked())
-        if "ui" not in self.cfg:
-            self.cfg["ui"] = {}
-        self.cfg["ui"]["compass_strom_el"] = on
+    def _on_heatmap_el_changed(self) -> None:
+        mode = str(self.cb_heatmap_el.currentData() or "off")
+        self.cfg.setdefault("ui", {})["compass_heatmap_el"] = mode
         try:
             self.save_cfg_cb(self.cfg)
         except Exception:
             pass
-        self.el_compass.set_heatmap_visible(on)
+        self.el_compass.set_heatmap_visible(mode == "strom")
 
     def _get_favorites(self) -> list[dict]:
         """Liefert Liste der gespeicherten Favoriten aus der Config."""
@@ -460,7 +732,7 @@ class CompassWindow(QDialog):
         color = self.az_compass.palette().color(QPalette.ColorRole.WindowText)
         self._last_label_color = color.name()
         style = f"{self._COMPASS_INFO_STYLE} color: {self._last_label_color};"
-        for lbl in (self.lbl_az_current, self.lbl_az_soll, self.lbl_el_current, self.lbl_el_soll):
+        for lbl in (self.lbl_az_soll, self.lbl_el_soll):
             lbl.setStyleSheet(style)
         if hasattr(self.az_compass, "apply_label_text_color"):
             self.az_compass.apply_label_text_color(color)
@@ -640,15 +912,46 @@ class CompassWindow(QDialog):
         if cur is not None:
             cur_display = wrap_deg(cur + off_az)
             self.az_compass.set_current_deg(cur_display)
-            self.lbl_az_current.setText(t("compass.ist_prefix") + fmt_deg(cur_display))
-        else:
-            self.lbl_az_current.setText(t("compass.ist_prefix") + "–")
 
         try:
             acc_cw = getattr(self.ctrl.az, "acc_bins_cw", None)
             acc_ccw = getattr(self.ctrl.az, "acc_bins_ccw", None)
             self.az_compass.set_heatmap_offset_deg(off_az)
             self.az_compass.set_bins(acc_cw, acc_ccw)
+            ui0 = self.cfg.get("ui", {})
+            self.az_compass.set_heatmap_scale(parse_heatmap_scale(ui0, "az"))
+        except Exception:
+            pass
+
+        # Standzeit je Sektor (nur wenn nicht fährt = LED „Fährt“ rot)
+        mono = time.monotonic()
+        if self._dwell_prev_mono is None:
+            self._dwell_prev_mono = mono
+        dt = max(0.0, float(mono - self._dwell_prev_mono))
+        self._dwell_prev_mono = mono
+        n_d = self._dwell_sector_count()
+        if len(self._dwell_az_seconds) != n_d:
+            self._dwell_az_seconds = [0.0] * n_d
+        moving = bool(getattr(self.ctrl.az, "moving", True))
+        if not moving and cur is not None:
+            comp_deg = wrap_deg(cur + off_az)
+            step = 360.0 / float(n_d)
+            idx = int(comp_deg / step) % n_d
+            self._dwell_az_seconds[idx] += dt
+
+        try:
+            mode_az_list = self._get_heatmap_az_modes_from_list()
+            self.az_compass.set_heatmap_modes(mode_az_list)
+            self.az_compass.set_om_radar_sector_count(self._om_radar_sector_count())
+            if "om_radar" in mode_az_list:
+                self.az_compass.set_om_radar_counts(self._compute_om_radar_counts())
+            else:
+                self.az_compass.set_om_radar_counts(None)
+            self.az_compass.set_dwell_ring_data(
+                self._dwell_az_seconds,
+                self._dwell_full_seconds(),
+                n_d,
+            )
         except Exception:
             pass
 
@@ -672,6 +975,14 @@ class CompassWindow(QDialog):
             self.az_compass.set_online_led_state(bool(self.ctrl.az.online))
         except Exception:
             pass
+
+        # Ist-Text im Kompass (Soll = Eingabe oben rechts)
+        if cur is not None:
+            cur_display_ov = wrap_deg(cur + off_az)
+            ist_txt = t("compass.ist_prefix") + fmt_deg(cur_display_ov)
+        else:
+            ist_txt = t("compass.ist_prefix") + "–"
+        self.az_compass.set_overlay_ist_soll(ist_txt, "")
 
     def _tick_el(self) -> None:
         now = time.time()
@@ -738,9 +1049,6 @@ class CompassWindow(QDialog):
         if cur is not None:
             cur_clamped = clamp_el(cur)
             self.el_compass.set_current_deg(cur_clamped)
-            self.lbl_el_current.setText(t("compass.ist_prefix") + fmt_deg(cur_clamped))
-        else:
-            self.lbl_el_current.setText(t("compass.ist_prefix") + "–")
 
         try:
             acc_cw = getattr(self.ctrl.el, "acc_bins_cw", None)
@@ -752,6 +1060,8 @@ class CompassWindow(QDialog):
                 acc_ccw = acc_ccw[:18]
             self.el_compass.set_heatmap_offset_deg(0.0)
             self.el_compass.set_bins(acc_cw, acc_ccw)
+            ui0 = self.cfg.get("ui", {})
+            self.el_compass.set_heatmap_scale(parse_heatmap_scale(ui0, "el"))
         except Exception:
             pass
 
@@ -769,6 +1079,12 @@ class CompassWindow(QDialog):
             self.el_compass.set_online_led_state(bool(self.ctrl.el.online))
         except Exception:
             pass
+
+        if cur is not None:
+            ist_txt = t("compass.ist_prefix") + fmt_deg(clamp_el(cur))
+        else:
+            ist_txt = t("compass.ist_prefix") + "–"
+        self.el_compass.set_overlay_ist_soll(ist_txt, "")
 
     def _parse_deg_input(self, text: str) -> Optional[float]:
         """Eingabe parsen: Komma und Punkt als Dezimaltrennzeichen."""

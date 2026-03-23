@@ -27,7 +27,17 @@ from ..angle_utils import shortest_delta_deg, wrap_deg
 from ..i18n import t
 from ..ui.led_widget import Led
 from ..ui.ui_utils import px_to_dip
-from .statistic_compass_widget import paint_bins_heatmap_ring
+from .statistic_compass_widget import (
+    OM_RADAR_N_DEFAULT,
+    HeatmapScale,
+    paint_az_ring_gap_black,
+    paint_bins_heatmap_ring,
+    paint_dwell_ring,
+    paint_om_radar_ring,
+)
+
+# Reihenfolge der Ringe von innen nach außen (wie die AZ-Liste im Kompass)
+_AZ_RING_ORDER = {"strom": 0, "om_radar": 1, "dwell": 2}
 
 
 class CompassWidget(QWidget):
@@ -56,8 +66,19 @@ class CompassWidget(QWidget):
         self._bins_cw: Optional[List[int]] = None
         self._bins_ccw: Optional[List[int]] = None
         self._heatmap_visible: bool = False
+        # Bis zu zwei Einträge aus: "strom" | "om_radar" | "dwell" (innen→außen sortiert)
+        self._heatmap_modes: List[str] = []
+        self._om_radar_counts: Optional[List[int]] = None
+        self._om_radar_n: int = OM_RADAR_N_DEFAULT
+        self._dwell_seconds: Optional[List[float]] = None
+        self._dwell_full_sec: float = 300.0
+        self._dwell_n: int = OM_RADAR_N_DEFAULT
         self._heatmap_offset_deg: float = 0.0
+        self._heatmap_scale: Optional[HeatmapScale] = None
         self._top_center_widget: Optional[QWidget] = None
+        self._soll_overlay: Optional[QWidget] = None
+        self._overlay_ist: str = ""
+        self._overlay_soll: str = ""
 
         self._led_d = px_to_dip(self, 13)
         lbl_style = "font-size: 16px; font-weight: bold;"
@@ -87,11 +108,32 @@ class CompassWidget(QWidget):
         self.setMinimumSize(280, 280)
 
     def set_top_center_widget(self, widget: Optional[QWidget]) -> None:
-        """Widget oben mittig über dem Kompass (z.B. Antennen-Dropdown)."""
+        """Widget oben mittig über dem Kompass (z.B. Antennen-Dropdown). None = keine Überlagerung."""
+        old = self._top_center_widget
         self._top_center_widget = widget
+        if old is not None and old is not widget:
+            old.setParent(None)
+            old.hide()
         if widget is not None:
             widget.setParent(self)
+            widget.show()
             widget.raise_()
+        self._layout_corner_controls()
+        self.update()
+
+    def set_soll_overlay_widget(self, widget: Optional[QWidget]) -> None:
+        """Soll-Label + Eingabe oben rechts (statt nur Textzeichnung). None = entfernen."""
+        old = self._soll_overlay
+        self._soll_overlay = widget
+        if old is not None and old is not widget:
+            old.setParent(None)
+            old.hide()
+        if widget is not None:
+            widget.setParent(self)
+            widget.show()
+            widget.raise_()
+        self._layout_corner_controls()
+        self.update()
 
     def set_ref_led_state(self, on: bool) -> None:
         self._ref_led.set_state(bool(on))
@@ -111,9 +153,18 @@ class CompassWidget(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._layout_corner_controls()
+
+    def _layout_corner_controls(self) -> None:
+        """LED-Zeilen (Fährt/Online/Home) unter Wind/Richtung und Ist/Soll; Abstand unter Text."""
         margin = 7
-        top_y = 13
-        line2_y = int(top_y + 22)  # unter Wind/Richtung
+        text_top = 13
+        line_gap = 22
+        led_extra_down = 5  # war 25 → LEDs 20px nach oben
+        if self._wind_visible:
+            line_first_led = text_top + 2 * line_gap + led_extra_down
+        else:
+            line_first_led = text_top + line_gap + led_extra_down
         if self._top_center_widget is not None:
             w = (
                 self._top_center_widget.sizeHint().width()
@@ -129,10 +180,10 @@ class CompassWidget(QWidget):
             y = 0
             self._top_center_widget.setGeometry(x, y, max(w, 120), max(h, 22))
             self._top_center_widget.raise_()
-        # Moving / Online / Ref – absolute Positionierung, LED-Spalte exakt auf einer Linie
         led_d = self._led_d
-        lbl_x = margin + led_d + 4  # Label beginnt immer direkt nach der LED
+        lbl_x = margin + led_d + 4
         row_h = 22
+        line2_y = line_first_led
         line3_y = line2_y + row_h
         line4_y = line3_y + row_h
 
@@ -150,6 +201,16 @@ class CompassWidget(QWidget):
         self._ref_lbl.setGeometry(lbl_x, line4_y, 200, row_h)
         self._ref_led.raise_()
         self._ref_lbl.raise_()
+
+        if self._soll_overlay is not None:
+            row_y = float(text_top + line_gap) if self._wind_visible else float(text_top)
+            sh = self._soll_overlay.sizeHint()
+            ow = int(sh.width()) if sh.width() > 0 else 140
+            oh = max(int(sh.height()) if sh.height() > 0 else 24, 22)
+            ox = int(self.width() - margin - ow)
+            oy = int(row_y)
+            self._soll_overlay.setGeometry(ox, oy, ow, oh)
+            self._soll_overlay.raise_()
 
     def set_current_deg(self, deg: Optional[float]) -> None:
         self._current_deg = None if deg is None else wrap_deg(deg)
@@ -188,6 +249,13 @@ class CompassWidget(QWidget):
 
     def set_wind_visible(self, on: bool) -> None:
         self._wind_visible = bool(on)
+        self._layout_corner_controls()
+        self.update()
+
+    def set_overlay_ist_soll(self, ist: str, soll: str) -> None:
+        """Ist/Soll als Textzeile(n) im oberen Bereich (unter Wind/Richtung)."""
+        self._overlay_ist = str(ist or "")
+        self._overlay_soll = str(soll or "")
         self.update()
 
     def set_bins(self, cw: Optional[List[int]], ccw: Optional[List[int]]) -> None:
@@ -197,13 +265,90 @@ class CompassWidget(QWidget):
         self.update()
 
     def set_heatmap_visible(self, on: bool) -> None:
-        """Ob der ACCBINS-Heatmap-Ring angezeigt wird."""
-        self._heatmap_visible = bool(on)
+        """Abwärtskompatibel: nur noch über set_heatmap_modes gesteuert."""
+        if not on:
+            self.set_heatmap_modes([])
+
+    @staticmethod
+    def _sort_ring_modes(modes: List[str]) -> List[str]:
+        """Innen → außen: Strom, OM-Radar, Standzeit."""
+        allowed = frozenset(("strom", "om_radar", "dwell"))
+        seen: set[str] = set()
+        out: List[str] = []
+        for m in modes:
+            s = str(m or "").strip().lower()
+            if s in allowed and s not in seen:
+                seen.add(s)
+                out.append(s)
+                if len(out) >= 2:
+                    break
+        out.sort(key=lambda x: _AZ_RING_ORDER.get(x, 99))
+        return out
+
+    def set_heatmap_modes(self, modes: List[str]) -> None:
+        """0–2 Ringe: strom | om_radar | dwell (Anzeige-Reihenfolge innen nach außen fest)."""
+        self._heatmap_modes = self._sort_ring_modes(list(modes or []))
+        self._heatmap_visible = len(self._heatmap_modes) > 0
+        self.update()
+
+    def set_heatmap_mode(self, mode: str) -> None:
+        """Einzelmodus (ältere API): 'off' oder ein Ring."""
+        m = str(mode or "").strip().lower()
+        if m in ("off", ""):
+            self.set_heatmap_modes([])
+        elif m in ("strom", "om_radar", "dwell"):
+            self.set_heatmap_modes([m])
+        else:
+            self.set_heatmap_modes([])
+
+    def set_dwell_ring_data(
+        self,
+        seconds: Optional[List[float]],
+        full_seconds: float,
+        n_sectors: int,
+    ) -> None:
+        """Standzeit-Ring: kumulative Sekunden je Sektor, Skala bis full_seconds → rot."""
+        self._dwell_seconds = list(seconds) if seconds else None
+        try:
+            self._dwell_full_sec = max(0.001, float(full_seconds))
+        except (TypeError, ValueError):
+            self._dwell_full_sec = 300.0
+        self._dwell_n = max(10, min(100, int(n_sectors)))
+        self.update()
+
+    def set_om_radar_sector_count(self, n: int) -> None:
+        """Anzahl Sektoren für OM-Radar (10–100), Standard 60."""
+        nn = max(10, min(100, int(n)))
+        if nn != self._om_radar_n:
+            self._om_radar_n = nn
+            self.update()
+
+    def set_om_radar_counts(self, counts: Optional[List[int]]) -> None:
+        """Zähler je Sektor für OM-Radar (Länge = konfigurierte Sektorenanzahl)."""
+        if not counts:
+            self._om_radar_counts = None
+            self.update()
+            return
+        v: List[int] = []
+        for i in range(self._om_radar_n):
+            if i < len(counts):
+                try:
+                    v.append(max(0, int(counts[i])))
+                except (TypeError, ValueError):
+                    v.append(0)
+            else:
+                v.append(0)
+        self._om_radar_counts = v
         self.update()
 
     def set_heatmap_offset_deg(self, offset: float) -> None:
         """Heatmap um Antennenversatz drehen (0° = Nord)."""
         self._heatmap_offset_deg = float(offset)
+        self.update()
+
+    def set_heatmap_scale(self, scale: Optional[HeatmapScale]) -> None:
+        """Optionale Last-Skala (blau/rot-Schwellen, Normbereich); None = auto."""
+        self._heatmap_scale = scale
         self.update()
 
     def _animate_wind_dir(self) -> None:
@@ -236,8 +381,8 @@ class CompassWidget(QWidget):
         self._angle_decimals = d
 
     def _geom(self) -> tuple[float, float, float]:
-        """Hilfsgeometrie: (cx, cy, r). Oben ~40px für Dropdown reserviert."""
-        rect = self.rect().adjusted(10, 40, -10, -10)
+        """Hilfsgeometrie: (cx, cy, r). Rand oben/unten für Beschriftung + äußere Ringe."""
+        rect = self.rect().adjusted(10, 26, -10, -14)
         cx = float(rect.center().x())
         cy = float(rect.center().y())
         r = float(min(rect.width(), rect.height())) / 2.0
@@ -344,19 +489,51 @@ class CompassWidget(QWidget):
         draw_label("S", 180)
         draw_label("W", 270)
 
-        # ACCBINS-Heatmap-Ring (5px) um den Kompass
-        if self._heatmap_visible and (self._bins_cw or self._bins_ccw):
-            paint_bins_heatmap_ring(
-                painter,
-                cx,
-                cy,
-                r,
-                self._bins_cw,
-                self._bins_ccw,
-                elevation=False,
-                ring_width=5.0,
-                offset_deg=self._heatmap_offset_deg,
-            )
+        # Heatmap-Ringe: Farbring 7px, dazwischen 1px schwarz; innen nach außen = Strom → OM-Radar → Standzeit
+        ring_w = 7.0
+        gap_w = 1.0
+        step = ring_w + gap_w
+        modes = self._heatmap_modes if self._heatmap_visible else []
+        for i, mode in enumerate(modes):
+            inner_r = r + float(i) * step
+            if mode == "strom" and (self._bins_cw or self._bins_ccw):
+                paint_bins_heatmap_ring(
+                    painter,
+                    cx,
+                    cy,
+                    inner_r,
+                    self._bins_cw,
+                    self._bins_ccw,
+                    elevation=False,
+                    ring_width=ring_w,
+                    offset_deg=self._heatmap_offset_deg,
+                    scale=self._heatmap_scale,
+                )
+            elif mode == "om_radar":
+                paint_om_radar_ring(
+                    painter,
+                    cx,
+                    cy,
+                    inner_r,
+                    self._om_radar_counts,
+                    ring_width=ring_w,
+                    offset_deg=self._heatmap_offset_deg,
+                    n_sectors=self._om_radar_n,
+                )
+            elif mode == "dwell":
+                paint_dwell_ring(
+                    painter,
+                    cx,
+                    cy,
+                    inner_r,
+                    self._dwell_seconds,
+                    self._dwell_full_sec,
+                    ring_width=ring_w,
+                    offset_deg=self._heatmap_offset_deg,
+                    n_sectors=self._dwell_n,
+                )
+            if i < len(modes) - 1:
+                paint_az_ring_gap_black(painter, cx, cy, inner_r + ring_w, gap_w)
 
         # Rotes Dreieck: Anschlag der Antenne (auf Kreislinie, nach innen zeigend)
         self._draw_anschlag_triangle(painter, cx, cy, r)
@@ -384,20 +561,20 @@ class CompassWidget(QWidget):
                 wd = wrap_deg(wd + 180.0)
             self._draw_arrow(painter, cx, cy, r * 0.46, wd)
 
-        # Windwerte in den oberen Ecken mit etwas Abstand
-        if self._wind_visible:
-            margin = 7
-            # Im kombinierten Kompassfenster muss der Text deutlich höher sitzen,
-            # damit er nicht in den Kreis hineinragt.
-            top_y = 13
-            txt_font = painter.font()
-            txt_font.setBold(True)
-            # Feste Pixelgröße, damit Wind/Richtung sicher gleich groß wie Ist/Soll wirken.
-            txt_font.setPixelSize(16)
-            painter.setFont(txt_font)
-            fm_txt = QFontMetrics(txt_font)
-            painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
+        # Wind + Ist/Soll in den oberen Ecken: Zeile 1 Wind/Richtung, Zeile 2 Ist (links) / Soll (rechts)
+        margin = 7
+        top_y = 13
+        line_gap = 22
+        txt_font = painter.font()
+        txt_font.setBold(True)
+        txt_font.setPixelSize(16)
+        painter.setFont(txt_font)
+        fm_txt = QFontMetrics(txt_font)
+        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
 
+        ist_txt = self._overlay_ist or ""
+
+        if self._wind_visible:
             speed_txt = "Wind: --.- km/h"
             if self._wind_kmh is not None:
                 speed_txt = f"Wind: {self._wind_kmh:.1f} km/h"
@@ -406,8 +583,13 @@ class CompassWidget(QWidget):
             dir_txt = "Richtung: --.-°"
             if self._wind_dir_deg is not None:
                 dir_txt = f"Richtung: {self._wind_dir_deg:.1f}°"
-            right_x = float(self.width() - margin - fm_txt.horizontalAdvance(dir_txt))
-            painter.drawText(QPointF(right_x, float(top_y)), dir_txt)
+            right_dir_x = float(self.width() - margin - fm_txt.horizontalAdvance(dir_txt))
+            painter.drawText(QPointF(right_dir_x, float(top_y)), dir_txt)
+
+            row2_y = float(top_y + line_gap)
+            painter.drawText(QPointF(float(margin), row2_y), ist_txt)
+        else:
+            painter.drawText(QPointF(float(margin), float(top_y)), ist_txt)
 
         # Mittelpunkt
         painter.setPen(Qt.PenStyle.NoPen)

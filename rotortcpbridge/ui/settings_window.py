@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QEvent, QEventLoop, QTimer
-from PySide6.QtGui import QCloseEvent, QFont, QKeyEvent, QPalette, QShowEvent
+from PySide6.QtCore import QEvent, QEventLoop, Qt, QTimer
+from PySide6.QtGui import QColor, QCloseEvent, QFont, QKeyEvent, QPalette, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -13,17 +13,22 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
+    QListWidget,
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
-    QTabWidget,
+    QStackedWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from ..compass.statistic_compass_widget import compute_bin_min_max
 from ..app_icon import get_app_icon
 from ..command_catalog import command_specs, format_cmd_tooltip
 from ..ports import list_serial_ports
@@ -63,8 +68,9 @@ class SettingsWindow(QDialog):
         self.setWindowTitle(t("settings.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        # Breite 420 px (520 − 100), Höhe unverändert
-        self.setFixedSize(px_to_dip(self, 420), px_to_dip(self, 550))
+        # Etwas breiter: linke Navigationsliste + Inhalt rechts
+        # +120 px zur Breite des rechten Inhaltsbereichs (Sidebar-Breite unverändert)
+        self.setFixedSize(px_to_dip(self, 600), px_to_dip(self, 620))
 
         main = QVBoxLayout(self)
 
@@ -117,6 +123,8 @@ class SettingsWindow(QDialog):
         self.ed_listen_host.setToolTip(t("settings.pst_listen_host_tooltip"))
         self.sp_listen_port_az.setToolTip(t("settings.pst_port_az_tooltip"))
         self.sp_listen_port_el.setToolTip(t("settings.pst_port_el_tooltip"))
+        _conn_ip_w = px_to_dip(self, 152)  # typ. IPv4-Feld +20 px ggü. 132
+        self.ed_listen_host.setMinimumWidth(_conn_ip_w)
         form_conn.addRow(self.chk_pst_enabled)
         form_conn.addRow(t("settings.pst_listen_host"), self.ed_listen_host)
         form_conn.addRow(t("settings.pst_port_az"), self.sp_listen_port_az)
@@ -127,6 +135,7 @@ class SettingsWindow(QDialog):
         self.cb_hw_mode.addItems(["tcp", "com"])
         self.cb_hw_mode.setCurrentText(cfg["hardware_link"]["mode"])
         self.ed_hw_ip = QLineEdit(cfg["hardware_link"]["tcp_ip"])
+        self.ed_hw_ip.setMinimumWidth(_conn_ip_w)
         self.sp_hw_port = QSpinBox()
         self.sp_hw_port.setRange(1, 65535)
         self.sp_hw_port.setValue(int(cfg["hardware_link"]["tcp_port"]))
@@ -173,9 +182,9 @@ class SettingsWindow(QDialog):
 
         _ui0 = cfg.get("ui", {})
 
-        _udp_ip_field_w = px_to_dip(self, 132 - 50)  # 82 px
+        _udp_ip_field_w = px_to_dip(self, 102)  # 82 + 20 px
         _udp_port_field_w = px_to_dip(self, 76 - 15)  # 61 px
-        _udp_target_field_w = px_to_dip(self, 132 - 50)  # Ziel-IP wie Listen-IP
+        _udp_target_field_w = px_to_dip(self, 102)  # Ziel-IP wie Listen-IP (+20 px)
         # Checkbox-Spalte: Basisbreite minus gewünschten Linksschub (kein neg. margin – der clippt Beschriftung)
         _udp_chk_col_w = max(0, px_to_dip(self, 218) - px_to_dip(self, 130))
 
@@ -266,41 +275,100 @@ class SettingsWindow(QDialog):
         self.chk_pst_enabled.stateChanged.connect(self._on_spid_vs_udp_pst_exclusive)
         self.chk_udp_pst.stateChanged.connect(self._on_udp_pst_vs_spid_exclusive)
 
+        _all_cmd_spec = {s.name.upper(): s for s in command_specs()}
+        _spec_setcal = _all_cmd_spec.get("SETCAL")
+        _spec_clrstat = _all_cmd_spec.get("CLRSTAT")
+
         self.btn_cal_start = QPushButton(t("cmd.btn_start_cal"))
         self.btn_cal_start.setAutoDefault(False)
         self.btn_cal_start.setDefault(False)
         self.btn_cal_reset = QPushButton(t("cmd.btn_reset_cal"))
         self.btn_cal_reset.setAutoDefault(False)
         self.btn_cal_reset.setDefault(False)
-        _all_cmd_spec = {s.name.upper(): s for s in command_specs()}
-        _spec_setcal = _all_cmd_spec.get("SETCAL")
         if _spec_setcal:
             self.btn_cal_start.setToolTip(format_cmd_tooltip(_spec_setcal))
-        _spec_clrstat = _all_cmd_spec.get("CLRSTAT")
         if _spec_clrstat:
             self.btn_cal_reset.setToolTip(format_cmd_tooltip(_spec_clrstat))
-        lbl_cal_title = QLabel(t("settings.cal_label"))
-        _f_cal = QFont(lbl_cal_title.font())
-        _f_cal.setBold(True)
-        lbl_cal_title.setFont(_f_cal)
-        lbl_cal_desc = QLabel(t("settings.cal_description"))
-        lbl_cal_desc.setWordWrap(True)
-        lbl_cal_desc.setForegroundRole(QPalette.ColorRole.WindowText)
+
+        _ui_hm = cfg.get("ui", {})
+
+        pg_stats = QWidget()
+        vl_st = QVBoxLayout(pg_stats)
+        _st_pad = px_to_dip(self, 5)
+        vl_st.setContentsMargins(_st_pad, _st_pad, _st_pad, _st_pad)
+        vl_st.setSpacing(10)
+        gb_strom_cal = QGroupBox(t("settings.cal_label"))
+        # Gleiches Layout wie Last-Heatmap-Gruppen (Standard-QGroupBox, kein Sonder-Stylesheet).
+        fl_strom_cal = QFormLayout(gb_strom_cal)
+        self.btn_cal_help = QPushButton(t("settings.stats_help_btn"))
+        self.btn_cal_help.setAutoDefault(False)
+        self.btn_cal_help.setDefault(False)
+        self.btn_cal_help.setToolTip(t("settings.stats_help_title"))
+        self.btn_cal_help.clicked.connect(self._show_stats_calibration_help)
         cal_btns = QHBoxLayout()
-        cal_btns.setContentsMargins(0, 4, 0, 0)
-        cal_btns.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        cal_btns.setContentsMargins(0, 0, 0, 0)
         cal_btns.addWidget(self.btn_cal_start)
         cal_btns.addWidget(self.btn_cal_reset)
+        cal_btns.addWidget(self.btn_cal_help)
         cal_btns.addStretch(1)
-        cal_outer = QVBoxLayout()
-        cal_outer.setContentsMargins(0, 0, 0, 0)
-        cal_outer.setSpacing(4)
-        cal_outer.addWidget(lbl_cal_title)
-        cal_outer.addWidget(lbl_cal_desc)
-        cal_outer.addLayout(cal_btns)
-        cal_row_w = QWidget()
-        cal_row_w.setLayout(cal_outer)
-        form_ui.addRow(cal_row_w)
+        _w_cal_btns = QWidget()
+        _w_cal_btns.setLayout(cal_btns)
+        fl_strom_cal.addRow(_w_cal_btns)
+        vl_st.addWidget(gb_strom_cal)
+
+        _stats_field_w = px_to_dip(self, 100)
+
+        def _hm_spin(val: int) -> QSpinBox:
+            sp = QSpinBox()
+            sp.setRange(0, 65535)
+            sp.setValue(int(val))
+            sp.setMaximumWidth(_stats_field_w)
+            return sp
+
+        gb_hm_az = QGroupBox(t("settings.stats_heatmap_group_az"))
+        fl_hm_az = QFormLayout(gb_hm_az)
+        self.chk_heatmap_custom_az = QCheckBox(t("settings.stats_heatmap_custom"))
+        self.chk_heatmap_custom_az.setChecked(bool(_ui_hm.get("heatmap_custom_az", False)))
+        fl_hm_az.addRow(self.chk_heatmap_custom_az)
+        self.sp_thr_blue_az = _hm_spin(int(_ui_hm.get("heatmap_thr_blue_az", 0)))
+        self.sp_norm_min_az = _hm_spin(int(_ui_hm.get("heatmap_norm_min_az", 0)))
+        self.sp_norm_max_az = _hm_spin(int(_ui_hm.get("heatmap_norm_max_az", 0)))
+        self.sp_thr_red_az = _hm_spin(int(_ui_hm.get("heatmap_thr_red_az", 0)))
+        self.sp_thr_blue_az.setToolTip(t("settings.stats_heatmap_thr_blue_tooltip"))
+        self.sp_norm_min_az.setToolTip(t("settings.stats_heatmap_norm_tooltip"))
+        self.sp_norm_max_az.setToolTip(t("settings.stats_heatmap_norm_tooltip"))
+        self.sp_thr_red_az.setToolTip(t("settings.stats_heatmap_thr_red_tooltip"))
+        fl_hm_az.addRow(t("settings.stats_heatmap_thr_blue"), self.sp_thr_blue_az)
+        fl_hm_az.addRow(t("settings.stats_heatmap_norm_min"), self.sp_norm_min_az)
+        fl_hm_az.addRow(t("settings.stats_heatmap_norm_max"), self.sp_norm_max_az)
+        fl_hm_az.addRow(t("settings.stats_heatmap_thr_red"), self.sp_thr_red_az)
+        self.btn_apply_cal_az = QPushButton(t("settings.stats_apply_from_cal"))
+        self.btn_apply_cal_az.setToolTip(t("settings.stats_apply_from_cal_tooltip"))
+        fl_hm_az.addRow(self.btn_apply_cal_az)
+        vl_st.addWidget(gb_hm_az)
+
+        gb_hm_el = QGroupBox(t("settings.stats_heatmap_group_el"))
+        fl_hm_el = QFormLayout(gb_hm_el)
+        self.chk_heatmap_custom_el = QCheckBox(t("settings.stats_heatmap_custom"))
+        self.chk_heatmap_custom_el.setChecked(bool(_ui_hm.get("heatmap_custom_el", False)))
+        fl_hm_el.addRow(self.chk_heatmap_custom_el)
+        self.sp_thr_blue_el = _hm_spin(int(_ui_hm.get("heatmap_thr_blue_el", 0)))
+        self.sp_norm_min_el = _hm_spin(int(_ui_hm.get("heatmap_norm_min_el", 0)))
+        self.sp_norm_max_el = _hm_spin(int(_ui_hm.get("heatmap_norm_max_el", 0)))
+        self.sp_thr_red_el = _hm_spin(int(_ui_hm.get("heatmap_thr_red_el", 0)))
+        self.sp_thr_blue_el.setToolTip(t("settings.stats_heatmap_thr_blue_tooltip"))
+        self.sp_norm_min_el.setToolTip(t("settings.stats_heatmap_norm_tooltip"))
+        self.sp_norm_max_el.setToolTip(t("settings.stats_heatmap_norm_tooltip"))
+        self.sp_thr_red_el.setToolTip(t("settings.stats_heatmap_thr_red_tooltip"))
+        fl_hm_el.addRow(t("settings.stats_heatmap_thr_blue"), self.sp_thr_blue_el)
+        fl_hm_el.addRow(t("settings.stats_heatmap_norm_min"), self.sp_norm_min_el)
+        fl_hm_el.addRow(t("settings.stats_heatmap_norm_max"), self.sp_norm_max_el)
+        fl_hm_el.addRow(t("settings.stats_heatmap_thr_red"), self.sp_thr_red_el)
+        self.btn_apply_cal_el = QPushButton(t("settings.stats_apply_from_cal"))
+        self.btn_apply_cal_el.setToolTip(t("settings.stats_apply_from_cal_tooltip"))
+        fl_hm_el.addRow(self.btn_apply_cal_el)
+        vl_st.addWidget(gb_hm_el)
+        vl_st.addStretch(1)
 
         self.cb_wind_dir_display = QComboBox()
         self.cb_wind_dir_display.addItem(t("settings.wind_dir_from"), "from")
@@ -528,11 +596,91 @@ class SettingsWindow(QDialog):
         vl_ant.addWidget(self.gb_antenna_az)
         vl_ant.addStretch(1)
 
-        self._tab_widget = QTabWidget()
-        self._tab_widget.addTab(_scroll_page(pg_ui), t("settings.group_ui"))
-        self._tab_widget.addTab(_scroll_page(pg_conn), t("settings.group_connection"))
-        self._tab_antenna_index = self._tab_widget.addTab(_scroll_page(pg_ant), t("settings.tab_antenna"))
-        main.addWidget(self._tab_widget, 1)
+        _om_sectors = int(cfg.get("ui", {}).get("compass_om_radar_sectors", 60))
+        _om_sectors = max(10, min(100, _om_sectors))
+        _dwell_sec = int(cfg.get("ui", {}).get("compass_dwell_sectors", 60))
+        _dwell_sec = max(10, min(100, _dwell_sec))
+        try:
+            _dwell_min = float(cfg.get("ui", {}).get("compass_dwell_full_minutes", 5.0))
+        except (TypeError, ValueError):
+            _dwell_min = 5.0
+        _dwell_min = max(0.05, min(240.0, _dwell_min))
+        pg_compass = QWidget()
+        vl_compass = QVBoxLayout(pg_compass)
+        _cp_pad = px_to_dip(self, 5)
+        vl_compass.setContentsMargins(_cp_pad, _cp_pad, _cp_pad, _cp_pad)
+        vl_compass.setSpacing(10)
+        gb_compass_om = QGroupBox(t("settings.compass_om_radar_group"))
+        fl_compass_om = QFormLayout(gb_compass_om)
+        self.sp_compass_om_sectors = QSpinBox()
+        self.sp_compass_om_sectors.setRange(10, 100)
+        self.sp_compass_om_sectors.setValue(_om_sectors)
+        self.sp_compass_om_sectors.setToolTip(t("settings.compass_om_radar_sectors_tooltip"))
+        fl_compass_om.addRow(t("settings.compass_om_radar_sectors"), self.sp_compass_om_sectors)
+        vl_compass.addWidget(gb_compass_om)
+        gb_compass_dwell = QGroupBox(t("settings.compass_dwell_group"))
+        fl_compass_dwell = QFormLayout(gb_compass_dwell)
+        self.sp_compass_dwell_sectors = QSpinBox()
+        self.sp_compass_dwell_sectors.setRange(10, 100)
+        self.sp_compass_dwell_sectors.setValue(_dwell_sec)
+        self.sp_compass_dwell_sectors.setToolTip(t("settings.compass_dwell_sectors_tooltip"))
+        fl_compass_dwell.addRow(t("settings.compass_dwell_sectors"), self.sp_compass_dwell_sectors)
+        self.sp_compass_dwell_minutes = QDoubleSpinBox()
+        self.sp_compass_dwell_minutes.setRange(0.1, 240.0)
+        self.sp_compass_dwell_minutes.setDecimals(1)
+        self.sp_compass_dwell_minutes.setSingleStep(0.5)
+        self.sp_compass_dwell_minutes.setValue(_dwell_min)
+        self.sp_compass_dwell_minutes.setToolTip(t("settings.compass_dwell_minutes_tooltip"))
+        fl_compass_dwell.addRow(t("settings.compass_dwell_minutes"), self.sp_compass_dwell_minutes)
+        vl_compass.addWidget(gb_compass_dwell)
+        vl_compass.addStretch(1)
+
+        # Navigation: vertikale Liste links (scrollbar bei vielen Einträgen), Inhalt rechts
+        # Breite ca. 2/3 der vorherigen Sidebar (ein Drittel schmaler)
+        _nav_w_min = px_to_dip(self, 88)
+        _nav_w_max = px_to_dip(self, 133)
+        self._settings_nav = QListWidget()
+        self._settings_nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._settings_nav.setWordWrap(True)
+        self._settings_nav.setSpacing(0)
+        self._settings_nav.setMinimumWidth(_nav_w_min)
+        self._settings_nav.setMaximumWidth(_nav_w_max)
+        self._settings_nav.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Expanding,
+        )
+        self._settings_nav.setUniformItemSizes(True)
+        self._settings_stack = QStackedWidget()
+        self._settings_stack.addWidget(_scroll_page(pg_ui))
+        self._settings_stack.addWidget(_scroll_page(pg_conn))
+        self._settings_stack.addWidget(_scroll_page(pg_ant))
+        self._settings_stack.addWidget(_scroll_page(pg_compass))
+        self._settings_stack.addWidget(_scroll_page(pg_stats))
+        self._tab_antenna_index = 2
+        for _lbl in (
+            t("settings.group_ui"),
+            t("settings.group_connection"),
+            t("settings.tab_antenna"),
+            t("settings.tab_compass"),
+            t("settings.tab_statistics"),
+        ):
+            self._settings_nav.addItem(_lbl)
+        self._settings_nav.currentRowChanged.connect(self._on_settings_nav_changed)
+        self._settings_nav.setCurrentRow(0)
+
+        self._settings_nav_wrap = QWidget()
+        _nav_lay = QVBoxLayout(self._settings_nav_wrap)
+        _nav_lay.setContentsMargins(0, 0, 0, 0)
+        _nav_lay.addWidget(self._settings_nav)
+        self._apply_settings_nav_style()
+
+        _tabs_body = QWidget()
+        _tabs_h = QHBoxLayout(_tabs_body)
+        _tabs_h.setContentsMargins(0, 0, 0, 0)
+        _tabs_h.setSpacing(px_to_dip(self, 8))
+        _tabs_h.addWidget(self._settings_nav_wrap, 0)
+        _tabs_h.addWidget(self._settings_stack, 1)
+        main.addWidget(_tabs_body, 1)
 
         self.chk_enable_az.installEventFilter(self)
         self.chk_enable_el.installEventFilter(self)
@@ -570,6 +718,8 @@ class SettingsWindow(QDialog):
         self.lbl_status.setWordWrap(True)
         self.btn_cal_start.clicked.connect(self._on_settings_cal_start)
         self.btn_cal_reset.clicked.connect(self._on_settings_cal_reset)
+        self.btn_apply_cal_az.clicked.connect(self._on_apply_cal_heatmap_az)
+        self.btn_apply_cal_el.clicked.connect(self._on_apply_cal_heatmap_el)
         btnrow = QHBoxLayout()
         btnrow.addWidget(self.lbl_status, 1)
         btn_save_close = QPushButton(t("settings.btn_save_close"))
@@ -579,6 +729,10 @@ class SettingsWindow(QDialog):
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
+        if hasattr(self.ctrl, "set_settings_window_open"):
+            self.ctrl.set_settings_window_open(True)
+        if hasattr(self.ctrl, "request_immediate_stats"):
+            self.ctrl.request_immediate_stats()
         self._antenna_giveup_done = False
         self._update_antenna_visibility()
         self._update_antenna_offset_enabled()
@@ -603,6 +757,8 @@ class SettingsWindow(QDialog):
         self._antenna_refresh_timer.stop()
         self._antenna_request_timer.stop()
         self._antenna_giveup_timer.stop()
+        if hasattr(self.ctrl, "set_settings_window_open"):
+            self.ctrl.set_settings_window_open(False)
         super().closeEvent(event)
 
     def _on_antenna_giveup(self) -> None:
@@ -640,6 +796,103 @@ class SettingsWindow(QDialog):
             except Exception:
                 pass
         self.lbl_status.setText(t("cmd.hint_cal_reset"))
+
+    def _stats_calibration_help_text(self) -> str:
+        """Hilfetext: Stromkalibrierung + Last-Heatmap (wie früher im Tab-Text)."""
+        return (
+            t("settings.cal_label")
+            + "\n\n"
+            + t("settings.cal_description")
+            + "\n\n"
+            + t("settings.stats_help_header_heatmap")
+            + "\n\n"
+            + t("settings.stats_help_mid")
+            + "\n\n"
+            + t("settings.stats_heatmap_info")
+        )
+
+    def _show_stats_calibration_help(self) -> None:
+        """Dialog mit Erklärung zu Stromkalibrierung und Farb-/Schwellenwerten."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(t("settings.stats_help_title"))
+        dlg.setModal(True)
+        dlg.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
+        te = QTextEdit()
+        te.setReadOnly(True)
+        te.setPlainText(self._stats_calibration_help_text())
+        te.setMinimumWidth(px_to_dip(self, 480))
+        te.setMinimumHeight(px_to_dip(self, 320))
+        root.addWidget(te)
+        btn_ok = QPushButton(t("about.btn_close"))
+        btn_ok.setFixedWidth(100)
+        btn_ok.clicked.connect(dlg.accept)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(btn_ok)
+        root.addLayout(row)
+        dlg.exec()
+
+    def _on_apply_cal_heatmap_az(self) -> None:
+        """CAL-Bins (AZ): Min/Max in Normfelder übernehmen, Schwellen mit Rand."""
+        az = self.ctrl.az
+        if getattr(az, "cal_state", 0) != 2:
+            self.lbl_status.setText(t("settings.stats_cal_no_data"))
+            return
+        mn, mx = compute_bin_min_max(
+            getattr(az, "cal_bins_cw", None),
+            getattr(az, "cal_bins_ccw", None),
+            False,
+        )
+        if mn is None or mx is None:
+            self.lbl_status.setText(t("settings.stats_cal_no_data"))
+            return
+        margin = 50
+        self.sp_norm_min_az.setValue(int(mn))
+        self.sp_norm_max_az.setValue(int(mx))
+        self.sp_thr_blue_az.setValue(max(0, int(mn) - margin))
+        self.sp_thr_red_az.setValue(min(65535, int(mx) + margin))
+        self.chk_heatmap_custom_az.setChecked(True)
+        self.lbl_status.setText(t("settings.stats_apply_ok"))
+
+    def _on_apply_cal_heatmap_el(self) -> None:
+        """CAL-Bins (EL): Min/Max übernehmen."""
+        el = getattr(self.ctrl, "el", None)
+        if el is None or getattr(el, "cal_state", 0) != 2:
+            self.lbl_status.setText(t("settings.stats_cal_no_data"))
+            return
+        mn, mx = compute_bin_min_max(
+            getattr(el, "cal_bins_cw", None),
+            getattr(el, "cal_bins_ccw", None),
+            True,
+        )
+        if mn is None or mx is None:
+            self.lbl_status.setText(t("settings.stats_cal_no_data"))
+            return
+        margin = 50
+        self.sp_norm_min_el.setValue(int(mn))
+        self.sp_norm_max_el.setValue(int(mx))
+        self.sp_thr_blue_el.setValue(max(0, int(mn) - margin))
+        self.sp_thr_red_el.setValue(min(65535, int(mx) + margin))
+        self.chk_heatmap_custom_el.setChecked(True)
+        self.lbl_status.setText(t("settings.stats_apply_ok"))
+
+    def _heatmap_scale_valid(self) -> bool:
+        """Prüft thr_blue ≤ norm_min ≤ norm_max ≤ thr_red wenn Custom aktiv."""
+        for prefix in ("az", "el"):
+            chk = getattr(self, f"chk_heatmap_custom_{prefix}", None)
+            if chk is None or not chk.isChecked():
+                continue
+            tb = getattr(self, f"sp_thr_blue_{prefix}").value()
+            nm = getattr(self, f"sp_norm_min_{prefix}").value()
+            nx = getattr(self, f"sp_norm_max_{prefix}").value()
+            tr = getattr(self, f"sp_thr_red_{prefix}").value()
+            if not (tb <= nm <= nx <= tr):
+                self.lbl_status.setText(t("settings.stats_heatmap_invalid"))
+                return False
+        return True
 
     def _on_spid_vs_udp_pst_exclusive(self, _state: int) -> None:
         """Nur eines aktiv: SPID BIG-RAS vs. UDP PST-Rotator."""
@@ -746,11 +999,72 @@ class SettingsWindow(QDialog):
                     return True
         return super().eventFilter(obj, event)
 
+    def _on_settings_nav_changed(self, row: int) -> None:
+        """Linke Liste → rechten Stacked-Inhalt umschalten."""
+        if row < 0 or row >= self._settings_stack.count():
+            return
+        self._settings_stack.setCurrentIndex(row)
+
+    def _apply_settings_nav_style(self) -> None:
+        """Sidebar wie große Kacheln; Farben aus der System-/App-Palette (Highlight, Base, …)."""
+        p = self.palette()
+
+        def _hex(c: QColor) -> str:
+            return c.name(QColor.NameFormat.HexRgb)
+
+        nav_bg = _hex(p.color(QPalette.ColorRole.Window))
+        item_bg = _hex(p.color(QPalette.ColorRole.Base))
+        sel_bg = _hex(p.color(QPalette.ColorRole.Highlight))
+        sel_fg = _hex(p.color(QPalette.ColorRole.HighlightedText))
+        fg = _hex(p.color(QPalette.ColorRole.WindowText))
+        sep = "#787878"
+
+        # Feste Zeilenhöhe 45 px (DIP); Hover dunkelgrau mit heller Schrift (nicht Weiß auf Weiß)
+        row_h = px_to_dip(self, 45)
+        pad_x = px_to_dip(self, 8)
+        gap = px_to_dip(self, 2)
+        rad = px_to_dip(self, 3)
+        hover_bg = "#4f4f4f"
+        hover_fg = "#eaeaea"
+
+        self._settings_nav_wrap.setStyleSheet(f"background-color: {nav_bg};")
+        self._settings_nav.setStyleSheet(
+            f"""
+            QListWidget {{
+                background-color: {nav_bg};
+                border: none;
+                border-right: 1px solid {sep};
+                outline: none;
+            }}
+            QListWidget::item {{
+                background-color: {item_bg};
+                color: {fg};
+                padding: 0 {pad_x}px;
+                margin: {gap}px 4px;
+                border-radius: {rad}px;
+                min-height: {row_h}px;
+                max-height: {row_h}px;
+            }}
+            QListWidget::item:selected {{
+                background-color: {sel_bg};
+                color: {sel_fg};
+            }}
+            QListWidget::item:hover:!selected {{
+                background-color: {hover_bg};
+                color: {hover_fg};
+            }}
+            """
+        )
+
     def _update_antenna_visibility(self) -> None:
         show = self.chk_enable_az.isChecked()
         self.gb_antenna_az.setVisible(show)
         try:
-            self._tab_widget.setTabVisible(self._tab_antenna_index, show)
+            item = self._settings_nav.item(self._tab_antenna_index)
+            if item is not None:
+                item.setHidden(not show)
+            if not show and self._settings_nav.currentRow() == self._tab_antenna_index:
+                self._settings_nav.setCurrentRow(0)
         except Exception:
             pass
         self._update_antenna_offset_enabled()
@@ -888,9 +1202,11 @@ class SettingsWindow(QDialog):
             bool(self.chk_enable_el.isChecked()),
         )
 
-    def _save_clicked(self):
+    def _save_clicked(self) -> bool:
         self.lbl_status.setText(t("settings.status_saving"))
         QApplication.processEvents()
+        if not self._heatmap_scale_valid():
+            return False
 
         self.cfg["pst_server"]["enabled"] = bool(self.chk_pst_enabled.isChecked())
         self.cfg["pst_server"]["listen_host"] = self.ed_listen_host.text().strip()
@@ -949,6 +1265,20 @@ class SettingsWindow(QDialog):
             float(self.sp_az_range_2.value()),
             float(self.sp_az_range_3.value()),
         ]
+        uih = self.cfg.setdefault("ui", {})
+        uih["heatmap_custom_az"] = bool(self.chk_heatmap_custom_az.isChecked())
+        uih["heatmap_thr_blue_az"] = int(self.sp_thr_blue_az.value())
+        uih["heatmap_norm_min_az"] = int(self.sp_norm_min_az.value())
+        uih["heatmap_norm_max_az"] = int(self.sp_norm_max_az.value())
+        uih["heatmap_thr_red_az"] = int(self.sp_thr_red_az.value())
+        uih["heatmap_custom_el"] = bool(self.chk_heatmap_custom_el.isChecked())
+        uih["heatmap_thr_blue_el"] = int(self.sp_thr_blue_el.value())
+        uih["heatmap_norm_min_el"] = int(self.sp_norm_min_el.value())
+        uih["heatmap_norm_max_el"] = int(self.sp_norm_max_el.value())
+        uih["heatmap_thr_red_el"] = int(self.sp_thr_red_el.value())
+        uih["compass_om_radar_sectors"] = int(self.sp_compass_om_sectors.value())
+        uih["compass_dwell_sectors"] = int(self.sp_compass_dwell_sectors.value())
+        uih["compass_dwell_full_minutes"] = float(self.sp_compass_dwell_minutes.value())
 
         # AZ-Antennenversatz und Öffnungswinkel in den Rotor schreiben (SETANTOFF1–3, SETANGLE1–3)
         # Nur übertragen wenn Wert sich gegenüber dem Snapshot beim Öffnen tatsächlich geändert hat
@@ -1025,10 +1355,12 @@ class SettingsWindow(QDialog):
 
         if lang_changed and self.rebuild_ui_cb:
             self.rebuild_ui_cb()
+        return True
 
     def _save_and_close(self):
         """Speichern (inkl. Antennen-Versätze), Status anzeigen, dann Fenster schließen."""
-        self._save_clicked()
+        if not self._save_clicked():
+            return
         self.lbl_status.setText(t("settings.status_closing"))
         QApplication.processEvents()
         QTimer.singleShot(600, self.close)

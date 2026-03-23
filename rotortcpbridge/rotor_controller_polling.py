@@ -27,6 +27,7 @@ class _RotorPollingHost:
     wind_enabled_known: bool
     _cfg_poll: dict[str, int]
     _statistics_window_open: bool
+    _settings_window_open: bool
     _compass_window_open: bool
     _stats_cooldown_until: float
     _hw_prev_connected: bool
@@ -278,8 +279,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     if wind_unknown_retry or wind_known_repoll:
                         self._poll_wind_enable(self.slave_az, self.az, "AZ")
 
-                # GETCALSTATE/LIVE nur wenn Statistik-Fenster offen
-                if self._statistics_window_open:
+                # GETCALSTATE/LIVE wenn Statistik- oder Einstellungsfenster offen
+                if self._statistics_window_open or self._settings_window_open:
                     if self.enable_az and (now - self._last_cal_state_az >= 10.0):
                         self._last_cal_state_az = now
                         self._poll_cal_state(self.slave_az, self.az)

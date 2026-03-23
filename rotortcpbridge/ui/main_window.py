@@ -81,6 +81,7 @@ class MainWindow(QMainWindow):
         self._aswatch_blink_phase = 0
         self._aswatch_blink_active = False
         self._aswatch_blink_sequence = (True, False, True, False, True, False, True, False, True)
+        self._aswatch_markers_last: list = []
 
         self._update_title_bar()
         self.setWindowIcon(get_app_icon())
@@ -123,6 +124,12 @@ class MainWindow(QMainWindow):
         self._act_log = QAction(t("main.btn_log"), self)
         self._act_log.triggered.connect(self._toggle_log)
         self._menu_help.addAction(self._act_log)
+
+        menubar.setStyleSheet("QMenuBar { font-weight: bold; }")
+        _menu_bold = "QMenu { font-weight: bold; }"
+        self._menu_setup.setStyleSheet(_menu_bold)
+        self._menu_window.setStyleSheet(_menu_bold)
+        self._menu_help.setStyleSheet(_menu_bold)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -304,6 +311,7 @@ class MainWindow(QMainWindow):
 
         self._log_win = LogWindow(self.logbuf, parent=None)
         self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+        self._attach_compass_aswatch_provider()
         self._map_win = MapWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
         self._settings_win = SettingsWindow(
             self.cfg,
@@ -454,6 +462,11 @@ class MainWindow(QMainWindow):
                 self._warnings_errors_win.retranslate_ui()
         except Exception:
             pass
+        try:
+            if hasattr(self, "_compass_win") and hasattr(self._compass_win, "sync_heatmap_controls_from_cfg"):
+                self._compass_win.sync_heatmap_controls_from_cfg()
+        except Exception:
+            pass
 
     def _rebuild_all_windows(self):
         """Alle Fenster schließen und neu erstellen (nach Sprachänderung)."""
@@ -482,6 +495,7 @@ class MainWindow(QMainWindow):
 
             self._log_win = LogWindow(self.logbuf, parent=None)
             self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+            self._attach_compass_aswatch_provider()
             self._map_win = MapWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
             self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
             self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
@@ -572,6 +586,8 @@ class MainWindow(QMainWindow):
             self._compass_win._update_groupbox_titles()
             if hasattr(self._compass_win, "_apply_label_colors_from_palette"):
                 self._compass_win._apply_label_colors_from_palette()
+        if hasattr(self, "_compass_win") and hasattr(self._compass_win, "sync_heatmap_controls_from_cfg"):
+            self._compass_win.sync_heatmap_controls_from_cfg()
 
     def _on_internet_check_timer(self) -> None:
         """Internet-Prüfung im Hintergrund, UI-Update auf Hauptthread.
@@ -610,10 +626,26 @@ class MainWindow(QMainWindow):
     def _on_aswatch_users(self, items: list) -> None:
         """UDP ASWATCHLIST → Karten-Marker (Hauptthread)."""
         try:
+            self._aswatch_markers_last = list(items) if items else []
+        except Exception:
+            self._aswatch_markers_last = []
+        try:
             if hasattr(self, "_map_win") and self._map_win is not None:
                 self._map_win.update_aswatch_users(items)
         except Exception:
             pass
+        try:
+            cw = getattr(self, "_compass_win", None)
+            if cw is not None and hasattr(cw, "refresh_om_radar_from_aswatch"):
+                cw.refresh_om_radar_from_aswatch()
+        except Exception:
+            pass
+
+    def _attach_compass_aswatch_provider(self) -> None:
+        """Kompass: OM-Radar aus letzter AirScout/KST-Markerliste."""
+        if not hasattr(self, "_compass_win") or self._compass_win is None:
+            return
+        self._compass_win.set_aswatch_marker_provider(lambda: self._aswatch_markers_last)
 
     def _open_compass(self):
         try:

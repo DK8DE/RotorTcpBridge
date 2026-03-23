@@ -69,6 +69,28 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # Wenn True: ACCBINS-Heatmap (Strom/Last) als 5px-Ring um den Kompass anzeigen.
         "compass_strom_az": False,
         "compass_strom_el": False,
+        # Kompass-Ring: "off" | "strom" | "om_radar" (AZ); EL nur "off" | "strom".
+        "compass_heatmap_az": "off",
+        "compass_heatmap_el": "off",
+        # OM-Radar: Anzahl Richtungs-Sektoren (10 = grob, 100 = fein; Standard 60).
+        "compass_om_radar_sectors": 60,
+        # Standzeit-Ring (AZ): Sektoren 10–100; volle Skala (rot) nach X Minuten Gesamtstillstand im Sektor.
+        "compass_dwell_sectors": 60,
+        "compass_dwell_full_minutes": 5.0,
+        # AZ-Kompass: bis zu zwei Ringe gleichzeitig: "strom" / "om_radar" / "dwell"
+        "compass_heatmap_az_modes": [],
+        # Last-Heatmap: optional feste Skala (Kompass + Statistik-Fenster, Langzeit=Aktuell gleich).
+        # thr_blue ≤ norm_min ≤ norm_max ≤ thr_red (mV); nur wenn heatmap_custom_* True.
+        "heatmap_custom_az": False,
+        "heatmap_thr_blue_az": 0,
+        "heatmap_norm_min_az": 0,
+        "heatmap_norm_max_az": 0,
+        "heatmap_thr_red_az": 0,
+        "heatmap_custom_el": False,
+        "heatmap_thr_blue_el": 0,
+        "heatmap_norm_min_el": 0,
+        "heatmap_norm_max_el": 0,
+        "heatmap_thr_red_el": 0,
         # Gewählte Antenne im Kompass (0/1/2 = Antenne 1/2/3), wird beim Start geladen.
         "compass_antenna": 0,
         # AZ-Antennenversätze (Fallback wenn Rotor noch nicht geantwortet hat): [Ant1, Ant2, Ant3] in Grad

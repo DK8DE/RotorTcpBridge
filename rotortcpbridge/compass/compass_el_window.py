@@ -22,7 +22,7 @@ from ..angle_utils import clamp_el
 from ..i18n import t
 from ..ui.led_widget import Led
 from ..ui.ui_utils import px_to_dip
-from .statistic_compass_widget import paint_bins_heatmap_ring
+from .statistic_compass_widget import HeatmapScale, paint_bins_heatmap_ring
 
 
 class ElevationCompassWidget(QWidget):
@@ -39,7 +39,11 @@ class ElevationCompassWidget(QWidget):
         self._bins_ccw: Optional[List[int]] = None
         self._heatmap_visible: bool = False
         self._heatmap_offset_deg: float = 0.0
+        self._heatmap_scale: Optional[HeatmapScale] = None
         self._top_center_widget: Optional[QWidget] = None
+        self._soll_overlay: Optional[QWidget] = None
+        self._overlay_ist: str = ""
+        self._overlay_soll: str = ""
 
         self._led_d = px_to_dip(self, 13)
         lbl_style = "font-size: 16px; font-weight: bold;"
@@ -75,6 +79,20 @@ class ElevationCompassWidget(QWidget):
             widget.setParent(self)
             widget.raise_()
 
+    def set_soll_overlay_widget(self, widget: Optional[QWidget]) -> None:
+        """Soll-Label + Eingabe oben rechts (statt nur Textzeichnung)."""
+        old = self._soll_overlay
+        self._soll_overlay = widget
+        if old is not None and old is not widget:
+            old.setParent(None)
+            old.hide()
+        if widget is not None:
+            widget.setParent(self)
+            widget.show()
+            widget.raise_()
+        self._layout_corner_controls()
+        self.update()
+
     def set_ref_led_state(self, on: bool) -> None:
         self._ref_led.set_state(bool(on))
 
@@ -91,10 +109,23 @@ class ElevationCompassWidget(QWidget):
         self._moving_lbl.setStyleSheet(style)
         self._online_lbl.setStyleSheet(style)
 
+    def set_overlay_ist_soll(self, ist: str, soll: str) -> None:
+        """Ist/Soll oben links/rechts im EL-Kompass."""
+        self._overlay_ist = str(ist or "")
+        self._overlay_soll = str(soll or "")
+        self.update()
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._layout_corner_controls()
+
+    def _layout_corner_controls(self) -> None:
+        """LEDs rechts; eine Textzeile Ist/Soll oben, dann Abstand zu den LEDs."""
         margin = 7
-        top_y = 13
+        text_top = 13
+        line_gap = 22
+        led_extra_down = 5  # war 25 → LEDs 20px nach oben
+        line_first_led = text_top + line_gap + led_extra_down
         if self._top_center_widget is not None:
             w = (
                 self._top_center_widget.sizeHint().width()
@@ -110,29 +141,40 @@ class ElevationCompassWidget(QWidget):
             y = 0
             self._top_center_widget.setGeometry(x, y, max(w, 120), max(h, 22))
             self._top_center_widget.raise_()
-        # Moving / Online / Ref rechts – absolute Positionierung, LED-Spalte exakt auf einer Linie
         led_d = self._led_d
         row_h = 22
-        line2_y = top_y + row_h
+        line2_y = line_first_led
         line3_y = line2_y + row_h
-        lbl_w = 80  # feste Label-Breite (reicht für alle drei Texte)
-        led_x = self.width() - margin - lbl_w - 4 - led_d  # LED-Spalte
-        lbl_x = led_x + led_d + 4  # Label immer direkt nach LED
+        line4_y = line3_y + row_h
+        lbl_w = 80
+        led_x = self.width() - margin - lbl_w - 4 - led_d
+        lbl_x = led_x + led_d + 4
 
-        self._moving_led.setGeometry(led_x, top_y + 5, led_d, led_d)
-        self._moving_lbl.setGeometry(lbl_x, top_y, lbl_w, row_h)
+        self._moving_led.setGeometry(led_x, line2_y + 5, led_d, led_d)
+        self._moving_lbl.setGeometry(lbl_x, line2_y, lbl_w, row_h)
         self._moving_led.raise_()
         self._moving_lbl.raise_()
 
-        self._online_led.setGeometry(led_x, line2_y + 5, led_d, led_d)
-        self._online_lbl.setGeometry(lbl_x, line2_y, lbl_w, row_h)
+        self._online_led.setGeometry(led_x, line3_y + 5, led_d, led_d)
+        self._online_lbl.setGeometry(lbl_x, line3_y, lbl_w, row_h)
         self._online_led.raise_()
         self._online_lbl.raise_()
 
-        self._ref_led.setGeometry(led_x, line3_y + 5, led_d, led_d)
-        self._ref_lbl.setGeometry(lbl_x, line3_y, lbl_w, row_h)
+        self._ref_led.setGeometry(led_x, line4_y + 5, led_d, led_d)
+        self._ref_lbl.setGeometry(lbl_x, line4_y, lbl_w, row_h)
         self._ref_led.raise_()
         self._ref_lbl.raise_()
+
+        if self._soll_overlay is not None:
+            margin = 7
+            text_top = 13
+            sh = self._soll_overlay.sizeHint()
+            ow = int(sh.width()) if sh.width() > 0 else 140
+            oh = max(int(sh.height()) if sh.height() > 0 else 24, 22)
+            ox = int(self.width() - margin - ow)
+            oy = int(text_top)
+            self._soll_overlay.setGeometry(ox, oy, ow, oh)
+            self._soll_overlay.raise_()
 
     def set_current_deg(self, deg: Optional[float]) -> None:
         self._current_deg = None if deg is None else clamp_el(deg)
@@ -165,6 +207,11 @@ class ElevationCompassWidget(QWidget):
     def set_heatmap_offset_deg(self, offset: float) -> None:
         """Heatmap um Antennenversatz drehen (0° = Horizont)."""
         self._heatmap_offset_deg = float(offset)
+        self.update()
+
+    def set_heatmap_scale(self, scale: Optional[HeatmapScale]) -> None:
+        """Optionale Last-Skala; None = automatische Min/Max-Skala."""
+        self._heatmap_scale = scale
         self.update()
 
     def _geom(self) -> tuple[float, float, float]:
@@ -300,6 +347,7 @@ class ElevationCompassWidget(QWidget):
                 elevation=True,
                 ring_width=5.0,
                 offset_deg=self._heatmap_offset_deg,
+                scale=self._heatmap_scale,
             )
 
         # SOLL (gestrichelt)
@@ -311,6 +359,18 @@ class ElevationCompassWidget(QWidget):
         if self._current_deg is not None:
             painter.setPen(QPen(QColor(0, 120, 0), 4, Qt.PenStyle.SolidLine))
             self._draw_arrow(painter, cx, cy, r * 0.92, self._current_deg)
+
+        # Ist/Soll oben links/rechts (wie AZ zweite Zeile, hier eine Zeile)
+        margin_txt = 7
+        text_top = 13
+        txt_font = painter.font()
+        txt_font.setBold(True)
+        txt_font.setPixelSize(16)
+        painter.setFont(txt_font)
+        fm_ov = QFontMetrics(txt_font)
+        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
+        ist_s = self._overlay_ist
+        painter.drawText(QPointF(float(margin_txt), float(text_top)), ist_s)
 
         # Mittelpunkt
         painter.setPen(Qt.PenStyle.NoPen)

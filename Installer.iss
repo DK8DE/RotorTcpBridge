@@ -36,6 +36,11 @@ OutputBaseFilename=RotorTcpBridge-Setup-{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+; Linkes Bild nur Willkommen + Fertig: hohes Format (Seitenverhältnis ~164:314), kein Quadrat — sonst streckt Inno und wirkt verzerrt.
+; Siehe https://jrsoftware.org/ishelp/topic_setup_wizardimagefile.htm (z. B. ≥240×459).
+WizardImageFile=Installer.png
+; Oben rechts auf den übrigen Seiten (Lizenz, Ordner, …): quadratisch — https://jrsoftware.org/ishelp/topic_setup_wizardsmallimagefile.htm
+WizardSmallImageFile=InstallerSmall.png
 PrivilegesRequired=admin
 SetupIconFile={#MyAppIcon}
 UninstallDisplayIcon={app}\{#MyExeName}

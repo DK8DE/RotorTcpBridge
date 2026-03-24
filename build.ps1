@@ -66,6 +66,27 @@ if (-not $SkipInstaller) {
     }
     if (-not $iscc) { throw "ISCC.exe nicht gefunden. Inno Setup installiert?" }
 
+    $outInstaller = Join-Path $ProjectDir "dist\installer\RotorTcpBridge-Setup-$Version.exe"
+    if (Test-Path $outInstaller) {
+        try {
+            $fs = [System.IO.File]::Open(
+                $outInstaller,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::None
+            )
+            $fs.Close()
+        } catch {
+            throw @"
+Die Installer-EXE ist gesperrt (Windows-Fehler 32) und kann nicht überschrieben werden:
+  $outInstaller
+
+Typisch: Setup noch offen, EXE im Explorer ausgewählt/Vorschau, oder Antivirus scannt die Datei.
+Vorgehen: Installer/Programm beenden, anderes Explorer-Fenster, ggf. Task-Manager (Handles), Build erneut starten.
+"@
+        }
+    }
+
     & $iscc /DMyAppVersion=$Version (Join-Path $ProjectDir "Installer.iss")
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup fehlgeschlagen (Exit $LASTEXITCODE)." }
 

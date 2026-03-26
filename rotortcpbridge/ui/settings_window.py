@@ -37,6 +37,12 @@ from ..net_utils import ipv4_subnet_broadcast_default
 from .ui_utils import px_to_dip
 
 
+def _settings_tooltip_html(text: str, max_width_px: int = 360) -> str:
+    """HTML für Tooltips mit begrenzter Breite und Umbruch (Qt zeigt HTML in Tooltips)."""
+    e = str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return f"<p style='white-space: pre-wrap; max-width: {max_width_px}px;'>{e}</p>"
+
+
 class SettingsWindow(QDialog):
     """Einstellungen + Server/Hardware Buttons."""
 
@@ -188,6 +194,13 @@ class SettingsWindow(QDialog):
         # Checkbox-Spalte: Basisbreite minus gewünschten Linksschub (kein neg. margin – der clippt Beschriftung)
         _udp_chk_col_w = max(0, px_to_dip(self, 218) - px_to_dip(self, 130))
 
+        def _asnearest_lbl_row(label_text: str) -> QLabel:
+            w = QLabel(label_text)
+            w.setWordWrap(True)
+            w.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            return w
+
         self.chk_udp_ucxlog = QCheckBox(t("settings.chk_udp_ucxlog"))
         self.chk_udp_ucxlog.setToolTip(t("settings.chk_udp_ucxlog_tooltip"))
         self.chk_udp_ucxlog.setChecked(bool(_ui0.get("udp_ucxlog_enabled", True)))
@@ -213,6 +226,42 @@ class SettingsWindow(QDialog):
         self.sp_aswatch_udp_port.setValue(int(_ui0.get("aswatch_udp_port", 9872)))
         self.sp_aswatch_udp_port.setFixedWidth(_udp_port_field_w)
         self.sp_aswatch_udp_port.setToolTip(t("settings.aswatch_udp_port_tooltip"))
+
+        self.chk_aswatch_aircraft = QCheckBox(t("settings.chk_aswatch_aircraft"))
+        self.chk_aswatch_aircraft.setToolTip(_settings_tooltip_html(t("settings.chk_aswatch_aircraft_tooltip")))
+        self.chk_aswatch_aircraft.setChecked(bool(_ui0.get("aswatch_aircraft_enabled", True)))
+        self.lbl_asnearest_min_score = _asnearest_lbl_row(t("settings.asnearest_min_score_label"))
+        self.sp_asnearest_min_score = QSpinBox()
+        self.sp_asnearest_min_score.setRange(0, 100)
+        self.sp_asnearest_min_score.setValue(int(_ui0.get("asnearest_min_score", 45)))
+        self.sp_asnearest_min_score.setToolTip(_settings_tooltip_html(t("settings.asnearest_min_score_tooltip")))
+        self.lbl_asnearest_min_score.setToolTip(self.sp_asnearest_min_score.toolTip())
+        self.sp_asnearest_min_score.setFixedWidth(_udp_port_field_w)
+        self.lbl_asnearest_geom_min = _asnearest_lbl_row(t("settings.asnearest_geom_min_label"))
+        self.sp_asnearest_geom_min = QSpinBox()
+        self.sp_asnearest_geom_min.setRange(0, 100)
+        self.sp_asnearest_geom_min.setValue(
+            int(round(float(_ui0.get("asnearest_geom_factor_min", 0.20)) * 100.0))
+        )
+        self.sp_asnearest_geom_min.setToolTip(_settings_tooltip_html(t("settings.asnearest_geom_min_tooltip")))
+        self.lbl_asnearest_geom_min.setToolTip(self.sp_asnearest_geom_min.toolTip())
+        self.sp_asnearest_geom_min.setFixedWidth(_udp_port_field_w)
+        self.lbl_asnearest_list_max_min = _asnearest_lbl_row(t("settings.asnearest_list_max_minutes_label"))
+        self.sp_asnearest_list_max_min = QSpinBox()
+        self.sp_asnearest_list_max_min.setRange(0, 999)
+        self.sp_asnearest_list_max_min.setValue(
+            max(0, int(_ui0.get("asnearest_list_max_minutes", 0)))
+        )
+        self.sp_asnearest_list_max_min.setToolTip(_settings_tooltip_html(t("settings.asnearest_list_max_minutes_tooltip")))
+        self.lbl_asnearest_list_max_min.setToolTip(self.sp_asnearest_list_max_min.toolTip())
+        self.sp_asnearest_list_max_min.setFixedWidth(_udp_port_field_w)
+        self.lbl_asnearest_list_max_rows = _asnearest_lbl_row(t("settings.asnearest_list_max_rows_label"))
+        self.sp_asnearest_list_max_rows = QSpinBox()
+        self.sp_asnearest_list_max_rows.setRange(1, 500)
+        self.sp_asnearest_list_max_rows.setValue(int(_ui0.get("asnearest_list_max_rows", 20)))
+        self.sp_asnearest_list_max_rows.setToolTip(_settings_tooltip_html(t("settings.asnearest_list_max_rows_tooltip")))
+        self.lbl_asnearest_list_max_rows.setToolTip(self.sp_asnearest_list_max_rows.toolTip())
+        self.sp_asnearest_list_max_rows.setFixedWidth(_udp_port_field_w)
 
         self.chk_udp_pst = QCheckBox(t("settings.chk_udp_pst"))
         self.chk_udp_pst.setToolTip(t("settings.chk_udp_pst_tooltip"))
@@ -256,14 +305,38 @@ class SettingsWindow(QDialog):
         grid_udp.addWidget(QLabel(_lbl_port), 1, 3, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         grid_udp.addWidget(self.sp_aswatch_udp_port, 1, 4, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
+        grid_udp.addWidget(
+            self.chk_aswatch_aircraft,
+            2,
+            0,
+            1,
+            5,
+            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+
+        def _asn_full_row(lbl: QLabel, sp: QSpinBox) -> QWidget:
+            """Eine Zeile: Beschriftung links (wie Checkbox-Zeilen), Wert rechts."""
+            row = QWidget()
+            lay = QHBoxLayout(row)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(12)
+            lay.addWidget(lbl, 1)
+            lay.addWidget(sp, 0, Qt.AlignmentFlag.AlignRight)
+            return row
+
+        grid_udp.addWidget(_asn_full_row(self.lbl_asnearest_min_score, self.sp_asnearest_min_score), 3, 0, 1, 5)
+        grid_udp.addWidget(_asn_full_row(self.lbl_asnearest_geom_min, self.sp_asnearest_geom_min), 4, 0, 1, 5)
+        grid_udp.addWidget(_asn_full_row(self.lbl_asnearest_list_max_min, self.sp_asnearest_list_max_min), 5, 0, 1, 5)
+        grid_udp.addWidget(_asn_full_row(self.lbl_asnearest_list_max_rows, self.sp_asnearest_list_max_rows), 6, 0, 1, 5)
+
         # PST: Checkbox über zwei Zeilen; Ziel-IP eine Zeile unter Listen-IP (unter „IP:“)
-        grid_udp.addWidget(self.chk_udp_pst, 2, 0, 2, 1, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(QLabel(_lbl_ip), 2, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(self.ed_udp_pst_listen, 2, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(QLabel(_lbl_port), 2, 3, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(self.sp_udp_pst_port, 2, 4, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(QLabel(_lbl_tgt), 3, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(self.ed_udp_pst_send_host, 3, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_udp.addWidget(self.chk_udp_pst, 7, 0, 2, 1, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_udp.addWidget(QLabel(_lbl_ip), 7, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid_udp.addWidget(self.ed_udp_pst_listen, 7, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_udp.addWidget(QLabel(_lbl_port), 7, 3, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid_udp.addWidget(self.sp_udp_pst_port, 7, 4, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_udp.addWidget(QLabel(_lbl_tgt), 8, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid_udp.addWidget(self.ed_udp_pst_send_host, 8, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         udp_block_w = QWidget()
         udp_block_w.setLayout(grid_udp)
@@ -274,6 +347,22 @@ class SettingsWindow(QDialog):
             self.chk_udp_pst.setChecked(False)
         self.chk_pst_enabled.stateChanged.connect(self._on_spid_vs_udp_pst_exclusive)
         self.chk_udp_pst.stateChanged.connect(self._on_udp_pst_vs_spid_exclusive)
+
+        def _sync_aswatch_aircraft_row():
+            en = self.chk_aswatch_udp.isChecked()
+            self.chk_aswatch_aircraft.setEnabled(en)
+            self.lbl_asnearest_min_score.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
+            self.sp_asnearest_min_score.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
+            self.lbl_asnearest_geom_min.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
+            self.sp_asnearest_geom_min.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
+            self.lbl_asnearest_list_max_min.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
+            self.sp_asnearest_list_max_min.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
+            self.lbl_asnearest_list_max_rows.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
+            self.sp_asnearest_list_max_rows.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
+
+        self.chk_aswatch_udp.stateChanged.connect(lambda _=None: _sync_aswatch_aircraft_row())
+        self.chk_aswatch_aircraft.stateChanged.connect(lambda _=None: _sync_aswatch_aircraft_row())
+        _sync_aswatch_aircraft_row()
 
         _all_cmd_spec = {s.name.upper(): s for s in command_specs()}
         _spec_setcal = _all_cmd_spec.get("SETCAL")
@@ -1235,6 +1324,17 @@ class SettingsWindow(QDialog):
         self.cfg.setdefault("ui", {})["aswatch_udp_enabled"] = bool(self.chk_aswatch_udp.isChecked())
         self.cfg.setdefault("ui", {})["aswatch_udp_port"] = int(self.sp_aswatch_udp_port.value())
         self.cfg.setdefault("ui", {})["aswatch_udp_listen_host"] = self.ed_aswatch_udp_listen.text().strip()
+        self.cfg.setdefault("ui", {})["aswatch_aircraft_enabled"] = bool(self.chk_aswatch_aircraft.isChecked())
+        self.cfg.setdefault("ui", {})["asnearest_min_score"] = int(self.sp_asnearest_min_score.value())
+        self.cfg.setdefault("ui", {})["asnearest_geom_factor_min"] = max(
+            0.0, min(1.0, int(self.sp_asnearest_geom_min.value()) / 100.0)
+        )
+        self.cfg.setdefault("ui", {})["asnearest_list_max_minutes"] = max(
+            0, int(self.sp_asnearest_list_max_min.value())
+        )
+        self.cfg.setdefault("ui", {})["asnearest_list_max_rows"] = max(
+            1, min(500, int(self.sp_asnearest_list_max_rows.value()))
+        )
         self.cfg.setdefault("ui", {})["udp_pst_enabled"] = bool(self.chk_udp_pst.isChecked())
         self.cfg.setdefault("ui", {})["udp_pst_port"] = int(self.sp_udp_pst_port.value())
         self.cfg.setdefault("ui", {})["udp_pst_listen_host"] = self.ed_udp_pst_listen.text().strip()

@@ -127,6 +127,25 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "aswatch_udp_enabled": True,
         "aswatch_udp_port": 9872,
         "aswatch_udp_listen_host": "0.0.0.0",
+        # ASNEAREST (Flugzeuge): wenn False, keine Verarbeitung/Anzeige (Karte ohne Flugzeuge/Linien)
+        "aswatch_aircraft_enabled": True,
+        # ASNEAREST (Flugzeuge): Rohdaten nach %APPDATA%/RotorTcpBridge/asnearest.jsonl
+        "asnearest_jsonl_log": True,
+        # Linie Flugzeug → Gegenstation wenn Potenzial ≥ und Restzeit ≤ (Minuten)
+        "asnearest_line_potential_min": 50,
+        "asnearest_line_duration_max_min": 120,
+        # ASNEAREST: kombinierter Score 0–100 (Potenzial + Zeit, vgl. KST); Anzeige nur ab diesem Wert
+        "asnearest_min_score": 45,
+        # Karten-Infotabelle ASNEAREST: nur Einträge mit Restzeit (min) ≤ diesem Wert; 0 = kein Limit
+        "asnearest_list_max_minutes": 0,
+        # Max. Zeilen in der ASNEAREST-Tabelle auf der Karte
+        "asnearest_list_max_rows": 20,
+        # Mitte-Faktor g = 4*t*(1-t); Linie nur wenn g ≥ (0 = aus, typ. 0.12–0.25)
+        "asnearest_geom_factor_min": 0.20,
+        # Keine Höhe in UDP: H/M/S-Faktor stärker bei langer QTH↔DX-Strecke (siehe udp_aswatchlist)
+        "asnearest_use_category_path": True,
+        # Gleiches Flugzeug pro DX beibehalten (sonst springt Restzeit beim Wechsel des „Besten“)
+        "asnearest_sticky_flight": True,
     },
 }
 

@@ -68,7 +68,7 @@ class CompassWidget(QWidget):
         self._heatmap_visible: bool = False
         # Bis zu zwei Einträge aus: "strom" | "om_radar" | "dwell" (innen→außen sortiert)
         self._heatmap_modes: List[str] = []
-        self._om_radar_counts: Optional[List[int]] = None
+        self._om_radar_counts: Optional[List[float]] = None
         self._om_radar_n: int = OM_RADAR_N_DEFAULT
         self._dwell_seconds: Optional[List[float]] = None
         self._dwell_full_sec: float = 300.0
@@ -323,21 +323,21 @@ class CompassWidget(QWidget):
             self._om_radar_n = nn
             self.update()
 
-    def set_om_radar_counts(self, counts: Optional[List[int]]) -> None:
-        """Zähler je Sektor für OM-Radar (Länge = konfigurierte Sektorenanzahl)."""
+    def set_om_radar_counts(self, counts: Optional[List[float]]) -> None:
+        """Erwartete OM-Dichte je Sektor (Länge = Sektorenanzahl); Anteile aus Öffnungswinkel, Summe ≈ OM-Anzahl."""
         if not counts:
             self._om_radar_counts = None
             self.update()
             return
-        v: List[int] = []
+        v: List[float] = []
         for i in range(self._om_radar_n):
             if i < len(counts):
                 try:
-                    v.append(max(0, int(counts[i])))
+                    v.append(max(0.0, float(counts[i])))
                 except (TypeError, ValueError):
-                    v.append(0)
+                    v.append(0.0)
             else:
-                v.append(0)
+                v.append(0.0)
         self._om_radar_counts = v
         self.update()
 
@@ -422,179 +422,180 @@ class CompassWidget(QWidget):
         self.targetPicked.emit(deg)
 
     def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        with QPainter(self) as painter:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        cx, cy, r = self._geom()
+            cx, cy, r = self._geom()
 
-        # Hauptkreis zuerst (darunter)
-        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 2))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+            # Hauptkreis zuerst (darunter)
+            painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
 
-        # Teilstriche
-        tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
-        painter.setPen(tick_pen)
-        for a in range(0, 360, 10):
-            rad = math.radians(a)
-            x1 = cx + math.sin(rad) * (r * 0.90)
-            y1 = cy - math.cos(rad) * (r * 0.90)
-            if a % 30 == 0:
-                x2 = cx + math.sin(rad) * (r * 1.00)
-                y2 = cy - math.cos(rad) * (r * 1.00)
+            # Teilstriche
+            tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
+            painter.setPen(tick_pen)
+            for a in range(0, 360, 10):
+                rad = math.radians(a)
+                x1 = cx + math.sin(rad) * (r * 0.90)
+                y1 = cy - math.cos(rad) * (r * 0.90)
+                if a % 30 == 0:
+                    x2 = cx + math.sin(rad) * (r * 1.00)
+                    y2 = cy - math.cos(rad) * (r * 1.00)
+                else:
+                    x2 = cx + math.sin(rad) * (r * 0.96)
+                    y2 = cy - math.cos(rad) * (r * 0.96)
+                painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+            # Grad-Beschriftung (alle 20°; Kardinalpunkte weglassen)
+            painter.save()
+            deg_font = painter.font()
+            deg_font.setBold(False)
+            deg_font.setPointSize(max(7, int(r * 0.06)))
+            painter.setFont(deg_font)
+            fm_deg = QFontMetrics(deg_font)
+            painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
+
+            label_r = max(r * 0.60, (r * 0.88) - 30.0)
+            for a in range(0, 360, 20):
+                if a % 90 == 0:
+                    continue
+                txt = f"{a}°"
+                rad = math.radians(a)
+                tx = cx + math.sin(rad) * label_r
+                ty = cy - math.cos(rad) * label_r
+                w = fm_deg.horizontalAdvance(txt)
+                h = fm_deg.height()
+                painter.drawText(QPointF(tx - w / 2.0, ty + h / 3.0), txt)
+            painter.restore()
+
+            # Himmelsrichtungen
+            font = painter.font()
+            font.setBold(True)
+            font.setPointSize(max(font.pointSize(), int(r * 0.12)))
+            painter.setFont(font)
+            fm = QFontMetrics(font)
+
+            def draw_label(text: str, angle: float) -> None:
+                rad = math.radians(angle)
+                tx = cx + math.sin(rad) * (r * 0.70)
+                ty = cy - math.cos(rad) * (r * 0.70)
+                w = fm.horizontalAdvance(text)
+                h = fm.height()
+                painter.drawText(QPointF(tx - w / 2.0, ty + h / 4.0), text)
+
+            draw_label("N", 0)
+            draw_label("O", 90)
+            draw_label("S", 180)
+            draw_label("W", 270)
+
+            # Heatmap-Ringe: Farbring 7px, dazwischen 1px schwarz; innen nach außen = Strom → OM-Radar → Standzeit
+            ring_w = 7.0
+            gap_w = 1.0
+            step = ring_w + gap_w
+            modes = self._heatmap_modes if self._heatmap_visible else []
+            for i, mode in enumerate(modes):
+                inner_r = r + float(i) * step
+                if mode == "strom" and (self._bins_cw or self._bins_ccw):
+                    paint_bins_heatmap_ring(
+                        painter,
+                        cx,
+                        cy,
+                        inner_r,
+                        self._bins_cw,
+                        self._bins_ccw,
+                        elevation=False,
+                        ring_width=ring_w,
+                        offset_deg=self._heatmap_offset_deg,
+                        scale=self._heatmap_scale,
+                    )
+                elif mode == "om_radar":
+                    # OM-Zähler sind in geografischer Peilung (Nord=0°); kein Antennenversatz wie bei Strom/Standzeit (Rotor-Koordinaten).
+                    paint_om_radar_ring(
+                        painter,
+                        cx,
+                        cy,
+                        inner_r,
+                        self._om_radar_counts,
+                        ring_width=ring_w,
+                        offset_deg=0.0,
+                        n_sectors=self._om_radar_n,
+                    )
+                elif mode == "dwell":
+                    paint_dwell_ring(
+                        painter,
+                        cx,
+                        cy,
+                        inner_r,
+                        self._dwell_seconds,
+                        self._dwell_full_sec,
+                        ring_width=ring_w,
+                        offset_deg=self._heatmap_offset_deg,
+                        n_sectors=self._dwell_n,
+                    )
+                if i < len(modes) - 1:
+                    paint_az_ring_gap_black(painter, cx, cy, inner_r + ring_w, gap_w)
+
+            # Rotes Dreieck: Anschlag der Antenne (auf Kreislinie, nach innen zeigend)
+            self._draw_anschlag_triangle(painter, cx, cy, r)
+
+            # Kreis-Kontur erneut
+            painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+
+            # SOLL (gestrichelt)
+            if self._target_deg is not None:
+                painter.setPen(QPen(QColor(160, 0, 0), 3, Qt.PenStyle.DashLine))
+                self._draw_arrow(painter, cx, cy, r * 0.85, self._target_deg)
+
+            # IST (durchgezogen)
+            if self._current_deg is not None:
+                painter.setPen(QPen(QColor(0, 120, 0), 4, Qt.PenStyle.SolidLine))
+                self._draw_arrow(painter, cx, cy, r * 0.92, self._current_deg)
+
+            # WIND Richtung (blau, halb so lang wie der grüne IST-Pfeil)
+            if self._wind_visible and self._wind_dir_draw_deg is not None:
+                painter.setPen(QPen(QColor(0, 90, 220), 3, Qt.PenStyle.SolidLine))
+                wd = float(self._wind_dir_draw_deg)
+                if self._wind_dir_mode == "to":
+                    wd = wrap_deg(wd + 180.0)
+                self._draw_arrow(painter, cx, cy, r * 0.46, wd)
+
+            # Wind + Ist/Soll in den oberen Ecken: Zeile 1 Wind/Richtung, Zeile 2 Ist (links) / Soll (rechts)
+            margin = 7
+            top_y = 13
+            line_gap = 22
+            txt_font = painter.font()
+            txt_font.setBold(True)
+            txt_font.setPixelSize(16)
+            painter.setFont(txt_font)
+            fm_txt = QFontMetrics(txt_font)
+            painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
+
+            ist_txt = self._overlay_ist or ""
+
+            if self._wind_visible:
+                speed_txt = "Wind: --.- km/h"
+                if self._wind_kmh is not None:
+                    speed_txt = f"Wind: {self._wind_kmh:.1f} km/h"
+                painter.drawText(QPointF(float(margin), float(top_y)), speed_txt)
+
+                dir_txt = "Richtung: --.-°"
+                if self._wind_dir_deg is not None:
+                    dir_txt = f"Richtung: {self._wind_dir_deg:.1f}°"
+                right_dir_x = float(self.width() - margin - fm_txt.horizontalAdvance(dir_txt))
+                painter.drawText(QPointF(right_dir_x, float(top_y)), dir_txt)
+
+                row2_y = float(top_y + line_gap)
+                painter.drawText(QPointF(float(margin), row2_y), ist_txt)
             else:
-                x2 = cx + math.sin(rad) * (r * 0.96)
-                y2 = cy - math.cos(rad) * (r * 0.96)
-            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+                painter.drawText(QPointF(float(margin), float(top_y)), ist_txt)
 
-        # Grad-Beschriftung (alle 20°; Kardinalpunkte weglassen)
-        painter.save()
-        deg_font = painter.font()
-        deg_font.setBold(False)
-        deg_font.setPointSize(max(7, int(r * 0.06)))
-        painter.setFont(deg_font)
-        fm_deg = QFontMetrics(deg_font)
-        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
-
-        label_r = max(r * 0.60, (r * 0.88) - 30.0)
-        for a in range(0, 360, 20):
-            if a % 90 == 0:
-                continue
-            txt = f"{a}°"
-            rad = math.radians(a)
-            tx = cx + math.sin(rad) * label_r
-            ty = cy - math.cos(rad) * label_r
-            w = fm_deg.horizontalAdvance(txt)
-            h = fm_deg.height()
-            painter.drawText(QPointF(tx - w / 2.0, ty + h / 3.0), txt)
-        painter.restore()
-
-        # Himmelsrichtungen
-        font = painter.font()
-        font.setBold(True)
-        font.setPointSize(max(font.pointSize(), int(r * 0.12)))
-        painter.setFont(font)
-        fm = QFontMetrics(font)
-
-        def draw_label(text: str, angle: float) -> None:
-            rad = math.radians(angle)
-            tx = cx + math.sin(rad) * (r * 0.70)
-            ty = cy - math.cos(rad) * (r * 0.70)
-            w = fm.horizontalAdvance(text)
-            h = fm.height()
-            painter.drawText(QPointF(tx - w / 2.0, ty + h / 4.0), text)
-
-        draw_label("N", 0)
-        draw_label("O", 90)
-        draw_label("S", 180)
-        draw_label("W", 270)
-
-        # Heatmap-Ringe: Farbring 7px, dazwischen 1px schwarz; innen nach außen = Strom → OM-Radar → Standzeit
-        ring_w = 7.0
-        gap_w = 1.0
-        step = ring_w + gap_w
-        modes = self._heatmap_modes if self._heatmap_visible else []
-        for i, mode in enumerate(modes):
-            inner_r = r + float(i) * step
-            if mode == "strom" and (self._bins_cw or self._bins_ccw):
-                paint_bins_heatmap_ring(
-                    painter,
-                    cx,
-                    cy,
-                    inner_r,
-                    self._bins_cw,
-                    self._bins_ccw,
-                    elevation=False,
-                    ring_width=ring_w,
-                    offset_deg=self._heatmap_offset_deg,
-                    scale=self._heatmap_scale,
-                )
-            elif mode == "om_radar":
-                paint_om_radar_ring(
-                    painter,
-                    cx,
-                    cy,
-                    inner_r,
-                    self._om_radar_counts,
-                    ring_width=ring_w,
-                    offset_deg=self._heatmap_offset_deg,
-                    n_sectors=self._om_radar_n,
-                )
-            elif mode == "dwell":
-                paint_dwell_ring(
-                    painter,
-                    cx,
-                    cy,
-                    inner_r,
-                    self._dwell_seconds,
-                    self._dwell_full_sec,
-                    ring_width=ring_w,
-                    offset_deg=self._heatmap_offset_deg,
-                    n_sectors=self._dwell_n,
-                )
-            if i < len(modes) - 1:
-                paint_az_ring_gap_black(painter, cx, cy, inner_r + ring_w, gap_w)
-
-        # Rotes Dreieck: Anschlag der Antenne (auf Kreislinie, nach innen zeigend)
-        self._draw_anschlag_triangle(painter, cx, cy, r)
-
-        # Kreis-Kontur erneut
-        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 2))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
-
-        # SOLL (gestrichelt)
-        if self._target_deg is not None:
-            painter.setPen(QPen(QColor(160, 0, 0), 3, Qt.PenStyle.DashLine))
-            self._draw_arrow(painter, cx, cy, r * 0.85, self._target_deg)
-
-        # IST (durchgezogen)
-        if self._current_deg is not None:
-            painter.setPen(QPen(QColor(0, 120, 0), 4, Qt.PenStyle.SolidLine))
-            self._draw_arrow(painter, cx, cy, r * 0.92, self._current_deg)
-
-        # WIND Richtung (blau, halb so lang wie der grüne IST-Pfeil)
-        if self._wind_visible and self._wind_dir_draw_deg is not None:
-            painter.setPen(QPen(QColor(0, 90, 220), 3, Qt.PenStyle.SolidLine))
-            wd = float(self._wind_dir_draw_deg)
-            if self._wind_dir_mode == "to":
-                wd = wrap_deg(wd + 180.0)
-            self._draw_arrow(painter, cx, cy, r * 0.46, wd)
-
-        # Wind + Ist/Soll in den oberen Ecken: Zeile 1 Wind/Richtung, Zeile 2 Ist (links) / Soll (rechts)
-        margin = 7
-        top_y = 13
-        line_gap = 22
-        txt_font = painter.font()
-        txt_font.setBold(True)
-        txt_font.setPixelSize(16)
-        painter.setFont(txt_font)
-        fm_txt = QFontMetrics(txt_font)
-        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
-
-        ist_txt = self._overlay_ist or ""
-
-        if self._wind_visible:
-            speed_txt = "Wind: --.- km/h"
-            if self._wind_kmh is not None:
-                speed_txt = f"Wind: {self._wind_kmh:.1f} km/h"
-            painter.drawText(QPointF(float(margin), float(top_y)), speed_txt)
-
-            dir_txt = "Richtung: --.-°"
-            if self._wind_dir_deg is not None:
-                dir_txt = f"Richtung: {self._wind_dir_deg:.1f}°"
-            right_dir_x = float(self.width() - margin - fm_txt.horizontalAdvance(dir_txt))
-            painter.drawText(QPointF(right_dir_x, float(top_y)), dir_txt)
-
-            row2_y = float(top_y + line_gap)
-            painter.drawText(QPointF(float(margin), row2_y), ist_txt)
-        else:
-            painter.drawText(QPointF(float(margin), float(top_y)), ist_txt)
-
-        # Mittelpunkt
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(self.palette().color(QPalette.ColorRole.WindowText))
-        painter.drawEllipse(QRectF(cx - 5.0, cy - 5.0, 10.0, 10.0))
+            # Mittelpunkt
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(self.palette().color(QPalette.ColorRole.WindowText))
+            painter.drawEllipse(QRectF(cx - 5.0, cy - 5.0, 10.0, 10.0))
 
     def _draw_anschlag_triangle(self, painter: QPainter, cx: float, cy: float, r: float) -> None:
         """Rotes Dreieck auf der Kreislinie am Antennenversatz, Spitze nach innen."""

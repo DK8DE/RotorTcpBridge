@@ -20,8 +20,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..app_icon import get_app_icon
-from ..angle_utils import clamp_el, fmt_deg, wrap_deg
-from ..geo_utils import bearing_deg
+from ..angle_utils import clamp_el, fmt_deg, om_beam_contributions_per_sector, wrap_deg
+from ..geo_utils import bearing_deg, haversine_km
 from ..i18n import t
 from ..ui.ui_utils import px_to_dip
 from .compass_az_window import CompassWidget
@@ -32,11 +32,12 @@ from .statistic_compass_widget import parse_heatmap_scale
 class CompassWindow(QDialog):
     """Gemeinsames Kompass-Fenster für AZ/EL."""
 
-    def __init__(self, cfg: dict, controller, save_cfg_cb, parent=None):
+    def __init__(self, cfg: dict, controller, save_cfg_cb, parent=None, antenna_bridge=None):
         super().__init__(parent)
         self.cfg = cfg
         self.ctrl = controller
         self.save_cfg_cb = save_cfg_cb
+        self._antenna_bridge = antenna_bridge
         self.setWindowTitle(t("compass.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
@@ -52,8 +53,8 @@ class CompassWindow(QDialog):
         self._stop_el_ts: Optional[float] = None
         self._STOP_PULL_DELAY_S = 3.0
         self._last_label_color: Optional[str] = None
-        # AZ Standzeit-Ring (nur Session, bis App-Neustart)
-        self._dwell_az_seconds: list[float] = []
+        # AZ Standzeit-Ring (nur Session): je Antenne (0–2) eigene Sektorliste, parallel geführt
+        self._dwell_az_seconds_per_ant: list[list[float]] = [[], [], []]
         self._dwell_prev_mono: Optional[float] = None
 
         root = QVBoxLayout(self)
@@ -111,6 +112,7 @@ class CompassWindow(QDialog):
         self._act_heatmap_strom.setData("strom")
         self._act_heatmap_om = QAction(t("compass.heatmap_om_radar"), self)
         self._act_heatmap_om.setCheckable(True)
+        self._act_heatmap_om.setToolTip(t("compass.heatmap_om_radar_tooltip"))
         self._act_heatmap_om.setData("om_radar")
         self._act_heatmap_dwell = QAction(t("compass.heatmap_dwell"), self)
         self._act_heatmap_dwell.setCheckable(True)
@@ -248,13 +250,19 @@ class CompassWindow(QDialog):
         self._refresh_antenna_dropdown()
 
     def _refresh_antenna_dropdown(self) -> None:
-        """Dropdown-Einträge mit aktuellen Versatzwerten aktualisieren."""
-        idx = max(0, min(2, self.cb_antenna.currentIndex()))
+        """Dropdown-Einträge mit aktuellen Versatzwerten aktualisieren; Index aus cfg (single source of truth)."""
+        idx = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
         self.cb_antenna.blockSignals(True)
         self.cb_antenna.clear()
         self.cb_antenna.addItems(self._get_antenna_dropdown_items())
         self.cb_antenna.setCurrentIndex(idx)
         self.cb_antenna.blockSignals(False)
+
+    def sync_antenna_from_external(self, idx: int) -> None:
+        """Andere Fenster / Bridge: gleiche cfg wie Sender — Dropdown und Anzeige anpassen."""
+        _ = idx  # Index steht bereits in cfg
+        self._refresh_antenna_dropdown()
+        self._refresh_after_antenna_changed()
 
     def _get_antenna_dropdown_items(self) -> list[str]:
         """Antennen-Namen mit Versatz in Klammern: 'Antenne 1 (0°)' etc."""
@@ -331,6 +339,11 @@ class CompassWindow(QDialog):
             self.save_cfg_cb(self.cfg)
         except Exception:
             pass
+        if self._antenna_bridge is not None:
+            try:
+                self._antenna_bridge.selection_changed.emit(idx)
+            except Exception:
+                pass
         self._refresh_after_antenna_changed()
 
     def _migrate_heatmap_ui_keys(self) -> None:
@@ -437,10 +450,12 @@ class CompassWindow(QDialog):
             self.az_compass.set_om_radar_counts(self._compute_om_radar_counts())
         else:
             self.az_compass.set_om_radar_counts(None)
+        n_d = self._dwell_sector_count()
+        self._ensure_dwell_arrays(n_d)
         self.az_compass.set_dwell_ring_data(
-            self._dwell_az_seconds,
+            self._dwell_az_seconds_per_ant[self._selected_antenna_idx()],
             self._dwell_full_seconds(),
-            self._dwell_sector_count(),
+            n_d,
         )
 
     def _fill_heatmap_el_combo(self) -> None:
@@ -507,9 +522,53 @@ class CompassWindow(QDialog):
             n = 60
         return max(10, min(100, n))
 
-    def _compute_om_radar_counts(self) -> list[int]:
+    def _om_opening_deg(self) -> float:
+        """Öffnungswinkel der gewählten AZ-Antenne (Hardware, sonst Config), für OM-Radar-Verteilung."""
+        idx = self._selected_antenna_idx()
+        op: Optional[float] = None
+        if hasattr(self.ctrl, "az"):
+            axis = self.ctrl.az
+            for i, attr in enumerate(("angle1", "angle2", "angle3")):
+                if i == idx:
+                    a = getattr(axis, attr, None)
+                    if a is not None:
+                        try:
+                            op = float(a)
+                        except (TypeError, ValueError):
+                            op = None
+                    break
+        if op is None or op <= 0.0:
+            ui = self.cfg.get("ui", {})
+            angles = ui.get("antenna_angles_az")
+            if isinstance(angles, list) and idx < len(angles):
+                try:
+                    op = float(angles[idx])
+                except (TypeError, ValueError):
+                    op = 30.0
+            else:
+                op = 30.0
+        if op <= 0.0:
+            op = 30.0
+        return min(360.0, max(1.0, float(op)))
+
+    def _om_range_km(self) -> float:
+        """Reichweite der gewählten AZ-Antenne (km), wie auf der Karte (antenna_ranges_az)."""
+        ui = self.cfg.get("ui", {})
+        idx = self._selected_antenna_idx()
+        ranges = ui.get("antenna_ranges_az", [100.0, 100.0, 100.0])
+        try:
+            r = float(ranges[idx]) if isinstance(ranges, list) and idx < len(ranges) else 100.0
+        except (TypeError, ValueError):
+            r = 100.0
+        if r <= 0.0:
+            r = 100.0
+        r = min(4000.0, r)
+        return max(1.0, r)
+
+    def _compute_om_radar_counts(self) -> list[float]:
+        """Erwartete OM-Dichte je Sektor: nur Stationen mit d ≤ Reichweite; Gewichtung über Öffnungswinkel."""
         n = self._om_radar_sector_count()
-        counts = [0] * n
+        counts = [0.0] * n
         ui = self.cfg.get("ui", {})
         try:
             lat0 = float(ui.get("location_lat", 49.502651))
@@ -520,7 +579,8 @@ class CompassWindow(QDialog):
         markers = fn() if fn else []
         if not markers:
             return counts
-        step = 360.0 / float(n)
+        op = self._om_opening_deg()
+        R = self._om_range_km()
         for m in markers:
             if not isinstance(m, dict):
                 continue
@@ -529,9 +589,13 @@ class CompassWindow(QDialog):
                 lon = float(m.get("lon"))
             except (TypeError, ValueError):
                 continue
+            d_km = haversine_km(lat0, lon0, lat, lon)
+            if d_km > R:
+                continue
             b = bearing_deg(lat0, lon0, lat, lon)
-            idx = int(b / step) % n
-            counts[idx] += 1
+            frac = om_beam_contributions_per_sector(b, op, n)
+            for j in range(n):
+                counts[j] += frac[j]
         return counts
 
     def _dwell_sector_count(self) -> int:
@@ -548,6 +612,15 @@ class CompassWindow(QDialog):
             m = 5.0
         m = max(0.05, m)
         return m * 60.0
+
+    def _selected_antenna_idx(self) -> int:
+        return max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
+
+    def _ensure_dwell_arrays(self, n_d: int) -> None:
+        """Drei parallele Listen à n_d Sektoren; bei Sektorzahl-Wechsel neu mit 0 füllen."""
+        for i in range(3):
+            if len(self._dwell_az_seconds_per_ant[i]) != n_d:
+                self._dwell_az_seconds_per_ant[i] = [0.0] * n_d
 
     def _on_heatmap_az_action_toggled(self, _checked: bool) -> None:
         act = self.sender()
@@ -577,9 +650,9 @@ class CompassWindow(QDialog):
         self._apply_heatmap_az_modes_to_widget()
 
     def _on_reset_dwell_az(self) -> None:
-        """Kumulative Standzeiten pro Sektor (Session) auf 0 setzen."""
+        """Kumulative Standzeiten pro Sektor (Session) für alle drei Antennen auf 0 setzen."""
         n = self._dwell_sector_count()
-        self._dwell_az_seconds = [0.0] * n
+        self._dwell_az_seconds_per_ant = [[0.0] * n, [0.0] * n, [0.0] * n]
         self._apply_heatmap_az_modes_to_widget()
 
     @Slot()
@@ -930,14 +1003,16 @@ class CompassWindow(QDialog):
         dt = max(0.0, float(mono - self._dwell_prev_mono))
         self._dwell_prev_mono = mono
         n_d = self._dwell_sector_count()
-        if len(self._dwell_az_seconds) != n_d:
-            self._dwell_az_seconds = [0.0] * n_d
+        self._ensure_dwell_arrays(n_d)
         moving = bool(getattr(self.ctrl.az, "moving", True))
         if not moving and cur is not None:
-            comp_deg = wrap_deg(cur + off_az)
+            # Rotor-Sektor (ohne Antennenversatz); die Drehung zur Anzeige übernimmt
+            # paint_dwell_ring(..., offset_deg) wie bei OM-Radar/Heatmap.
+            rotor_deg = wrap_deg(cur)
             step = 360.0 / float(n_d)
-            idx = int(comp_deg / step) % n_d
-            self._dwell_az_seconds[idx] += dt
+            idx = int(rotor_deg / step) % n_d
+            ant_i = self._selected_antenna_idx()
+            self._dwell_az_seconds_per_ant[ant_i][idx] += dt
 
         try:
             mode_az_list = self._get_heatmap_az_modes_from_list()
@@ -948,7 +1023,7 @@ class CompassWindow(QDialog):
             else:
                 self.az_compass.set_om_radar_counts(None)
             self.az_compass.set_dwell_ring_data(
-                self._dwell_az_seconds,
+                self._dwell_az_seconds_per_ant[self._selected_antenna_idx()],
                 self._dwell_full_seconds(),
                 n_d,
             )

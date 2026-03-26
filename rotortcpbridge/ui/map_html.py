@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from urllib.parse import quote
 
 from .map_tiles import (
     _DEBUG_TILES,
@@ -50,6 +51,13 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     popup_target = params.get("popup_target", "Ziel")
     info_offnung = params.get("info_offnung", "Öffnungswinkel")
     info_reichweite = params.get("info_reichweite", "Reichweite")
+    asnearest_title = params.get("asnearest_title", "Nächste Verbindungen")
+    asnearest_col_call = params.get("asnearest_col_call", "Rufzeichen")
+    asnearest_col_dist = params.get("asnearest_col_dist", "Entfernung")
+    asnearest_col_eta = params.get("asnearest_col_eta", "Zeit (min)")
+    asnearest_col_score = params.get("asnearest_col_score", "Score")
+    asnearest_tooltip_path = params.get("asnearest_tooltip_path", "Strecke QTH→DX")
+    asnearest_tooltip_catpath = params.get("asnearest_tooltip_catpath", "Strecke/Kategorie")
     offline = bool(params.get("offline", False))
     locator_overlay = bool(params.get("map_locator_overlay", False))
     offline_min_z, offline_max_z = _offline_zoom_range(dark)
@@ -77,9 +85,8 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     else:
         tile_url = "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
         tile_url_light = tile_url_dark = tile_url
-    info_bg = "#2d2d2d" if dark else "white"
-    info_color = "#e1e1e1" if dark else "inherit"
     body_bg = "#1c1c1c" if dark else "inherit"
+    body_map_dark_class = "map-dark" if dark else ""
 
     _pkg_root = Path(__file__).resolve().parent.parent
     antenna_path = _pkg_root / "Antenne.png"
@@ -106,6 +113,13 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
             break
         except OSError:
             continue
+    # Kein großes PNG per Base64 im Inline-Skript (Qt WebEngine: sehr große Seiten → weiße Karte).
+    # Kompaktes SVG; optional kann später rotortiles:assets/ genutzt werden, wenn die Seite nicht about:blank ist.
+    _airplane_svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#e65100">'
+        '<path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>'
+    )
+    airplane_icon_url = "data:image/svg+xml;charset=utf-8," + quote(_airplane_svg, safe="")
 
     # Leaflet und Maidenhead inline einbetten (rotortiles:-URLs werden bei about:blank blockiert)
     def _read_static(name: str) -> str:
@@ -120,6 +134,21 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     leaflet_css = _read_static("leaflet.css")
     leaflet_js = _read_static("leaflet.min.js")
     maidenhead_js = _read_static("maidenhead.js")
+    _mc_css_a = _read_static("MarkerCluster.css")
+    _mc_css_b = _read_static("MarkerCluster.Default.css")
+    markercluster_css = (_mc_css_a + "\n" + _mc_css_b).strip()
+    markercluster_js = _read_static("leaflet.markercluster.js")
+    _cluster_extra_css = ""
+    if dark and markercluster_css:
+        # Lesbare Cluster-Farben auf dunkler Basemap
+        _cluster_extra_css = """
+    .marker-cluster-small { background-color: rgba(70, 130, 200, 0.45); }
+    .marker-cluster-small div { background-color: rgba(45, 100, 170, 0.88); }
+    .marker-cluster-medium { background-color: rgba(255, 193, 7, 0.45); }
+    .marker-cluster-medium div { background-color: rgba(200, 150, 0, 0.88); }
+    .marker-cluster-large { background-color: rgba(255, 120, 80, 0.5); }
+    .marker-cluster-large div { background-color: rgba(200, 80, 40, 0.9); }
+    """
 
     return f"""<!DOCTYPE html>
 <html lang="de">
@@ -128,29 +157,78 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Antennenkarte</title>
   <style>{leaflet_css}</style>
+  <style>{markercluster_css}</style>
   <style>
     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
     html, body {{ width: 100%; height: 100%; overflow: hidden; background: {body_bg}; }}
     #map {{ width: 100%; height: 100%; }}
     #info {{ position: absolute; top: 12px; left: 62px; z-index: 1000;
-      background: {info_bg}; color: {info_color}; padding: 10px 14px; border-radius: 8px;
+      background: transparent; padding: 0; max-width: min(420px, calc(100vw - 80px));
       font: 13px/1.4 sans-serif; }}
-    #info div {{ margin: 2px 0; }}
+    #infoMain {{ padding: 10px 14px; border-radius: 8px;
+      border: 1px solid rgba(128,128,128,0.35);
+      background: rgba(255, 255, 255, 0.22);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      color: #1a1a1a;
+    }}
+    body.map-dark #infoMain {{
+      background: rgba(28, 28, 30, 0.45);
+      border-color: rgba(180,180,190,0.25);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+      color: #eaeaea;
+    }}
+    #infoMain div {{ margin: 2px 0; }}
+    #asnearestBlock {{ margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid rgba(128,128,128,0.35);
+      background: rgba(255, 255, 255, 0.22);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }}
+    body.map-dark #asnearestBlock {{
+      background: rgba(28, 28, 30, 0.45);
+      border-color: rgba(180,180,190,0.25);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+    }}
+    #asnearestTitle {{ color: #1a1a1a; }}
+    body.map-dark #asnearestTitle {{ color: #eaeaea; }}
+    #asnearestList table {{ width: 100%; border-collapse: collapse; font-size: 11px;
+      background: rgba(255, 255, 255, 0.15); border-radius: 4px; color: #1f1f1f; }}
+    body.map-dark #asnearestList table {{
+      background: rgba(0, 0, 0, 0.12);
+      color: #e8e8e8;
+    }}
+    #asnearestList th, #asnearestList td {{ padding: 2px 4px; vertical-align: top; }}
+    #asnearestList a {{ color: inherit; }}
     .leaflet-div-icon.rotor-aswatch-marker {{ border: none; background: transparent; }}
     /* Sicherstellen, dass Hover/Tooltip am User-Marker ankommen (Leaflet setzt sonst oft pointer-events:none) */
     .leaflet-marker-icon.rotor-aswatch-marker {{
       pointer-events: auto !important;
     }}
+    .leaflet-div-icon.rotor-airplane-marker {{ border: none; background: transparent; }}
+    .leaflet-marker-icon.rotor-airplane-marker {{
+      pointer-events: auto !important;
+    }}
+    {_cluster_extra_css}
   </style>
 </head>
-<body>
+<body class="{body_map_dark_class}">
   <div id="info">
-    <div><strong>{info_standort}:</strong> {loc_str}</div>
-    <div><strong>{info_offnung}:</strong> {opening:.1f}°</div>
-    <div><strong>{info_reichweite}:</strong> {range_km:.1f} km</div>
+    <div id="infoMain">
+      <div><strong>{info_standort}:</strong> {loc_str}</div>
+      <div><strong>{info_offnung}:</strong> {opening:.1f}°</div>
+      <div><strong>{info_reichweite}:</strong> {range_km:.1f} km</div>
+    </div>
+    <div id="asnearestBlock" style="display:none;">
+      <div id="asnearestTitle" style="font-weight:600;margin-bottom:4px;"></div>
+      <div id="asnearestList"></div>
+    </div>
   </div>
   <div id="map"></div>
   <script>{leaflet_js}</script>
+  <script>{markercluster_js}</script>
   <script>{maidenhead_js}</script>
   <script>
     const lat = {lat};
@@ -162,12 +240,20 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     const horizonColor = {json.dumps(horizon_color)};
     const popupAntenna = {json.dumps(popup_antenna)};
     const popupTarget = {json.dumps(popup_target)};
+    const ASNEAREST_TITLE = {json.dumps(asnearest_title)};
+    const ASNEAREST_COL_CALL = {json.dumps(asnearest_col_call)};
+    const ASNEAREST_COL_DIST = {json.dumps(asnearest_col_dist)};
+    const ASNEAREST_COL_ETA = {json.dumps(asnearest_col_eta)};
+    const ASNEAREST_COL_SCORE = {json.dumps(asnearest_col_score)};
+    const ASNEAREST_TOOLTIP_PATH = {json.dumps(asnearest_tooltip_path)};
+    const ASNEAREST_TOOLTIP_CATPATH = {json.dumps(asnearest_tooltip_catpath)};
 
     const TILE_URL_DARK = "https://{{s}}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}{{r}}.png";
     const TILE_URL_LIGHT = "https://{{s}}.basemaps.cartocdn.com/rastertiles/voyager/{{z}}/{{x}}/{{y}}{{r}}.png";
     const OFFLINE_ATTRIBUTION = "© OpenStreetMap-Mitwirkende";
     const ONLINE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
     const isOffline = {str(offline).lower()};
+    let _currentOffline = isOffline;
     const offlineMinZ = {offline_min_z};
     const offlineMaxZ = {offline_max_z};
     const tileOpts = isOffline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION }}
@@ -176,13 +262,72 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     console.log('[Map] Init isOffline=' + isOffline + ' tileUrl=' + {json.dumps(tile_url)} + ' origin=' + (document.location && document.location.origin ? document.location.origin : '?'));
     const initZoom = isOffline ? {offline_max_z} : 10;
     const map = L.map('map', {{ maxZoom: isOffline ? {offline_max_z} : 19, minZoom: isOffline ? {offline_max_z} : 3 }}).setView([lat, lon], initZoom);
+    let tileLayer = L.tileLayer({json.dumps(tile_url)}, tileOpts).addTo(map);
+    tileLayer.on('tileerror', function(e) {{
+      if (!_currentOffline) console.error('ROTOR_TILEERROR');
+    }});
     const userWatchIconUrl = {json.dumps(user_watch_data_url)};
-    let aswatchLayer = L.layerGroup().addTo(map);
+    /* Offline: max. Zoom = Tile-Limit → Einzelmarker ab diesem Level; Online: ab 16 */
+    const aswatchDisableClusterZoom = isOffline ? offlineMaxZ : 16;
+    let aswatchLayer;
+    if (typeof L.markerClusterGroup === 'function') {{
+      aswatchLayer = L.markerClusterGroup({{
+        spiderfyOnMaxZoom: true,
+        showCoverageOnHover: false,
+        zoomToBoundsOnClick: true,
+        maxClusterRadius: 72,
+        disableClusteringAtZoom: aswatchDisableClusterZoom,
+        removeOutsideVisibleBounds: true,
+        chunkedLoading: true
+      }}).addTo(map);
+    }} else {{
+      aswatchLayer = L.layerGroup().addTo(map);
+    }}
     let _lastAswatch = [];
     let _mapDarkAswatch = {str(dark).lower()};
     function _escapeHtmlAswatch(s) {{
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
     }}
+    let _lastAsnearestSummary = [];
+    function _redrawAsnearestPanel() {{
+      const block = document.getElementById('asnearestBlock');
+      const listEl = document.getElementById('asnearestList');
+      const titleEl = document.getElementById('asnearestTitle');
+      if (!block || !listEl) return;
+      const rows = _lastAsnearestSummary;
+      if (!rows || !rows.length) {{
+        block.style.display = 'none';
+        listEl.innerHTML = '';
+        if (titleEl) titleEl.textContent = '';
+        return;
+      }}
+      block.style.display = 'block';
+      if (titleEl) titleEl.textContent = ASNEAREST_TITLE;
+      let html = '<table><thead><tr>'
+        + '<th align="left">' + ASNEAREST_COL_CALL + '</th>'
+        + '<th align="right">' + ASNEAREST_COL_DIST + '</th>'
+        + '<th align="right">' + ASNEAREST_COL_ETA + '</th>'
+        + '<th align="right">' + ASNEAREST_COL_SCORE + '</th></tr></thead><tbody>';
+      rows.forEach(function(r) {{
+        const lat = Number(r.lat), lon = Number(r.lon);
+        if (isNaN(lat) || isNaN(lon)) return;
+        let href = 'rotorapp://setaz?lat=' + lat + '&lon=' + lon;
+        if (r.dest_key) {{
+          href += '&asnearest_dest=' + encodeURIComponent(r.dest_key);
+        }}
+        const call = _escapeHtmlAswatch(r.call || '');
+        html += '<tr style="cursor:pointer;"><td><a href="' + href + '" style="color:inherit;text-decoration:underline;">' + call + '</a></td>';
+        html += '<td align="right">' + (r.distance_km != null ? r.distance_km + ' km' : '–') + '</td>';
+        html += '<td align="right">' + (r.duration_min != null ? r.duration_min + ' min' : '–') + '</td>';
+        html += '<td align="right">' + (r.score != null ? r.score : '–') + '</td></tr>';
+      }});
+      html += '</tbody></table>';
+      listEl.innerHTML = html;
+    }}
+    window.setAsnearestSummary = function(rows) {{
+      _lastAsnearestSummary = (rows && rows.length) ? rows.slice() : [];
+      _redrawAsnearestPanel();
+    }};
     window.setAswatchMarkers = function(arr) {{
       _lastAswatch = (arr && arr.length) ? arr.slice() : [];
       aswatchLayer.clearLayers();
@@ -209,16 +354,81 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         const hasQrg = !!qrgRaw;
         const iconH = hasQrg ? 72 : 56;
         const icon = L.divIcon({{ html: html, iconSize: [120, iconH], iconAnchor: [60, iconH], className: 'rotor-aswatch-marker' }});
-        L.marker([m.lat, m.lon], {{ icon: icon, interactive: true }}).addTo(aswatchLayer);
+        const mk = L.marker([m.lat, m.lon], {{ icon: icon, interactive: true }});
+        /* MarkerClusterGroup fängt Klicks ab: map.on('click') feuert auf User-Icon nicht → Rotor wie bei Kartenklick */
+        mk.on('click', function(ev) {{
+          if (ev && ev.originalEvent) {{ L.DomEvent.stopPropagation(ev.originalEvent); }}
+          const lat2 = Number(m.lat);
+          const lon2 = Number(m.lon);
+          if (isNaN(lat2) || isNaN(lon2)) return;
+          window.setClickMarker(lat2, lon2);
+          window.location = 'rotorapp://setaz?lat=' + lat2 + '&lon=' + lon2;
+        }});
+        mk.addTo(aswatchLayer);
       }});
       // Kein fitBounds bei ASWATCH-Updates: sonst zoomt die Karte bei jedem UDP-
       // Tick heraus, sobald ein Marker außerhalb des Viewports liegt. Zoom und
       // Pan bleiben in der Hand des Nutzers.
     }};
-    let tileLayer = L.tileLayer({json.dumps(tile_url)}, tileOpts).addTo(map);
-    tileLayer.on('tileerror', function(e) {{
-      if (!_currentOffline) console.error('ROTOR_TILEERROR');
-    }});
+    const airplaneIconUrl = {json.dumps(airplane_icon_url)};
+    let airplaneLayer = L.layerGroup().addTo(map);
+    let _lastAirplanes = [];
+    function _airplanePopupKey(m) {{
+      return String(m.flight || '') + '\\u0001' + String(m.partner || '') + '\\u0001' + String(m.dest_loc || '');
+    }}
+    window.setAirplaneMarkers = function(arr) {{
+      var reopenKey = null;
+      try {{
+        if (map._popup && map._popup.isOpen() && map._popup._source && map._popup._source._rotorAirplaneKey) {{
+          reopenKey = map._popup._source._rotorAirplaneKey;
+        }}
+      }} catch (e) {{}}
+      _lastAirplanes = (arr && arr.length) ? arr.slice() : [];
+      airplaneLayer.clearLayers();
+      if (!_lastAirplanes.length) return;
+      const lineColor = _mapDarkAswatch ? '#ffb74d' : '#e65100';
+      _lastAirplanes.forEach(function(m) {{
+        if (m.link_ok && m.partner_lat != null && m.partner_lon != null
+            && !isNaN(Number(m.partner_lat)) && !isNaN(Number(m.partner_lon))) {{
+          L.polyline([[m.lat, m.lon], [Number(m.partner_lat), Number(m.partner_lon)]], {{
+            color: lineColor, weight: 2, dashArray: '7,6', opacity: 0.92, interactive: false
+          }}).addTo(airplaneLayer);
+        }}
+        const flight = _escapeHtmlAswatch(m.flight || '');
+        const partner = _escapeHtmlAswatch(m.partner || '');
+        let tip = '<b>' + flight + '</b> → ' + partner;
+        if (m.distance_km != null) tip += '<br/>' + m.distance_km + ' km';
+        tip += '<br/>Potenzial: ' + (m.potential != null ? m.potential : '-') + ' %';
+        if (m.path_fraction != null) tip += '<br/>' + ASNEAREST_TOOLTIP_PATH + ': ' + Math.round(Number(m.path_fraction) * 1000) / 10 + ' %';
+        if (m.alt_path_factor != null) tip += '<br/>' + ASNEAREST_TOOLTIP_CATPATH + ': ' + Math.round(Number(m.alt_path_factor) * 1000) / 10 + ' %';
+        if (m.score != null) tip += '<br/>Score: ' + m.score + ' /100';
+        if (m.duration_min != null) tip += '<br/>ca. ' + m.duration_min + ' min';
+        if (m.category) tip += '<br/>' + _escapeHtmlAswatch(m.category);
+        let sym = '';
+        if (airplaneIconUrl) {{
+          sym = '<img src="' + airplaneIconUrl + '" width="32" height="32" alt="" style="display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.45));"/>';
+        }} else {{
+          sym = '<div style="width:32px;height:32px;background:#ff9800;border-radius:4px;border:2px solid #e65100;"></div>';
+        }}
+        const bubbleBg = _mapDarkAswatch ? 'rgba(40,40,40,0.95)' : 'rgba(255,255,255,0.95)';
+        const bubbleFg = _mapDarkAswatch ? '#f0f0f0' : '#111';
+        const bubbleBr = _mapDarkAswatch ? '#888' : '#333';
+        const html = '<div style="display:flex;flex-direction:column;align-items:center;">'
+          + '<div style="background:' + bubbleBg + ';border:1px solid ' + bubbleBr + ';border-radius:7px;padding:2px 6px;font-size:10px;font-weight:600;line-height:1.2;margin-bottom:3px;color:' + bubbleFg + ';text-align:center;max-width:140px;">' + flight + '</div>'
+          + sym + '</div>';
+        const icon = L.divIcon({{ html: html, iconSize: [140, 70], iconAnchor: [70, 70], className: 'rotor-airplane-marker' }});
+        const mk = L.marker([m.lat, m.lon], {{ icon: icon, interactive: true }}).addTo(airplaneLayer);
+        mk._rotorAirplaneKey = _airplanePopupKey(m);
+        mk.bindPopup(tip);
+      }});
+      if (reopenKey) {{
+        airplaneLayer.eachLayer(function(layer) {{
+          if (layer instanceof L.Marker && layer._rotorAirplaneKey === reopenKey) {{
+            layer.openPopup();
+          }}
+        }});
+      }}
+    }};
 
     const antennaIcon = {json.dumps(antenna_data_url)} ? L.icon({{
       iconUrl: {json.dumps(antenna_data_url)},
@@ -322,14 +532,14 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       if (hKm > 0.5) {{
         horizonCircle = L.circle([data.lat, data.lon], {{ radius: hKm * 1000, color: horizonColor, weight: 2, dashArray: '8, 8', fill: false, fillOpacity: 0, interactive: false }}).addTo(map);
       }}
-      document.getElementById('info').innerHTML = '<div><strong>' + (data.info_standort || 'Standort') + ':</strong> ' + data.location_str + '</div>' +
+      const infoMain = document.getElementById('infoMain');
+      if (infoMain) infoMain.innerHTML = '<div><strong>' + (data.info_standort || 'Standort') + ':</strong> ' + data.location_str + '</div>' +
         '<div><strong>' + (data.info_offnung || 'Öffnungswinkel') + ':</strong> ' + data.opening.toFixed(1) + '°</div>' +
         '<div><strong>' + (data.info_reichweite || 'Reichweite') + ':</strong> ' + data.range_km.toFixed(1) + ' km</div>';
     }};
 
     const OFFLINE_TILE_URL_LIGHT = {json.dumps(tile_url_light)};
     const OFFLINE_TILE_URL_DARK = {json.dumps(tile_url_dark)};
-    let _currentOffline = isOffline;
     window.setMapOfflineMode = function(offline, tileUrl) {{
       _currentOffline = offline;
       if (tileLayer) map.removeLayer(tileLayer);
@@ -362,6 +572,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       }}
       document.body.style.background = dark ? '#1c1c1c' : 'inherit';
       const info = document.getElementById('info');
+      document.body.classList.toggle('map-dark', !!dark);
       if (info) {{
         info.style.background = dark ? '#2d2d2d' : 'white';
         info.style.color = dark ? '#e1e1e1' : 'inherit';
@@ -374,6 +585,8 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       }}
       _mapDarkAswatch = dark;
       if (typeof window.setAswatchMarkers === 'function') window.setAswatchMarkers(_lastAswatch);
+      if (typeof window.setAirplaneMarkers === 'function') window.setAirplaneMarkers(_lastAirplanes);
+      if (typeof _redrawAsnearestPanel === 'function') _redrawAsnearestPanel();
       if (locatorVisible) {{
         _mapDark = dark;
         _currentLocatorKey = '';

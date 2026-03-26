@@ -30,14 +30,14 @@ class Led(QWidget):
         self.update()
 
     def paintEvent(self, _event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        with QPainter(self) as p:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        color = QColor(46, 204, 113) if self._on else QColor(231, 76, 60)
-        border = QColor(30, 30, 30)
+            color = QColor(46, 204, 113) if self._on else QColor(231, 76, 60)
+            border = QColor(30, 30, 30)
 
-        rect = self.rect().adjusted(1, 1, -1, -1)
+            rect = self.rect().adjusted(1, 1, -1, -1)
 
-        p.setPen(border)
-        p.setBrush(color)
-        p.drawEllipse(rect)
+            p.setPen(border)
+            p.setBrush(color)
+            p.drawEllipse(rect)

@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt, QTimer
 
+from .antenna_sync import AntennaSelectionBridge
+
 from ..app_icon import get_app_icon
 from ..i18n import t
 from ..net_utils import check_internet
@@ -67,6 +69,12 @@ class MainWindow(QMainWindow):
                 aswatch_bridge.users.connect(
                     self._on_aswatch_users, Qt.ConnectionType.QueuedConnection
                 )
+                aswatch_bridge.airplanes.connect(
+                    self._on_aswatch_aircraft, Qt.ConnectionType.QueuedConnection
+                )
+                aswatch_bridge.asnearest_summary.connect(
+                    self._on_asnearest_summary, Qt.ConnectionType.QueuedConnection
+                )
             except Exception:
                 pass
         self._hw_off_since: float | None = None
@@ -82,6 +90,10 @@ class MainWindow(QMainWindow):
         self._aswatch_blink_active = False
         self._aswatch_blink_sequence = (True, False, True, False, True, False, True, False, True)
         self._aswatch_markers_last: list = []
+        self._aswatch_aircraft_last: list = []
+        self._asnearest_summary_last: list = []
+
+        self._antenna_bridge = AntennaSelectionBridge(self)
 
         self._update_title_bar()
         self.setWindowIcon(get_app_icon())
@@ -310,9 +322,21 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(500, self._check_pst_udp_startup_error)
 
         self._log_win = LogWindow(self.logbuf, parent=None)
-        self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+        self._compass_win = CompassWindow(
+            self.cfg, self.ctrl, self.save_cfg_cb, parent=None, antenna_bridge=self._antenna_bridge
+        )
         self._attach_compass_aswatch_provider()
-        self._map_win = MapWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+        self._map_win = MapWindow(
+            self.cfg,
+            self.ctrl,
+            self.save_cfg_cb,
+            parent=None,
+            antenna_bridge=self._antenna_bridge,
+            on_asnearest_select_cb=self._on_map_asnearest_select,
+            on_map_page_ready_cb=self._on_map_page_ready,
+        )
+        self._antenna_bridge.selection_changed.connect(self._compass_win.sync_antenna_from_external)
+        self._antenna_bridge.selection_changed.connect(self._map_win.sync_antenna_from_external)
         self._settings_win = SettingsWindow(
             self.cfg,
             self.ctrl,
@@ -494,9 +518,25 @@ class MainWindow(QMainWindow):
             from .warnings_errors_window import WarningsErrorsWindow
 
             self._log_win = LogWindow(self.logbuf, parent=None)
-            self._compass_win = CompassWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+            self._compass_win = CompassWindow(
+                self.cfg, self.ctrl, self.save_cfg_cb, parent=None, antenna_bridge=self._antenna_bridge
+            )
             self._attach_compass_aswatch_provider()
-            self._map_win = MapWindow(self.cfg, self.ctrl, self.save_cfg_cb, parent=None)
+            self._map_win = MapWindow(
+                self.cfg,
+                self.ctrl,
+                self.save_cfg_cb,
+                parent=None,
+                antenna_bridge=self._antenna_bridge,
+                on_asnearest_select_cb=self._on_map_asnearest_select,
+                on_map_page_ready_cb=self._on_map_page_ready,
+            )
+            try:
+                self._antenna_bridge.selection_changed.disconnect()
+            except TypeError:
+                pass
+            self._antenna_bridge.selection_changed.connect(self._compass_win.sync_antenna_from_external)
+            self._antenna_bridge.selection_changed.connect(self._map_win.sync_antenna_from_external)
             self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
             self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
             self._warnings_errors_win = WarningsErrorsWindow(self.ctrl, parent=None)
@@ -641,11 +681,64 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _on_aswatch_aircraft(self, items: list) -> None:
+        """UDP ASNEAREST → Flugzeug-Marker und Reflexions-Linien (Hauptthread)."""
+        try:
+            self._aswatch_aircraft_last = list(items) if items else []
+        except Exception:
+            self._aswatch_aircraft_last = []
+        try:
+            if hasattr(self, "_map_win") and self._map_win is not None:
+                self._map_win.update_aircraft_markers(items)
+        except Exception:
+            pass
+
+    def _on_asnearest_summary(self, rows: list) -> None:
+        """ASNEAREST: Liste Rufzeichen / Entfernung / ETA (Hauptthread)."""
+        try:
+            self._asnearest_summary_last = list(rows) if rows else []
+        except Exception:
+            self._asnearest_summary_last = []
+        try:
+            if hasattr(self, "_map_win") and self._map_win is not None:
+                self._map_win.update_asnearest_summary(rows)
+        except Exception:
+            pass
+
+    def _on_map_asnearest_select(self, dest_key: str | None) -> None:
+        """Karten-HTML: Zeile in der ASNEAREST-Tabelle oder Kartenklick (Auswahl löschen)."""
+        asw = getattr(self, "_udp_aswatch", None)
+        if asw is None:
+            return
+        try:
+            asw.set_asnearest_selected(dest_key)
+        except Exception:
+            pass
+
+    def _on_map_page_ready(self) -> None:
+        """Leaflet geladen: Flugzeug-Marker mit Listener-Zustand synchronisieren (keine veraltete Liste)."""
+        asw = getattr(self, "_udp_aswatch", None)
+        if asw is None:
+            return
+        try:
+            asw.refresh_aircraft_emit()
+        except Exception:
+            pass
+
     def _attach_compass_aswatch_provider(self) -> None:
         """Kompass: OM-Radar aus letzter AirScout/KST-Markerliste."""
         if not hasattr(self, "_compass_win") or self._compass_win is None:
             return
         self._compass_win.set_aswatch_marker_provider(lambda: self._aswatch_markers_last)
+
+    @staticmethod
+    def _bring_tool_window_to_front(w: QWidget) -> None:
+        """Hilfsfenster aus Taskleisten-Minimierung holen und in den Vordergrund legen."""
+        if w.isMinimized():
+            w.showNormal()
+        w.show()
+        w.raise_()
+        w.activateWindow()
 
     def _open_compass(self):
         try:
@@ -653,9 +746,7 @@ class MainWindow(QMainWindow):
                 self._compass_win._update_groupbox_titles()
             if hasattr(self._compass_win, "refresh_visibility"):
                 self._compass_win.refresh_visibility()
-            self._compass_win.show()
-            self._compass_win.raise_()
-            self._compass_win.activateWindow()
+            self._bring_tool_window_to_front(self._compass_win)
         except Exception:
             pass
 
@@ -677,9 +768,7 @@ class MainWindow(QMainWindow):
 
     def _open_map(self):
         try:
-            self._map_win.show()
-            self._map_win.raise_()
-            self._map_win.activateWindow()
+            self._bring_tool_window_to_front(self._map_win)
         except Exception:
             pass
 

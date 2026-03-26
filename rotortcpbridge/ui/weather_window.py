@@ -146,62 +146,62 @@ class WindRoseWidget(QWidget):
         self.update()
 
     def paintEvent(self, _event) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        rect = self.rect().adjusted(8, 8, -8, -8)
-        cx, cy = float(rect.center().x()), float(rect.center().y())
-        r = float(min(rect.width(), rect.height())) / 2.0
-        p.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 2))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawEllipse(rect)
-        p.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
-        for a in range(0, 360, 10):
-            rad = math.radians(a)
-            x1 = cx + math.sin(rad) * (r * (0.84 if a % 30 == 0 else 0.89))
-            y1 = cy - math.cos(rad) * (r * (0.84 if a % 30 == 0 else 0.89))
-            x2 = cx + math.sin(rad) * (r * 0.97)
-            y2 = cy - math.cos(rad) * (r * 0.97)
-            p.drawLine(int(x1), int(y1), int(x2), int(y2))
-        f_main = p.font()
-        f_main.setBold(True)
-        f_main.setPointSize(max(8, int(r * 0.12)))
-        f_diag = p.font()
-        f_diag.setBold(True)
-        f_diag.setPointSize(max(7, f_main.pointSize() - 1))
+        with QPainter(self) as p:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            rect = self.rect().adjusted(8, 8, -8, -8)
+            cx, cy = float(rect.center().x()), float(rect.center().y())
+            r = float(min(rect.width(), rect.height())) / 2.0
+            p.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(rect)
+            p.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
+            for a in range(0, 360, 10):
+                rad = math.radians(a)
+                x1 = cx + math.sin(rad) * (r * (0.84 if a % 30 == 0 else 0.89))
+                y1 = cy - math.cos(rad) * (r * (0.84 if a % 30 == 0 else 0.89))
+                x2 = cx + math.sin(rad) * (r * 0.97)
+                y2 = cy - math.cos(rad) * (r * 0.97)
+                p.drawLine(int(x1), int(y1), int(x2), int(y2))
+            f_main = p.font()
+            f_main.setBold(True)
+            f_main.setPointSize(max(8, int(r * 0.12)))
+            f_diag = p.font()
+            f_diag.setBold(True)
+            f_diag.setPointSize(max(7, f_main.pointSize() - 1))
 
-        def _draw_cardinal(text: str, deg: float, diagonal: bool = False) -> None:
-            p.setFont(f_diag if diagonal else f_main)
-            fm = QFontMetrics(f_diag if diagonal else f_main)
-            rad = math.radians(deg)
-            label_r = r * (0.60 if diagonal else 0.68)
-            tx = cx + math.sin(rad) * label_r
-            ty = cy - math.cos(rad) * label_r
-            w, h = fm.horizontalAdvance(text), fm.height()
-            p.drawText(int(tx - w / 2.0), int(ty + h / 4.0), text)
+            def _draw_cardinal(text: str, deg: float, diagonal: bool = False) -> None:
+                p.setFont(f_diag if diagonal else f_main)
+                fm = QFontMetrics(f_diag if diagonal else f_main)
+                rad = math.radians(deg)
+                label_r = r * (0.60 if diagonal else 0.68)
+                tx = cx + math.sin(rad) * label_r
+                ty = cy - math.cos(rad) * label_r
+                w, h = fm.horizontalAdvance(text), fm.height()
+                p.drawText(int(tx - w / 2.0), int(ty + h / 4.0), text)
 
-        for txt, deg, diag in [
-            ("N", 0, False),
-            ("NO", 45, True),
-            ("O", 90, False),
-            ("SO", 135, True),
-            ("S", 180, False),
-            ("SW", 225, True),
-            ("W", 270, False),
-            ("NW", 315, True),
-        ]:
-            _draw_cardinal(txt, deg, diag)
+            for txt, deg, diag in [
+                ("N", 0, False),
+                ("NO", 45, True),
+                ("O", 90, False),
+                ("SO", 135, True),
+                ("S", 180, False),
+                ("SW", 225, True),
+                ("W", 270, False),
+                ("NW", 315, True),
+            ]:
+                _draw_cardinal(txt, deg, diag)
 
-        if self._wind_dir_draw_deg is not None:
-            wd = (
-                wrap_deg(float(self._wind_dir_draw_deg) + 180.0)
-                if self._wind_dir_mode == "to"
-                else float(self._wind_dir_draw_deg)
-            )
-            if not self._arrow_pixmap.isNull():
-                self._draw_arrow_image(p, cx, cy, r * 0.72, wd)
-            else:
-                self._draw_arrow(p, cx, cy, r * 0.72, wd)
+            if self._wind_dir_draw_deg is not None:
+                wd = (
+                    wrap_deg(float(self._wind_dir_draw_deg) + 180.0)
+                    if self._wind_dir_mode == "to"
+                    else float(self._wind_dir_draw_deg)
+                )
+                if not self._arrow_pixmap.isNull():
+                    self._draw_arrow_image(p, cx, cy, r * 0.72, wd)
+                else:
+                    self._draw_arrow(p, cx, cy, r * 0.72, wd)
 
     @staticmethod
     def _draw_arrow(p: QPainter, cx: float, cy: float, length: float, deg: float) -> None:

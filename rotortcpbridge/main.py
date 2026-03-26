@@ -94,9 +94,17 @@ def main():
     # QObject/Signal NUR nach QApplication – sonst werden Slots u. U. nie aufgerufen
     class AswatchBridge(QObject):
         users = Signal(list)
+        airplanes = Signal(list)
+        asnearest_summary = Signal(list)
 
     aswatch_bridge = AswatchBridge(app)
-    udp_aswatch = UdpAswatchlistListener(log, cfg, emit_fn=aswatch_bridge.users.emit)
+    udp_aswatch = UdpAswatchlistListener(
+        log,
+        cfg,
+        emit_fn=aswatch_bridge.users.emit,
+        emit_air_fn=aswatch_bridge.airplanes.emit,
+        emit_summary_fn=aswatch_bridge.asnearest_summary.emit,
+    )
     udp_aswatch.start(
         enabled=bool(ui_cfg.get("aswatch_udp_enabled", True)),
         port=int(ui_cfg.get("aswatch_udp_port", 9872)),

@@ -278,104 +278,103 @@ class ElevationCompassWidget(QWidget):
         self.targetPicked.emit(deg)
 
     def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        with QPainter(self) as painter:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        cx, cy, r = self._geom()
+            cx, cy, r = self._geom()
 
-        # Rahmen (Viertelkreis): Arc + zwei Radien
-        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 2))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
+            # Rahmen (Viertelkreis): Arc + zwei Radien
+            painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
 
-        # Qt: drawArc benötigt ein Rechteck um den Vollkreis.
-        # Unser Viertelkreis ist Teil eines Kreises mit Mittelpunkt (cx,cy) und Radius r.
-        arc_rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-        # Startwinkel 0° (3 Uhr), Spannweite 90° CCW
-        painter.drawArc(arc_rect, 0 * 16, 90 * 16)
-        # Radialkanten
-        painter.drawLine(QPointF(cx, cy), QPointF(cx + r, cy))  # 0°
-        painter.drawLine(QPointF(cx, cy), QPointF(cx, cy - r))  # 90°
+            # Qt: drawArc benötigt ein Rechteck um den Vollkreis.
+            # Unser Viertelkreis ist Teil eines Kreises mit Mittelpunkt (cx,cy) und Radius r.
+            arc_rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+            # Startwinkel 0° (3 Uhr), Spannweite 90° CCW
+            painter.drawArc(arc_rect, 0 * 16, 90 * 16)
+            # Radialkanten
+            painter.drawLine(QPointF(cx, cy), QPointF(cx + r, cy))  # 0°
+            painter.drawLine(QPointF(cx, cy), QPointF(cx, cy - r))  # 90°
 
-        # Teilstriche
-        tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
-        painter.setPen(tick_pen)
-        for a in range(0, 91, 5):
-            rad = math.radians(a)
-            x1 = cx + math.cos(rad) * (r * 0.90)
-            y1 = cy - math.sin(rad) * (r * 0.90)
-            if a % 15 == 0:
-                x2 = cx + math.cos(rad) * (r * 1.00)
-                y2 = cy - math.sin(rad) * (r * 1.00)
-            else:
-                x2 = cx + math.cos(rad) * (r * 0.96)
-                y2 = cy - math.sin(rad) * (r * 0.96)
-            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            # Teilstriche
+            tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
+            painter.setPen(tick_pen)
+            for a in range(0, 91, 5):
+                rad = math.radians(a)
+                x1 = cx + math.cos(rad) * (r * 0.90)
+                y1 = cy - math.sin(rad) * (r * 0.90)
+                if a % 15 == 0:
+                    x2 = cx + math.cos(rad) * (r * 1.00)
+                    y2 = cy - math.sin(rad) * (r * 1.00)
+                else:
+                    x2 = cx + math.cos(rad) * (r * 0.96)
+                    y2 = cy - math.sin(rad) * (r * 0.96)
+                painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
-        # Grad-Beschriftung (alle 10°)
-        painter.save()
-        deg_font = painter.font()
-        deg_font.setBold(False)
-        # Beim AZ-Kompass wirken die Zahlen kleiner; beim Viertelkreis ist der Radius oft
-        # größer, daher skalieren wir etwas konservativer und begrenzen nach oben.
-        deg_font.setPointSize(max(7, min(14, int(r * 0.045))))
-        painter.setFont(deg_font)
-        fm_deg = QFontMetrics(deg_font)
-        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
+            # Grad-Beschriftung (alle 10°)
+            painter.save()
+            deg_font = painter.font()
+            deg_font.setBold(False)
+            # Beim AZ-Kompass wirken die Zahlen kleiner; beim Viertelkreis ist der Radius oft
+            # größer, daher skalieren wir etwas konservativer und begrenzen nach oben.
+            deg_font.setPointSize(max(7, min(14, int(r * 0.045))))
+            painter.setFont(deg_font)
+            fm_deg = QFontMetrics(deg_font)
+            painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
 
-        # Beschriftung absichtlich *außerhalb* des Viertelkreises: so werden die Zahlen
-        # an 0° und 90° nicht von den Radiallinien geschnitten.
-        label_r = r * 1.06
-        for a in range(0, 91, 10):
-            txt = f"{a}°"
-            rad = math.radians(a)
-            tx = cx + math.cos(rad) * label_r
-            ty = cy - math.sin(rad) * label_r
-            w = fm_deg.horizontalAdvance(txt)
-            h = fm_deg.height()
-            painter.drawText(QPointF(tx - w / 2.0, ty + h / 3.0), txt)
-        painter.restore()
+            # Beschriftung absichtlich *außerhalb* des Viertelkreises: so werden die Zahlen
+            # an 0° und 90° nicht von den Radiallinien geschnitten.
+            label_r = r * 1.06
+            for a in range(0, 91, 10):
+                txt = f"{a}°"
+                rad = math.radians(a)
+                tx = cx + math.cos(rad) * label_r
+                ty = cy - math.sin(rad) * label_r
+                w = fm_deg.horizontalAdvance(txt)
+                h = fm_deg.height()
+                painter.drawText(QPointF(tx - w / 2.0, ty + h / 3.0), txt)
+            painter.restore()
 
-        # ACCBINS-Heatmap-Ring (5px) um den Viertelkreis
-        if self._heatmap_visible and (self._bins_cw or self._bins_ccw):
-            paint_bins_heatmap_ring(
-                painter,
-                cx,
-                cy,
-                r,
-                self._bins_cw,
-                self._bins_ccw,
-                elevation=True,
-                ring_width=5.0,
-                offset_deg=self._heatmap_offset_deg,
-                scale=self._heatmap_scale,
-            )
+            # ACCBINS-Heatmap-Ring (5px) um den Viertelkreis
+            if self._heatmap_visible and (self._bins_cw or self._bins_ccw):
+                paint_bins_heatmap_ring(
+                    painter,
+                    cx,
+                    cy,
+                    r,
+                    self._bins_cw,
+                    self._bins_ccw,
+                    elevation=True,
+                    ring_width=5.0,
+                    offset_deg=self._heatmap_offset_deg,
+                    scale=self._heatmap_scale,
+                )
 
-        # SOLL (gestrichelt)
-        if self._target_deg is not None:
-            painter.setPen(QPen(QColor(160, 0, 0), 3, Qt.PenStyle.DashLine))
-            self._draw_arrow(painter, cx, cy, r * 0.85, self._target_deg)
+            # SOLL (gestrichelt)
+            if self._target_deg is not None:
+                painter.setPen(QPen(QColor(160, 0, 0), 3, Qt.PenStyle.DashLine))
+                self._draw_arrow(painter, cx, cy, r * 0.85, self._target_deg)
 
-        # IST (durchgezogen)
-        if self._current_deg is not None:
-            painter.setPen(QPen(QColor(0, 120, 0), 4, Qt.PenStyle.SolidLine))
-            self._draw_arrow(painter, cx, cy, r * 0.92, self._current_deg)
+            # IST (durchgezogen)
+            if self._current_deg is not None:
+                painter.setPen(QPen(QColor(0, 120, 0), 4, Qt.PenStyle.SolidLine))
+                self._draw_arrow(painter, cx, cy, r * 0.92, self._current_deg)
 
-        # Ist/Soll oben links/rechts (wie AZ zweite Zeile, hier eine Zeile)
-        margin_txt = 7
-        text_top = 13
-        txt_font = painter.font()
-        txt_font.setBold(True)
-        txt_font.setPixelSize(16)
-        painter.setFont(txt_font)
-        fm_ov = QFontMetrics(txt_font)
-        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
-        ist_s = self._overlay_ist
-        painter.drawText(QPointF(float(margin_txt), float(text_top)), ist_s)
+            # Ist/Soll oben links/rechts (wie AZ zweite Zeile, hier eine Zeile)
+            margin_txt = 7
+            text_top = 13
+            txt_font = painter.font()
+            txt_font.setBold(True)
+            txt_font.setPixelSize(16)
+            painter.setFont(txt_font)
+            painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
+            ist_s = self._overlay_ist
+            painter.drawText(QPointF(float(margin_txt), float(text_top)), ist_s)
 
-        # Mittelpunkt
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(self.palette().color(QPalette.ColorRole.WindowText))
-        painter.drawEllipse(QRectF(cx - 5.0, cy - 5.0, 10.0, 10.0))
+            # Mittelpunkt
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(self.palette().color(QPalette.ColorRole.WindowText))
+            painter.drawEllipse(QRectF(cx - 5.0, cy - 5.0, 10.0, 10.0))
 
     @staticmethod
     def _draw_arrow(painter: QPainter, cx: float, cy: float, length: float, deg: float) -> None:

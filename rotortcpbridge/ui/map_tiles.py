@@ -21,7 +21,7 @@ _DEBUG_TILES = False
 
 
 def _static_lib_path() -> Path:
-    """Pfad zu rotortcpbridge/static (Leaflet, Maidenhead)."""
+    """Pfad zu rotortcpbridge/static (Leaflet, Maidenhead, MarkerCluster)."""
     return Path(__file__).resolve().parent.parent / "static"
 
 

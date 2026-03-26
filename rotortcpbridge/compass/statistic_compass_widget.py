@@ -216,35 +216,38 @@ def paint_om_radar_ring(
     cx: float,
     cy: float,
     inner_r: float,
-    counts: Optional[List[int]],
+    counts: Optional[List[float]],
     ring_width: float = 5.0,
     offset_deg: float = 0.0,
     n_sectors: int = OM_RADAR_N_DEFAULT,
 ) -> None:
-    """5px-Ring: n Sektoren (360°/n), Zähler aus AirScout-Usern je Peilung; blau = wenig, rot = viel."""
+    """5px-Ring: n Sektoren (360°/n); Werte = erwartete OM-Dichte (Öffnungswinkel-Verteilung); blau = wenig, rot = viel.
+
+    ``offset_deg``: nur für rotorbezogene Daten; OM-Radar nutzt geografische Peilung → Aufruf mit 0.
+    """
     outer_r = inner_r + ring_width
     if outer_r <= inner_r:
         return
 
     n = max(10, min(100, int(n_sectors)))
-    vals = [0] * n
+    vals = [0.0] * n
     if counts:
         for i in range(min(n, len(counts))):
             try:
-                vals[i] = max(0, int(counts[i]))
+                vals[i] = max(0.0, float(counts[i]))
             except (TypeError, ValueError):
-                vals[i] = 0
+                vals[i] = 0.0
 
-    v_min = min(vals) if vals else 0
-    v_max = max(vals) if vals else 0
-    no_data = not vals or all(v <= 0 for v in vals)
+    v_min = min(vals) if vals else 0.0
+    v_max = max(vals) if vals else 0.0
+    no_data = not vals or all(v <= 0.0 for v in vals)
 
-    def val_to_color(v: int) -> QColor:
+    def val_to_color(v: float) -> QColor:
         if no_data:
             return QColor(120, 130, 170)
         if v_max <= v_min:
             return QColor(0, 180, 120)
-        span = max(v_max - v_min, 1)
+        span = max(v_max - v_min, 1e-9)
         t = max(0.0, min(1.0, (float(v) - float(v_min)) / float(span)))
         return _t_to_heatmap_color(t)
 
@@ -289,7 +292,11 @@ def paint_dwell_ring(
     offset_deg: float = 0.0,
     n_sectors: int = OM_RADAR_N_DEFAULT,
 ) -> None:
-    """5px-Ring: kumulative Stillstandszeit je Sektor; 0s→blau, full_seconds→rot (linear)."""
+    """5px-Ring: kumulative Stillstandszeit je Sektor; 0s→blau, full_seconds→rot (linear).
+
+    ``seconds[i]`` = Sektor i in **Rotor-/Mechanik-Koordinaten** (0° = wie Rotor-Null);
+    ``offset_deg`` = Antennenversatz: gleiche Drehlogik wie OM-Radar/Heatmap (Anzeige = Rotor + Offset).
+    """
     outer_r = inner_r + ring_width
     if outer_r <= inner_r:
         return
@@ -410,78 +417,78 @@ class StatisticCompassWidget(QWidget):
         return cx, cy, r
 
     def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        with QPainter(self) as painter:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        cx, cy, r = self._geom()
+            cx, cy, r = self._geom()
 
-        if self._elevation:
-            # Viertelkreis (EL): 0°=rechts, 90°=oben
-            arc_rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+            if self._elevation:
+                # Viertelkreis (EL): 0°=rechts, 90°=oben
+                arc_rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+                painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawArc(arc_rect, int(0 * 16), int(EL_ARC_DEG * 16))
+                painter.drawLine(QPointF(cx, cy), QPointF(cx + r, cy))
+                end_x = cx + math.cos(math.radians(EL_ARC_DEG)) * r
+                end_y = cy - math.sin(math.radians(EL_ARC_DEG)) * r
+                painter.drawLine(QPointF(cx, cy), QPointF(end_x, end_y))
+                tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
+                painter.setPen(tick_pen)
+                for a in range(0, int(EL_ARC_DEG) + 1, 15):
+                    rad = math.radians(a)
+                    x1 = cx + math.cos(rad) * (r * 0.85)
+                    y1 = cy - math.sin(rad) * (r * 0.85)
+                    x2 = cx + math.cos(rad) * r
+                    y2 = cy - math.sin(rad) * r
+                    painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            else:
+                # Vollkreis (AZ)
+                painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+                tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
+                painter.setPen(tick_pen)
+                for a in range(0, 360, 30):
+                    rad = math.radians(a)
+                    x1 = cx + math.sin(rad) * (r * 0.85)
+                    y1 = cy - math.cos(rad) * (r * 0.85)
+                    x2 = cx + math.sin(rad) * r
+                    y2 = cy - math.cos(rad) * r
+                    painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+                font = painter.font()
+                font.setBold(True)
+                font.setPointSize(max(6, int(r * 0.12)))
+                painter.setFont(font)
+                fm = QFontMetrics(font)
+                label_r = r * 0.65
+                for text, angle in [("N", 0), ("O", 90), ("S", 180), ("W", 270)]:
+                    rad = math.radians(angle)
+                    tx = cx + math.sin(rad) * label_r
+                    ty = cy - math.cos(rad) * label_r
+                    w = fm.horizontalAdvance(text)
+                    h = fm.height()
+                    painter.drawText(QPointF(tx - w / 2.0, ty + h / 4.0), text)
+
+            # 5px Heatmap-Ring
+            paint_bins_heatmap_ring(
+                painter,
+                cx,
+                cy,
+                r,
+                self._bins_cw,
+                self._bins_ccw,
+                self._elevation,
+                scale=self._heatmap_scale,
+            )
+
+            # Kontur erneut darüber
             painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawArc(arc_rect, int(0 * 16), int(EL_ARC_DEG * 16))
-            painter.drawLine(QPointF(cx, cy), QPointF(cx + r, cy))
-            end_x = cx + math.cos(math.radians(EL_ARC_DEG)) * r
-            end_y = cy - math.sin(math.radians(EL_ARC_DEG)) * r
-            painter.drawLine(QPointF(cx, cy), QPointF(end_x, end_y))
-            tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
-            painter.setPen(tick_pen)
-            for a in range(0, int(EL_ARC_DEG) + 1, 15):
-                rad = math.radians(a)
-                x1 = cx + math.cos(rad) * (r * 0.85)
-                y1 = cy - math.sin(rad) * (r * 0.85)
-                x2 = cx + math.cos(rad) * r
-                y2 = cy - math.sin(rad) * r
-                painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-        else:
-            # Vollkreis (AZ)
-            painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
-            tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
-            painter.setPen(tick_pen)
-            for a in range(0, 360, 30):
-                rad = math.radians(a)
-                x1 = cx + math.sin(rad) * (r * 0.85)
-                y1 = cy - math.cos(rad) * (r * 0.85)
-                x2 = cx + math.sin(rad) * r
-                y2 = cy - math.cos(rad) * r
-                painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-            font = painter.font()
-            font.setBold(True)
-            font.setPointSize(max(6, int(r * 0.12)))
-            painter.setFont(font)
-            fm = QFontMetrics(font)
-            label_r = r * 0.65
-            for text, angle in [("N", 0), ("O", 90), ("S", 180), ("W", 270)]:
-                rad = math.radians(angle)
-                tx = cx + math.sin(rad) * label_r
-                ty = cy - math.cos(rad) * label_r
-                w = fm.horizontalAdvance(text)
-                h = fm.height()
-                painter.drawText(QPointF(tx - w / 2.0, ty + h / 4.0), text)
-
-        # 5px Heatmap-Ring
-        paint_bins_heatmap_ring(
-            painter,
-            cx,
-            cy,
-            r,
-            self._bins_cw,
-            self._bins_ccw,
-            self._elevation,
-            scale=self._heatmap_scale,
-        )
-
-        # Kontur erneut darüber
-        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        if self._elevation:
-            painter.drawArc(QRectF(cx - r, cy - r, 2 * r, 2 * r), int(0 * 16), int(EL_ARC_DEG * 16))
-            painter.drawLine(QPointF(cx, cy), QPointF(cx + r, cy))
-            end_x = cx + math.cos(math.radians(EL_ARC_DEG)) * r
-            end_y = cy - math.sin(math.radians(EL_ARC_DEG)) * r
-            painter.drawLine(QPointF(cx, cy), QPointF(end_x, end_y))
-        else:
-            painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+            if self._elevation:
+                painter.drawArc(QRectF(cx - r, cy - r, 2 * r, 2 * r), int(0 * 16), int(EL_ARC_DEG * 16))
+                painter.drawLine(QPointF(cx, cy), QPointF(cx + r, cy))
+                end_x = cx + math.cos(math.radians(EL_ARC_DEG)) * r
+                end_y = cy - math.sin(math.radians(EL_ARC_DEG)) * r
+                painter.drawLine(QPointF(cx, cy), QPointF(end_x, end_y))
+            else:
+                painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))

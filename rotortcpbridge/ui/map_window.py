@@ -69,11 +69,23 @@ def _map_antenna_swatch_icon(antenna_index: int, size_px: int = 14) -> QIcon:
 class MapWindow(QDialog):
     """Fenster mit Leaflet-Karte, Antennen-Beam und Klick-zu-Rotor."""
 
-    def __init__(self, cfg: dict, controller, save_cfg_cb=None, parent=None):
+    def __init__(
+        self,
+        cfg: dict,
+        controller,
+        save_cfg_cb=None,
+        parent=None,
+        antenna_bridge=None,
+        on_asnearest_select_cb=None,
+        on_map_page_ready_cb=None,
+    ):
         super().__init__(parent)
         self.cfg = cfg
         self.ctrl = controller
         self.save_cfg_cb = save_cfg_cb
+        self._antenna_bridge = antenna_bridge
+        self._on_asnearest_select_cb = on_asnearest_select_cb
+        self._on_map_page_ready_cb = on_map_page_ready_cb
         self.setWindowTitle(t("map.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
@@ -136,7 +148,7 @@ class MapWindow(QDialog):
         map_layout.setContentsMargins(0, 0, 0, 0)
         self._view = QWebEngineView(map_container)
         self._page = MapWebPage(
-            self._on_map_click, on_tile_error_cb=self._on_tile_error, parent=self._view
+            self._on_map_page_nav, on_tile_error_cb=self._on_tile_error, parent=self._view
         )
         self._view.setPage(self._page)
         self._view.loadFinished.connect(self._on_map_load_finished)
@@ -229,6 +241,10 @@ class MapWindow(QDialog):
         self._elevation_win: Optional[ElevationProfileWindow] = None
         # ASWATCHLIST (AirScout/KST): andere Stationen auf der Karte
         self._aswatch_last: list = []
+        # ASNEAREST: mögliche Flugzeug-Reflexionspunkte (nur link_ok → Karte)
+        self._aircraft_last: list = []
+        # ASNEAREST: Zusammenfassung (Rufzeichen, km, min) für Infopanel
+        self._asnearest_summary_last: list = []
         # True erst nach loadFinished – sonst existiert setAswatchMarkers in JS noch nicht
         self._map_page_ready = False
 
@@ -244,6 +260,40 @@ class MapWindow(QDialog):
             js = (
                 f"if (typeof window.setAswatchMarkers === 'function') "
                 f"window.setAswatchMarkers({json.dumps(self._aswatch_last)});"
+            )
+            self._view.page().runJavaScript(js)
+        except Exception:
+            pass
+
+    def update_aircraft_markers(self, items: list) -> None:
+        """ASNEAREST: Flugzeug-Icon + Linie nur bei link_ok (vom Listener gefiltert)."""
+        try:
+            self._aircraft_last = list(items) if items else []
+        except Exception:
+            self._aircraft_last = []
+        if not self._view or not getattr(self, "_map_page_ready", False):
+            return
+        try:
+            js = (
+                f"if (typeof window.setAirplaneMarkers === 'function') "
+                f"window.setAirplaneMarkers({json.dumps(self._aircraft_last)});"
+            )
+            self._view.page().runJavaScript(js)
+        except Exception:
+            pass
+
+    def update_asnearest_summary(self, rows: list) -> None:
+        """ASNEAREST: Infopanel unter Standort (max. 20 Zeilen, sortiert)."""
+        try:
+            self._asnearest_summary_last = list(rows) if rows else []
+        except Exception:
+            self._asnearest_summary_last = []
+        if not self._view or not getattr(self, "_map_page_ready", False):
+            return
+        try:
+            js = (
+                f"if (typeof window.setAsnearestSummary === 'function') "
+                f"window.setAsnearestSummary({json.dumps(self._asnearest_summary_last)});"
             )
             self._view.page().runJavaScript(js)
         except Exception:
@@ -304,6 +354,13 @@ class MapWindow(QDialog):
             "horizon_dist_km": horizon_dist_km,
             "popup_antenna": t("map.popup_antenna"),
             "popup_target": t("map.popup_target"),
+            "asnearest_title": t("map.asnearest_title"),
+            "asnearest_col_call": t("map.asnearest_col_call"),
+            "asnearest_col_dist": t("map.asnearest_col_dist"),
+            "asnearest_col_eta": t("map.asnearest_col_eta"),
+            "asnearest_col_score": t("map.asnearest_col_score"),
+            "asnearest_tooltip_path": t("map.asnearest_tooltip_path"),
+            "asnearest_tooltip_catpath": t("map.asnearest_tooltip_catpath"),
         }
 
     def _compute_beams(self, rotor_az_deg: float, antenna_idx: int) -> list[dict]:
@@ -422,12 +479,18 @@ class MapWindow(QDialog):
         self._cb_fav.blockSignals(False)
 
     def _refresh_antenna_dropdown(self) -> None:
-        """Antennen-Dropdown mit aktuellen Werten aktualisieren."""
-        idx = max(0, min(2, self._cb_antenna.currentIndex()))
+        """Antennen-Dropdown mit aktuellen Werten aktualisieren; Index aus cfg."""
+        idx = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
         self._cb_antenna.blockSignals(True)
         self._populate_antenna_dropdown()
         self._cb_antenna.setCurrentIndex(idx)
         self._cb_antenna.blockSignals(False)
+
+    def sync_antenna_from_external(self, idx: int) -> None:
+        """Kompass/Bridge: Dropdown an cfg anpassen und Karte aktualisieren."""
+        _ = idx
+        self._refresh_antenna_dropdown()
+        self._refresh_map()
 
     def _on_antenna_changed(self) -> None:
         """Antenne gewechselt → Config speichern, Karte aktualisiert sich über cfg."""
@@ -440,6 +503,11 @@ class MapWindow(QDialog):
                 self.save_cfg_cb(self.cfg)
         except Exception:
             pass
+        if self._antenna_bridge is not None:
+            try:
+                self._antenna_bridge.selection_changed.emit(idx)
+            except Exception:
+                pass
 
     def _on_fav_activated(self, idx: int) -> None:
         """Favorit ausgewählt → dorthin fahren."""
@@ -694,8 +762,20 @@ class MapWindow(QDialog):
             self._lbl_temp_motor.setText(f"{t('weather.temp_motor_label')}: –")
             self._lbl_temp_ambient.setText(f"{t('weather.temp_ambient_label')}: –")
 
-    def _on_map_click(self, lat: float, lon: float) -> None:
-        """Klick auf Karte: Rotor auf Peilung zu diesem Punkt drehen."""
+    def _on_map_page_nav(self, lat: float, lon: float, asnearest_dest: str | None = None) -> None:
+        """Von MapWebPage: Kartenklick oder ASNEAREST-Tabellenzeile (optional dest_key)."""
+        self._on_map_click(lat, lon, asnearest_dest=asnearest_dest)
+
+    def _on_map_click(self, lat: float, lon: float, asnearest_dest: str | None = None) -> None:
+        """Klick auf Karte oder ASNEAREST-Link: Rotor auf Peilung zu diesem Punkt drehen."""
+        if self._map_loaded and self._view:
+            try:
+                self._view.page().runJavaScript(
+                    f"if (typeof window.setClickMarker === 'function') "
+                    f"window.setClickMarker({float(lat)}, {float(lon)});"
+                )
+            except Exception:
+                pass
         self._target_lat = lat
         self._target_lon = lon
 
@@ -724,6 +804,13 @@ class MapWindow(QDialog):
         except Exception:
             pass
         self._refresh_map()
+
+        if self._on_asnearest_select_cb:
+            if asnearest_dest:
+                self._on_asnearest_select_cb(asnearest_dest)
+            else:
+                # Kartenklick ohne Tabellen-Link: Auswahl löschen (wieder alle Flugzeuge oder — bei „nur nach Klick“ — leer)
+                self._on_asnearest_select_cb(None)
 
     def _clear_map_target(self) -> None:
         """Zielmarker löschen: Zustand, cfg und Kartenanzeige bereinigen."""
@@ -899,6 +986,19 @@ class MapWindow(QDialog):
                 if getattr(self, "_aswatch_last", None)
                 else None,
             )
+        # Alte Flugzeug-Liste nicht wiederherstellen (sonst kurz „alle“ bis zum nächsten UDP)
+        self.update_aircraft_markers([])
+        cb = getattr(self, "_on_map_page_ready_cb", None)
+        if cb:
+            try:
+                cb()
+            except Exception:
+                pass
+        self.update_asnearest_summary(getattr(self, "_asnearest_summary_last", []))
+        QTimer.singleShot(
+            200,
+            lambda: self.update_asnearest_summary(getattr(self, "_asnearest_summary_last", [])),
+        )
 
     def on_settings_applied(self) -> None:
         """Wird von main_window nach dem Speichern der Einstellungen aufgerufen."""

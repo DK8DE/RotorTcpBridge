@@ -8,6 +8,95 @@ from datetime import datetime, timezone
 _EARTH_RADIUS_KM = 6371.0
 
 
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Großkreis-Distanz zwischen zwei Punkten in Kilometern."""
+    lat1_r = math.radians(lat1)
+    lat2_r = math.radians(lat2)
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1_r) * math.cos(lat2_r) * math.sin(dlon / 2) ** 2
+    c = 2 * math.asin(min(1.0, math.sqrt(max(0.0, a))))
+    return _EARTH_RADIUS_KM * c
+
+
+def great_circle_interpolate(
+    lat1: float, lon1: float, lat2: float, lon2: float, t: float
+) -> tuple[float, float]:
+    """Großkreis zwischen zwei Punkten: ``t=0`` Start, ``t=1`` Ziel."""
+    t = min(1.0, max(0.0, t))
+    lat1_r = math.radians(lat1)
+    lon1_r = math.radians(lon1)
+    lat2_r = math.radians(lat2)
+    lon2_r = math.radians(lon2)
+    x1 = math.cos(lat1_r) * math.cos(lon1_r)
+    y1 = math.cos(lat1_r) * math.sin(lon1_r)
+    z1 = math.sin(lat1_r)
+    x2 = math.cos(lat2_r) * math.cos(lon2_r)
+    y2 = math.cos(lat2_r) * math.sin(lon2_r)
+    z2 = math.sin(lat2_r)
+    dot = x1 * x2 + y1 * y2 + z1 * z2
+    dot = max(-1.0, min(1.0, dot))
+    ang = math.acos(dot)
+    if ang < 1e-9:
+        return lat1, lon1
+    a = math.sin((1.0 - t) * ang) / math.sin(ang)
+    b = math.sin(t * ang) / math.sin(ang)
+    x = a * x1 + b * x2
+    y = a * y1 + b * y2
+    z = a * z1 + b * z2
+    lat_r = math.atan2(z, math.sqrt(x * x + y * y))
+    lon_r = math.atan2(y, x)
+    return (math.degrees(lat_r), math.degrees(lon_r))
+
+
+def point_along_path_km(
+    lat_own: float,
+    lon_own: float,
+    lat_dest: float,
+    lon_dest: float,
+    distance_from_own_km: float,
+) -> tuple[float, float]:
+    """Punkt auf der Großkreislinie eigenes QTH → Ziel, ``distance_from_own_km`` vom Start (geklappt)."""
+    d_tot = haversine_km(lat_own, lon_own, lat_dest, lon_dest)
+    if d_tot < 0.01:
+        return lat_own, lon_own
+    t = min(1.0, max(0.0, distance_from_own_km / d_tot))
+    return great_circle_interpolate(lat_own, lon_own, lat_dest, lon_dest, t)
+
+
+def reflection_path_fraction_and_midpoint_factor(
+    dist_from_own_km: float,
+    lat_own: float,
+    lon_own: float,
+    lat_dest: float,
+    lon_dest: float,
+) -> tuple[float, float]:
+    """
+    Aircraft-Scatter-Heuristik auf der Großkreislinie QTH → Gegenstation:
+
+    - ``t`` = Anteil der Streckenlänge (0 = bei dir, 1 = beim Partner).
+    - ``g`` = ``4 * t * (1 - t)`` in [0, 1], Maximum **1** bei **Mitte** (t = 0,5);
+      nahe den Enden (Flug direkt über QTH oder über dem Ziel) → **g ≈ 0**.
+
+    AirScouts ``distance_km`` wird als Entfernung vom eigenen Standort entlang des Pfads interpretiert
+    (wie ``point_along_path_km``).
+    """
+    d_tot = haversine_km(lat_own, lon_own, lat_dest, lon_dest)
+    if d_tot < 0.01:
+        return (0.5, 1.0)
+    t = min(1.0, max(0.0, float(dist_from_own_km) / d_tot))
+    g = 4.0 * t * (1.0 - t)
+    return (t, g)
+
+
+def offset_perpendicular_toward_dest(
+    lat: float, lon: float, lat_dest: float, lon_dest: float, offset_km: float
+) -> tuple[float, float]:
+    """Senkrecht zur Verbindung (lat,lon)→Ziel um ``offset_km`` verschieben (für mehrere Marker)."""
+    brg = bearing_deg(lat, lon, lat_dest, lon_dest)
+    return destination_point(lat, lon, (brg + 90.0) % 360.0, offset_km)
+
+
 def grayline_points(n_points: int = 360) -> list[tuple[float, float]]:
     """Punkte des Solar-Terminators (Grayline) für die aktuelle UTC-Zeit.
 

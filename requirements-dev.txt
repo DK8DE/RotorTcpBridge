@@ -2,3 +2,5 @@
 -r requirements.txt
 pytest>=8.0
 ruff>=0.8
+# tools/optimize_map_assets.py (PNG für Karte/Installer verkleinern)
+Pillow>=10.0

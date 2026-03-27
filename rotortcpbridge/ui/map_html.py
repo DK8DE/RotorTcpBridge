@@ -113,6 +113,20 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
             break
         except OSError:
             continue
+    # User_ACC nur einbetten, wenn klein genug — große PNGs (z. B. > ~120 KB) sprengen die Seite → weiße Karte (WebEngine).
+    _max_embed_asset_bytes = 120_000
+    user_watch_acc_data_url = ""
+    for _uname in ("User_ACC.png", "User_acc.png"):
+        try:
+            _up = _pkg_root / _uname
+            if not _up.is_file():
+                continue
+            _raw = _up.read_bytes()
+            if len(_raw) <= _max_embed_asset_bytes:
+                user_watch_acc_data_url = "data:image/png;base64," + base64.b64encode(_raw).decode("ascii")
+            break
+        except OSError:
+            continue
     # Kein großes PNG per Base64 im Inline-Skript (Qt WebEngine: sehr große Seiten → weiße Karte).
     # Kompaktes SVG; optional kann später rotortiles:assets/ genutzt werden, wenn die Seite nicht about:blank ist.
     _airplane_svg = (
@@ -201,6 +215,12 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       color: #e8e8e8;
     }}
     #asnearestList th, #asnearestList td {{ padding: 2px 4px; vertical-align: top; }}
+    #asnearestList tbody tr.asnearest-row-hover {{
+      background: rgba(0, 0, 0, 0.07);
+    }}
+    body.map-dark #asnearestList tbody tr.asnearest-row-hover {{
+      background: rgba(255, 255, 255, 0.08);
+    }}
     #asnearestList a {{ color: inherit; }}
     .leaflet-div-icon.rotor-aswatch-marker {{ border: none; background: transparent; }}
     /* Sicherstellen, dass Hover/Tooltip am User-Marker ankommen (Leaflet setzt sonst oft pointer-events:none) */
@@ -210,6 +230,12 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     .leaflet-div-icon.rotor-airplane-marker {{ border: none; background: transparent; }}
     .leaflet-marker-icon.rotor-airplane-marker {{
       pointer-events: auto !important;
+    }}
+    .leaflet-marker-icon.rotor-asnearest-hover-marker {{
+      pointer-events: none !important;
+    }}
+    img.rotor-asnearest-hover-fallback-img {{
+      filter: drop-shadow(0 0 5px rgba(76, 175, 80, 0.9)) drop-shadow(0 1px 2px rgba(0,0,0,0.45));
     }}
     {_cluster_extra_css}
   </style>
@@ -267,6 +293,16 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       if (!_currentOffline) console.error('ROTOR_TILEERROR');
     }});
     const userWatchIconUrl = {json.dumps(user_watch_data_url)};
+    const userWatchAccIconUrl = {json.dumps(user_watch_acc_data_url)};
+    if (typeof map.createPane === 'function') {{
+      map.createPane('rotorAsnearestHover');
+      map.getPane('rotorAsnearestHover').style.zIndex = 650;
+      map.getPane('rotorAsnearestHover').style.pointerEvents = 'none';
+    }}
+    let asnearestHoverLayer = L.layerGroup().addTo(map);
+    let asnearestHoverFlightLayer = null;
+    let _hoverDestKey = null;
+    let _hiddenAswatchForHover = null;
     /* Offline: max. Zoom = Tile-Limit → Einzelmarker ab diesem Level; Online: ab 16 */
     const aswatchDisableClusterZoom = isOffline ? offlineMaxZ : 16;
     let aswatchLayer;
@@ -288,12 +324,131 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     function _escapeHtmlAswatch(s) {{
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
     }}
+    function _escapeAttrAswatch(s) {{
+      return String(s).replace(/&/g,'&amp;').replace(/\"/g,'&quot;');
+    }}
     let _lastAsnearestSummary = [];
+    function _findAswatchMarkerByDestKey(destKey) {{
+      if (!destKey || !aswatchLayer || !aswatchLayer.eachLayer) return null;
+      var found = null;
+      try {{
+        aswatchLayer.eachLayer(function(layer) {{
+          if (found) return;
+          if (layer instanceof L.Marker && layer._rotorDestKey === destKey) found = layer;
+        }});
+      }} catch (e) {{}}
+      return found;
+    }}
+    function _clearAsnearestHover() {{
+      if (_hiddenAswatchForHover) {{
+        try {{ _hiddenAswatchForHover.setOpacity(1); }} catch (e) {{}}
+        _hiddenAswatchForHover = null;
+      }}
+      if (asnearestHoverFlightLayer) asnearestHoverFlightLayer.clearLayers();
+      asnearestHoverLayer.clearLayers();
+      _hoverDestKey = null;
+    }}
+    function _showAsnearestListHover(destKey) {{
+      if (_hiddenAswatchForHover) {{
+        try {{ _hiddenAswatchForHover.setOpacity(1); }} catch (e) {{}}
+        _hiddenAswatchForHover = null;
+      }}
+      asnearestHoverLayer.clearLayers();
+      if (asnearestHoverFlightLayer) asnearestHoverFlightLayer.clearLayers();
+      if (!destKey) {{ _hoverDestKey = null; return; }}
+      _hoverDestKey = destKey;
+      var row = null;
+      for (var ri = 0; ri < _lastAsnearestSummary.length; ri++) {{
+        if (_lastAsnearestSummary[ri] && _lastAsnearestSummary[ri].dest_key === destKey) {{
+          row = _lastAsnearestSummary[ri];
+          break;
+        }}
+      }}
+      var lat = null, lon = null;
+      var mk = _findAswatchMarkerByDestKey(destKey);
+      if (mk) {{
+        var ll = mk.getLatLng();
+        lat = ll.lat; lon = ll.lng;
+      }} else if (row) {{
+        var la = Number(row.lat), lo = Number(row.lon);
+        if (!isNaN(la) && !isNaN(lo)) {{ lat = la; lon = lo; }}
+      }}
+      if (lat == null || lon == null) {{ _hoverDestKey = null; return; }}
+      var useAcc = !!userWatchAccIconUrl;
+      if (useAcc && mk) {{
+        try {{ mk.setOpacity(0); _hiddenAswatchForHover = mk; }} catch (e) {{}}
+      }}
+      var bubbleBg = _mapDarkAswatch ? 'rgba(40,40,40,0.95)' : 'rgba(255,255,255,0.95)';
+      var bubbleFg = _mapDarkAswatch ? '#f0f0f0' : '#111';
+      var bubbleBr = _mapDarkAswatch ? '#888' : '#333';
+      var sym = '';
+      if (userWatchAccIconUrl) {{
+        sym = '<img src="' + userWatchAccIconUrl + '" width="28" height="28" alt="" style="display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.45));"/>';
+      }} else if (userWatchIconUrl) {{
+        sym = '<img src="' + userWatchIconUrl + '" width="28" height="28" alt="" class="rotor-asnearest-hover-fallback-img" style="display:block;"/>';
+      }} else {{
+        sym = '<div style="width:28px;height:28px;border-radius:50%;background:#81c784;border:2px solid #2e7d32;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></div>';
+      }}
+      var callTxt = row ? _escapeHtmlAswatch(row.call || '') : '';
+      var html = '<div style="display:flex;flex-direction:column;align-items:center;">'
+        + '<div style="background:' + bubbleBg + ';border:1px solid ' + bubbleBr + ';border-radius:7px;padding:2px 6px;font-size:10px;font-weight:600;line-height:1.15;margin-bottom:3px;color:' + bubbleFg + ';text-align:center;white-space:nowrap;">' + callTxt + '</div>'
+        + sym + '</div>';
+      var icon = L.divIcon({{ html: html, iconSize: [120, 56], iconAnchor: [60, 56], className: 'rotor-aswatch-marker rotor-asnearest-hover-marker' }});
+      var paneOpt = (typeof map.getPane === 'function' && map.getPane('rotorAsnearestHover')) ? {{ pane: 'rotorAsnearestHover' }} : {{}};
+      var hm = L.marker([lat, lon], L.extend({{ icon: icon, interactive: false, keyboard: false }}, paneOpt));
+      hm.addTo(asnearestHoverLayer);
+      if (row && asnearestHoverFlightLayer && row.hover_plane_lat != null && row.hover_plane_lon != null
+          && row.hover_partner_lat != null && row.hover_partner_lon != null) {{
+        var skipFlight = false;
+        if (_lastAirplanes && _lastAirplanes.length && _lastAirplanes[0].dest_key === destKey) skipFlight = true;
+        if (!skipFlight) {{
+          var plat = Number(row.hover_plane_lat), plon = Number(row.hover_plane_lon);
+          var ptlat = Number(row.hover_partner_lat), ptlon = Number(row.hover_partner_lon);
+          if (!isNaN(plat) && !isNaN(plon) && !isNaN(ptlat) && !isNaN(ptlon)) {{
+            var lineColor = _mapDarkAswatch ? '#ffb74d' : '#e65100';
+            var fp = (typeof map.getPane === 'function' && map.getPane('rotorAsnearestHover')) ? 'rotorAsnearestHover' : undefined;
+            var lineOpts = {{ color: lineColor, weight: 2, dashArray: '7,6', opacity: 0.92, interactive: false }};
+            if (fp) lineOpts.pane = fp;
+            L.polyline([[plat, plon], [ptlat, ptlon]], lineOpts).addTo(asnearestHoverFlightLayer);
+            var flightLbl = '';
+            if (row.hover_flight != null && String(row.hover_flight).trim()) flightLbl = _escapeHtmlAswatch(String(row.hover_flight).trim());
+            var symP = '';
+            if (airplaneIconUrl) {{
+              symP = '<img src="' + airplaneIconUrl + '" width="32" height="32" alt="" style="display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.45));"/>';
+            }} else {{
+              symP = '<div style="width:32px;height:32px;background:#ff9800;border-radius:4px;border:2px solid #e65100;"></div>';
+            }}
+            var htmlP = '<div style="display:flex;flex-direction:column;align-items:center;">'
+              + '<div style="background:' + bubbleBg + ';border:1px solid ' + bubbleBr + ';border-radius:7px;padding:2px 6px;font-size:10px;font-weight:600;line-height:1.2;margin-bottom:3px;color:' + bubbleFg + ';text-align:center;max-width:140px;">' + flightLbl + '</div>'
+              + symP + '</div>';
+            var iconP = L.divIcon({{ html: htmlP, iconSize: [140, 70], iconAnchor: [70, 70], className: 'rotor-airplane-marker rotor-asnearest-hover-marker' }});
+            var mkOpts = L.extend({{ icon: iconP, interactive: false, keyboard: false }}, fp ? {{ pane: fp }} : {{}});
+            L.marker([plat, plon], mkOpts).addTo(asnearestHoverFlightLayer);
+          }}
+        }}
+      }}
+    }}
+    function _bindAsnearestRowHover(listEl) {{
+      if (!listEl) return;
+      listEl.querySelectorAll('tbody tr.asnearest-row').forEach(function(tr) {{
+        tr.addEventListener('mouseenter', function() {{
+          listEl.querySelectorAll('tbody tr.asnearest-row-hover').forEach(function(x) {{ x.classList.remove('asnearest-row-hover'); }});
+          tr.classList.add('asnearest-row-hover');
+          var dk = tr.getAttribute('data-dest-key');
+          if (dk) _showAsnearestListHover(dk);
+        }});
+        tr.addEventListener('mouseleave', function() {{
+          tr.classList.remove('asnearest-row-hover');
+          _clearAsnearestHover();
+        }});
+      }});
+    }}
     function _redrawAsnearestPanel() {{
       const block = document.getElementById('asnearestBlock');
       const listEl = document.getElementById('asnearestList');
       const titleEl = document.getElementById('asnearestTitle');
       if (!block || !listEl) return;
+      _clearAsnearestHover();
       const rows = _lastAsnearestSummary;
       if (!rows || !rows.length) {{
         block.style.display = 'none';
@@ -316,13 +471,15 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
           href += '&asnearest_dest=' + encodeURIComponent(r.dest_key);
         }}
         const call = _escapeHtmlAswatch(r.call || '');
-        html += '<tr style="cursor:pointer;"><td><a href="' + href + '" style="color:inherit;text-decoration:underline;">' + call + '</a></td>';
+        const dkAttr = r.dest_key ? _escapeAttrAswatch(r.dest_key) : '';
+        html += '<tr class="asnearest-row"' + (dkAttr ? ' data-dest-key="' + dkAttr + '"' : '') + ' style="cursor:pointer;"><td><a href="' + href + '" style="color:inherit;text-decoration:underline;">' + call + '</a></td>';
         html += '<td align="right">' + (r.distance_km != null ? r.distance_km + ' km' : '–') + '</td>';
         html += '<td align="right">' + (r.duration_min != null ? r.duration_min + ' min' : '–') + '</td>';
         html += '<td align="right">' + (r.score != null ? r.score : '–') + '</td></tr>';
       }});
       html += '</tbody></table>';
       listEl.innerHTML = html;
+      _bindAsnearestRowHover(listEl);
     }}
     window.setAsnearestSummary = function(rows) {{
       _lastAsnearestSummary = (rows && rows.length) ? rows.slice() : [];
@@ -330,8 +487,14 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     }};
     window.setAswatchMarkers = function(arr) {{
       _lastAswatch = (arr && arr.length) ? arr.slice() : [];
+      _hiddenAswatchForHover = null;
+      if (asnearestHoverFlightLayer) asnearestHoverFlightLayer.clearLayers();
+      asnearestHoverLayer.clearLayers();
       aswatchLayer.clearLayers();
-      if (!_lastAswatch.length) return;
+      if (!_lastAswatch.length) {{
+        if (_hoverDestKey) _clearAsnearestHover();
+        return;
+      }}
       const bubbleBg = _mapDarkAswatch ? 'rgba(40,40,40,0.95)' : 'rgba(255,255,255,0.95)';
       const bubbleFg = _mapDarkAswatch ? '#f0f0f0' : '#111';
       const bubbleBr = _mapDarkAswatch ? '#888' : '#333';
@@ -355,6 +518,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         const iconH = hasQrg ? 72 : 56;
         const icon = L.divIcon({{ html: html, iconSize: [120, iconH], iconAnchor: [60, iconH], className: 'rotor-aswatch-marker' }});
         const mk = L.marker([m.lat, m.lon], {{ icon: icon, interactive: true }});
+        mk._rotorDestKey = (m.dest_key != null && String(m.dest_key).trim()) ? String(m.dest_key).trim() : '';
         /* MarkerClusterGroup fängt Klicks ab: map.on('click') feuert auf User-Icon nicht → Rotor wie bei Kartenklick */
         mk.on('click', function(ev) {{
           if (ev && ev.originalEvent) {{ L.DomEvent.stopPropagation(ev.originalEvent); }}
@@ -366,12 +530,16 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         }});
         mk.addTo(aswatchLayer);
       }});
+      if (_hoverDestKey) {{
+        _showAsnearestListHover(_hoverDestKey);
+      }}
       // Kein fitBounds bei ASWATCH-Updates: sonst zoomt die Karte bei jedem UDP-
       // Tick heraus, sobald ein Marker außerhalb des Viewports liegt. Zoom und
       // Pan bleiben in der Hand des Nutzers.
     }};
     const airplaneIconUrl = {json.dumps(airplane_icon_url)};
     let airplaneLayer = L.layerGroup().addTo(map);
+    asnearestHoverFlightLayer = L.layerGroup().addTo(map);
     let _lastAirplanes = [];
     function _airplanePopupKey(m) {{
       return String(m.flight || '') + '\\u0001' + String(m.partner || '') + '\\u0001' + String(m.dest_loc || '');
@@ -385,7 +553,10 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       }} catch (e) {{}}
       _lastAirplanes = (arr && arr.length) ? arr.slice() : [];
       airplaneLayer.clearLayers();
-      if (!_lastAirplanes.length) return;
+      if (!_lastAirplanes.length) {{
+        if (_hoverDestKey) _showAsnearestListHover(_hoverDestKey);
+        return;
+      }}
       const lineColor = _mapDarkAswatch ? '#ffb74d' : '#e65100';
       _lastAirplanes.forEach(function(m) {{
         if (m.link_ok && m.partner_lat != null && m.partner_lon != null
@@ -427,6 +598,9 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
             layer.openPopup();
           }}
         }});
+      }}
+      if (_hoverDestKey) {{
+        _showAsnearestListHover(_hoverDestKey);
       }}
     }};
 

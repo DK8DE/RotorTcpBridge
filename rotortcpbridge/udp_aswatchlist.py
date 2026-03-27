@@ -350,7 +350,8 @@ def _build_markers_for_map(
         for i, (call, qrg) in enumerate(calls_sorted):
             off_km = (i - (n - 1) / 2.0) * spacing_km
             lat2, lon2 = destination_point(lat, lon, 90.0, off_km)
-            item: dict[str, Any] = {"call": call, "lat": lat2, "lon": lon2}
+            dk = f"{call.strip().upper()}|{loc_u}"
+            item: dict[str, Any] = {"call": call, "lat": lat2, "lon": lon2, "dest_key": dk}
             if qrg:
                 item["qrg"] = qrg
             out.append(item)
@@ -551,6 +552,7 @@ class UdpAswatchlistListener:
             {
                 "lat": lat,
                 "lon": lon,
+                "dest_key": dest_key,
                 "flight": pl.get("flight", ""),
                 "partner": p["dest_call"],
                 "dest_loc": str(p.get("dest_loc", "")).strip().upper(),
@@ -645,11 +647,29 @@ class UdpAswatchlistListener:
 
     def _build_asnearest_summary_rows(self, max_rows: int | None = None) -> list[dict[str, Any]]:
         """Pro Gegenstation eine Zeile: kürzeste Restzeit zuerst; nur Score ≥ min; max. Zeilen aus cfg."""
+        ui = self.cfg.get("ui", {})
+        try:
+            min_score = int(ui.get("asnearest_min_score", 45))
+        except (TypeError, ValueError):
+            min_score = 45
+        min_score = max(0, min(100, min_score))
+        aircraft_on = self._aircraft_enabled()
         rows: list[dict[str, Any]] = []
         for _key, parsed in sorted(self._asnearest_parsed_by_dest.items(), key=lambda x: x[0]):
             row = self._summary_row_from_parsed(parsed)
-            if row is not None:
-                rows.append(row)
+            if row is None:
+                continue
+            if aircraft_on:
+                markers = self._build_aircraft_markers_for_packet(parsed)
+                for m in markers:
+                    if m.get("link_ok") and marker_asnearest_score(m) >= min_score:
+                        row["hover_plane_lat"] = m["lat"]
+                        row["hover_plane_lon"] = m["lon"]
+                        row["hover_partner_lat"] = m["partner_lat"]
+                        row["hover_partner_lon"] = m["partner_lon"]
+                        row["hover_flight"] = str(m.get("flight", "") or "")
+                        break
+            rows.append(row)
         rows.sort(key=lambda r: (int(r.get("duration_min", 9999)), str(r.get("call", ""))))
         mr = self._summary_max_rows() if max_rows is None else max(0, min(500, int(max_rows)))
         return rows[:mr]

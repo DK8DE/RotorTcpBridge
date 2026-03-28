@@ -1,0 +1,2090 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rotor‑Controller – RS485‑Anleitung &amp; Firmware‑Dokumentation</title>
+  <style>
+
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            line-height: 1.5;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+            background: #f7f7f7;
+        }
+        h1, h2, h3, h4 {
+            color: #222;
+        }
+        code {
+            font-family: "Fira Code", "Consolas", monospace;
+            background: #eee;
+            padding: 0 3px;
+            border-radius: 3px;
+        }
+        pre {
+            background: #272822;
+            color: #f8f8f2;
+            padding: 10px 12px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        pre code {
+            background: transparent;
+            padding: 0;
+        }
+        ul {
+            margin-top: 0;
+        }
+        hr {
+            margin: 2em 0;
+        }
+        .note {
+            background: #fff9c4;
+            border-left: 4px solid #fbc02d;
+            padding: 8px 10px;
+            margin: 16px 0;
+        }
+        .warn {
+            background: #fff9c4;
+            border-left: 4px solid #f57c00;
+            padding: 8px 10px;
+            margin: 16px 0;
+        }
+        .danger {
+            background: #ffebee;
+            border-left: 4px solid #c62828;
+            padding: 8px 10px;
+            margin: 16px 0;
+        }
+        .section {
+            background: #ffffff;
+            padding: 16px 18px;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            margin-bottom: 18px;
+        }
+        .toc {
+            background: #ffffff;
+            padding: 16px 18px;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            margin-bottom: 18px;
+        }
+        .toc ul {
+            margin: 8px 0 0 0;
+            padding-left: 18px;
+        }
+        .toc li {
+            margin: 4px 0;
+        }
+        .toc a {
+            color: #1565c0;
+            text-decoration: none;
+        }
+        .toc a:hover {
+            text-decoration: underline;
+        }
+        .toplink {
+            font-size: 0.95em;
+            margin-top: 10px;
+        }
+        .toplink a {
+            color: #1565c0;
+            text-decoration: none;
+        }
+        .toplink a:hover {
+            text-decoration: underline;
+        }
+
+        /* Ergänzungen für Tabellen (im Beispiel nicht enthalten, hier aber nötig) */
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 10px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px 8px;
+            vertical-align: top;
+        }
+        th {
+            background: #f0f0f0;
+            text-align: left;
+        }
+        .muted {
+            color: #555;
+        }
+    
+  </style>
+</head>
+<body>
+<div class="section" id="intro">
+  <h1>Rotor‑Controller – RS485‑Anleitung &amp; Firmware‑Dokumentation (DE)</h1>
+  <p class="muted">Stand: 2026-03-28 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler &amp; Warnungen. Die <b>Befehlstabelle</b> ist mit dem RotorTcpBridge‑Katalog abgeglichen (<code>command_catalog.py</code> / Befehlsfenster).</p>
+</div>
+<main>
+<section class="toc" id="toc">
+<h2>Inhaltsverzeichnis</h2>
+<ul>
+<li><a href="#protocol">1. RS485‑Protokoll (Format, Dezimal, Checksumme)</a></li>
+<li><a href="#encoders">2. Encoder‑Varianten (fest in der Firmware)</a></li>
+<li><a href="#cmd-table">3. RS485‑Befehle – Tabelle</a></li>
+<li><a href="#cmd-details">4. RS485‑Befehle – Erklärung &amp; Empfehlungen</a></li>
+<li><a href="#vars-table">5. INO‑Konfig‑Variablen – Tabelle</a></li>
+<li><a href="#vars-details">6. INO‑Variablen – Erklärung &amp; gute Werte</a></li>
+<li><a href="#tuning">7. Kalibrierung/Lastprofil/Temperatur – Tuning‑Anleitung</a></li>
+<li><a href="#warns">8. Warnungen</a></li>
+<li><a href="#errors">9. Fehler</a></li>
+<li><a href="#notes">10. Hinweise</a></li>
+</ul>
+</section>
+<section class="section" id="protocol">
+<h2>1. RS485‑Protokoll</h2>
+<p>Alle RS485‑Telegramme haben dieses Grundformat:</p>
+<pre><code>#&lt;SRC&gt;:&lt;DST&gt;:&lt;CMD&gt;:&lt;PARAMS&gt;:&lt;CS&gt;$</code></pre>
+<ul>
+<li><b>SRC</b> = Sender‑ID (Master)</li>
+<li><b>DST</b> = Empfänger‑ID (Slave, z.B. 20)</li>
+<li><b>CMD</b> = Befehl (Großbuchstaben)</li>
+<li><b>PARAMS</b> = Nutzdaten. Mehrere Werte werden (wo sinnvoll) mit <code>;</code> getrennt.</li>
+<li><b>CS</b> = Checksumme (einfache Plausibilität, nicht kryptografisch)</li>
+</ul>
+<h3>Dezimalzahlen</h3>
+<p>Der Master darf Dezimalzahlen mit <b>Komma</b> oder <b>Punkt</b> senden. In Antworten verwendet die Firmware in der Regel das <b>Komma</b> (z.B. <code>10,5</code>).</p>
+<h3>Checksumme (CS)</h3>
+<p>Die Checksumme ist bewusst einfach gehalten. Sie setzt sich aus <b>SRC + DST</b> und dem <b>letzten Zahlenwert</b> in <code>PARAMS</code> zusammen.</p>
+<ul>
+<li>Intern wird mit <b>0,01‑Auflösung</b> gerechnet (scaled100).</li>
+<li>Wenn <code>PARAMS</code> mehrere Zahlen hat (z.B. Listen), zählt <b>nur der letzte Wert</b> für die Checksumme.</li>
+<li>Wenn <code>PARAMS</code> gar keine Zahl enthält (z.B. <code>NOHW</code>), wird der Wert als 0 behandelt.</li>
+</ul>
+
+
+<h3>Ablauf (Request/Response)</h3>
+<p>Das Protokoll ist als <b>Frage/Antwort</b> aufgebaut:</p>
+<ol>
+  <li>Der Master sendet ein Telegramm an eine Slave‑ID.</li>
+  <li>Der Slave prüft Format und Checksumme.</li>
+  <li>Wenn alles passt: Antwort mit <code>ACK_*</code>. Bei ungültigen Parametern: <code>NAK_*</code> mit einer kurzen Begründung.</li>
+  <li>Bei Befehlen, die eine Bewegung starten (z.B. <code>SETPOSDG</code>): das <code>ACK</code> kommt sofort, die Bewegung läuft danach in der Hauptschleife weiter.</li>
+</ol>
+
+<h3>IDs (SRC/DST)</h3>
+<ul>
+  <li><b>Slave‑ID</b>: ist die Zieladresse (<code>DST</code>) und kann mit <code>SETID</code> geändert werden.</li>
+  <li><b>Master‑ID</b>: ist immer die Quelladresse (<code>SRC</code>) der Anfrage. Der Slave antwortet an genau diese ID (die Antwort hat dann <code>SRC=Slave</code> und <code>DST=Master</code>).</li>
+  <li>Die Master‑ID muss also nicht <code>0</code> sein. Wenn mehrere Master existieren, antwortet der Slave jeweils an den Master, der die Anfrage geschickt hat.</li>
+</ul>
+
+<h3>Beispiele</h3>
+<p><b>Beispiel 1: Abfrage der Position</b> (Master‑ID = 7, Slave‑ID = 20). In der Anfrage ist der letzte Zahlenwert <code>0</code>, daher ist <code>CS = 7 + 20 + 0 = 27</code>:</p>
+<pre><code>#7:20:GETPOSDG:0:27$</code></pre>
+<p>Antwort (Beispielwert 160,00°). Letzter Zahlenwert ist <code>160,00</code> → <code>CS = 20 + 7 + 160 = 187</code>:</p>
+<pre><code>#20:7:ACK_GETPOSDG:160,00:187,00$</code></pre>
+
+<p><b>Beispiel 2: Positionsfahrt starten</b> (Ziel 160,00°). Letzter Zahlenwert ist <code>160,00</code> → <code>CS = 7 + 20 + 160 = 187</code>:</p>
+<pre><code>#7:20:SETPOSDG:160,00:187,00$</code></pre>
+<p>Antwort: <code>1</code> bedeutet „angenommen“. Letzter Zahlenwert ist <code>1</code> → <code>CS = 20 + 7 + 1 = 28</code>:</p>
+<pre><code>#20:7:ACK_SETPOSDG:1:28$</code></pre>
+
+<h3>Asynchrone Meldungen (ERR)</h3>
+<p>Wenn ein <b>Fehler</b> auftritt (z.B. Blockade, Not‑Stop, Stall), stoppt der Motor und der Slave sendet zusätzlich ein <code>ERR</code>‑Telegramm an den zuletzt aktiven Master:</p>
+<pre><code>#20:7:ERR:16:43$</code></pre>
+<p>Im Beispiel ist der Fehlercode <code>16</code>. Die Checksumme ist <code>20 + 7 + 16 = 43</code>. Der Fehler bleibt aktiv, bis er quittiert wird (siehe <code>SETREF</code>).</p>
+
+<div class="note"><b>Tipp:</b> Wenn von der Master‑Seite aus geparst werden soll, ist die Trennung so gedacht: Felder mit <code>:</code>, und innerhalb von <code>PARAMS</code> (falls mehrere Werte) mit <code>;</code>.</div>
+<div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
+</section>
+<section class="section" id="encoders">
+<h2>2. Encoder‑Varianten </h2>
+<p>Es gibt zwei Hardware‑Varianten, wie der Encoder montiert ist. Die Auswahl ist über RS485 möglich über <b>SETENCTYPE 1/2</b>. Axis hat die Id1 und Ring hat Id2. 
+    Bei einem Encoder‑Wechsel müss einige andere Werte angepasst werden.</p>
+<ul>
+  <li><b>Ring‑Encoder an der Ausgangswelle</b>: typisch ca. <b>160000 Counts pro 360°</b>. Sehr feine Positionsauflösung, da direkt an der Rotor‑Achse gemessen wird.</li>
+  <li><b>Encoder an der Motorachse</b>: typisch ca. <b>50000 Counts pro 360°</b> (am Motor). Mechanisch oft einfacher, aber das Getriebe kann beim Richtungswechsel Spiel haben.</li>
+</ul>
+<p><b>Auswirkung in der Firmware:</b> Homing‑Rampen, erwartete Counts pro Umdrehung sowie einige Schutz‑ und Auswertefunktionen verwenden diese feste Counts‑pro‑Umdrehung‑Annahme. Daher ändert sich das Verhalten spürbar, wenn die Encoder‑Variante gewechselt wird.</p>
+<p><b>Getriebespiel‑Kompensation beim Motor‑Encoder:</b> Wenn der Encoder am Motor sitzt, wird das Getriebespiel beim Homing durch die Firmware kompensiert. Dazu wird die Referenz immer mit einer definierten Anfahr‑Richtung und einer definierten Überfahr‑/Rückzugslogik angefahren, damit der Nullpunkt trotz Spiel reproduzierbar bleibt.</p>
+</section>
+
+<section class="section" id="cmd-table">
+<h2>3. RS485‑Befehle – Tabelle</h2>
+<p>Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische Antwort vom Slave. Spalte 3 ist eine Kurzbeschreibung. <b>Antennenversatz</b> (<code>SETANTOFF1..3</code>/<code>GET…</code>) und <b>Öffnungswinkel</b> (<code>SETANGLE1..3</code>/<code>GET…</code>) werden im Controller dauerhaft gespeichert (NVS) – dieselben Befehle stehen im Bridge‑Befehlsfenster zur Verfügung.</p>
+<table>
+<tr><th>Master → Slave</th><th>Slave → Master</th><th>Kurzbeschreibung</th></tr>
+<tr>
+<td><code>#0:20:TEST:...:CS$</code></td>
+<td><code>#20:0:ACK_TEST:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_TEST:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-TEST">TEST</a></b><br>Verbindungstest (Ping).</td>
+</tr>
+<tr>
+<td><code>#0:20:STOP:...:CS$</code></td>
+<td><code>#20:0:ACK_STOP:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_STOP:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-STOP">STOP</a></b><br>Weicher Stop (normales Abbremsen).</td>
+</tr>
+<tr>
+<td><code>#0:20:NSTOP:...:CS$</code></td>
+<td><code>#20:0:ACK_NSTOP:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_NSTOP:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-NSTOP">NSTOP</a></b><br>Not-Stop über RS485.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETREF:...:CS$</code></td>
+<td><code>#20:0:ACK_GETREF:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETREF:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETREF">GETREF</a></b><br>Abfragen, ob Referenz (Homing) vorhanden ist.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETPOSDG:...:CS$</code></td>
+<td><code>#20:0:ACK_GETPOSDG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETPOSDG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETPOSDG">GETPOSDG</a></b><br>Aktuelle Position in Grad (0,01°).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETIS:...:CS$</code></td>
+<td><code>#20:0:ACK_GETIS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETIS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETIS">GETIS</a></b><br>Aktueller Strommesswert (mV) nach Offset-Abzug.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETTEMPA:...:CS$</code></td>
+<td><code>#20:0:ACK_GETTEMPA:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETTEMPA:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETTEMPA">GETTEMPA</a></b><br>Umgebungstemperatur in °C.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETTEMPM:...:CS$</code></td>
+<td><code>#20:0:ACK_GETTEMPM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETTEMPM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETTEMPM">GETTEMPM</a></b><br>Motortemperatur in °C.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANEMO:...:CS$</code></td>
+<td><code>#20:0:ACK_GETANEMO:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANEMO:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANEMO">GETANEMO</a></b><br>Windgeschwindigkeit vom Windmesser in km/h.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETBEAUFORT:...:CS$</code></td>
+<td><code>#20:0:ACK_GETBEAUFORT:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETBEAUFORT:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETBEAUFORT">GETBEAUFORT</a></b><br>Windstärke des RS485-Sensors als Beaufortwert 0 bis 12.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANEMOOF:...:CS$</code></td>
+<td><code>#20:0:ACK_GETANEMOOF:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANEMOOF:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANEMOOF">GETANEMOOF</a></b><br>Offset der Windgeschwindigkeit (km/h) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETANEMOOF:...:CS$</code></td>
+<td><code>#20:0:ACK_SETANEMOOF:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANEMOOF:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETANEMOOF">SETANEMOOF</a></b><br>Offset der Windgeschwindigkeit (km/h) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETWINDDIR:...:CS$</code></td>
+<td><code>#20:0:ACK_WINDDIR:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_WINDDIR:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETWINDDIR">GETWINDDIR</a></b><br>Windrichtung des RS485-Sensors in Grad lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETWINDDIROF:...:CS$</code></td>
+<td><code>#20:0:ACK_GETWINDDIROF:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETWINDDIROF:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETWINDDIROF">GETWINDDIROF</a></b><br>Offset der Windrichtung (Grad) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETWINDDIROF:...:CS$</code></td>
+<td><code>#20:0:ACK_SETWINDDIROF:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETWINDDIROF:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETWINDDIROF">SETWINDDIROF</a></b><br>Offset der Windrichtung (Grad) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETWINDENABLE:...:CS$</code></td>
+<td><code>#20:0:ACK_GETWINDENABLE:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETWINDENABLE:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETWINDENABLE">GETWINDENABLE</a></b><br>Abfragen, ob der RS485-Windsensor aktiv ist.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETWINDENABLE:...:CS$</code></td>
+<td><code>#20:0:ACK_SETWINDENABLE:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETWINDENABLE:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETWINDENABLE">SETWINDENABLE</a></b><br>RS485-Windsensor aktivieren oder deaktivieren.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANGLE1:1:20,01$</code></td>
+<td><code>#20:0:ACK_GETANGLE1:&lt;WERT&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANGLE1:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANGLE1">GETANGLE1</a></b><br>Öffnungswinkel der Antenne 1 lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETANGLE1:120,0:21,20$</code></td>
+<td><code>#20:0:ACK_SETANGLE1:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANGLE1:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETANGLE1">SETANGLE1</a></b><br>Öffnungswinkel der Antenne 1 speichern.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANGLE2:1:20,01$</code></td>
+<td><code>#20:0:ACK_GETANGLE2:&lt;WERT&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANGLE2:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANGLE2">GETANGLE2</a></b><br>Öffnungswinkel der Antenne 2 lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETANGLE2:120,0:21,20$</code></td>
+<td><code>#20:0:ACK_SETANGLE2:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANGLE2:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETANGLE2">SETANGLE2</a></b><br>Öffnungswinkel der Antenne 2 speichern.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANGLE3:1:20,01$</code></td>
+<td><code>#20:0:ACK_GETANGLE3:&lt;WERT&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANGLE3:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANGLE3">GETANGLE3</a></b><br>Öffnungswinkel der Antenne 3 lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETANGLE3:120,0:21,20$</code></td>
+<td><code>#20:0:ACK_SETANGLE3:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANGLE3:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETANGLE3">SETANGLE3</a></b><br>Öffnungswinkel der Antenne 3 speichern.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANTOFF1:1:20,01$</code></td>
+<td><code>#20:0:ACK_GETANTOFF1:&lt;WERT&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANTOFF1:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANTOFF1">GETANTOFF1</a></b><br>Winkelversatz der Antenne 1 lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETANTOFF1:45,0:20,45$</code></td>
+<td><code>#20:0:ACK_SETANTOFF1:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANTOFF1:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETANTOFF1">SETANTOFF1</a></b><br>Winkelversatz der Antenne 1 speichern.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANTOFF2:1:20,01$</code></td>
+<td><code>#20:0:ACK_GETANTOFF2:&lt;WERT&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANTOFF2:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANTOFF2">GETANTOFF2</a></b><br>Winkelversatz der Antenne 2 lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETANTOFF2:45,0:20,45$</code></td>
+<td><code>#20:0:ACK_SETANTOFF2:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANTOFF2:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETANTOFF2">SETANTOFF2</a></b><br>Winkelversatz der Antenne 2 speichern.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANTOFF3:1:20,01$</code></td>
+<td><code>#20:0:ACK_GETANTOFF3:&lt;WERT&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANTOFF3:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANTOFF3">GETANTOFF3</a></b><br>Winkelversatz der Antenne 3 lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETANTOFF3:45,0:20,45$</code></td>
+<td><code>#20:0:ACK_SETANTOFF3:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANTOFF3:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETANTOFF3">SETANTOFF3</a></b><br>Winkelversatz der Antenne 3 speichern.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETTEMPAW:...:CS$</code></td>
+<td><code>#20:0:ACK_GETTEMPAW:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETTEMPAW:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETTEMPAW">GETTEMPAW</a></b><br>Warnschwelle Umgebungstemperatur lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETTEMPMW:...:CS$</code></td>
+<td><code>#20:0:ACK_GETTEMPMW:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETTEMPMW:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETTEMPMW">GETTEMPMW</a></b><br>Warnschwelle Motortemperatur lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETTEMPA:...:CS$</code></td>
+<td><code>#20:0:ACK_SETTEMPA:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETTEMPA:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETTEMPA">SETTEMPA</a></b><br>Warnschwelle Umgebungstemperatur setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETTEMPM:...:CS$</code></td>
+<td><code>#20:0:ACK_SETTEMPM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETTEMPM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETTEMPM">SETTEMPM</a></b><br>Warnschwelle Motortemperatur setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETSWAPTMP:...:CS$</code></td>
+<td><code>#20:0:ACK_GETSWAPTMP:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETSWAPTMP:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETSWAPTMP">GETSWAPTMP</a></b><br>Zuordnung Motor-/Umgebungstemperatur lesen (0=normal, 1=vertauscht).</td>
+</tr>
+<tr>
+<td><code>#0:20:SETSWAPTEMP:...:CS$</code></td>
+<td><code>#20:0:ACK_SETSWAPTEMP:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETSWAPTEMP:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETSWAPTEMP">SETSWAPTEMP</a></b><br>Zuordnung Motor-/Umgebungstemperatur setzen (0/1, NVS).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETCOLDT:...:CS$</code></td>
+<td><code>#20:0:ACK_GETCOLDT:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETCOLDT:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETCOLDT">GETCOLDT</a></b><br>Kälte-Schwelle (°C) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETCOLDT:...:CS$</code></td>
+<td><code>#20:0:ACK_SETCOLDT:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETCOLDT:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETCOLDT">SETCOLDT</a></b><br>Kälte-Schwelle (°C) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETCOLDP:...:CS$</code></td>
+<td><code>#20:0:ACK_GETCOLDP:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETCOLDP:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETCOLDP">GETCOLDP</a></b><br>Extra-Reibung bei Kälte (%) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETCOLDP:...:CS$</code></td>
+<td><code>#20:0:ACK_SETCOLDP:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETCOLDP:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETCOLDP">SETCOLDP</a></b><br>Extra-Reibung bei Kälte (%) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETCALIGNDG:...:CS$</code></td>
+<td><code>#20:0:ACK_GETCALIGNDG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETCALIGNDG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETCALIGNDG">GETCALIGNDG</a></b><br>Kalibrierfahrt: Rampenbereich, der ignoriert wird (Grad).</td>
+</tr>
+<tr>
+<td><code>#0:20:SETCALIGNDG:...:CS$</code></td>
+<td><code>#20:0:ACK_SETCALIGNDG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETCALIGNDG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETCALIGNDG">SETCALIGNDG</a></b><br>Kalibrierfahrt: Rampenbereich (Grad) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETSTATMINDG:...:CS$</code></td>
+<td><code>#20:0:ACK_GETSTATMINDG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETSTATMINDG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETSTATMINDG">GETSTATMINDG</a></b><br>Mindestbewegung in Grad für Statistik.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETSTATMINDG:...:CS$</code></td>
+<td><code>#20:0:ACK_SETSTATMINDG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETSTATMINDG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETSTATMINDG">SETSTATMINDG</a></b><br>Mindestbewegung in Grad setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETDRAG:...:CS$</code></td>
+<td><code>#20:0:ACK_GETDRAG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETDRAG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETDRAG">GETDRAG</a></b><br>Schwellwert „mehr Reibung“ (%) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETDRAG:...:CS$</code></td>
+<td><code>#20:0:ACK_SETDRAG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETDRAG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETDRAG">SETDRAG</a></b><br>Schwellwert „mehr Reibung“ (%) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETDRAGBINS:...:CS$</code></td>
+<td><code>#20:0:ACK_GETDRAGBINS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETDRAGBINS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETDRAGBINS">GETDRAGBINS</a></b><br>Wie viele Winkel-Bins müssen drüber sein (%) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETDRAGBINS:...:CS$</code></td>
+<td><code>#20:0:ACK_SETDRAGBINS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETDRAGBINS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETDRAGBINS">SETDRAGBINS</a></b><br>Drag-Bins-Prozent setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETDRAGPERSIST:...:CS$</code></td>
+<td><code>#20:0:ACK_GETDRAGPERSIST:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETDRAGPERSIST:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETDRAGPERSIST">GETDRAGPERSIST</a></b><br>Wie viele große Fahrten hintereinander benötigt werden.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETDRAGPERSIST:...:CS$</code></td>
+<td><code>#20:0:ACK_SETDRAGPERSIST:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETDRAGPERSIST:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETDRAGPERSIST">SETDRAGPERSIST</a></b><br>Persistenz (Anzahl Fahrten) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETWINDPEAK:...:CS$</code></td>
+<td><code>#20:0:ACK_GETWINDPEAK:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETWINDPEAK:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETWINDPEAK">GETWINDPEAK</a></b><br>Wind: Peak-Schwellwert (%) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETWINDPEAK:...:CS$</code></td>
+<td><code>#20:0:ACK_SETWINDPEAK:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETWINDPEAK:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETWINDPEAK">SETWINDPEAK</a></b><br>Wind: Peak-Schwellwert (%) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETWINDCOH:...:CS$</code></td>
+<td><code>#20:0:ACK_GETWINDCOH:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETWINDCOH:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETWINDCOH">GETWINDCOH</a></b><br>Wind: Mindest-Kohärenz (%) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETWINDCOH:...:CS$</code></td>
+<td><code>#20:0:ACK_SETWINDCOH:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETWINDCOH:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETWINDCOH">SETWINDCOH</a></b><br>Wind: Mindest-Kohärenz (%) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETCALVALID:...:CS$</code></td>
+<td><code>#20:0:ACK_GETCALVALID:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETCALVALID:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETCALVALID">GETCALVALID</a></b><br>Abfragen, ob eine gültige Kalibrierung gespeichert ist.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETCAL:...:CS$</code></td>
+<td><code>#20:0:ACK_SETCAL:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETCAL:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETCAL">SETCAL</a></b><br>Kalibrierfahrt starten (0→360→0) und Stromprofil lernen.</td>
+</tr>
+<tr>
+<td><code>#0:20:ABORTCAL:...:CS$</code></td>
+<td><code>#20:0:ACK_ABORTCAL:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_ABORTCAL:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-ABORTCAL">ABORTCAL</a></b><br>Kalibrierfahrt abbrechen.</td>
+</tr>
+<tr>
+<td><code>#0:20:DELCAL:...:CS$</code></td>
+<td><code>#20:0:ACK_DELCAL:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_DELCAL:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-DELCAL">DELCAL</a></b><br>Gespeicherte Kalibrierung löschen.</td>
+</tr>
+<tr>
+<td><code>#0:20:CLRSTAT:...:CS$</code></td>
+<td><code>#20:0:ACK_CLRSTAT:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_CLRSTAT:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-CLRSTAT">CLRSTAT</a></b><br>Live-Statistik (Betriebsdaten) löschen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETCALSTATE:...:CS$</code></td>
+<td><code>#20:0:ACK_GETCALSTATE:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETCALSTATE:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETCALSTATE">GETCALSTATE</a></b><br>Status der Kalibrierfahrt abfragen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETLOADSTAT:...:CS$</code></td>
+<td><code>#20:0:ACK_GETLOADSTAT:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETLOADSTAT:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETLOADSTAT">GETLOADSTAT</a></b><br>Zusammenfassung der Last-Statistik.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETWIND:...:CS$</code></td>
+<td><code>#20:0:ACK_GETWIND:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETWIND:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETWIND">GETWIND</a></b><br>Wind-Schätzung aus Motorlastprofil.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETCALBINS:...:CS$</code></td>
+<td><code>#20:0:ACK_GETCALBINS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETCALBINS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETCALBINS">GETCALBINS</a></b><br>Kalibrier-Bins lesen (72 Bins).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETLIVEBINS:...:CS$</code></td>
+<td><code>#20:0:ACK_GETLIVEBINS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETLIVEBINS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETLIVEBINS">GETLIVEBINS</a></b><br>Live-Bins lesen (72 Bins).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETACCBINS:1;0;12:20,12$</code></td>
+<td><code>#20:0:ACK_GETACCBINS:DIR;START;COUNT;V1;V2;...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETACCBINS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETACCBINS">GETACCBINS</a></b><br>Schnelle aktuelle Last-Bins lesen (72 Bins, auch ohne Kalibrierung).</td>
+</tr>
+<tr>
+<td><code>#0:20:SETACCBINSRST:1:20,01$</code></td>
+<td><code>#20:0:ACK_SETACCBINSRST:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETACCBINSRST:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETACCBINSRST">SETACCBINSRST</a></b><br>Nur die schnelle ACC-Bin-Statistik löschen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETDELTABINS:...:CS$</code></td>
+<td><code>#20:0:ACK_GETDELTABINS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETDELTABINS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETDELTABINS">GETDELTABINS</a></b><br>Delta-Bins (Live minus Cal) in % lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETWARN:...:CS$</code></td>
+<td><code>#20:0:ACK_WARN:0:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETWARN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETWARN">GETWARN</a></b><br>Warnungen abfragen (können mehrere sein).</td>
+</tr>
+<tr>
+<td><code>#0:20:DELWARN:...:CS$</code></td>
+<td><code>#20:0:ACK_DELWARN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_DELWARN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-DELWARN">DELWARN</a></b><br>Warnungen löschen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETERR:...:CS$</code></td>
+<td><code>#20:0:ACK_ERR:0:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETERR:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETERR">GETERR</a></b><br>Aktuellen Fehlercode abfragen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETREF:...:CS$</code></td>
+<td><code>#20:0:ACK_SETREF:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETREF:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETREF">SETREF</a></b><br>Homing starten und Fehler quittieren.</td>
+</tr>
+<tr>
+<td><code>#0:20:JOG:...:CS$</code></td>
+<td><code>#20:0:ACK_JOG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_JOG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-JOG">JOG</a></b><br>Manuelles Verfahren (aktuell deaktiviert).</td>
+</tr>
+<tr>
+<td><code>#0:20:SETPOSDG:...:CS$</code></td>
+<td><code>#20:0:ACK_SETPOSDG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETPOSDG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETPOSDG">SETPOSDG</a></b><br>Positionsfahrt in Grad starten.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETID:...:CS$</code></td>
+<td><code>#20:0:ACK_GETID:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETID:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETID">GETID</a></b><br>Slave-ID lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETID:...:CS$</code></td>
+<td><code>#20:0:ACK_SETID:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETID:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETID">SETID</a></b><br>Slave-ID setzen und speichern.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETBEGINDG:...:CS$</code></td>
+<td><code>#20:0:ACK_GETBEGINDG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETBEGINDG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETBEGINDG">GETBEGINDG</a></b><br>Min-Winkel (Achsenanfang) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETBEGINDG:...:CS$</code></td>
+<td><code>#20:0:ACK_SETBEGINDG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETBEGINDG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETBEGINDG">SETBEGINDG</a></b><br>Min-Winkel setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETMAXDG:...:CS$</code></td>
+<td><code>#20:0:ACK_GETMAXDG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETMAXDG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETMAXDG">GETMAXDG</a></b><br>Max-Winkel lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETMAXDG:...:CS$</code></td>
+<td><code>#20:0:ACK_SETMAXDG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETMAXDG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETMAXDG">SETMAXDG</a></b><br>Max-Winkel setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETDGOFFSET:...:CS$</code></td>
+<td><code>#20:0:ACK_GETDGOFFSET:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETDGOFFSET:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETDGOFFSET">GETDGOFFSET</a></b><br>Offset (Grad) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETDGOFFSET:...:CS$</code></td>
+<td><code>#20:0:ACK_SETDGOFFSET:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETDGOFFSET:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETDGOFFSET">SETDGOFFSET</a></b><br>Offset setzen (Grad).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETHOMEPWM:...:CS$</code></td>
+<td><code>#20:0:ACK_GETHOMEPWM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETHOMEPWM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETHOMEPWM">GETHOMEPWM</a></b><br>Homing-Max-PWM (%) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETHOMEPWM:...:CS$</code></td>
+<td><code>#20:0:ACK_SETHOMEPWM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETHOMEPWM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETHOMEPWM">SETHOMEPWM</a></b><br>Homing-Max-PWM (%) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETHOMEBACKOFF:...:CS$</code></td>
+<td><code>#20:0:ACK_GETHOMEBACKOFF:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETHOMEBACKOFF:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETHOMEBACKOFF">GETHOMEBACKOFF</a></b><br>Homing Rückzug (Grad) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETHOMEBACKOFF:...:CS$</code></td>
+<td><code>#20:0:ACK_SETHOMEBACKOFF:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETHOMEBACKOFF:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETHOMEBACKOFF">SETHOMEBACKOFF</a></b><br>Homing Rückzug (Grad) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETHOMRETURN:...:CS$</code></td>
+<td><code>#20:0:ACK_GETHOMRETURN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETHOMRETURN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETHOMRETURN">GETHOMRETURN</a></b><br>Rückfahrt auf 0 nach Homing an/aus lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETHOMERETURN:...:CS$</code></td>
+<td><code>#20:0:ACK_SETHOMERETURN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETHOMERETURN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETHOMERETURN">SETHOMERETURN</a></b><br>Rückfahrt auf 0 nach Homing setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETHOMETIMEOUT:...:CS$</code></td>
+<td><code>#20:0:ACK_GETHOMETIMEOUT:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETHOMETIMEOUT:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETHOMETIMEOUT">GETHOMETIMEOUT</a></b><br>Homing Timeout (ms) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETHOMETIMEOUT:...:CS$</code></td>
+<td><code>#20:0:ACK_SETHOMETIMEOUT:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETHOMETIMEOUT:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETHOMETIMEOUT">SETHOMETIMEOUT</a></b><br>Homing Timeout (ms) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETPOSTIMEOUT:...:CS$</code></td>
+<td><code>#20:0:ACK_GETPOSTIMEOUT:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETPOSTIMEOUT:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETPOSTIMEOUT">GETPOSTIMEOUT</a></b><br>Positions-Timeout (ms) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETPOSTIMEOUT:...:CS$</code></td>
+<td><code>#20:0:ACK_SETPOSTIMEOUT:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETPOSTIMEOUT:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETPOSTIMEOUT">SETPOSTIMEOUT</a></b><br>Positions-Timeout (ms) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETHANDSPEED:...:CS$</code></td>
+<td><code>#20:0:ACK_GETHANDSPEED:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETHANDSPEED:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETHANDSPEED">GETHANDSPEED</a></b><br>Handspeed (%) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETHANDSPEED:...:CS$</code></td>
+<td><code>#20:0:ACK_SETHANDSPEED:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETHANDSPEED:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETHANDSPEED">SETHANDSPEED</a></b><br>Handspeed (%) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETDEADMAN:...:CS$</code></td>
+<td><code>#20:0:ACK_GETDEADMAN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETDEADMAN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETDEADMAN">GETDEADMAN</a></b><br>Deadman/Keepalive Timeout (ms) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETDEADMAN:...:CS$</code></td>
+<td><code>#20:0:ACK_SETDEADMAN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETDEADMAN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETDEADMAN">SETDEADMAN</a></b><br>Deadman Timeout (ms) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETIWARN:...:CS$</code></td>
+<td><code>#20:0:ACK_GETIWARN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETIWARN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETIWARN">GETIWARN</a></b><br>Strom-Warnschwelle (mV) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETIWARN:...:CS$</code></td>
+<td><code>#20:0:ACK_SETIWARN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETIWARN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETIWARN">SETIWARN</a></b><br>Strom-Warnschwelle (mV) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETIMAX:...:CS$</code></td>
+<td><code>#20:0:ACK_GETIMAX:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETIMAX:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETIMAX">GETIMAX</a></b><br>Strom-Abschaltschwelle (mV) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETIMAX:...:CS$</code></td>
+<td><code>#20:0:ACK_SETIMAX:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETIMAX:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETIMAX">SETIMAX</a></b><br>Strom-Abschaltschwelle (mV) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETARRTOL:...:CS$</code></td>
+<td><code>#20:0:ACK_GETARRTOL:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETARRTOL:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETARRTOL">GETARRTOL</a></b><br>Ankunftstoleranz (Grad) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETARRTOL:...:CS$</code></td>
+<td><code>#20:0:ACK_SETARRTOL:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETARRTOL:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETARRTOL">SETARRTOL</a></b><br>Ankunftstoleranz (Grad) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETRAMP:...:CS$</code></td>
+<td><code>#20:0:ACK_GETRAMP:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETRAMP:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETRAMP">GETRAMP</a></b><br>Rampenlänge (Grad) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETRAMP:...:CS$</code></td>
+<td><code>#20:0:ACK_SETRAMP:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETRAMP:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETRAMP">SETRAMP</a></b><br>Rampenlänge (Grad) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETMINPWM:...:CS$</code></td>
+<td><code>#20:0:ACK_GETMINPWM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETMINPWM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETMINPWM">GETMINPWM</a></b><br>Min-PWM (%) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETMINPWM:...:CS$</code></td>
+<td><code>#20:0:ACK_SETMINPWM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETMINPWM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETMINPWM">SETMINPWM</a></b><br>Min-PWM (%) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETSTALLTIMEOUT:...:CS$</code></td>
+<td><code>#20:0:ACK_GETSTALLTIMEOUT:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETSTALLTIMEOUT:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETSTALLTIMEOUT">GETSTALLTIMEOUT</a></b><br>Stall-Timeout (ms) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETSTALLTIMEOUT:...:CS$</code></td>
+<td><code>#20:0:ACK_SETSTALLTIMEOUT:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETSTALLTIMEOUT:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETSTALLTIMEOUT">SETSTALLTIMEOUT</a></b><br>Stall-Timeout (ms) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETMAXPWM:...:CS$</code></td>
+<td><code>#20:0:ACK_GETMAXPWM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETMAXPWM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETMAXPWM">GETMAXPWM</a></b><br>Max-PWM (%) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETMAXPWM:...:CS$</code></td>
+<td><code>#20:0:ACK_SETMAXPWM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETMAXPWM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETMAXPWM">SETMAXPWM</a></b><br>Max-PWM (%) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETPWM:...:CS$</code></td>
+<td><code>#20:0:ACK_GETPWM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETPWM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETPWM">GETPWM</a></b><br>Aktuell freigegebenes PWM-Limit (%) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETPWM:...:CS$</code></td>
+<td><code>#20:0:ACK_SETPWM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETPWM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETPWM">SETPWM</a></b><br>PWM-Limit (%) zur Laufzeit setzen (ohne Speichern).</td>
+</tr>
+<tr>
+<td><code>#0:20:RESET:1:21$</code></td>
+<td><code>#20:0:ACK_RESET:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_RESET:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-RESET">RESET</a></b><br>Factory-Reset (Auslieferungszustand) und Neustart – <b>alle</b> Einstellungen verworfen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETSTALLEN:...:CS$</code></td>
+<td><code>#20:0:ACK_GETSTALLEN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETSTALLEN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETSTALLEN">GETSTALLEN</a></b><br>Stall-Erkennung ein/aus lesen (0/1).</td>
+</tr>
+<tr>
+<td><code>#0:20:SETSTALLEN:...:CS$</code></td>
+<td><code>#20:0:ACK_SETSTALLEN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETSTALLEN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETSTALLEN">SETSTALLEN</a></b><br>Stall-Erkennung aktivieren/deaktivieren.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETMINSTALLPWM:...:CS$</code></td>
+<td><code>#20:0:ACK_GETMINSTALLPWM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETMINSTALLPWM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETMINSTALLPWM">GETMINSTALLPWM</a></b><br>Mindest-PWM für Stall-Erkennung lesen (%).</td>
+</tr>
+<tr>
+<td><code>#0:20:SETMINSTALLPWM:...:CS$</code></td>
+<td><code>#20:0:ACK_SETMINSTALLPWM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETMINSTALLPWM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETMINSTALLPWM">SETMINSTALLPWM</a></b><br>Mindest-PWM für Stall-Erkennung setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETSTALLMINCOUNTS:...:CS$</code></td>
+<td><code>#20:0:ACK_GETSTALLMINCOUNTS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETSTALLMINCOUNTS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETSTALLMINCOUNTS">GETSTALLMINCOUNTS</a></b><br>Mindest-Encoder-Counts im Stall-Zeitfenster lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETSTALLMINCOUNTS:...:CS$</code></td>
+<td><code>#20:0:ACK_SETSTALLMINCOUNTS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETSTALLMINCOUNTS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETSTALLMINCOUNTS">SETSTALLMINCOUNTS</a></b><br>Mindest-Counts im Stall-Fenster setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETFILTERLEN:...:CS$</code></td>
+<td><code>#20:0:ACK_GETFILTERLEN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETFILTERLEN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETFILTERLEN">GETFILTERLEN</a></b><br>Länge des Strom-Mittelwertfilters lesen (gehört zu <code>SETISFILTERLEN</code>).</td>
+</tr>
+<tr>
+<td><code>#0:20:SETISFILTERLEN:...:CS$</code></td>
+<td><code>#20:0:ACK_SETISFILTERLEN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETISFILTERLEN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETISFILTERLEN">SETISFILTERLEN</a></b><br>Strom-Mittelwertfilter-Länge setzen (1…32).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETISHOLDMS:...:CS$</code></td>
+<td><code>#20:0:ACK_GETISHOLDMS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETISHOLDMS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETISHOLDMS">GETISHOLDMS</a></b><br>Hold-Zeit Strom-Hardlimit (ms) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETISHOLDMS:...:CS$</code></td>
+<td><code>#20:0:ACK_SETISHOLDMS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETISHOLDMS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETISHOLDMS">SETISHOLDMS</a></b><br>Hold-Zeit für Strom-Hardlimit setzen (ms).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETGRACEMS:...:CS$</code></td>
+<td><code>#20:0:ACK_GETGRACEMS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETGRACEMS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETGRACEMS">GETGRACEMS</a></b><br>Grace-Zeit Stromschutz (ms) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETISGRACEMS:...:CS$</code></td>
+<td><code>#20:0:ACK_SETISGRACEMS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETISGRACEMS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETISGRACEMS">SETISGRACEMS</a></b><br>Grace-Zeit nach Start/Umkehr setzen (ms).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETHOMESEEKPPWM:...:CS$</code></td>
+<td><code>#20:0:ACK_GETHOMESEEKPPWM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETHOMESEEKPPWM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETHOMESEEKPPWM">GETHOMESEEKPPWM</a></b><br>Zusätzliche Such-PWM in der Homing-Suchphase lesen (%).</td>
+</tr>
+<tr>
+<td><code>#0:20:SETHOMESEEKPPWM:...:CS$</code></td>
+<td><code>#20:0:ACK_SETHOMESEEKPPWM:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETHOMESEEKPPWM:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETHOMESEEKPPWM">SETHOMESEEKPPWM</a></b><br>Zusätzliche Such-PWM für Homing-Suchphase setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETENCCRI:...:CS$</code></td>
+<td><code>#20:0:ACK_GETENCCRI:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETENCCRI:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETENCCRI">GETENCCRI</a></b><br>Counts pro 360° <b>Ring</b>-Encoder lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETENCCRI:...:CS$</code></td>
+<td><code>#20:0:ACK_SETENCCRI:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETENCCRI:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETENCCRI">SETENCCRI</a></b><br>Counts pro 360° Ring-Encoder setzen (typ. ~160000).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETENCCAX:...:CS$</code></td>
+<td><code>#20:0:ACK_GETENCCAX:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETENCCAX:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETENCCAX">GETENCCAX</a></b><br>Counts pro 360° <b>Motor-/Achsen</b>-Encoder lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETENCCAX:...:CS$</code></td>
+<td><code>#20:0:ACK_SETENCCAX:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETENCCAX:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETENCCAX">SETENCCAX</a></b><br>Counts pro 360° Motor-/Achsen-Encoder setzen (typ. ~28600…50000).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETENCTYPE:...:CS$</code></td>
+<td><code>#20:0:ACK_GETENCTYPE:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETENCTYPE:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETENCTYPE">GETENCTYPE</a></b><br>Encoder-Variante lesen: 1 = Achse/Motor, 2 = Ring.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETENCTYPE:...:CS$</code></td>
+<td><code>#20:0:ACK_SETENCTYPE:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETENCTYPE:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETENCTYPE">SETENCTYPE</a></b><br>Encoder-Variante setzen (1 oder 2). Nach Wechsel Homing/Counts prüfen.</td>
+</tr>
+</table>
+<div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
+</section>
+<section class="section" id="cmd-details">
+<h2>4. RS485‑Befehle – Erklärung &amp; Empfehlungen</h2>
+<p>Hier ist jeder Befehl in einem eigenen Absatz beschrieben: Was er macht, wie man ihn benutzt, und welche Werte in der Praxis oft gut funktionieren.</p>
+<h3>Grundbefehle</h3>
+<h4 id="cmd-TEST"><code>TEST</code></h4>
+<p><b>Was es macht:</b> Verbindungstest (Ping).</p>
+<p><b>Details:</b> Keine Parameter. Antwort ist ein kurzes OK.</p>
+<hr>
+<h4 id="cmd-GETID"><code>GETID</code></h4>
+<p><b>Was es macht:</b> Slave-ID lesen.</p>
+<p><b>Details:</b> Rückgabe 0..255.</p>
+<hr>
+<h4 id="cmd-SETID"><code>SETID</code></h4>
+<p><b>Was es macht:</b> Slave-ID setzen und speichern.</p>
+<p><b>Details:</b> Achtung: danach neue Adresse verwenden.</p>
+<hr>
+<h4 id="cmd-GETREF"><code>GETREF</code></h4>
+<p><b>Was es macht:</b> Abfragen, ob Referenz (Homing) vorhanden ist.</p>
+<p><b>Details:</b> 0 = nicht referenziert, 1 = referenziert.</p>
+<hr>
+<h4 id="cmd-SETREF"><code>SETREF</code></h4>
+<p><b>Was es macht:</b> Homing starten und Fehler quittieren.</p>
+<p><b>Details:</b> SETREF:0 = nur Fehler quittieren. SETREF:1 = Homing starten (Standard).</p>
+<p><b>Hinweis:</b> Nach einem Fehler (ERR) muss <code>SETREF</code> gesendet werden, damit der Fehler quittiert wird. Warnungen werden nicht dadurch gelöscht (nur <code>DELWARN</code>).</p>
+<hr>
+<h4 id="cmd-GETPOSDG"><code>GETPOSDG</code></h4>
+<p><b>Was es macht:</b> Aktuelle Position in Grad (0,01°).</p>
+<p><b>Details:</b> Rückgabe ist immer die Offset-korrigierte Position.</p>
+<hr>
+<h4 id="cmd-SETPOSDG"><code>SETPOSDG</code></h4>
+<p><b>Was es macht:</b> Positionsfahrt in Grad starten.</p>
+<p><b>Details:</b> Parameter: Zielwinkel (z.B. 160,00).</p>
+<p><b>Gute Werte:</b> Zielwinkel in Grad, z.B. <code>160,00</code>. Bei sehr kleinen Schritten (0,01°) kann es sinnvoll sein, die Ankunftstoleranz (<code>ARRTOL</code>) etwas grösser zu wählen, damit die Regelung nicht „zittert“.</p>
+<hr>
+<h4 id="cmd-STOP"><code>STOP</code></h4>
+<p><b>Was es macht:</b> Weicher Stop (normales Abbremsen).</p>
+<p><b>Details:</b> Beendet eine Positionsfahrt. Fehler werden NICHT gelöscht.</p>
+<hr>
+<h4 id="cmd-NSTOP"><code>NSTOP</code></h4>
+<p><b>Was es macht:</b> Not-Stop über RS485.</p>
+<p><b>Details:</b> Setzt sofort einen Fehler SE_NSTOP_CMD und stoppt.</p>
+<hr>
+<h4 id="cmd-GETERR"><code>GETERR</code></h4>
+<p><b>Was es macht:</b> Aktuellen Fehlercode abfragen.</p>
+<p><b>Details:</b> Antwort ACK_ERR mit einem Code oder 0.</p>
+<hr>
+<h4 id="cmd-GETWARN"><code>GETWARN</code></h4>
+<p><b>Was es macht:</b> Warnungen abfragen (können mehrere sein).</p>
+<p><b>Details:</b> Antwort ist ACK_WARN mit Liste: &quot;0&quot; oder &quot;id;id;...&quot;.</p>
+<hr>
+<h4 id="cmd-DELWARN"><code>DELWARN</code></h4>
+<p><b>Was es macht:</b> Warnungen löschen.</p>
+<p><b>Details:</b> Antwort ACK_DELWARN:1</p>
+<hr>
+<h3>Strom / Temperatur / Windmesser</h3>
+<h4 id="cmd-GETIS"><code>GETIS</code></h4>
+<p><b>Was es macht:</b> Aktueller Strommesswert (mV) nach Offset-Abzug.</p>
+<p><b>Details:</b> Wird automatisch aus IS1/IS2 passend zur Bewegungsrichtung gewählt.</p>
+<hr>
+<h4 id="cmd-GETTEMPA"><code>GETTEMPA</code></h4>
+<p><b>Was es macht:</b> Umgebungstemperatur in °C.</p>
+<p><b>Details:</b> DS18B20. Rückgabe mit 2 Nachkommastellen.</p>
+<hr>
+<h4 id="cmd-GETTEMPM"><code>GETTEMPM</code></h4>
+<p><b>Was es macht:</b> Motortemperatur in °C.</p>
+<p><b>Details:</b> Wenn Motor-Sensor deaktiviert ist: immer 0.</p>
+<hr>
+<h4 id="cmd-GETTEMPAW"><code>GETTEMPAW</code></h4>
+<p><b>Was es macht:</b> Warnschwelle Umgebungstemperatur lesen.</p>
+<p><b>Details:</b> &lt;=0 deaktiviert die Warnung.</p>
+<hr>
+<h4 id="cmd-GETTEMPMW"><code>GETTEMPMW</code></h4>
+<p><b>Was es macht:</b> Warnschwelle Motortemperatur lesen.</p>
+<p><b>Details:</b> &lt;=0 deaktiviert die Warnung.</p>
+<hr>
+<h4 id="cmd-SETTEMPA"><code>SETTEMPA</code></h4>
+<p><b>Was es macht:</b> Warnschwelle Umgebungstemperatur setzen.</p>
+<p><b>Details:</b> Wert in °C (Float).</p>
+<hr>
+<h4 id="cmd-SETTEMPM"><code>SETTEMPM</code></h4>
+<p><b>Was es macht:</b> Warnschwelle Motortemperatur setzen.</p>
+<p><b>Details:</b> Wert in °C (Float).</p>
+<hr>
+<h4 id="cmd-GETSWAPTMP"><code>GETSWAPTMP</code></h4>
+<p><b>Was es macht:</b> Liest, ob die beiden Temperaturfühler (Motor vs. Umgebung) in der Firmware als vertauscht behandelt werden.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETSWAPTMP:0:20,01$</code> (Parameter wie bei anderen GET-Befehlen mit Literal <code>0</code>)</p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETSWAPTMP:&lt;0|1&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> <code>0</code> = normale Zuordnung, <code>1</code> = vertauscht. Abhängig von der Hardware-Erkennung können die gemessenen Kanäle getauscht werden müssen; siehe <code>SETSWAPTEMP</code>.</p>
+<hr>
+<h4 id="cmd-SETSWAPTEMP"><code>SETSWAPTEMP</code></h4>
+<p><b>Was es macht:</b> Legt fest, ob Motor- und Umgebungstemperatur in der Anzeige/Logik vertauscht werden – wird im NVS gespeichert.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETSWAPTEMP:0:20,20$</code> bzw. <code>#0:20:SETSWAPTEMP:1:20,21$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETSWAPTEMP:1:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Nur <code>0</code> oder <code>1</code> zulässig. Nach Neustart bleibt die Einstellung erhalten.</p>
+<p><b>Praxis:</b> Wenn <code>GETTEMPA</code> und <code>GETTEMPM</code> „falsch herum“ wirken, zuerst prüfen und ggf. auf <code>1</code> setzen.</p>
+<hr>
+<h4 id="cmd-GETANEMO"><code>GETANEMO</code></h4>
+<p><b>Was es macht:</b> Liest die Windgeschwindigkeit des RS485-Wind-/Richtungssensors in km/h.</p>
+<p><b>Details:</b> Die Firmware pollt den Sensor zyklisch über <b>RS485/Modbus</b> und liefert den zwischengespeicherten Wert aus dem HalBoard-Cache. Rückgabe mit 1 Nachkommastelle im Kommaformat. Wenn der Windsensor per <code>SETWINDENABLE</code> deaktiviert ist, liefert <code>GETANEMO</code> immer <code>0,0</code>. Wenn gerade kein gültiger Sensorwert vorliegt, kommt ein <code>NAK_GETANEMO:NOWIND</code>.</p>
+<p><b>Praxis:</b> Das ist der echte Messwert des RS485-Sensors. Ein km/h-Offset existiert zwar noch, ist bei einem sauber kalibrierten digitalen Sensor aber normalerweise nicht nötig.</p>
+<hr>
+<h4 id="cmd-GETBEAUFORT"><code>GETBEAUFORT</code></h4>
+<p><b>Was es macht:</b> Liest die aktuelle Windstärke des RS485-Wind-/Richtungssensors als ganzzahligen Beaufortwert.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETBEAUFORT:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETBEAUFORT:&lt;BFT&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Rückgabe als ganzzahliger Wert von <code>0</code> bis <code>12</code>. Der Wert wird wie <code>GETANEMO</code> und <code>GETWINDDIR</code> zyklisch vom RS485-Sensor eingelesen und im HalBoard zwischengespeichert. Wenn der Windsensor per <code>SETWINDENABLE</code> deaktiviert ist, liefert <code>GETBEAUFORT</code> <code>0</code>. Wenn kein gültiger Sensorwert vorliegt, kommt <code>NAK_GETBEAUFORT:NOWIND</code>. Wenn keine passende Hardware vorhanden ist, kommt <code>NAK_GETBEAUFORT:NOHW</code>.</p>
+<p><b>Praxis:</b> Dieser Befehl ist ideal, wenn der Master die Windstärke nicht als exakten km/h-Wert, sondern als robuste Beaufortstufe anzeigen oder für einfache Schaltschwellen verwenden soll. Typisch wäre zum Beispiel eine Anzeige „ruhig“, „frisch“ oder „stark“, ohne selbst die Umrechnung aus km/h machen zu müssen.</p>
+<p><b>Interpretation:</b> <code>0</code> bedeutet Windstille oder deaktivierten Sensor. Die Stufen <code>1</code> bis <code>12</code> entsprechen der vom Sensor gelieferten Beaufortskala. Für Warnungen oder Sperren sollte der Master trotzdem zusätzlich die direkte Geschwindigkeit aus <code>GETANEMO</code> berücksichtigen, wenn exakte Grenzwerte nötig sind.</p>
+<hr>
+<h4 id="cmd-GETANEMOOF"><code>GETANEMOOF</code></h4>
+<p><b>Was es macht:</b> Liest den eingestellten Offset für die Windgeschwindigkeit in km/h.</p>
+<p><b>Details:</b> Der Wert wird im NVS unter dem Key <code>ano</code> gespeichert und bei jedem Polling auf den Sensordatenstrom angewendet.</p>
+<hr>
+<h4 id="cmd-SETANEMOOF"><code>SETANEMOOF</code></h4>
+<p><b>Was es macht:</b> Setzt einen zusätzlichen Offset für die Windgeschwindigkeit in km/h.</p>
+<p><b>Details:</b> Wert mit 1 Nachkommastelle. Der Offset wird persistent gespeichert und sofort an den RS485-Sensorpfad übernommen. Zulässiger Bereich im Code: <code>-200,0</code> bis <code>+200,0</code> km/h.</p>
+<p><b>Praxis:</b> Dieser Befehl ist nur für Sonderfälle gedacht. Normalerweise sollte der RS485-Windsensor bereits die richtigen Werte liefern, sodass kein zusätzlicher Geschwindigkeits-Offset nötig ist.</p>
+<hr>
+<h4 id="cmd-GETWINDDIR"><code>GETWINDDIR</code></h4>
+<p><b>Was es macht:</b> Liest die Windrichtung des RS485-Wind-/Richtungssensors in Grad.</p>
+<p><b>Details:</b> Rückgabe mit 1 Nachkommastelle im Bereich <code>0,0</code> bis kleiner <code>360,0</code>. Im Code ist die Antwort historisch als <code>ACK_WINDDIR</code> umgesetzt, obwohl der Befehl <code>GETWINDDIR</code> heißt. Wenn der Sensor deaktiviert ist, wird <code>0,0</code> geliefert. Wenn kein gültiger Sensorwert vorliegt, kommt <code>NAK_WINDDIR:NOWIND</code>.</p>
+<p><b>Praxis:</b> Damit kann der Master direkt die aktuelle Windrichtung anzeigen. Das ist die echte gemessene Richtung des RS485-Sensors und nicht die aus dem Lastprofil geschätzte Windrichtung von <code>GETWIND</code>.</p>
+<hr>
+<h4 id="cmd-GETWINDDIROF"><code>GETWINDDIROF</code></h4>
+<p><b>Was es macht:</b> Liest den eingestellten Richtungs-Offset des Windsensors in Grad.</p>
+<p><b>Details:</b> Der Offset wird im NVS unter dem Key <code>wdo</code> gespeichert.</p>
+<hr>
+<h4 id="cmd-SETWINDDIROF"><code>SETWINDDIROF</code></h4>
+<p><b>Was es macht:</b> Setzt einen zusätzlichen Richtungs-Offset in Grad für den RS485-Windsensor.</p>
+<p><b>Details:</b> Wert mit 1 Nachkommastelle, sofort wirksam und persistent gespeichert. Zulässiger Bereich im Code: <code>-360,0</code> bis <code>+360,0</code> Grad.</p>
+<p><b>Praxis:</b> Sinnvoll, wenn der montierte Sensor mechanisch verdreht eingebaut ist und die Richtung im Master auf den echten Antennen-/Mastbezug korrigiert werden soll.</p>
+<hr>
+<h4 id="cmd-GETWINDENABLE"><code>GETWINDENABLE</code></h4>
+<p><b>Was es macht:</b> Zeigt an, ob der RS485-Wind-/Richtungssensor aktiv ist.</p>
+<p><b>Details:</b> Rückgabe <code>1</code> = aktiv, <code>0</code> = deaktiviert.</p>
+<hr>
+<h4 id="cmd-SETWINDENABLE"><code>SETWINDENABLE</code></h4>
+<p><b>Was es macht:</b> Aktiviert oder deaktiviert den RS485-Wind-/Richtungssensor.</p>
+<p><b>Details:</b> Bei <code>0</code> werden keine Sensorabfragen durchgeführt; <code>GETANEMO</code> und <code>GETWINDDIR</code> liefern dann <code>0</code>. Der Zustand wird persistent im NVS unter dem Key <code>wen</code> gespeichert.</p>
+<p><b>Praxis:</b> Nützlich für Tests oder wenn der Sensor zeitweise nicht vorhanden ist. Für den normalen Betrieb sollte der Wert auf <code>1</code> stehen.</p>
+<hr>
+<h3>Kalibrierung &amp; Statistik</h3>
+<h4 id="cmd-GETCALVALID"><code>GETCALVALID</code></h4>
+<p><b>Was es macht:</b> Abfragen, ob eine gültige Kalibrierung gespeichert ist.</p>
+<p><b>Details:</b> 0 = nein, 1 = ja.</p>
+<hr>
+<h4 id="cmd-GETANGLE1"><code>GETANGLE1</code></h4>
+<p><b>Was es macht:</b> Liest den gespeicherten Öffnungswinkel der Antenne 1.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETANGLE1:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETANGLE1:&lt;WERT&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Der Wert wird nur im Rotor gespeichert und dem Master über RS485 bereitgestellt. Er wird nicht für die Motorregelung verwendet. Standardwert ist <code>0,0</code>. Zulässiger Bereich ist <code>0,0</code> bis <code>360,0</code> Grad mit einer Nachkommastelle.</p>
+<p><b>Praxis:</b> Dieser Wert ist für den Öffnungswinkel der ersten möglichen Antenne gedacht. Der Master kann damit Antennendaten zentral im Rotor hinterlegen und später wieder abrufen.</p>
+<hr>
+<h4 id="cmd-SETANGLE1"><code>SETANGLE1</code></h4>
+<p><b>Was es macht:</b> Speichert den Öffnungswinkel der Antenne 1 im NVS.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETANGLE1:120,0:21,20$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETANGLE1:1:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Der Wert wird persistent gespeichert und steht nach einem Neustart weiter zur Verfügung. Zulässig sind Werte von <code>0,0</code> bis <code>360,0</code> Grad. Außerhalb des Bereichs wird der Befehl mit NAK abgelehnt.</p>
+<hr>
+<h4 id="cmd-GETANGLE2"><code>GETANGLE2</code></h4>
+<p><b>Was es macht:</b> Liest den gespeicherten Öffnungswinkel der Antenne 2.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETANGLE2:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETANGLE2:&lt;WERT&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Verhalten und Bereich wie bei <code>GETANGLE1</code>. Standardwert ist <code>0,0</code>.</p>
+<hr>
+<h4 id="cmd-SETANGLE2"><code>SETANGLE2</code></h4>
+<p><b>Was es macht:</b> Speichert den Öffnungswinkel der Antenne 2 im NVS.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETANGLE2:120,0:21,20$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETANGLE2:1:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Persistent gespeichert, Bereich <code>0,0</code> bis <code>360,0</code> Grad, Standardwert <code>0,0</code>.</p>
+<hr>
+<h4 id="cmd-GETANGLE3"><code>GETANGLE3</code></h4>
+<p><b>Was es macht:</b> Liest den gespeicherten Öffnungswinkel der Antenne 3.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETANGLE3:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETANGLE3:&lt;WERT&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Verhalten und Bereich wie bei <code>GETANGLE1</code>. Standardwert ist <code>0,0</code>.</p>
+<hr>
+<h4 id="cmd-SETANGLE3"><code>SETANGLE3</code></h4>
+<p><b>Was es macht:</b> Speichert den Öffnungswinkel der Antenne 3 im NVS.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETANGLE3:120,0:21,20$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETANGLE3:1:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Persistent gespeichert, Bereich <code>0,0</code> bis <code>360,0</code> Grad, Standardwert <code>0,0</code>.</p>
+<hr>
+<h4 id="cmd-GETANTOFF1"><code>GETANTOFF1</code></h4>
+<p><b>Was es macht:</b> Liest den gespeicherten Winkelversatz der Antenne 1.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETANTOFF1:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETANTOFF1:&lt;WERT&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Der Winkelversatz wird nur gespeichert und dem Master bereitgestellt. Der Rotor nutzt ihn nicht direkt in der Regelung. Standardwert ist <code>0,0</code>. Bereich <code>0,0</code> bis <code>360,0</code> Grad.</p>
+<p><b>Praxis:</b> Hier kann der Master den mechanischen oder elektrischen Versatz der Antenne 1 zum Rotor-Nullpunkt hinterlegen.</p>
+<hr>
+<h4 id="cmd-SETANTOFF1"><code>SETANTOFF1</code></h4>
+<p><b>Was es macht:</b> Speichert den Winkelversatz der Antenne 1 im NVS.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETANTOFF1:45,0:20,45$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETANTOFF1:1:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Persistent gespeichert, Bereich <code>0,0</code> bis <code>360,0</code> Grad, Standardwert <code>0,0</code>.</p>
+<hr>
+<h4 id="cmd-GETANTOFF2"><code>GETANTOFF2</code></h4>
+<p><b>Was es macht:</b> Liest den gespeicherten Winkelversatz der Antenne 2.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETANTOFF2:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETANTOFF2:&lt;WERT&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Verhalten und Bereich wie bei <code>GETANTOFF1</code>. Standardwert ist <code>0,0</code>.</p>
+<hr>
+<h4 id="cmd-SETANTOFF2"><code>SETANTOFF2</code></h4>
+<p><b>Was es macht:</b> Speichert den Winkelversatz der Antenne 2 im NVS.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETANTOFF2:45,0:20,45$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETANTOFF2:1:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Persistent gespeichert, Bereich <code>0,0</code> bis <code>360,0</code> Grad, Standardwert <code>0,0</code>.</p>
+<hr>
+<h4 id="cmd-GETANTOFF3"><code>GETANTOFF3</code></h4>
+<p><b>Was es macht:</b> Liest den gespeicherten Winkelversatz der Antenne 3.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETANTOFF3:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETANTOFF3:&lt;WERT&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Verhalten und Bereich wie bei <code>GETANTOFF1</code>. Standardwert ist <code>0,0</code>.</p>
+<hr>
+<h4 id="cmd-SETANTOFF3"><code>SETANTOFF3</code></h4>
+<p><b>Was es macht:</b> Speichert den Winkelversatz der Antenne 3 im NVS.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETANTOFF3:45,0:20,45$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETANTOFF3:1:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Persistent gespeichert, Bereich <code>0,0</code> bis <code>360,0</code> Grad, Standardwert <code>0,0</code>.</p>
+<hr>
+<h4 id="cmd-SETCAL"><code>SETCAL</code></h4>
+<p><b>Was es macht:</b> Kalibrierfahrt starten (0→360→0) und Stromprofil lernen.</p>
+<p><b>Details:</b> Nur wenn REFF gemacht wurde.</p>
+<hr>
+<h4 id="cmd-GETCALSTATE"><code>GETCALSTATE</code></h4>
+<p><b>Was es macht:</b> Status der Kalibrierfahrt abfragen.</p>
+<p><b>Details:</b> Antwort: &lt;state&gt;;&lt;progress&gt; (progress 0..100).</p>
+<p><b>Interpretation:</b> <code>state</code> ist der Zustand der Kalibrierfahrt (0=IDLE, 1=RUNNING, 2=DONE, 3=ABORT/ERROR). <code>progress</code> läuft von 0 bis 100.</p>
+<hr>
+<h4 id="cmd-ABORTCAL"><code>ABORTCAL</code></h4>
+<p><b>Was es macht:</b> Kalibrierfahrt abbrechen.</p>
+<p><b>Details:</b> Stoppt die Kalibrierung, Daten bleiben wie vorher.</p>
+<hr>
+<h4 id="cmd-DELCAL"><code>DELCAL</code></h4>
+<p><b>Was es macht:</b> Gespeicherte Kalibrierung löschen.</p>
+<p><b>Details:</b> Danach ist GETCALVALID=0.</p>
+<hr>
+<h4 id="cmd-CLRSTAT"><code>CLRSTAT</code></h4>
+<p><b>Was es macht:</b> Live-Statistik (Betriebsdaten) löschen.</p>
+<p><b>Details:</b> Gut vor Tests, damit nur aktuelle Fahrten zählen.</p>
+<hr>
+<h4 id="cmd-GETLOADSTAT"><code>GETLOADSTAT</code></h4>
+<p><b>Was es macht:</b> Zusammenfassung der Last-Statistik.</p>
+<p><b>Details:</b> Antwort: mean%;peak%;coh%;moves. Werte sind Delta zur Kalibrierung.</p>
+<p><b>Hinweis:</b> <code>GETLOADSTAT</code> basiert auf der normalen Last-Statistik und nicht auf <code>GETACCBINS</code>. Für schnelle aktuelle Änderungen pro Winkel ist <a href="#cmd-GETACCBINS"><code>GETACCBINS</code></a> gedacht.</p>
+<p><b>Interpretation:</b> <code>mean</code> ist die durchschnittliche Abweichung in %, <code>peak</code> ein Spitzenwert, <code>coh</code> die „Gerichtetheit“ (hoch = Wind aus einer Richtung), <code>moves</code> wie viele große Fahrten in der Statistik sind.</p>
+<hr>
+<h4 id="cmd-GETWIND"><code>GETWIND</code></h4>
+<p><b>Was es macht:</b> Wind-Schätzung aus Motorlastprofil.</p>
+<p><b>Details:</b> Antwort: peak%;coh%;dirDeg;peakDeg.</p>
+<p><b>Interpretation:</b> <code>dirDeg</code> ist die geschätzte Windrichtung (wo es schwer geht). <code>peakDeg</code> ist der Winkel mit der stärksten Spitze. Bei Windstille sind peak/coh oft nahe 0.</p>
+<hr>
+<h4 id="cmd-GETCALBINS"><code>GETCALBINS</code></h4>
+<p><b>Was es macht:</b> Kalibrier-Bins lesen (72 Bins).</p>
+<p><b>Details:</b> Params: dir;start;count. Rückgabe: dir;start;count;v1;v2;...</p>
+<hr>
+<h4 id="cmd-GETLIVEBINS"><code>GETLIVEBINS</code></h4>
+<p><b>Was es macht:</b> Live-Bins lesen (72 Bins).</p>
+<p><b>Details:</b> Wie GETCALBINS, aber aktuelle Betriebsdaten.</p>
+<p><b>Verhalten:</b> Diese Statistik ist träge und geglättet. Sie ist für eine robuste Langzeitbetrachtung gedacht und wird nur während geeigneter Fahrfenster aufgebaut. Bereiche am Anfang und Ende einer Fahrt werden ignoriert. Die Werte bauen sich über mehrere größere Fahrten auf.</p>
+<p><b>Verwendung:</b> Gut geeignet, wenn der Master eine ruhige Langzeit-Heatmap oder den Vergleich zur Kalibrierung zeigen soll. Wenn eine Veränderung schnell sichtbar werden soll, ist <a href="#cmd-GETACCBINS"><code>GETACCBINS</code></a> besser geeignet.</p>
+<hr>
+<h4 id="cmd-GETACCBINS"><code>GETACCBINS</code></h4>
+<p><b>Was es macht:</b> Liest eine schnelle aktuelle Last-Statistik als 72 Winkel-Bins.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETACCBINS:1;0;12:20,12$</code></p>
+<p><b>Details:</b> Aufbau wie <code>GETCALBINS</code> und <code>GETLIVEBINS</code>: Parameter sind <code>DIR;START;COUNT</code>. Antwort ist <code>DIR;START;COUNT;V1;V2;...</code>. Es gibt insgesamt 72 Bins mit 5° pro Bin, pro Telegramm können 1 bis 12 Bins gelesen werden.</p>
+<p><b>Richtungen:</b> <code>DIR=1</code> für positive Richtung / CW / IS1, <code>DIR=2</code> für negative Richtung / CCW / IS2.</p>
+<p><b>Verhalten:</b> Diese Statistik ist ausdrücklich für schnelle aktuelle Änderungen gedacht. Neue Messwerte laufen mit hohem Gewicht ein, dadurch reagiert sie deutlich schneller als <code>GETLIVEBINS</code>. Sie funktioniert auch ohne vorhandene Kalibrierung und zeigt damit direkt die aktuelle Stromverteilung über den Winkel.</p>
+<p><b>Ignorierte Bereiche:</b> Wie bei der Lastaufzeichnung werden am Anfang und Ende einer Fahrt Randbereiche ignoriert. Für <code>GETACCBINS</code> wird dafür ein eigener Rampen-/Ignore-Wert <code>RAPDG</code> verwendet, der vom Master eingestellt werden kann. So lässt sich festlegen, wie viel Start- und Bremsbereich nicht in die ACC-Statistik eingehen soll.</p>
+<p><b>Verwendung im Master:</b> <code>GETACCBINS</code> eignet sich für eine schnelle Heatmap, wenn akut sichtbar werden soll, an welcher Stelle die Stromaufnahme gerade ansteigt. Typischer Ablauf: Statistik mit <a href="#cmd-SETACCBINSRST"><code>SETACCBINSRST</code></a> löschen, eine oder mehrere gezielte Fahrten über den kritischen Bereich machen und danach die 72 Bins in 6 Abfragen lesen.</p>
+<p><b>Beispiel:</b> Für die ersten 12 Bins in positiver Richtung: <code>#0:20:GETACCBINS:1;0;12:20,12$</code></p>
+<p><b>Interpretation:</b> Höhere Werte bedeuten höhere aktuelle Stromaufnahme in diesem Winkelbereich. Im Gegensatz zu <code>GETDELTABINS</code> wird hier kein Vergleich zur Kalibrierung gemacht. Der Master kann die Werte daher direkt als Live-Heatmap anzeigen oder selbst mit älteren Kurven vergleichen.</p>
+<hr>
+<h4 id="cmd-SETACCBINSRST"><code>SETACCBINSRST</code></h4>
+<p><b>Was es macht:</b> Löscht nur die schnelle ACC-Bin-Statistik.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETACCBINSRST:1:20,01$</code></p>
+<p><b>Details:</b> Der Parameter ist ein einfacher Auslösewert. Mit dem Befehl wird die neue ACC-Statistik zurückgesetzt, ohne die normale <code>GETLIVEBINS</code>-Statistik oder die Kalibrierdaten zu verändern.</p>
+<p><b>Verwendung:</b> Vor einem gezielten Test oder vor einer neuen Messreihe senden, damit nur die danach aufgenommenen Werte in <code>GETACCBINS</code> sichtbar sind. Das ist sinnvoll, wenn der Master eine kurzfristige Veränderung oder eine akute Schwergängigkeit erkennen soll.</p>
+<p><b>Abgrenzung zu CLRSTAT:</b> <code>CLRSTAT</code> betrifft die normale Live-Statistik. <code>SETACCBINSRST</code> ist nur für die schnelle ACC-Statistik gedacht.</p>
+<hr>
+<h4 id="cmd-GETDELTABINS"><code>GETDELTABINS</code></h4>
+<p><b>Was es macht:</b> Delta-Bins (Live minus Cal) in % lesen.</p>
+<p><b>Details:</b> Wie GETCALBINS, Werte können negativ sein.</p>
+<hr>
+<h3>Bewegungsgrenzen &amp; Offset</h3>
+<h4 id="cmd-GETBEGINDG"><code>GETBEGINDG</code></h4>
+<p><b>Was es macht:</b> Min-Winkel (Achsenanfang) lesen.</p>
+<p><b>Details:</b> In 0,01°.</p>
+<hr>
+<h4 id="cmd-SETBEGINDG"><code>SETBEGINDG</code></h4>
+<p><b>Was es macht:</b> Min-Winkel setzen.</p>
+<p><b>Details:</b> Typisch 0,00.</p>
+<hr>
+<h4 id="cmd-GETMAXDG"><code>GETMAXDG</code></h4>
+<p><b>Was es macht:</b> Max-Winkel lesen.</p>
+<p><b>Details:</b> In 0,01°.</p>
+<hr>
+<h4 id="cmd-SETMAXDG"><code>SETMAXDG</code></h4>
+<p><b>Was es macht:</b> Max-Winkel setzen.</p>
+<p><b>Details:</b> Typisch 360,00.</p>
+<hr>
+<h4 id="cmd-GETDGOFFSET"><code>GETDGOFFSET</code></h4>
+<p><b>Was es macht:</b> Offset (Grad) lesen.</p>
+<p><b>Details:</b> Offset wird bei Positionsausgabe/Regelung abgezogen.</p>
+<hr>
+<h4 id="cmd-SETDGOFFSET"><code>SETDGOFFSET</code></h4>
+<p><b>Was es macht:</b> Offset setzen (Grad).</p>
+<p><b>Details:</b> Typisch 2,25 oder 2,50. Wird gespeichert.</p>
+<hr>
+<h3>Homing Einstellungen</h3>
+<h4 id="cmd-GETHOMEPWM"><code>GETHOMEPWM</code></h4>
+<p><b>Was es macht:</b> Homing-Max-PWM (%) lesen.</p>
+<p><b>Details:</b> Das ist die schnelle Homing-PWM.</p>
+<hr>
+<h4 id="cmd-SETHOMEPWM"><code>SETHOMEPWM</code></h4>
+<p><b>Was es macht:</b> Homing-Max-PWM (%) setzen.</p>
+<p><b>Details:</b> Typisch 60..100%.</p>
+<hr>
+<h4 id="cmd-GETHOMEBACKOFF"><code>GETHOMEBACKOFF</code></h4>
+<p><b>Was es macht:</b> Homing Rückzug (Grad) lesen.</p>
+<p><b>Details:</b> Wie weit nach Endschalter wieder wegfahren.</p>
+<hr>
+<h4 id="cmd-SETHOMEBACKOFF"><code>SETHOMEBACKOFF</code></h4>
+<p><b>Was es macht:</b> Homing Rückzug (Grad) setzen.</p>
+<p><b>Details:</b> Typisch 10..60°.</p>
+<hr>
+<h4 id="cmd-GETHOMRETURN"><code>GETHOMRETURN</code></h4>
+<p><b>Was es macht:</b> Rückfahrt auf 0 nach Homing an/aus lesen.</p>
+<p><b>Details:</b> 1=ja, 0=nein.</p>
+<hr>
+<h4 id="cmd-SETHOMERETURN"><code>SETHOMERETURN</code></h4>
+<p><b>Was es macht:</b> Rückfahrt auf 0 nach Homing setzen.</p>
+<p><b>Details:</b> Meist 1.</p>
+<hr>
+<h4 id="cmd-GETHOMETIMEOUT"><code>GETHOMETIMEOUT</code></h4>
+<p><b>Was es macht:</b> Homing Timeout (ms) lesen.</p>
+<p><b>Details:</b> Typisch 60000..120000.</p>
+<hr>
+<h4 id="cmd-SETHOMETIMEOUT"><code>SETHOMETIMEOUT</code></h4>
+<p><b>Was es macht:</b> Homing Timeout (ms) setzen.</p>
+<p><b>Details:</b> Wenn Homing abbricht: erhöhen.</p>
+<hr>
+<h3>Positionsfahrt Einstellungen</h3>
+<h4 id="cmd-GETPOSTIMEOUT"><code>GETPOSTIMEOUT</code></h4>
+<p><b>Was es macht:</b> Positions-Timeout (ms) lesen.</p>
+<p><b>Details:</b> Max. Zeit für eine Positionsfahrt.</p>
+<hr>
+<h4 id="cmd-SETPOSTIMEOUT"><code>SETPOSTIMEOUT</code></h4>
+<p><b>Was es macht:</b> Positions-Timeout (ms) setzen.</p>
+<p><b>Details:</b> Typisch 30000..90000.</p>
+<hr>
+<h4 id="cmd-GETARRTOL"><code>GETARRTOL</code></h4>
+<p><b>Was es macht:</b> Ankunftstoleranz (Grad) lesen.</p>
+<p><b>Details:</b> Wie nah er ans Ziel muss.</p>
+<hr>
+<h4 id="cmd-SETARRTOL"><code>SETARRTOL</code></h4>
+<p><b>Was es macht:</b> Ankunftstoleranz (Grad) setzen.</p>
+<p><b>Details:</b> Typisch 0,02..0,20°.</p>
+<hr>
+<h4 id="cmd-GETRAMP"><code>GETRAMP</code></h4>
+<p><b>Was es macht:</b> Rampenlänge (Grad) lesen.</p>
+<p><b>Details:</b> Beschleunigen/Abbremsen über diesen Winkel.</p>
+<hr>
+<h4 id="cmd-SETRAMP"><code>SETRAMP</code></h4>
+<p><b>Was es macht:</b> Rampenlänge (Grad) setzen.</p>
+<p><b>Details:</b> Typisch 10..40°.</p>
+<hr>
+<h4 id="cmd-GETMINPWM"><code>GETMINPWM</code></h4>
+<p><b>Was es macht:</b> Min-PWM (%) lesen.</p>
+<p><b>Details:</b> Untergrenze für Bewegung.</p>
+<hr>
+<h4 id="cmd-SETMINPWM"><code>SETMINPWM</code></h4>
+<p><b>Was es macht:</b> Min-PWM (%) setzen.</p>
+<p><b>Details:</b> Typisch 20..35% je nach Haftreibung.</p>
+<p><b>Gute Werte:</b> Typisch <code>20..35</code>%. Wenn er beim Anfahren häufig stehen bleibt: MINPWM etwas hoch. Wenn er zu ruppig ist: MINPWM runter, aber Stall/Timeout im Blick behalten.</p>
+<hr>
+<h4 id="cmd-GETMAXPWM"><code>GETMAXPWM</code></h4>
+<p><b>Was es macht:</b> Max-PWM (%) lesen.</p>
+<p><b>Details:</b> Globales Limit für Positionsfahrt.</p>
+<hr>
+<h4 id="cmd-SETMAXPWM"><code>SETMAXPWM</code></h4>
+<p><b>Was es macht:</b> Max-PWM (%) setzen.</p>
+<p><b>Details:</b> Typisch 60..100%.</p>
+<hr>
+<h4 id="cmd-GETPWM"><code>GETPWM</code></h4>
+<p><b>Was es macht:</b> Aktuell freigegebenes PWM-Limit (%) lesen.</p>
+<p><b>Details:</b> Kann durch SETMAXPWM/SETPWM beeinflusst sein.</p>
+<hr>
+<h4 id="cmd-SETPWM"><code>SETPWM</code></h4>
+<p><b>Was es macht:</b> PWM-Limit (%) zur Laufzeit setzen (ohne Speichern).</p>
+<p><b>Details:</b> Gut für Tests/Debug.</p>
+<hr>
+<h3>Factory-Reset</h3>
+<h4 id="cmd-RESET"><code>RESET</code></h4>
+<p><b>Was es macht:</b> Alles auf den Auslieferungszustand zurücksetzen und den Controller neu starten.</p>
+<p><b>Parameter:</b> laut Firmware/Katalog typisch <code>1</code> als Bestätigung (siehe Bridge-Befehlsfenster).</p>
+<div class="danger"><b>Achtung:</b> Alle Einstellungen inkl. NVS gehen verloren (Antennenversatz, Öffnungswinkel, Kalibrierung, IDs, …). Nur in der Werkstatt oder mit absicherter Konfiguration verwenden.</div>
+<hr>
+<h3>Stall-Erkennung (zusätzliche Parameter)</h3>
+<p>Die Stall-<b>Timeout</b>-Zeit (<code>GETSTALLTIMEOUT</code>/<code>SETSTALLTIMEOUT</code>) steht weiter unten bei den Motorparametern. Ergänzend gibt es:</p>
+<h4 id="cmd-GETSTALLEN"><code>GETSTALLEN</code></h4>
+<p><b>Was es macht:</b> Stall-Erkennung lesen. <code>0</code> = aus, <code>1</code> = ein.</p>
+<hr>
+<h4 id="cmd-SETSTALLEN"><code>SETSTALLEN</code></h4>
+<p><b>Was es macht:</b> Stall-Erkennung aktivieren (<code>1</code>) oder deaktivieren (<code>0</code>). Wird gespeichert.</p>
+<hr>
+<h4 id="cmd-GETMINSTALLPWM"><code>GETMINSTALLPWM</code></h4>
+<p><b>Was es macht:</b> Mindest-PWM für die Stall-Erkennung lesen (%). Unterhalb dieser PWM wird keine Stall-Auswertung erwartet (verhindert Fehltrigger bei sehr kleinem Antrieb).</p>
+<hr>
+<h4 id="cmd-SETMINSTALLPWM"><code>SETMINSTALLPWM</code></h4>
+<p><b>Was es macht:</b> Mindest-PWM für Stall-Erkennung setzen (0…100&nbsp;%).</p>
+<p><b>Empfehlung:</b> So wählen, dass der Motor zuverlässig „Anzug“ hat, bevor Stall überwacht wird (typisch im mittleren Bereich, siehe Katalog-Default).</p>
+<hr>
+<h4 id="cmd-GETSTALLMINCOUNTS"><code>GETSTALLMINCOUNTS</code></h4>
+<p><b>Was es macht:</b> Mindestanzahl Encoder-Counts im Stall-Zeitfenster lesen (Plausibilität: PWM an, kaum Bewegung).</p>
+<hr>
+<h4 id="cmd-SETSTALLMINCOUNTS"><code>SETSTALLMINCOUNTS</code></h4>
+<p><b>Was es macht:</b> Mindest-Counts im Stall-Zeitfenster setzen (Integer ≥ 1).</p>
+<hr>
+<h3>Strommessung: Filter &amp; Zeiten</h3>
+<h4 id="cmd-GETFILTERLEN"><code>GETFILTERLEN</code></h4>
+<p><b>Was es macht:</b> Länge des Strom-Mittelwertfilters lesen. Gehört zu <code>SETISFILTERLEN</code>.</p>
+<hr>
+<h4 id="cmd-SETISFILTERLEN"><code>SETISFILTERLEN</code></h4>
+<p><b>Was es macht:</b> Strom-Mittelwertfilter-Länge setzen (1…32). Größer = ruhiger, langsamer.</p>
+<hr>
+<h4 id="cmd-GETISHOLDMS"><code>GETISHOLDMS</code></h4>
+<p><b>Was es macht:</b> Hold-Zeit für das Strom-Hardlimit lesen (ms). Der Hard-Stop muss so lange überschritten sein.</p>
+<hr>
+<h4 id="cmd-SETISHOLDMS"><code>SETISHOLDMS</code></h4>
+<p><b>Was es macht:</b> Hold-Zeit Strom-Hardlimit setzen (ms).</p>
+<hr>
+<h4 id="cmd-GETGRACEMS"><code>GETGRACEMS</code></h4>
+<p><b>Was es macht:</b> Grace-Zeit des Stromschutzes lesen (ms). Gehört zu <code>SETISGRACEMS</code>.</p>
+<hr>
+<h4 id="cmd-SETISGRACEMS"><code>SETISGRACEMS</code></h4>
+<p><b>Was es macht:</b> Grace-Zeit nach Start/Umkehr setzen (ms). In dieser Schonzeit kann das Hardlimit ignoriert werden, damit Anfahren nicht sofort triggert.</p>
+<hr>
+<h3>Homing: Such-PWM</h3>
+<h4 id="cmd-GETHOMESEEKPPWM"><code>GETHOMESEEKPPWM</code></h4>
+<p><b>Was es macht:</b> Zusätzliche Such-PWM für die Homing-<b>Suchphase</b> lesen (%).</p>
+<hr>
+<h4 id="cmd-SETHOMESEEKPPWM"><code>SETHOMESEEKPPWM</code></h4>
+<p><b>Was es macht:</b> Zusätzliche Such-PWM für die Homing-Suchphase setzen (0…100&nbsp;%). Ergänzt die Homing-PWM in der Phase, in der der Endschalter gesucht wird.</p>
+<hr>
+<h3>Encoder: Counts &amp; Typ (RS485)</h3>
+<p>Ergänzung zu Abschnitt <a href="#encoders">„Encoder-Varianten“</a>: Ring vs. Motor können hier fein eingestellt und der Typ umgeschaltet werden.</p>
+<h4 id="cmd-GETENCCRI"><code>GETENCCRI</code></h4>
+<p><b>Was es macht:</b> Counts pro 360° für den <b>Ring</b>-Encoder lesen (Integer, typisch ca. 160000).</p>
+<hr>
+<h4 id="cmd-SETENCCRI"><code>SETENCCRI</code></h4>
+<p><b>Was es macht:</b> Counts pro 360° Ring-Encoder setzen. Wird gespeichert.</p>
+<hr>
+<h4 id="cmd-GETENCCAX"><code>GETENCCAX</code></h4>
+<p><b>Was es macht:</b> Counts pro 360° für den <b>Achsen-/Motor</b>-Encoder lesen (Integer, typisch im Zehntausender-Bereich).</p>
+<hr>
+<h4 id="cmd-SETENCCAX"><code>SETENCCAX</code></h4>
+<p><b>Was es macht:</b> Counts pro 360° Achsen-/Motor-Encoder setzen. Wird gespeichert.</p>
+<hr>
+<h4 id="cmd-GETENCTYPE"><code>GETENCTYPE</code></h4>
+<p><b>Was es macht:</b> Encoder-Variante lesen: <code>1</code> = Axis/Motor, <code>2</code> = Ring.</p>
+<hr>
+<h4 id="cmd-SETENCTYPE"><code>SETENCTYPE</code></h4>
+<p><b>Was es macht:</b> Encoder-Variante setzen (<code>1</code> oder <code>2</code>). Nach Wechsel Homing und Counts prüfen.</p>
+<hr>
+<h4 id="cmd-GETSTALLTIMEOUT"><code>GETSTALLTIMEOUT</code></h4>
+<p><b>Was es macht:</b> Stall-Timeout (ms) lesen.</p>
+<p><b>Details:</b> Zeit, bis SE_STALL auslöst.</p>
+<hr>
+<h4 id="cmd-SETSTALLTIMEOUT"><code>SETSTALLTIMEOUT</code></h4>
+<p><b>Was es macht:</b> Stall-Timeout (ms) setzen.</p>
+<p><b>Details:</b> Typisch 1500..4000ms.</p>
+<p><b>Gute Werte:</b> Start oft bei <code>2000</code> ms. Wenn der Motor bei kleinen PWM erst spät loskommt (zähes Getriebe), eher <code>3000..5000</code> ms. Wenn Blockaden sehr schnell erkannt werden sollen, eher kleiner – dann braucht es aber genug „Kick“.</p>
+<hr>
+<h3>Lastprofil / Warnschwellen</h3>
+<h4 id="cmd-GETCOLDT"><code>GETCOLDT</code></h4>
+<p><b>Was es macht:</b> Kälte-Schwelle (°C) lesen.</p>
+<p><b>Details:</b> Unterhalb dieser Temp wird Extra-Reibung erlaubt.</p>
+<hr>
+<h4 id="cmd-SETCOLDT"><code>SETCOLDT</code></h4>
+<p><b>Was es macht:</b> Kälte-Schwelle (°C) setzen.</p>
+<p><b>Details:</b> Typisch 0..10°C.</p>
+<hr>
+<h4 id="cmd-GETCOLDP"><code>GETCOLDP</code></h4>
+<p><b>Was es macht:</b> Extra-Reibung bei Kälte (%) lesen.</p>
+<p><b>Details:</b> Erlaubter Zuschlag in %.</p>
+<hr>
+<h4 id="cmd-SETCOLDP"><code>SETCOLDP</code></h4>
+<p><b>Was es macht:</b> Extra-Reibung bei Kälte (%) setzen.</p>
+<p><b>Details:</b> Typisch 10..25%.</p>
+<hr>
+<h4 id="cmd-GETCALIGNDG"><code>GETCALIGNDG</code></h4>
+<p><b>Was es macht:</b> Kalibrierfahrt: Rampenbereich, der ignoriert wird (Grad).</p>
+<p><b>Details:</b> Damit Stromwerte nicht durch Beschleunigen/Abbremsen verfälscht werden.</p>
+<hr>
+<h4 id="cmd-SETCALIGNDG"><code>SETCALIGNDG</code></h4>
+<p><b>Was es macht:</b> Kalibrierfahrt: Rampenbereich (Grad) setzen.</p>
+<p><b>Details:</b> Typisch 10° (Test) oder 30° (robust).</p>
+<hr>
+<h4 id="cmd-GETSTATMINDG"><code>GETSTATMINDG</code></h4>
+<p><b>Was es macht:</b> Mindestbewegung in Grad für Statistik.</p>
+<p><b>Details:</b> Nur Bewegungen grösser als dieser Wert fliessen in Load-Statistik.</p>
+<hr>
+<h4 id="cmd-SETSTATMINDG"><code>SETSTATMINDG</code></h4>
+<p><b>Was es macht:</b> Mindestbewegung in Grad setzen.</p>
+<p><b>Details:</b> Typisch 30..90°.</p>
+<hr>
+<h4 id="cmd-GETDRAG"><code>GETDRAG</code></h4>
+<p><b>Was es macht:</b> Schwellwert „mehr Reibung“ (%) lesen.</p>
+<p><b>Details:</b> Mittelwert-Schwellwert.</p>
+<hr>
+<h4 id="cmd-SETDRAG"><code>SETDRAG</code></h4>
+<p><b>Was es macht:</b> Schwellwert „mehr Reibung“ (%) setzen.</p>
+<p><b>Details:</b> Typisch 15..30%.</p>
+<hr>
+<h4 id="cmd-GETDRAGBINS"><code>GETDRAGBINS</code></h4>
+<p><b>Was es macht:</b> Wie viele Winkel-Bins müssen drüber sein (%) lesen.</p>
+<p><b>Details:</b> Damit einzelne Ausreisser nicht warnen.</p>
+<hr>
+<h4 id="cmd-SETDRAGBINS"><code>SETDRAGBINS</code></h4>
+<p><b>Was es macht:</b> Drag-Bins-Prozent setzen.</p>
+<p><b>Details:</b> Typisch 30..70%.</p>
+<hr>
+<h4 id="cmd-GETDRAGPERSIST"><code>GETDRAGPERSIST</code></h4>
+<p><b>Was es macht:</b> Wie viele große Fahrten hintereinander benötigt werden.</p>
+<p><b>Details:</b> Damit kurze Störungen nicht warnen.</p>
+<hr>
+<h4 id="cmd-SETDRAGPERSIST"><code>SETDRAGPERSIST</code></h4>
+<p><b>Was es macht:</b> Persistenz (Anzahl Fahrten) setzen.</p>
+<p><b>Details:</b> Typisch 3..5.</p>
+<hr>
+<h4 id="cmd-GETWINDPEAK"><code>GETWINDPEAK</code></h4>
+<p><b>Was es macht:</b> Wind: Peak-Schwellwert (%) lesen.</p>
+<p><b>Details:</b> Für Böen/kurzzeitig hohe Last.</p>
+<hr>
+<h4 id="cmd-SETWINDPEAK"><code>SETWINDPEAK</code></h4>
+<p><b>Was es macht:</b> Wind: Peak-Schwellwert (%) setzen.</p>
+<p><b>Details:</b> Typisch 25..60%.</p>
+<hr>
+<h4 id="cmd-GETWINDCOH"><code>GETWINDCOH</code></h4>
+<p><b>Was es macht:</b> Wind: Mindest-Kohärenz (%) lesen.</p>
+<p><b>Details:</b> Wie „gerichtet“ die Last sein muss.</p>
+<hr>
+<h4 id="cmd-SETWINDCOH"><code>SETWINDCOH</code></h4>
+<p><b>Was es macht:</b> Wind: Mindest-Kohärenz (%) setzen.</p>
+<p><b>Details:</b> Typisch 50..70%.</p>
+<hr>
+<h3>Sonstiges</h3>
+<h4 id="cmd-JOG"><code>JOG</code></h4>
+<p><b>Was es macht:</b> Manuelles Verfahren (aktuell deaktiviert).</p>
+<p><b>Details:</b> Gibt NAK_JOG:DISABLED.</p>
+<hr>
+<h3>Weitere</h3>
+<h4 id="cmd-GETHANDSPEED"><code>GETHANDSPEED</code></h4>
+<p><b>Was es macht:</b> Handspeed (%) lesen.</p>
+<p><b>Details:</b> Sicher langsames Verfahren (lokal/Service).</p>
+<hr>
+<h4 id="cmd-SETHANDSPEED"><code>SETHANDSPEED</code></h4>
+<p><b>Was es macht:</b> Handspeed (%) setzen.</p>
+<p><b>Details:</b> Typisch 10..40%.</p>
+<hr>
+<h4 id="cmd-GETDEADMAN"><code>GETDEADMAN</code></h4>
+<p><b>Was es macht:</b> Deadman/Keepalive Timeout (ms) lesen.</p>
+<p><b>Details:</b> 0 = aus.</p>
+<hr>
+<h4 id="cmd-SETDEADMAN"><code>SETDEADMAN</code></h4>
+<p><b>Was es macht:</b> Deadman Timeout (ms) setzen.</p>
+<p><b>Details:</b> Typisch 0 (aus) oder 2000..5000ms.</p>
+<p><b>Gute Werte:</b> Wenn der Master sicher regelmäßig Befehle sendet (z.B. alle 100–500 ms), dann ist <code>2000..5000</code> ms ein guter Start. Wenn das nicht benötigt wird: <code>0</code> (aus).</p>
+<hr>
+<h4 id="cmd-GETIWARN"><code>GETIWARN</code></h4>
+<p><b>Was es macht:</b> Strom-Warnschwelle (mV) lesen.</p>
+<p><b>Details:</b> Nur Warnung, kein Stop.</p>
+<hr>
+<h4 id="cmd-SETIWARN"><code>SETIWARN</code></h4>
+<p><b>Was es macht:</b> Strom-Warnschwelle (mV) setzen.</p>
+<p><b>Details:</b> Typisch 200..350mV (abh. Sensor).</p>
+<hr>
+<h4 id="cmd-GETIMAX"><code>GETIMAX</code></h4>
+<p><b>Was es macht:</b> Strom-Abschaltschwelle (mV) lesen.</p>
+<p><b>Details:</b> Führt zu Stop + Error.</p>
+<hr>
+<h4 id="cmd-SETIMAX"><code>SETIMAX</code></h4>
+<p><b>Was es macht:</b> Strom-Abschaltschwelle (mV) setzen.</p>
+<p><b>Details:</b> Typisch 300..600mV (abh. Sensor).</p>
+<hr>
+<div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
+</section>
+<section class="section" id="vars-table">
+<h2>5. INO‑Konfig‑Variablen – Tabelle</h2>
+<p>Diese Tabelle listet die wichtigsten Einstellungen aus der <code>.ino</code>. „Kurzname“ ist der Preferences‑Key (Variante&nbsp;1), also der kurze Speichername im EEPROM/NVS.</p>
+<table>
+<tr><th>Variablenname</th><th>Kurzname</th><th>EEPROM</th><th>RS485</th><th>Kurzbeschreibung</th></tr>
+<tr>
+<td><code>g_slaveId</code></td>
+<td><code>id</code></td>
+<td>ja</td>
+<td>SETID/GETID</td>
+<td>Slave-Adresse (RS485)</td>
+</tr>
+<tr>
+<td><code>g_axisMinDeg01</code></td>
+<td><code>amin</code></td>
+<td>ja</td>
+<td>SETBEGINDG/GETBEGINDG</td>
+<td>Min-Winkel (0,01°)</td>
+</tr>
+<tr>
+<td><code>g_axisMaxDeg01</code></td>
+<td><code>amax</code></td>
+<td>ja</td>
+<td>SETMAXDG/GETMAXDG</td>
+<td>Max-Winkel (0,01°)</td>
+</tr>
+<tr>
+<td><code>g_dgOffsetDeg01</code></td>
+<td><code>dgo</code></td>
+<td>ja</td>
+<td>SETDGOFFSET/GETDGOFFSET</td>
+<td>Offset in Grad (0,01°)</td>
+</tr>
+<tr>
+<td><code>g_homeFastPwmPercent</code></td>
+<td><code>hfp</code></td>
+<td>ja</td>
+<td>SETHOMEPWM/GETHOMEPWM</td>
+<td>Homing: Max-PWM (%)</td>
+</tr>
+<tr>
+<td><code>g_homeSeekMinPwmPercent</code></td>
+<td><code>-</code></td>
+<td>nein</td>
+<td>-</td>
+<td>Homing Phase A: Ziel-PWM (%) zum linken Endschalter</td>
+</tr>
+<tr>
+<td><code>g_homeBackoff</code></td>
+<td><code>hbo</code></td>
+<td>ja</td>
+<td>SETHOMEBACKOFF/GETHOMEBACKOFF</td>
+<td>Homing: Rückzug vom Endschalter (Grad)</td>
+</tr>
+<tr>
+<td><code>g_homeReturnToZero</code></td>
+<td><code>hrz</code></td>
+<td>ja</td>
+<td>SETHOMERETURN/GETHOMRETURN</td>
+<td>Homing: danach auf 0 fahren (1/0)</td>
+</tr>
+<tr>
+<td><code>g_homeTimeoutMs</code></td>
+<td><code>hto</code></td>
+<td>ja</td>
+<td>SETHOMETIMEOUT/GETHOMETIMEOUT</td>
+<td>Homing: Timeout (ms)</td>
+</tr>
+<tr>
+<td><code>g_posTimeoutMs</code></td>
+<td><code>pto</code></td>
+<td>ja</td>
+<td>SETPOSTIMEOUT/GETPOSTIMEOUT</td>
+<td>Positionsfahrt: Timeout (ms)</td>
+</tr>
+<tr>
+<td><code>g_handSpeedPercent</code></td>
+<td><code>hsp</code></td>
+<td>ja</td>
+<td>SETHANDSPEED/GETHANDSPEED</td>
+<td>Handspeed (%)</td>
+</tr>
+<tr>
+<td><code>g_cmdTimeoutMs</code></td>
+<td><code>dman</code></td>
+<td>ja</td>
+<td>SETDEADMAN/GETDEADMAN</td>
+<td>Deadman/Keepalive (ms, 0=aus)</td>
+</tr>
+<tr>
+<td><code>g_arriveTolDeg01</code></td>
+<td><code>atol</code></td>
+<td>ja</td>
+<td>SETARRTOL/GETARRTOL</td>
+<td>Ankunftstoleranz (Grad)</td>
+</tr>
+<tr>
+<td><code>g_rampDistDeg</code></td>
+<td><code>ramp</code></td>
+<td>ja</td>
+<td>SETRAMP/GETRAMP</td>
+<td>Rampenlänge (Grad)</td>
+</tr>
+<tr>
+<td><code>g_minPwm</code></td>
+<td><code>minp</code></td>
+<td>ja</td>
+<td>SETMINPWM/GETMINPWM</td>
+<td>Min-PWM (%)</td>
+</tr>
+<tr>
+<td><code>g_pwmMaxAbsNv</code></td>
+<td><code>maxp</code></td>
+<td>ja</td>
+<td>SETMAXPWM/GETMAXPWM</td>
+<td>Max-PWM (%) (dauerhaft)</td>
+</tr>
+<tr>
+<td><code>g_pwmMaxAbsCmd</code></td>
+<td><code>-</code></td>
+<td>nein</td>
+<td>SETPWM/GETPWM</td>
+<td>Max-PWM (%) (nur Laufzeit)</td>
+</tr>
+<tr>
+<td><code>g_isSoftWarnMv</code></td>
+<td><code>iw</code></td>
+<td>ja</td>
+<td>SETIWARN/GETIWARN</td>
+<td>Strom: Warnschwelle (mV)</td>
+</tr>
+<tr>
+<td><code>g_isHardStopMv</code></td>
+<td><code>imax</code></td>
+<td>ja</td>
+<td>SETIMAX/GETIMAX</td>
+<td>Strom: Abschaltschwelle (mV)</td>
+</tr>
+<tr>
+<td><code>g_isGraceMs</code></td>
+<td><code>-</code></td>
+<td>nein</td>
+<td>-</td>
+<td>Strom: Schonzeit nach Start/Umkehr (ms)</td>
+</tr>
+<tr>
+<td><code>g_isHardHoldMs</code></td>
+<td><code>-</code></td>
+<td>nein</td>
+<td>-</td>
+<td>Strom: Hardlimit muss so lange anliegen (ms)</td>
+</tr>
+<tr>
+<td><code>g_isFilterLen</code></td>
+<td><code>-</code></td>
+<td>nein</td>
+<td>-</td>
+<td>Strom: Filterlänge (Samples)</td>
+</tr>
+<tr>
+<td><code>g_isSampleIntervalMs</code></td>
+<td><code>-</code></td>
+<td>nein</td>
+<td>-</td>
+<td>Strom: Abtastintervall (ms)</td>
+</tr>
+<tr>
+<td><code>g_stallMonitorEnabled</code></td>
+<td><code>-</code></td>
+<td>nein</td>
+<td>-</td>
+<td>Stall-Erkennung an/aus</td>
+</tr>
+<tr>
+<td><code>g_minStallPwm</code></td>
+<td><code>-</code></td>
+<td>nein</td>
+<td>-</td>
+<td>Stall: Mindest-PWM für Arming (%)</td>
+</tr>
+<tr>
+<td><code>g_stallTimeoutMs</code></td>
+<td><code>stto</code></td>
+<td>ja</td>
+<td>SETSTALLTIMEOUT/GETSTALLTIMEOUT</td>
+<td>Stall: Timeout (ms)</td>
+</tr>
+<tr>
+<td><code>g_stallMinCounts</code></td>
+<td><code>-</code></td>
+<td>nein</td>
+<td>-</td>
+<td>Stall: Mindest-Counts im Timeout</td>
+</tr>
+<tr>
+<td><code>g_tempWarnAmbientC</code></td>
+<td><code>twa</code></td>
+<td>ja</td>
+<td>SETTEMPA/GETTEMPAW</td>
+<td>Temp: Warnschwelle Umgebung (°C)</td>
+</tr>
+<tr>
+<td><code>g_tempWarnMotorC</code></td>
+<td><code>twm</code></td>
+<td>ja</td>
+<td>SETTEMPM/GETTEMPMW</td>
+<td>Temp: Warnschwelle Motor (°C)</td>
+</tr>
+<tr>
+<td><code>g_coldTempDegC</code></td>
+<td><code>cth</code></td>
+<td>ja</td>
+<td>SETCOLDT/GETCOLDT</td>
+<td>Kälte-Schwelle (°C)</td>
+</tr>
+<tr>
+<td><code>g_coldExtraDragPct</code></td>
+<td><code>cpx</code></td>
+<td>ja</td>
+<td>SETCOLDP/GETCOLDP</td>
+<td>Extra-Reibung bei Kälte (%)</td>
+</tr>
+<tr>
+<td><code>g_calIgnoreRampDeg</code></td>
+<td><code>cig</code></td>
+<td>ja</td>
+<td>SETCALIGNDG/GETCALIGNDG</td>
+<td>Kalibrierung: Rampenbereich ignorieren (°)</td>
+</tr>
+<tr>
+<td><code>g_statMinMoveDeg</code></td>
+<td><code>smm</code></td>
+<td>ja</td>
+<td>SETSTATMINDG/GETSTATMINDG</td>
+<td>Statistik: Mindestbewegung (°)</td>
+</tr>
+<tr>
+<td><code>g_dragWarnPct</code></td>
+<td><code>drw</code></td>
+<td>ja</td>
+<td>SETDRAG/GETDRAG</td>
+<td>Warnung: Reibung grösser (Mittelwert %)</td>
+</tr>
+<tr>
+<td><code>g_dragWarnBinsPct</code></td>
+<td><code>drb</code></td>
+<td>ja</td>
+<td>SETDRAGBINS/GETDRAGBINS</td>
+<td>Warnung: Anteil Bins über Schwellwert (%)</td>
+</tr>
+<tr>
+<td><code>g_dragPersistMoves</code></td>
+<td><code>drn</code></td>
+<td>ja</td>
+<td>SETDRAGPERSIST/GETDRAGPERSIST</td>
+<td>Warnung: Persistenz (Fahrten)</td>
+</tr>
+<tr>
+<td><code>g_windPeakPct</code></td>
+<td><code>wpk</code></td>
+<td>ja</td>
+<td>SETWINDPEAK/GETWINDPEAK</td>
+<td>Warnung: Windböe Peak (%)</td>
+</tr>
+<tr>
+<td><code>g_windCoherenceMin</code></td>
+<td><code>wco</code></td>
+<td>ja</td>
+<td>SETWINDCOH/GETWINDCOH</td>
+<td>Wind-Erkennung: Kohärenz Minimum (%)</td>
+</tr>
+<tr>
+<td><code>g_anemoOffsetKmh</code></td>
+<td><code>ano</code></td>
+<td>ja</td>
+<td>SETANEMOOF/GETANEMOOF</td>
+<td>RS485-Windsensor: Geschwindigkeits-Offset (km/h)</td>
+</tr>
+<tr>
+<td><code>g_windDirOffsetDeg</code></td>
+<td><code>wdo</code></td>
+<td>ja</td>
+<td>SETWINDDIROF/GETWINDDIROF</td>
+<td>RS485-Windsensor: Richtungs-Offset (Grad)</td>
+</tr>
+<tr>
+<td><code>g_windEnable</code></td>
+<td><code>wen</code></td>
+<td>ja</td>
+<td>SETWINDENABLE/GETWINDENABLE</td>
+<td>RS485-Windsensor aktiv/inaktiv</td>
+</tr>
+<tr>
+<td><code>g_windDirOffsetDeg</code></td>
+<td><code>wdo</code></td>
+<td>ja</td>
+<td>SETWINDDIROF/GETWINDDIROF</td>
+<td>RS485-Windsensor: Richtungs-Offset (Grad)</td>
+</tr>
+<tr>
+<td><code>g_windEnable</code></td>
+<td><code>wen</code></td>
+<td>ja</td>
+<td>SETWINDENABLE/GETWINDENABLE</td>
+<td>RS485-Windsensor aktiv/inaktiv</td>
+</tr>
+</table>
+<div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
+</section>
+<section class="section" id="vars-details">
+<h2>6. INO‑Variablen – Erklärung &amp; gute Einstellungen</h2>
+<p>Hier sind die Variablen in einfachen Worten erklärt. Wenn „gut“ genannt wird, ist das ein Startwert – am Ende entscheidet deine Mechanik (Haftreibung, Getriebe, Windlast, Temperatur).</p>
+<h3 id="var-g_slaveId"><code>g_slaveId</code></h3>
+<p><b>Kurz:</b> Slave-Adresse (RS485)</p>
+<p class="muted"><b>Default:</b> <code>static uint8_t g_slaveId = 20;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>id</code>). Ändern über RS485: <b>SETID/GETID</b>.</p>
+<hr>
+<h3 id="var-g_axisMinDeg01"><code>g_axisMinDeg01</code></h3>
+<p><b>Kurz:</b> Min-Winkel (0,01°)</p>
+<p class="muted"><b>Default:</b> <code>static int32_t g_axisMinDeg01 = 0;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>amin</code>). Ändern über RS485: <b>SETBEGINDG/GETBEGINDG</b>.</p>
+<hr>
+<h3 id="var-g_axisMaxDeg01"><code>g_axisMaxDeg01</code></h3>
+<p><b>Kurz:</b> Max-Winkel (0,01°)</p>
+<p class="muted"><b>Default:</b> <code>static int32_t g_axisMaxDeg01 = 36000;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>amax</code>). Ändern über RS485: <b>SETMAXDG/GETMAXDG</b>.</p>
+<hr>
+<h3 id="var-g_dgOffsetDeg01"><code>g_dgOffsetDeg01</code></h3>
+<p><b>Kurz:</b> Offset in Grad (0,01°)</p>
+<p class="muted"><b>Default:</b> <code>static int32_t g_dgOffsetDeg01 = 250;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>dgo</code>). Ändern über RS485: <b>SETDGOFFSET/GETDGOFFSET</b>.</p>
+<hr>
+<h3 id="var-g_homeFastPwmPercent"><code>g_homeFastPwmPercent</code></h3>
+<p><b>Kurz:</b> Homing: Max-PWM (%)</p>
+<p class="muted"><b>Default:</b> <code>static float g_homeFastPwmPercent     = 100.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>hfp</code>). Ändern über RS485: <b>SETHOMEPWM/GETHOMEPWM</b>.</p>
+<hr>
+<h3 id="var-g_homeSeekMinPwmPercent"><code>g_homeSeekMinPwmPercent</code></h3>
+<p><b>Kurz:</b> Homing Phase A: Ziel-PWM (%) zum linken Endschalter</p>
+<p class="muted"><b>Default:</b> <code>static float g_homeSeekMinPwmPercent = 60.0f;</code></p>
+<p><b>Speicherung:</b> Nein (nur Firmware/INO). Falls das später per RS485 änderbar sein soll, kann dafür ein GET/SET‑Befehl ergänzt werden.</p>
+<hr>
+<h3 id="var-g_homeBackoff"><code>g_homeBackoff</code></h3>
+<p><b>Kurz:</b> Homing: Rückzug vom Endschalter (Grad)</p>
+<p class="muted"><b>Default:</b> <code>static float g_homeBackoff = 30.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>hbo</code>). Ändern über RS485: <b>SETHOMEBACKOFF/GETHOMEBACKOFF</b>.</p>
+<hr>
+<h3 id="var-g_homeReturnToZero"><code>g_homeReturnToZero</code></h3>
+<p><b>Kurz:</b> Homing: danach auf 0 fahren (1/0)</p>
+<p class="muted"><b>Default:</b> <code>static bool g_homeReturnToZero = true;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>hrz</code>). Ändern über RS485: <b>SETHOMERETURN/GETHOMRETURN</b>.</p>
+<hr>
+<h3 id="var-g_homeTimeoutMs"><code>g_homeTimeoutMs</code></h3>
+<p><b>Kurz:</b> Homing: Timeout (ms)</p>
+<p class="muted"><b>Default:</b> <code>static uint32_t g_homeTimeoutMs = 120000;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>hto</code>). Ändern über RS485: <b>SETHOMETIMEOUT/GETHOMETIMEOUT</b>.</p>
+<hr>
+<h3 id="var-g_posTimeoutMs"><code>g_posTimeoutMs</code></h3>
+<p><b>Kurz:</b> Positionsfahrt: Timeout (ms)</p>
+<p class="muted"><b>Default:</b> <code>static uint32_t g_posTimeoutMs = 60000;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>pto</code>). Ändern über RS485: <b>SETPOSTIMEOUT/GETPOSTIMEOUT</b>.</p>
+<hr>
+<h3 id="var-g_handSpeedPercent"><code>g_handSpeedPercent</code></h3>
+<p><b>Kurz:</b> Handspeed (%)</p>
+<p class="muted"><b>Default:</b> <code>static float g_handSpeedPercent  = 25.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>hsp</code>). Ändern über RS485: <b>SETHANDSPEED/GETHANDSPEED</b>.</p>
+<hr>
+<h3 id="var-g_cmdTimeoutMs"><code>g_cmdTimeoutMs</code></h3>
+<p><b>Kurz:</b> Deadman/Keepalive (ms, 0=aus)</p>
+<p class="muted"><b>Default:</b> <code>static uint32_t g_cmdTimeoutMs = 0;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>dman</code>). Ändern über RS485: <b>SETDEADMAN/GETDEADMAN</b>.</p>
+<p><b>Praxis:</b> Diese Zeit ist nur sinnvoll, wenn der Master während Bewegung regelmäßig „lebt“. Im Stillstand wird der Deadman nicht benötigt.</p>
+<hr>
+<h3 id="var-g_arriveTolDeg01"><code>g_arriveTolDeg01</code></h3>
+<p><b>Kurz:</b> Ankunftstoleranz (Grad)</p>
+<p class="muted"><b>Default:</b> <code>static int32_t  g_arriveTolDeg01 = 2;          // 0,02deg</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>atol</code>). Ändern über RS485: <b>SETARRTOL/GETARRTOL</b>.</p>
+<hr>
+<h3 id="var-g_rampDistDeg"><code>g_rampDistDeg</code></h3>
+<p><b>Kurz:</b> Rampenlänge (Grad)</p>
+<p class="muted"><b>Default:</b> <code>static float  g_rampDistDeg    = 30.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>ramp</code>). Ändern über RS485: <b>SETRAMP/GETRAMP</b>.</p>
+<hr>
+<h3 id="var-g_minPwm"><code>g_minPwm</code></h3>
+<p><b>Kurz:</b> Min-PWM (%)</p>
+<p class="muted"><b>Default:</b> <code>static float   g_minPwm = 20.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>minp</code>). Ändern über RS485: <b>SETMINPWM/GETMINPWM</b>.</p>
+<p><b>Praxis:</b> Wenn der Motor manchmal nicht losfährt, ist MINPWM oft zu klein. Wenn er zu ruppig anfährt, ist MINPWM zu groß oder die Rampe zu kurz.</p>
+<hr>
+<h3 id="var-g_pwmMaxAbsNv"><code>g_pwmMaxAbsNv</code></h3>
+<p><b>Kurz:</b> Max-PWM (%) (dauerhaft)</p>
+<p class="muted"><b>Default:</b> <code>static float g_pwmMaxAbsNv = 100.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>maxp</code>). Ändern über RS485: <b>SETMAXPWM/GETMAXPWM</b>.</p>
+<hr>
+<h3 id="var-g_pwmMaxAbsCmd"><code>g_pwmMaxAbsCmd</code></h3>
+<p><b>Kurz:</b> Max-PWM (%) (nur Laufzeit)</p>
+<p class="muted"><b>Default:</b> <code>static float g_pwmMaxAbsCmd = 100.0f;</code></p>
+<p><b>Speicherung:</b> Nein (nur Firmware/INO). Falls das später per RS485 änderbar sein soll, kann dafür ein GET/SET‑Befehl ergänzt werden.</p>
+<hr>
+<h3 id="var-g_isSoftWarnMv"><code>g_isSoftWarnMv</code></h3>
+<p><b>Kurz:</b> Strom: Warnschwelle (mV)</p>
+<p class="muted"><b>Default:</b> <code>static uint32_t g_isSoftWarnMv = 250;     // Warnschwelle (mV) -&gt; nur Warnung/Log, KEIN Stop</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>iw</code>). Ändern über RS485: <b>SETIWARN/GETIWARN</b>.</p>
+<hr>
+<h3 id="var-g_isHardStopMv"><code>g_isHardStopMv</code></h3>
+<p><b>Kurz:</b> Strom: Abschaltschwelle (mV)</p>
+<p class="muted"><b>Default:</b> <code>static uint32_t g_isHardStopMv = 350;    // Abschaltschwelle (mV) -&gt; Fault + Motor aus</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>imax</code>). Ändern über RS485: <b>SETIMAX/GETIMAX</b>.</p>
+<hr>
+<h3 id="var-g_isGraceMs"><code>g_isGraceMs</code></h3>
+<p><b>Kurz:</b> Strom: Schonzeit nach Start/Umkehr (ms)</p>
+<p class="muted"><b>Default:</b> <code>static uint32_t g_isGraceMs = 200;        // Schonzeit nach Start/Umkehr (ms): HardStop wird ignoriert</code></p>
+<p><b>Speicherung:</b> Nein (nur Firmware/INO). Falls das später per RS485 änderbar sein soll, kann dafür ein GET/SET‑Befehl ergänzt werden.</p>
+<hr>
+<h3 id="var-g_isHardHoldMs"><code>g_isHardHoldMs</code></h3>
+<p><b>Kurz:</b> Strom: Hardlimit muss so lange anliegen (ms)</p>
+<p class="muted"><b>Default:</b> <code>static uint32_t g_isHardHoldMs = 60;      // HardStop muss so lange überschritten sein (ms)</code></p>
+<p><b>Speicherung:</b> Nein (nur Firmware/INO). Falls das später per RS485 änderbar sein soll, kann dafür ein GET/SET‑Befehl ergänzt werden.</p>
+<hr>
+<h3 id="var-g_isFilterLen"><code>g_isFilterLen</code></h3>
+<p><b>Kurz:</b> Strom: Filterlänge (Samples)</p>
+<p class="muted"><b>Default:</b> <code>static uint8_t  g_isFilterLen = 16;       // Mittelwert-Länge (1..32). Grösser=ruhiger, aber langsamer</code></p>
+<p><b>Speicherung:</b> Nein (nur Firmware/INO). Falls das später per RS485 änderbar sein soll, kann dafür ein GET/SET‑Befehl ergänzt werden.</p>
+<hr>
+<h3 id="var-g_isSampleIntervalMs"><code>g_isSampleIntervalMs</code></h3>
+<p><b>Kurz:</b> Strom: Abtastintervall (ms)</p>
+<p class="muted"><b>Default:</b> <code>static uint32_t g_isSampleIntervalMs = 5; // Abtastintervall (ms). Kleiner=schneller, kann mehr rauschen</code></p>
+<p><b>Speicherung:</b> Nein (nur Firmware/INO). Falls das später per RS485 änderbar sein soll, kann dafür ein GET/SET‑Befehl ergänzt werden.</p>
+<hr>
+<h3 id="var-g_stallMonitorEnabled"><code>g_stallMonitorEnabled</code></h3>
+<p><b>Kurz:</b> Stall-Erkennung an/aus</p>
+<p class="muted"><b>Default:</b> <code>static bool g_stallMonitorEnabled = true;</code></p>
+<p><b>Speicherung:</b> Nein (nur Firmware/INO). Falls das später per RS485 änderbar sein soll, kann dafür ein GET/SET‑Befehl ergänzt werden.</p>
+<hr>
+<h3 id="var-g_minStallPwm"><code>g_minStallPwm</code></h3>
+<p><b>Kurz:</b> Stall: Mindest-PWM für Arming (%)</p>
+<p class="muted"><b>Default:</b> <code>static float   g_minStallPwm = 20.0f;</code></p>
+<p><b>Speicherung:</b> Nein (nur Firmware/INO). Falls das später per RS485 änderbar sein soll, kann dafür ein GET/SET‑Befehl ergänzt werden.</p>
+<hr>
+<h3 id="var-g_stallTimeoutMs"><code>g_stallTimeoutMs</code></h3>
+<p><b>Kurz:</b> Stall: Timeout (ms)</p>
+<p class="muted"><b>Default:</b> <code>static uint32_t g_stallTimeoutMs = 2000;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>stto</code>). Ändern über RS485: <b>SETSTALLTIMEOUT/GETSTALLTIMEOUT</b>.</p>
+<p><b>Praxis:</b> Wenn häufig ERR16 beim Anfahren auftritt, obwohl nichts klemmt, ist das Timeout oft zu kurz (oder der Kick zu schwach). Ein höherer Wert hilft häufig sofort.</p>
+<hr>
+<h3 id="var-g_stallMinCounts"><code>g_stallMinCounts</code></h3>
+<p><b>Kurz:</b> Stall: Mindest-Counts im Timeout</p>
+<p class="muted"><b>Default:</b> <code>static uint32_t g_stallMinCounts = 10;</code></p>
+<p><b>Speicherung:</b> Nein (nur Firmware/INO). Falls das später per RS485 änderbar sein soll, kann dafür ein GET/SET‑Befehl ergänzt werden.</p>
+<hr>
+<h3 id="var-g_tempWarnAmbientC"><code>g_tempWarnAmbientC</code></h3>
+<p><b>Kurz:</b> Temp: Warnschwelle Umgebung (°C)</p>
+<p class="muted"><b>Default:</b> <code>static float g_tempWarnAmbientC = 0.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>twa</code>). Ändern über RS485: <b>SETTEMPA/GETTEMPAW</b>.</p>
+<p><b>Praxis:</b> Wenn nur angezeigt werden soll und keine Warnung gebraucht wird, den Wert auf <code>0</code> oder kleiner setzen (Warnung aus).</p>
+<hr>
+<h3 id="var-g_tempWarnMotorC"><code>g_tempWarnMotorC</code></h3>
+<p><b>Kurz:</b> Temp: Warnschwelle Motor (°C)</p>
+<p class="muted"><b>Default:</b> <code>static float g_tempWarnMotorC   = 0.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>twm</code>). Ändern über RS485: <b>SETTEMPM/GETTEMPMW</b>.</p>
+<p><b>Praxis:</b> Wenn nur angezeigt werden soll und keine Warnung gebraucht wird, den Wert auf <code>0</code> oder kleiner setzen (Warnung aus).</p>
+<hr>
+<h3 id="var-g_coldTempDegC"><code>g_coldTempDegC</code></h3>
+<p><b>Kurz:</b> Kälte-Schwelle (°C)</p>
+<p class="muted"><b>Default:</b> <code>static float g_coldTempDegC       = 5.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>cth</code>). Ändern über RS485: <b>SETCOLDT/GETCOLDT</b>.</p>
+<p><b>Praxis:</b> Diese Werte gehören zur „Lastprofil‑Auswertung“ (Wind/Getriebe/Kälte). Details dazu sind im Tuning‑Kapitel beschrieben.</p>
+<hr>
+<h3 id="var-g_coldExtraDragPct"><code>g_coldExtraDragPct</code></h3>
+<p><b>Kurz:</b> Extra-Reibung bei Kälte (%)</p>
+<p class="muted"><b>Default:</b> <code>static float g_coldExtraDragPct   = 10.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>cpx</code>). Ändern über RS485: <b>SETCOLDP/GETCOLDP</b>.</p>
+<p><b>Praxis:</b> Diese Werte gehören zur „Lastprofil‑Auswertung“ (Wind/Getriebe/Kälte). Details dazu sind im Tuning‑Kapitel beschrieben.</p>
+<hr>
+<h3 id="var-g_calIgnoreRampDeg"><code>g_calIgnoreRampDeg</code></h3>
+<p><b>Kurz:</b> Kalibrierung: Rampenbereich ignorieren (°)</p>
+<p class="muted"><b>Default:</b> <code>static float g_calIgnoreRampDeg = 10.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>cig</code>). Ändern über RS485: <b>SETCALIGNDG/GETCALIGNDG</b>.</p>
+<p><b>Praxis:</b> Diese Werte gehören zur „Lastprofil‑Auswertung“ (Wind/Getriebe/Kälte). Details dazu sind im Tuning‑Kapitel beschrieben.</p>
+<hr>
+<h3 id="var-g_statMinMoveDeg"><code>g_statMinMoveDeg</code></h3>
+<p><b>Kurz:</b> Statistik: Mindestbewegung (°)</p>
+<p class="muted"><b>Default:</b> <code>static float g_statMinMoveDeg = 60.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>smm</code>). Ändern über RS485: <b>SETSTATMINDG/GETSTATMINDG</b>.</p>
+<p><b>Praxis:</b> Diese Werte gehören zur „Lastprofil‑Auswertung“ (Wind/Getriebe/Kälte). Details dazu sind im Tuning‑Kapitel beschrieben.</p>
+<hr>
+<h3 id="var-g_dragWarnPct"><code>g_dragWarnPct</code></h3>
+<p><b>Kurz:</b> Warnung: Reibung grösser (Mittelwert %)</p>
+<p class="muted"><b>Default:</b> <code>static float   g_dragWarnPct      = 25.0f; // Mittelwert-Schwellwert (%)</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>drw</code>). Ändern über RS485: <b>SETDRAG/GETDRAG</b>.</p>
+<p><b>Praxis:</b> Diese Werte gehören zur „Lastprofil‑Auswertung“ (Wind/Getriebe/Kälte). Details dazu sind im Tuning‑Kapitel beschrieben.</p>
+<hr>
+<h3 id="var-g_dragWarnBinsPct"><code>g_dragWarnBinsPct</code></h3>
+<p><b>Kurz:</b> Warnung: Anteil Bins über Schwellwert (%)</p>
+<p class="muted"><b>Default:</b> <code>static float   g_dragWarnBinsPct  = 30.0f; // wie viele Bins müssen drüber sein (%)</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>drb</code>). Ändern über RS485: <b>SETDRAGBINS/GETDRAGBINS</b>.</p>
+<p><b>Praxis:</b> Diese Werte gehören zur „Lastprofil‑Auswertung“ (Wind/Getriebe/Kälte). Details dazu sind im Tuning‑Kapitel beschrieben.</p>
+<hr>
+<h3 id="var-g_dragPersistMoves"><code>g_dragPersistMoves</code></h3>
+<p><b>Kurz:</b> Warnung: Persistenz (Fahrten)</p>
+<p class="muted"><b>Default:</b> <code>static uint8_t g_dragPersistMoves = 3;     // wie viele große Fahrten hintereinander</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>drn</code>). Ändern über RS485: <b>SETDRAGPERSIST/GETDRAGPERSIST</b>.</p>
+<p><b>Praxis:</b> Diese Werte gehören zur „Lastprofil‑Auswertung“ (Wind/Getriebe/Kälte). Details dazu sind im Tuning‑Kapitel beschrieben.</p>
+<hr>
+<h3 id="var-g_windPeakPct"><code>g_windPeakPct</code></h3>
+<p><b>Kurz:</b> Warnung: Windböe Peak (%)</p>
+<p class="muted"><b>Default:</b> <code>static float g_windPeakPct      = 60.0f; // Peak-Schwellwert (%)</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>wpk</code>). Ändern über RS485: <b>SETWINDPEAK/GETWINDPEAK</b>.</p>
+<p><b>Praxis:</b> Diese Werte gehören zur „Lastprofil‑Auswertung“ (Wind/Getriebe/Kälte). Details dazu sind im Tuning‑Kapitel beschrieben.</p>
+<hr>
+<h3 id="var-g_windCoherenceMin"><code>g_windCoherenceMin</code></h3>
+<p><b>Kurz:</b> Wind-Erkennung: Kohärenz Minimum (%)</p>
+<p class="muted"><b>Default:</b> <code>static float g_windCoherenceMin = 55.0f; // Kohärenz-Minimum (%)</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>wco</code>). Ändern über RS485: <b>SETWINDCOH/GETWINDCOH</b>.</p>
+<p><b>Praxis:</b> Diese Werte gehören zur „Lastprofil‑Auswertung“ (Wind/Getriebe/Kälte). Details dazu sind im Tuning‑Kapitel beschrieben.</p>
+<hr>
+<h3 id="var-g_anemoOffsetKmh"><code>g_anemoOffsetKmh</code></h3>
+<p><b>Kurz:</b> Anemometer: Offset (km/h)</p>
+<p class="muted"><b>Default:</b> <code>static float g_anemoOffsetKmh = 0.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>ano</code>). Ändern über RS485: <b>SETANEMOOF/GETANEMOOF</b>.</p>
+<p><b>Praxis:</b> GETANEMO liefert die gemessene Windgeschwindigkeit des RS485-Sensors. Der Offset ist nur für Sonderfälle gedacht; normalerweise sollte er auf <code>0,0</code> bleiben.</p>
+<hr>
+<h3 id="var-g_windDirOffsetDeg"><code>g_windDirOffsetDeg</code></h3>
+<p><b>Kurz:</b> RS485-Windsensor: Richtungs-Offset (Grad)</p>
+<p class="muted"><b>Default:</b> <code>static float g_windDirOffsetDeg = 0.0f;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>wdo</code>). Ändern über RS485: <b>SETWINDDIROF/GETWINDDIROF</b>.</p>
+<p><b>Praxis:</b> Sinnvoll bei verdrehter Montage des Sensors. Damit kann die angezeigte Windrichtung auf den mechanischen Bezug der Anlage korrigiert werden.</p>
+<hr>
+<h3 id="var-g_windEnable"><code>g_windEnable</code></h3>
+<p><b>Kurz:</b> RS485-Windsensor aktiv (1/0)</p>
+<p class="muted"><b>Default:</b> <code>static bool g_windEnable = true;</code></p>
+<p><b>Speicherung:</b> Ja (Key <code>wen</code>). Ändern über RS485: <b>SETWINDENABLE/GETWINDENABLE</b>.</p>
+<p><b>Praxis:</b> Bei <code>0</code> werden keine Winddaten gepollt; <code>GETANEMO</code> und <code>GETWINDDIR</code> liefern dann <code>0</code>. Für den normalen Betrieb sollte der Sensor aktiviert bleiben.</p>
+<hr>
+<div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
+</section>
+<section class="section" id="tuning">
+<h2>7. Kalibrierung/Lastprofil/Temperatur – Tuning‑Anleitung</h2>
+<h3>6.1 Ziel der Kalibrierung</h3>
+<p>Bei der Kalibrierfahrt (<code>SETCAL</code>) wird ein „Normalprofil“ gelernt: Wie hoch ist die Stromaufnahme in jedem Winkelbereich, wenn <b>kein Wind</b> da ist und die Mechanik ok ist. Später werden Bewegungen damit verglichen.</p>
+<h3>6.2 Wie viele Datenpunkte?</h3>
+<p>Das Profil ist in <b>72 Winkel‑Bins</b> aufgeteilt. Ein Bin entspricht also <b>5°</b>. Das reicht gut, um Richtung und typische Lastbereiche zu erkennen, ohne zu viel Speicher zu brauchen.</p>
+<h3>6.3 Wichtige Einstellwerte</h3>
+<ul>
+<li><code>g_calIgnoreRampDeg</code>: Bereich am Anfang/Ende der Fahrt, der ignoriert wird. Empfehlung: 10° (Test), 30° (sehr robust).</li>
+<li><code>g_statMinMoveDeg</code>: Nur große Fahrten zählen. Empfehlung: 30–90°.</li>
+<li><code>g_dragWarnPct</code>: Ab wann „gleichmäßig schwerer“ (Getriebe/Kälte). Empfehlung: 20–30%.</li>
+<li><code>g_dragWarnBinsPct</code>: Wie viel vom Kreis muss betroffen sein. Empfehlung: 30–70%.</li>
+<li><code>g_dragPersistMoves</code>: Wie oft hintereinander, bevor gewarnt wird. Empfehlung: 3–5.</li>
+<li><code>g_windPeakPct</code>: Ab wann „Böe“. Empfehlung: 25–60%.</li>
+<li><code>g_windCoherenceMin</code>: Wie klar die Richtung sein muss. Empfehlung: 50–70%.</li>
+<li><code>g_coldTempDegC</code> und <code>g_coldExtraDragPct</code>: Bei Kälte darf es schwerer sein, ohne gleich zu warnen. Empfehlung: 5°C und 10–25%.</li>
+</ul>
+<h3>6.4 Einfache Schritt‑für‑Schritt‑Methode</h3>
+<ol>
+<li><b>Homing</b>: <code>SETREF:1</code> und warten bis referenziert.</li>
+<li><b>Kalibrieren</b> bei Windstille: <code>SETCAL</code>, dann <code>GETCALVALID</code> muss <code>1</code> sein.</li>
+<li><b>Statistik leeren</b>: <code>CLRSTAT</code> für die normale Live-Statistik, <code>SETACCBINSRST</code> für die schnelle ACC-Statistik.</li>
+<li><b>2–3 große Fahrten</b> fahren (z.B. 0→160→0→300). Danach <code>GETLOADSTAT</code> und <code>GETWIND</code ansehen.</li>
+<li><b>Windtag</b>: Das gleiche bei Wind wiederholen. Jetzt sollten <code>peak</code> und <code>coh</code steigen und <code>dirDeg</code stabiler werden.</li>
+<li><b>Kaltes Wetter</b>: Unterhalb <code>g_coldTempDegC</code> testen. Wenn ohne Wind schon Warnungen kommen: <code>g_coldExtraDragPct</code> etwas hoch oder <code>g_dragWarnPct</code etwas hoch.</li>
+</ol>
+<h3>6.5 Fehlerbild → typische Anpassung</h3>
+<table>
+<tr><th>Beobachtung</th><th>Typische Ursache</th><th>Was anpassen?</th></tr>
+<tr><td>Viele kurze Peaks, aber <code>coh</code> niedrig</td><td>Böe/zufällige Störung</td><td><code>g_windPeakPct</code> höher oder <code>g_dragPersistMoves</code höher</td></tr>
+<tr><td><code>mean</code> steigt langsam über Tage, viele Bins betroffen</td><td>Getriebe wird zäher / Schmierung / Temperatur</td><td><code>g_dragWarnPct</code höher, ggf. <code>g_coldExtraDragPct</code höher</td></tr>
+<tr><td>Warnung „leichter“ (DRAG_DECREASE)</td><td>Last fehlt oder Profil passt nicht mehr</td><td>Mechanik prüfen, ggf. neu kalibrieren (<code>SETCAL</code>)</td></tr>
+<tr><td>Bei <b>Windstille</b> trotzdem Wind‑Warnung</td><td>Schwellwerte zu niedrig oder Profil verrauscht</td><td><code>g_windPeakPct</code höher, <code>g_windCoherenceMin</code höher</td></tr>
+<tr><td>Bei Kälte dauernd Drag‑Warnung</td><td>Kälte sorgt für normale Mehrreibung</td><td><code>g_coldExtraDragPct</code höher oder <code>g_coldTempDegC</code anpassen</td></tr>
+</table>
+<div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
+</section>
+<section class="section" id="warns">
+<h2>8. Warnungen</h2>
+<p>Warnungen stoppen den Motor <b>nicht</b>. Sie werden gesammelt (mehrere möglich) und müssen bewusst gelöscht werden.</p>
+<p><b>Abfragen:</b> <code>GETWARN</code> → Antwort <code>ACK_WARN</code> mit <code>0</code> oder <code>id;id;...</code></p>
+<p><b>Löschen:</b> <code>DELWARN</code> (Antwort <code>ACK_DELWARN:1</code>)</p>
+<table>
+<tr><th>ID</th><th>Name</th><th>Bedeutung</th><th>Was tun?</th></tr>
+<tr><td>0</td><td><code>SW_NONE</code></td><td>Keine Warnung</td><td>-</td></tr>
+<tr><td>1</td><td><code>SW_IS_SOFT</code></td><td>Strom-Warnung (Soft-Limit erreicht)</td><td>Limits prüfen, ggf. IWARN höher oder Mechanik prüfen.</td></tr>
+<tr><td>2</td><td><code>SW_WIND_GUST</code></td><td>Windböe / kurzfristig stark erhöhte Last</td><td>Bei Wind normal. Wenn dauernd: Schwellwerte oder Mechanik checken.</td></tr>
+<tr><td>3</td><td><code>SW_DRAG_INCREASE</code></td><td>Gleichmäßig mehr Reibung</td><td>Kälte/Schmierstoff/Getriebe. coldExtraDragPct/dragWarnPct anpassen.</td></tr>
+<tr><td>4</td><td><code>SW_DRAG_DECREASE</code></td><td>Gleichmäßig weniger Reibung</td><td>Kann auf „Last fehlt“ hinweisen (z.B. Antenne weg).</td></tr>
+<tr><td>5</td><td><code>SW_TEMP_AMBIENT_HIGH</code></td><td>Umgebung zu warm</td><td>Warnschwelle setzen, ggf. Schutz/Belüftung.</td></tr>
+<tr><td>6</td><td><code>SW_TEMP_MOTOR_HIGH</code></td><td>Motor zu warm</td><td>Motorsensor aktivieren, Warnschwelle setzen, Pausen/Last reduzieren.</td></tr>
+</table>
+<div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
+</section>
+<section class="section" id="errors">
+<h2>9. Fehler</h2>
+<p>Fehler stoppen den Motor und bleiben aktiv („gelatched“), bis sie quittiert werden (siehe SETREF).</p>
+<p><b>Abfragen:</b> <code>GETERR</code> → Antwort <code>ACK_ERR</code> mit einem Code oder <code>0</code></p>
+<p><b>Quittieren:</b> <code>SETREF:0</code> oder <code>SETREF:1</code> (quittiert immer den Fehler; <code>SETREF:1</code> startet zusätzlich Homing)</p>
+<table>
+<tr><th>ID</th><th>Name</th><th>Ursache (typisch)</th><th>Was tun?</th><th>Wie löschen?</th></tr>
+<tr><td>0</td><td><code>SE_NONE</code></td><td>Kein Fehler</td><td>-</td><td>-</td></tr>
+<tr><td>10</td><td><code>SE_TIMEOUT</code></td><td>Deadman/Keepalive Timeout</td><td>Master sendet zu lange keine Befehle während Bewegung</td><td>SETREF (quittiert) / Deadman anpassen</td></tr>
+<tr><td>11</td><td><code>SE_ENDSTOP</code></td><td>Endschalter blockiert Fahrtrichtung</td><td>Es soll in Richtung eines aktiven Endschalters gefahren werden</td><td>Richtung/Endschalter/Offset prüfen, dann SETREF</td></tr>
+<tr><td>12</td><td><code>SE_NSTOP_CMD</code></td><td>NSTOP (Not-Aus) per RS485</td><td>Not-Stop Kommando empfangen</td><td>Ursache im Master, dann SETREF</td></tr>
+<tr><td>15</td><td><code>SE_IS_HARD</code></td><td>Strom-Hardlimit</td><td>Zu hoher Motorstrom länger als Hold</td><td>Mechanik prüfen, IMAX/Grace/Hold prüfen, dann SETREF</td></tr>
+<tr><td>16</td><td><code>SE_STALL</code></td><td>Stall: Encoder bewegt sich nicht</td><td>PWM an, aber zu wenige Encoder-Counts im Timeout</td><td>Mechanik/Haftreibung, MINPWM/KICK/STALLTIMEOUT anpassen, dann SETREF</td></tr>
+<tr><td>17</td><td><code>SE_HOME_FAIL</code></td><td>Homing fehlgeschlagen</td><td>Timeout in Homing-Phase oder Endschalterproblem</td><td>Endschalter, Counts-Parameter, HOMETIMEOUT prüfen, dann SETREF</td></tr>
+</table>
+<div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
+</section>
+<section class="section" id="notes">
+<h2>10. Hinweise</h2>
+<h3>10.1 OneWire / DS18B20 Compiler‑Warnungen</h3>
+<p>Wenn beim Bauen Warnungen aus <code>OneWire.cpp</code> erscheinen (z.B. „extra tokens at end of #undef“), kommen die aus der Library/ESP32‑Core Kombination. Das ist meist nur ein Warnhinweis und kein Laufzeitfehler. Wenn das stört, hilft in der Regel ein Update der OneWire‑Library oder des ESP32‑Cores.</p>
+<h3>10.2 RS485-Wind-/Richtungssensor</h3>
+<p>Der Windmesser wird in der aktuellen Firmware nicht mehr analog über eine Spannung eingelesen, sondern als <b>RS485-Wind-/Richtungssensor</b> über <code>Serial2</code> mit <code>9600 Baud</code> abgefragt. Dabei werden <b>Windgeschwindigkeit</b>, <b>Windrichtung</b> und die <b>Windstärke in Beaufort</b> zyklisch gelesen und im HalBoard zwischengespeichert.</p>
+<p>Für den Master sind besonders diese Befehle relevant:</p>
+<ul>
+<li><code>GETANEMO</code> = aktuelle Windgeschwindigkeit in km/h</li>
+<li><code>GETBEAUFORT</code> = aktuelle Windstärke als Beaufortwert 0 bis 12</li>
+<li><code>GETWINDDIR</code> = aktuelle Windrichtung in Grad</li>
+<li><code>GETWINDENABLE</code>/<code>SETWINDENABLE</code> = Sensor aktivieren oder deaktivieren</li>
+<li><code>GETANEMOOF</code>/<code>SETANEMOOF</code> = optionaler Geschwindigkeits-Offset</li>
+<li><code>GETWINDDIROF</code>/<code>SETWINDDIROF</code> = optionaler Richtungs-Offset</li>
+</ul>
+<p>Wichtig: <code>GETWIND</code> ist davon getrennt. Dieser Befehl liefert eine <b>Wind-Schätzung aus dem Motorlastprofil</b> und nicht die direkt gemessenen Werte des RS485-Sensors.</p>
+<div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
+</section>
+</main>
+</body>
+</html>

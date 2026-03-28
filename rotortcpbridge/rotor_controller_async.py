@@ -24,6 +24,11 @@ class RotorControllerAsyncMixin:
             sel = int(self.slave_el)
             if (s == saz or s == sel) and d != mid:
                 return True
+            # SETPOSDG an unseren Rotor (Mitschnitt; auch bei gleicher Master-ID wie wir,
+            # z. B. zweiter Rechner / Echo auf dem Bus – Ziel muss trotzdem ins UI)
+            cmd_u = str(tel.cmd or "").strip().upper()
+            if cmd_u == "SETPOSDG" and (d == saz or d == sel):
+                return True
             return False
         except Exception:
             return True
@@ -32,6 +37,23 @@ class RotorControllerAsyncMixin:
     def _on_async_tel(self, tel: Telegram):
         # Asynchrone ACK/NAK aus Polling (wenn Requests ohne pending gesendet werden).
         if not self._tel_dst_allowed(tel):
+            return
+        # SETPOSDG an unsere Slave-ID: Zielwinkel steht in params (nicht in ACK).
+        # Kein Filter src!=master_id: Auf dem Bus kann dieselbe Master-ID wie unsere
+        # konfigurierte vorkommen (anderes Gerät); sonst würde der Soll nie gesetzt.
+        cmd_u = str(tel.cmd or "").strip().upper()
+        if cmd_u == "SETPOSDG":
+            try:
+                dst = int(tel.dst)
+                saz = int(self.slave_az)
+                sel = int(self.slave_el)
+                if dst == saz or dst == sel:
+                    self._apply_local_state_for_ui_command(dst, "SETPOSDG", tel.params)
+                    ax = self.az if dst == saz else self.el
+                    ax.online = True
+                    ax.last_rx_ts = time.time()
+            except Exception:
+                pass
             return
         try:
             axis_state: AxisState | None = None
@@ -128,7 +150,15 @@ class RotorControllerAsyncMixin:
                 # SETPOSDG-Bestätigung (z. B. anderer Master mit separater Controller-ID)
                 if tel.cmd.startswith("ACK_SETPOSDG"):
                     try:
-                        self._apply_local_state_for_ui_command(int(tel.src), "SETPOSDG", tel.params)
+                        # ACK-Parameter ist typischerweise "1" (übernommen), nicht der Zielwinkel.
+                        # Ziel setzen wir über mitgeschnittenes SETPOSDG; hier nur Bewegung spiegeln.
+                        p0 = str(tel.params).strip().split(";")[0]
+                        try:
+                            ok = int(float(p0.replace(",", "."))) != 0
+                        except Exception:
+                            ok = True
+                        if ok:
+                            axis_state.moving = True
                     except Exception:
                         pass
                     axis_state.last_rx_ts = time.time()

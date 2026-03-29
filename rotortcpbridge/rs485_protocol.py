@@ -15,6 +15,9 @@ from dataclasses import dataclass
 
 NUM_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 
+# RS485: Broadcast-Ziel (alle Teilnehmer), z. B. SETASELECT
+BROADCAST_DST = 255
+
 
 @dataclass
 class Telegram:

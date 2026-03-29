@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Callable, Optional
 
-from .rs485_protocol import build, Telegram
+from .rs485_protocol import BROADCAST_DST, build, Telegram
 from .hardware_client import HardwareClient, HwRequest
 from .rotor_model import AxisState
 
@@ -108,6 +108,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         # Callback: wird nach jedem erfolgreichen SETANTOFF-ACK aufgerufen (z.B. Kompassfenster-Refresh)
         self.on_antenna_offsets_changed: Optional[Callable[[], None]] = None
         self.on_antenna_angles_changed: Optional[Callable[[], None]] = None
+        # RS485-Broadcast SETASELECT (DST 255): arg = Antenne 1–3 (Hintergrund-Thread → UI per QTimer marshallen)
+        self.on_setaselect_from_bus: Optional[Callable[[int], None]] = None
         # Callback: wird aufgerufen, wenn SETREF kein ACK erhält (Timeout/NAK). arg=Achsname "AZ"/"EL".
         # Wichtig: wird aus einem Hintergrund-Thread aufgerufen → UI muss QTimer.singleShot nutzen.
         self.on_ref_start_failed: Optional[Callable[[str], None]] = None
@@ -431,6 +433,18 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
     def build_line(self, dst: int, cmd: str, params: str) -> str:
         """RS485-Telegramm mit aktueller Master-ID erzeugen."""
         return build(int(self.master_id), int(dst), str(cmd).strip(), str(params))
+
+    def broadcast_set_aselect(self, antenna_id_1_to_3: int) -> None:
+        """Broadcast (DST 255): gewählte Antenne 1–3 melden (SETASELECT). Keine Antwort erwartet."""
+        try:
+            n = int(antenna_id_1_to_3)
+            if n < 1 or n > 3:
+                return
+        except Exception:
+            return
+        line = build(int(self.master_id), int(BROADCAST_DST), "SETASELECT", str(n))
+        # Direkt senden: Worker blockiert die Queue bei ausstehendem Poll-ACK
+        self.hw.send_line_fire_and_forget(line)
 
     def send_ui_command(
         self,

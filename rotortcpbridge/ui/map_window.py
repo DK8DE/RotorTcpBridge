@@ -487,8 +487,9 @@ class MapWindow(QDialog):
         self._cb_antenna.blockSignals(False)
 
     def sync_antenna_from_external(self, idx: int) -> None:
-        """Kompass/Bridge: Dropdown an cfg anpassen und Karte aktualisieren."""
-        _ = idx
+        """Kompass/Bridge/RS485: Index 0–2 in cfg schreiben, Dropdown und Karte aktualisieren."""
+        idx = max(0, min(2, int(idx)))
+        self.cfg.setdefault("ui", {})["compass_antenna"] = idx
         self._refresh_antenna_dropdown()
         self._refresh_map()
 

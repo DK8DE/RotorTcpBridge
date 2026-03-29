@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from .rs485_protocol import Telegram
+from .rs485_protocol import BROADCAST_DST, Telegram
 from .rotor_model import AxisState
 from .rotor_parse_utils import parse_float, parse_float_any, parse_int
 
@@ -29,6 +29,9 @@ class RotorControllerAsyncMixin:
             cmd_u = str(tel.cmd or "").strip().upper()
             if cmd_u == "SETPOSDG" and (d == saz or d == sel):
                 return True
+            # Broadcast: gewählte Antenne (alle Teilnehmer)
+            if cmd_u == "SETASELECT" and d == int(BROADCAST_DST):
+                return True
             return False
         except Exception:
             return True
@@ -38,10 +41,22 @@ class RotorControllerAsyncMixin:
         # Asynchrone ACK/NAK aus Polling (wenn Requests ohne pending gesendet werden).
         if not self._tel_dst_allowed(tel):
             return
+        cmd_u = str(tel.cmd or "").strip().upper()
+        # Broadcast SETASELECT → UI (Kompass/Karte)
+        if cmd_u == "SETASELECT" and int(tel.dst) == int(BROADCAST_DST):
+            # Checksumme nicht zwingend: Fremdgerät / Sniffer kann leicht abweichen
+            try:
+                n = parse_int(str(tel.params).strip().split(";")[0])
+                if n is not None and 1 <= n <= 3:
+                    fn = getattr(self, "on_setaselect_from_bus", None)
+                    if callable(fn):
+                        fn(int(n))
+            except Exception:
+                pass
+            return
         # SETPOSDG an unsere Slave-ID: Zielwinkel steht in params (nicht in ACK).
         # Kein Filter src!=master_id: Auf dem Bus kann dieselbe Master-ID wie unsere
         # konfigurierte vorkommen (anderes Gerät); sonst würde der Soll nie gesetzt.
-        cmd_u = str(tel.cmd or "").strip().upper()
         if cmd_u == "SETPOSDG":
             try:
                 dst = int(tel.dst)

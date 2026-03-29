@@ -335,8 +335,14 @@ class MainWindow(QMainWindow):
             on_asnearest_select_cb=self._on_map_asnearest_select,
             on_map_page_ready_cb=self._on_map_page_ready,
         )
+        # Broadcast zuerst: Sync-Slots dürfen den TX nicht verhindern; Fire-and-Forget ist separat
+        self._antenna_bridge.selection_changed.connect(self._on_antenna_broadcast_aselect)
         self._antenna_bridge.selection_changed.connect(self._compass_win.sync_antenna_from_external)
         self._antenna_bridge.selection_changed.connect(self._map_win.sync_antenna_from_external)
+        self._antenna_bridge.setaselect_from_bus.connect(self._apply_setaselect_from_bus_ui)
+        self.ctrl.on_setaselect_from_bus = (
+            lambda n: self._antenna_bridge.setaselect_from_bus.emit(int(n))
+        )
         self._settings_win = SettingsWindow(
             self.cfg,
             self.ctrl,
@@ -535,8 +541,13 @@ class MainWindow(QMainWindow):
                 self._antenna_bridge.selection_changed.disconnect()
             except TypeError:
                 pass
+            self._antenna_bridge.selection_changed.connect(self._on_antenna_broadcast_aselect)
             self._antenna_bridge.selection_changed.connect(self._compass_win.sync_antenna_from_external)
             self._antenna_bridge.selection_changed.connect(self._map_win.sync_antenna_from_external)
+            # setaselect_from_bus bleibt an derselben Bridge verbunden (nur Callback am Controller setzen)
+            self.ctrl.on_setaselect_from_bus = (
+                lambda n: self._antenna_bridge.setaselect_from_bus.emit(int(n))
+            )
             self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
             self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
             self._warnings_errors_win = WarningsErrorsWindow(self.ctrl, parent=None)
@@ -730,6 +741,35 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_compass_win") or self._compass_win is None:
             return
         self._compass_win.set_aswatch_marker_provider(lambda: self._aswatch_markers_last)
+
+    def _on_antenna_broadcast_aselect(self, idx: int) -> None:
+        """Kompass/Karte: Antennenwechsel → RS485-Broadcast SETASELECT (Antenne 1–3)."""
+        try:
+            self.ctrl.broadcast_set_aselect(int(idx) + 1)
+        except Exception:
+            pass
+
+    def _apply_setaselect_from_bus_ui(self, antenna_id_1_to_3: int) -> None:
+        """Antenne 1–3 aus Bus übernehmen; cfg + Kompass/Karte, kein selection_changed (kein Echo)."""
+        try:
+            idx = max(0, min(2, int(antenna_id_1_to_3) - 1))
+            ui = self.cfg.setdefault("ui", {})
+            if int(ui.get("compass_antenna", 0)) == idx:
+                return
+            ui["compass_antenna"] = idx
+            try:
+                if self.save_cfg_cb:
+                    self.save_cfg_cb(self.cfg)
+            except Exception:
+                pass
+            cw = getattr(self, "_compass_win", None)
+            if cw is not None:
+                cw.sync_antenna_from_external(idx)
+            mw = getattr(self, "_map_win", None)
+            if mw is not None:
+                mw.sync_antenna_from_external(idx)
+        except Exception:
+            pass
 
     @staticmethod
     def _bring_tool_window_to_front(w: QWidget) -> None:

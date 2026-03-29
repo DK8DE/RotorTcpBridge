@@ -259,8 +259,9 @@ class CompassWindow(QDialog):
         self.cb_antenna.blockSignals(False)
 
     def sync_antenna_from_external(self, idx: int) -> None:
-        """Andere Fenster / Bridge: gleiche cfg wie Sender — Dropdown und Anzeige anpassen."""
-        _ = idx  # Index steht bereits in cfg
+        """Andere Fenster / Bridge / RS485: Index 0–2 in cfg schreiben und Dropdown aktualisieren."""
+        idx = max(0, min(2, int(idx)))
+        self.cfg.setdefault("ui", {})["compass_antenna"] = idx
         self._refresh_antenna_dropdown()
         self._refresh_after_antenna_changed()
 

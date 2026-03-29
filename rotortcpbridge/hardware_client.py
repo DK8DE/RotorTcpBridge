@@ -59,6 +59,8 @@ class HardwareClient:
         self._rxbuf = b""
         self._pending: Optional[HwRequest] = None
         self._lock = threading.Lock()
+        # Serielle Ausgabe: Worker und UI (Fire-and-Forget) dürfen nicht mischen
+        self._serial_write_lock = threading.Lock()
 
         self.on_async_telegram: Optional[Callable[[Telegram], None]] = None
         # Antworten auf unsere Requests haben DST = eigene Master-ID; andere Master nicht als Pending matchen
@@ -184,13 +186,36 @@ class HardwareClient:
             except Exception:
                 self._ser = None
 
-    def _write(self, data: bytes):
+    def _write_unlocked(self, data: bytes) -> None:
         if self._sock:
             self._sock.sendall(data)
             self._last_tx_any_ts = time.time()
         elif self._ser:
             self._ser.write(data)
             self._last_tx_any_ts = time.time()
+
+    def _write(self, data: bytes):
+        with self._serial_write_lock:
+            self._write_unlocked(data)
+
+    def send_line_fire_and_forget(self, line: str) -> None:
+        """Sofort senden, ohne Worker-Queue und ohne Pending-Wartezeit.
+
+        Nötig z. B. für Broadcasts ohne Antwort: sonst blockiert die TX-Schleife
+        bei ausstehendem Poll-ACK und das Telegramm bleibt in der Queue.
+        """
+        if not self.is_connected():
+            return
+        s = str(line).strip()
+        if not s:
+            return
+        try:
+            data = s.encode("ascii")
+            self.log.write("TX", s)
+            with self._serial_write_lock:
+                self._write_unlocked(data)
+        except Exception:
+            pass
 
     def _read_some(self) -> bytes:
         if self._sock:
@@ -435,8 +460,8 @@ class HardwareClient:
                 continue
 
             try:
-                # Viele Serial-Server akzeptieren \\n oder \\r\\n; wir schicken \\r\\n für maximale Kompatibilität
-                data = (req.line + "\r\n").encode("ascii")
+                # Nur das Telegramm (#...$), ohne \\r\\n — Protokoll endet mit $
+                data = req.line.encode("ascii")
                 self.log.write("TX", req.line)
                 self._write(data)
                 req.sent_ts = time.time()

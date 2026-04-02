@@ -319,6 +319,7 @@
   "popup.warn_tip": "Tipp: {todo}",
 
   "compass.title": "Kompass",
+  "compass.open_map_tooltip": "Kartenfenster öffnen",
   "compass.ist_prefix": "Ist: ",
   "compass.soll_label": "Soll:",
   "compass.btn_stop_az": "STOP AZ",

@@ -11,6 +11,67 @@ from .rotor_model import AxisState
 from .rotor_parse_utils import parse_int
 
 
+def bins_block_looks_complete(vals: list[int]) -> bool:
+    """12 Strom-Werte je Block: bei Buslast liefert die Firmware oft Null-Padding (siehe Log).
+
+    Ohne diese Prüfung landen Nullen in der Heatmap und die Auto-Farbskala wird unbrauchbar.
+    """
+    if len(vals) != 12:
+        return False
+    hi = max(vals)
+    if hi == 0:
+        return True
+    leading = 0
+    for v in vals:
+        if v == 0:
+            leading += 1
+        else:
+            break
+    if leading >= 6 and hi > 50:
+        return False
+    trailing = 0
+    for v in reversed(vals):
+        if v == 0:
+            trailing += 1
+        else:
+            break
+    if trailing >= 3 and hi > 50:
+        return False
+    for i in range(1, 11):
+        if vals[i] == 0 and vals[i - 1] > 50 and vals[i + 1] > 50:
+            return False
+    if sum(1 for v in vals if v == 0) >= 6 and hi > 50:
+        return False
+    return True
+
+
+def merge_strom_bin_block(
+    bins: list[int],
+    parts: list[str],
+    start_val: int,
+    count_val: int,
+) -> tuple[bool, bool]:
+    """Schreibt Rohwerte in ``bins`` [0..71].
+
+    Rückgabe ``(success, plausible)``: success=False nur bei Parse-Fehler.
+    plausible=False = Null-Padding/Lücken (trotzdem geschrieben, UI soll Daten sehen).
+    """
+    if count_val < 1 or count_val > 12 or len(parts) < 3 + count_val:
+        return False, False
+    vals: list[int] = []
+    for i in range(count_val):
+        v = parse_int(parts[3 + i])
+        if v is None:
+            return False, False
+        vals.append(int(v))
+    plausible = bins_block_looks_complete(vals)
+    for i, v in enumerate(vals):
+        j = start_val + i
+        if 0 <= j < 72:
+            bins[j] = v
+    return True, plausible
+
+
 class _RotorPollingHost:
     """Nur Typannotationen: Instanzattribute setzt ``RotorController.__init__`` (Mixin-Kombination)."""
 
@@ -791,10 +852,14 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     if dir_val is not None and start_val is not None and count_val is not None:
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
-                            for i in range(count_val):
-                                v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
-                                if v is not None and start_val + i < 72:
-                                    bins[start_val + i] = int(v)
+                            ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
+                            if not ok_m:
+                                pass
+                            elif not plausible:
+                                ctrl.log.write(
+                                    "WARN",
+                                    f"AZ GETCALBINS Block {idx + 1}: verdächtige Nullen/Lücken, Rohwerte übernommen",
+                                )
             ctrl._cal_bins_received_az = idx + 1
             ctrl._send_next_cal_block(dst, axis_state, idx + 1)
 
@@ -859,10 +924,14 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     if dir_val is not None and start_val is not None and count_val is not None:
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
-                            for i in range(count_val):
-                                v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
-                                if v is not None and start_val + i < 72:
-                                    bins[start_val + i] = int(v)
+                            ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
+                            if not ok_m:
+                                pass
+                            elif not plausible:
+                                ctrl.log.write(
+                                    "WARN",
+                                    f"EL GETCALBINS Block {idx + 1}: verdächtige Nullen/Lücken, Rohwerte übernommen",
+                                )
             ctrl._send_next_cal_block_el(dst, axis_state, idx + 1)
 
         prio = getattr(self, "_cal_bins_priority_el", 3)
@@ -892,7 +961,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
     def _send_next_live_block(self, dst: int, axis_state: AxisState, idx: int) -> None:
         if idx >= len(self._CAL_LIVE_BLOCKS):
-            # Alle 12 Blöcke empfangen: Temp in axis_state übernehmen
+            # Alle 12 Blöcke empfangen: Temp in axis_state übernehmen (Langzeit / GETLIVEBINS)
             if self._live_bins_temp_cw and self._live_bins_temp_ccw:
                 axis_state.live_bins_cw = list(self._live_bins_temp_cw)
                 axis_state.live_bins_ccw = list(self._live_bins_temp_ccw)
@@ -921,10 +990,14 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     if dir_val is not None and start_val is not None and count_val is not None:
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
-                            for i in range(count_val):
-                                v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
-                                if v is not None and start_val + i < 72:
-                                    bins[start_val + i] = int(v)
+                            ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
+                            if not ok_m:
+                                pass
+                            elif not plausible:
+                                ctrl.log.write(
+                                    "WARN",
+                                    f"AZ GETLIVEBINS Block {idx + 1}: verdächtige Nullen/Lücken, Rohwerte übernommen",
+                                )
             ctrl._send_next_live_block(dst, axis_state, idx + 1)
 
         prio = getattr(self, "_live_bins_priority_az", 3)
@@ -980,10 +1053,14 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     if dir_val is not None and start_val is not None and count_val is not None:
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
-                            for i in range(count_val):
-                                v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
-                                if v is not None and start_val + i < 72:
-                                    bins[start_val + i] = int(v)
+                            ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
+                            if not ok_m:
+                                pass
+                            elif not plausible:
+                                ctrl.log.write(
+                                    "WARN",
+                                    f"EL GETLIVEBINS Block {idx + 1}: verdächtige Nullen/Lücken, Rohwerte übernommen",
+                                )
             ctrl._send_next_live_block_el(dst, axis_state, idx + 1)
 
         prio = getattr(self, "_live_bins_priority_el", 3)
@@ -1046,10 +1123,14 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     if dir_val is not None and start_val is not None and count_val is not None:
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
-                            for i in range(count_val):
-                                v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
-                                if v is not None and start_val + i < 72:
-                                    bins[start_val + i] = int(v)
+                            ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
+                            if not ok_m:
+                                pass
+                            elif not plausible:
+                                ctrl.log.write(
+                                    "WARN",
+                                    f"AZ GETACCBINS Block {idx + 1}: verdächtige Nullen/Lücken, Rohwerte übernommen",
+                                )
             ctrl._send_next_acc_block(dst, axis_state, idx + 1)
 
         prio = getattr(self, "_acc_bins_priority_az", 3)
@@ -1110,10 +1191,14 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     if dir_val is not None and start_val is not None and count_val is not None:
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
-                            for i in range(count_val):
-                                v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
-                                if v is not None and start_val + i < 72:
-                                    bins[start_val + i] = int(v)
+                            ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
+                            if not ok_m:
+                                pass
+                            elif not plausible:
+                                ctrl.log.write(
+                                    "WARN",
+                                    f"EL GETACCBINS Block {idx + 1}: verdächtige Nullen/Lücken, Rohwerte übernommen",
+                                )
             ctrl._send_next_acc_block_el(dst, axis_state, idx + 1)
 
         prio = getattr(self, "_acc_bins_priority_el", 3)

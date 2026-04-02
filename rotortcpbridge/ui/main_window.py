@@ -323,7 +323,12 @@ class MainWindow(QMainWindow):
 
         self._log_win = LogWindow(self.logbuf, parent=None)
         self._compass_win = CompassWindow(
-            self.cfg, self.ctrl, self.save_cfg_cb, parent=None, antenna_bridge=self._antenna_bridge
+            self.cfg,
+            self.ctrl,
+            self.save_cfg_cb,
+            parent=None,
+            antenna_bridge=self._antenna_bridge,
+            open_map_cb=self._open_map,
         )
         self._attach_compass_aswatch_provider()
         self._map_win = MapWindow(
@@ -497,6 +502,11 @@ class MainWindow(QMainWindow):
                 self._compass_win.sync_heatmap_controls_from_cfg()
         except Exception:
             pass
+        try:
+            if hasattr(self, "_compass_win") and hasattr(self._compass_win, "retranslate_ui"):
+                self._compass_win.retranslate_ui()
+        except Exception:
+            pass
 
     def _rebuild_all_windows(self):
         """Alle Fenster schließen und neu erstellen (nach Sprachänderung)."""
@@ -525,7 +535,12 @@ class MainWindow(QMainWindow):
 
             self._log_win = LogWindow(self.logbuf, parent=None)
             self._compass_win = CompassWindow(
-                self.cfg, self.ctrl, self.save_cfg_cb, parent=None, antenna_bridge=self._antenna_bridge
+                self.cfg,
+                self.ctrl,
+                self.save_cfg_cb,
+                parent=None,
+                antenna_bridge=self._antenna_bridge,
+                open_map_cb=self._open_map,
             )
             self._attach_compass_aswatch_provider()
             self._map_win = MapWindow(

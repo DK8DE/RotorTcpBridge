@@ -693,6 +693,45 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.stop_az()
         self.stop_el()
 
+    def hold_az_at_current_pos(self) -> None:
+        """Statt STOP: SETPOSDG auf aktuelle Ist-Position (z. B. PST/HW-Stop), damit Ziel = Ist für Clients."""
+        if not self.enable_az:
+            return
+        self._abort_stats_fetch_and_cooldown()
+        try:
+            d10 = int(self.az.pos_d10)
+        except Exception:
+            return
+        self.az.target_d10 = d10
+        self.az.last_set_sent_target_d10 = d10
+        self.az.last_set_sent_ts = time.time()
+        self.az.moving = False
+        if not self.az.referenced:
+            return
+        self._send_setpos(self.slave_az, d10, axis="AZ")
+
+    def hold_el_at_current_pos(self) -> None:
+        """Wie hold_az_at_current_pos für EL."""
+        if not self.enable_el:
+            return
+        self._abort_stats_fetch_and_cooldown()
+        try:
+            d10 = int(self.el.pos_d10)
+        except Exception:
+            return
+        self.el.target_d10 = d10
+        self.el.last_set_sent_target_d10 = d10
+        self.el.last_set_sent_ts = time.time()
+        self.el.moving = False
+        if not self.el.referenced:
+            return
+        self._send_setpos(self.slave_el, d10, axis="EL")
+
+    def hold_all_at_current_pos(self) -> None:
+        """Beide Achsen: aktuelle Position als SETPOSDG (für PST-Stop von HW/Remote)."""
+        self.hold_az_at_current_pos()
+        self.hold_el_at_current_pos()
+
     def stop_az(self):
         if not self.enable_az:
             return

@@ -13,6 +13,9 @@ try:
 except Exception:
     serial = None
 
+# Nach erstem fehlerhaften RX höchstens so viele erneute Sends desselben Telegramms
+_MAX_CHECKSUM_RETRIES = 2
+
 
 @dataclass
 class HwRequest:
@@ -23,6 +26,7 @@ class HwRequest:
     sent_ts: float = 0.0
     priority: int = 5  # 0 = höchste Priorität (UI), 5 = normal (Polling)
     dont_disconnect_on_timeout: bool = False  # True: bei Timeout nicht trennen (z.B. für Retry)
+    checksum_retries_done: int = 0  # fehlerhafte CS → erneut senden (siehe Reader)
 
 
 class HardwareClient:
@@ -367,17 +371,55 @@ class HardwareClient:
                         with self._lock:
                             pending = self._pending
                         if pending and _matches_pending(tel, pending):
-                            with self._lock:
-                                self._pending = None
-                            if pending.on_done:
-                                try:
-                                    pending.on_done(tel, None)
-                                except Exception as _e:
-                                    pass
+                            if tel.ok:
+                                with self._lock:
+                                    self._pending = None
+                                if pending.on_done:
+                                    try:
+                                        pending.on_done(tel, None)
+                                    except Exception as _e:
+                                        pass
+                            else:
+                                # Checksumme passt nicht: gleiche Anfrage begrenzt erneut senden
+                                pending.checksum_retries_done += 1
+                                if pending.checksum_retries_done <= _MAX_CHECKSUM_RETRIES:
+                                    self.log.write(
+                                        "WARN",
+                                        f"RX Checksumme ungültig, erneut senden ({pending.checksum_retries_done}/{_MAX_CHECKSUM_RETRIES})",
+                                    )
+                                    try:
+                                        data = pending.line.encode("ascii")
+                                        self._write(data)
+                                        pending.sent_ts = time.time()
+                                    except Exception:
+                                        with self._lock:
+                                            self._pending = None
+                                        if pending.on_done:
+                                            try:
+                                                pending.on_done(None, "bad_checksum_resend_error")
+                                            except Exception:
+                                                pass
+                                else:
+                                    # Nach Retries trotzdem auswerten (wie vor CS-Retry), sonst blockiert
+                                    # die Queue / Folgeabfragen (z. B. GETACCBINS) unnötig.
+                                    with self._lock:
+                                        self._pending = None
+                                    self.log.write(
+                                        "WARN",
+                                        "RX Checksumme nach Retries noch ungültig — Telegramm wird trotzdem ausgewertet",
+                                    )
+                                    if pending.on_done:
+                                        try:
+                                            pending.on_done(tel, None)
+                                        except Exception as _e:
+                                            pass
                         else:
                             if self.on_async_telegram:
                                 try:
-                                    self.on_async_telegram(tel)
+                                    cmd_u = (tel.cmd or "").strip().upper()
+                                    # SETASELECT (Broadcast): Fremdgeräte können CS abweichen (s. rotor_controller_async)
+                                    if tel.ok or "SETASELECT" in cmd_u:
+                                        self.on_async_telegram(tel)
                                 except Exception:
                                     pass
 
@@ -461,6 +503,7 @@ class HardwareClient:
 
             try:
                 # Nur das Telegramm (#...$), ohne \\r\\n — Protokoll endet mit $
+                req.checksum_retries_done = 0
                 data = req.line.encode("ascii")
                 self.log.write("TX", req.line)
                 self._write(data)

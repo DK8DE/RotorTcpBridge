@@ -32,7 +32,15 @@ from .statistic_compass_widget import parse_heatmap_scale
 class CompassWindow(QDialog):
     """Gemeinsames Kompass-Fenster für AZ/EL."""
 
-    def __init__(self, cfg: dict, controller, save_cfg_cb, parent=None, antenna_bridge=None):
+    def __init__(
+        self,
+        cfg: dict,
+        controller,
+        save_cfg_cb,
+        parent=None,
+        antenna_bridge=None,
+        open_map_cb: Optional[Callable[[], None]] = None,
+    ):
         super().__init__(parent)
         self.cfg = cfg
         self.ctrl = controller
@@ -56,6 +64,9 @@ class CompassWindow(QDialog):
         # AZ Standzeit-Ring (nur Session): je Antenne (0–2) eigene Sektorliste, parallel geführt
         self._dwell_az_seconds_per_ant: list[list[float]] = [[], [], []]
         self._dwell_prev_mono: Optional[float] = None
+        # Bei SETPOSDG o.ä.: target_d10 ändert sich → Soll-Eingabe auch bei Fokus nachziehen
+        self._compass_last_bus_target_d10_az: Optional[int] = None
+        self._compass_last_bus_target_d10_el: Optional[int] = None
 
         root = QVBoxLayout(self)
 
@@ -77,6 +88,14 @@ class CompassWindow(QDialog):
         az_antenna_row = QHBoxLayout()
         az_antenna_row.addStretch(1)
         az_antenna_row.addWidget(self.cb_antenna)
+        self._btn_open_map: Optional[QPushButton] = None
+        if open_map_cb is not None:
+            self._btn_open_map = QPushButton(t("main.btn_map"))
+            self._btn_open_map.setAutoDefault(False)
+            self._btn_open_map.setDefault(False)
+            self._btn_open_map.setToolTip(t("compass.open_map_tooltip"))
+            self._btn_open_map.clicked.connect(open_map_cb)
+            az_antenna_row.addWidget(self._btn_open_map)
         az_antenna_row.addStretch(1)
         az_l.addLayout(az_antenna_row)
 
@@ -733,6 +752,7 @@ class CompassWindow(QDialog):
             self.ctrl.set_el_deg(rotor_el, force=True)
         except Exception:
             pass
+        self._sync_compass_bus_cache_from_ctrl()
 
     @Slot()
     def _on_fav_save(self) -> None:
@@ -818,6 +838,13 @@ class CompassWindow(QDialog):
         slave_el = self.cfg.get("rotor_bus", {}).get("slave_el", "?")
         self.gb_az.setTitle(f"AZ ID:{slave_az}")
         self.gb_el.setTitle(f"EL ID:{slave_el}")
+
+    def retranslate_ui(self) -> None:
+        """Sprachwechsel: Fenstertitel und Karten-Button."""
+        self.setWindowTitle(t("compass.title"))
+        if self._btn_open_map is not None:
+            self._btn_open_map.setText(t("main.btn_map"))
+            self._btn_open_map.setToolTip(t("compass.open_map_tooltip"))
 
     def refresh_visibility(self) -> None:
         az_on = bool(getattr(self.ctrl, "enable_az", True))
@@ -1034,11 +1061,32 @@ class CompassWindow(QDialog):
         if tgt is not None:
             tgt_display = wrap_deg(tgt + off_az)
             self.az_compass.set_target_deg(tgt_display)
+            desired_txt = f"{tgt_display:.1f}"
+            try:
+                bus_d10 = int(getattr(self.ctrl.az, "target_d10", 0))
+            except Exception:
+                bus_d10 = 0
+            bus_changed = (
+                self._compass_last_bus_target_d10_az is None
+                or bus_d10 != self._compass_last_bus_target_d10_az
+            )
+            update_text = False
             if not self.ed_az_soll.hasFocus():
-                self.ed_az_soll.setText(f"{tgt_display:.1f}")
+                update_text = True
+            elif bus_changed and not self._soll_line_matches_display_deg(
+                self.ed_az_soll, float(tgt_display), is_az=True
+            ):
+                update_text = True
+            if update_text:
+                had_focus = self.ed_az_soll.hasFocus()
+                self.ed_az_soll.setText(desired_txt)
+                if had_focus:
+                    self.ed_az_soll.selectAll()
+            self._compass_last_bus_target_d10_az = bus_d10
         else:
             if not self.ed_az_soll.hasFocus():
                 self.ed_az_soll.clear()
+            self._compass_last_bus_target_d10_az = None
 
         # Wind als letztes aktualisieren (nach Pfeile, Richtungen, Antenne)
         self.az_compass.set_wind_kmh(wind_kmh)
@@ -1144,11 +1192,32 @@ class CompassWindow(QDialog):
         if tgt is not None:
             tgt_clamped = clamp_el(tgt)
             self.el_compass.set_target_deg(tgt_clamped)
+            desired_txt = f"{tgt_clamped:.1f}"
+            try:
+                bus_d10 = int(getattr(self.ctrl.el, "target_d10", 0))
+            except Exception:
+                bus_d10 = 0
+            bus_changed = (
+                self._compass_last_bus_target_d10_el is None
+                or bus_d10 != self._compass_last_bus_target_d10_el
+            )
+            update_text = False
             if not self.ed_el_soll.hasFocus():
-                self.ed_el_soll.setText(f"{tgt_clamped:.1f}")
+                update_text = True
+            elif bus_changed and not self._soll_line_matches_display_deg(
+                self.ed_el_soll, float(tgt_clamped), is_az=False
+            ):
+                update_text = True
+            if update_text:
+                had_focus = self.ed_el_soll.hasFocus()
+                self.ed_el_soll.setText(desired_txt)
+                if had_focus:
+                    self.ed_el_soll.selectAll()
+            self._compass_last_bus_target_d10_el = bus_d10
         else:
             if not self.ed_el_soll.hasFocus():
                 self.ed_el_soll.clear()
+            self._compass_last_bus_target_d10_el = None
         try:
             self.el_compass.set_ref_led_state(bool(self.ctrl.el.referenced))
             self.el_compass.set_moving_led_state(bool(self.ctrl.el.moving))
@@ -1171,6 +1240,33 @@ class CompassWindow(QDialog):
             return float(s)
         except ValueError:
             return None
+
+    @staticmethod
+    def _short_deg_diff(a: float, b: float) -> float:
+        d = abs(a - b) % 360.0
+        return min(d, 360.0 - d)
+
+    def _soll_line_matches_display_deg(
+        self, le: QLineEdit, display_deg: float, *, is_az: bool
+    ) -> bool:
+        """True wenn Eingabe bereits dem angezeigten Soll entspricht (setText würde nur Markierung zerstören)."""
+        v = self._parse_deg_input(le.text())
+        if v is None:
+            return False
+        if is_az:
+            return self._short_deg_diff(v, display_deg) < 0.11
+        return abs(v - display_deg) < 0.11
+
+    def _sync_compass_bus_cache_from_ctrl(self) -> None:
+        """Nach lokalem Setzen von target_d10: Tick erkennt kein falsches „Bus geändert“."""
+        try:
+            self._compass_last_bus_target_d10_az = int(getattr(self.ctrl.az, "target_d10", 0))
+        except Exception:
+            pass
+        try:
+            self._compass_last_bus_target_d10_el = int(getattr(self.ctrl.el, "target_d10", 0))
+        except Exception:
+            pass
 
     @Slot()
     def _on_az_soll_entered(self) -> None:
@@ -1210,6 +1306,10 @@ class CompassWindow(QDialog):
             self.ctrl.set_az_deg(rotor_deg, force=True)
         except Exception:
             pass
+        try:
+            self._compass_last_bus_target_d10_az = int(getattr(self.ctrl.az, "target_d10", 0))
+        except Exception:
+            pass
 
     @Slot(float)
     def _on_target_picked_el(self, deg: float) -> None:
@@ -1232,6 +1332,10 @@ class CompassWindow(QDialog):
             self.ctrl.set_el_deg(rotor_deg, force=True)
         except Exception:
             pass
+        try:
+            self._compass_last_bus_target_d10_el = int(getattr(self.ctrl.el, "target_d10", 0))
+        except Exception:
+            pass
 
     @Slot()
     def _on_stop_az(self) -> None:
@@ -1242,6 +1346,7 @@ class CompassWindow(QDialog):
             self._target_az = wrap_deg(cur)  # Soll springt auf Position bei STOP
             # Controller mitschreiben, damit keine andere Stelle alte Soll-Position zurückholt
             self.ctrl.az.target_d10 = int(round(self._target_az * 10.0))
+            self._compass_last_bus_target_d10_az = int(self.ctrl.az.target_d10)
         except Exception:
             pass
         try:
@@ -1258,6 +1363,7 @@ class CompassWindow(QDialog):
             self._target_el = clamp_el(cur)  # Soll springt auf Position bei STOP
             # Controller mitschreiben, damit keine andere Stelle alte Soll-Position zurückholt
             self.ctrl.el.target_d10 = int(round(self._target_el * 10.0))
+            self._compass_last_bus_target_d10_el = int(self.ctrl.el.target_d10)
         except Exception:
             pass
         try:

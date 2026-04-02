@@ -302,11 +302,11 @@ class UdpPstRotator:
                 self.log.write("WARN", f"UDP PST-Rotator set_az_deg: {e}")
 
         elif tag in ("STOP", "PARK"):
-            self.log.write("UDP", f"PST {tag} von {sender} → Rotor stoppen")
+            self.log.write("UDP", f"PST {tag} von {sender} → SETPOS auf Ist-Position (statt STOP)")
             try:
-                self.ctrl.stop_all()
+                self.ctrl.hold_all_at_current_pos()
             except Exception as e:
-                self.log.write("WARN", f"UDP PST-Rotator stop_all: {e}")
+                self.log.write("WARN", f"UDP PST-Rotator hold_all_at_current_pos: {e}")
 
         elif tag in _KNOWN_SILENT:
             self.log.write("UDP", f"PST {tag}={val} von {sender} (nicht implementiert, ignoriert)")

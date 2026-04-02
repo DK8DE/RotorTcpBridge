@@ -88,6 +88,18 @@ def _t_to_heatmap_color(t: float) -> QColor:
     return QColor(max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
 
 
+# Auto-Skala: Mindestbreite, damit kleine Mess-/Poll-Schwankungen nicht ständig die Farben umsortieren
+_AUTO_HEATMAP_MIN_SPAN = 32
+
+
+def _expanded_auto_range_int(v_min: int, v_max: int, min_span: int = _AUTO_HEATMAP_MIN_SPAN) -> tuple[float, float]:
+    """Symmetrisch um die Mitte auf mindestens ``min_span`` aufweiten (nur wenn v_max > v_min)."""
+    mid = 0.5 * float(v_min + v_max)
+    raw = float(v_max - v_min)
+    half = max(0.5 * raw, 0.5 * float(min_span))
+    return mid - half, mid + half
+
+
 def _v_to_t_scaled(v: int, scale: HeatmapScale) -> float:
     """Wert → 0…1 für Farbverlauf: unterhalb norm_min bläulich, Normbereich grünlich, oberhalb rötlich."""
     tb, nm, nx, tr = scale
@@ -162,9 +174,12 @@ def paint_bins_heatmap_ring(
             return _t_to_heatmap_color(_v_to_t_scaled(int(v), scale))
         if v_max <= v_min:
             return QColor(0, 180, 120)
-        # Skala v_min…v_max: t=0 → blau, t=1 → rot (min/max aus Bins)
-        span = max(v_max - v_min, 1)
-        t = max(0.0, min(1.0, (v - v_min) / span))
+        # Auto: Min/Max mit Mindestspanne, sonst flackert die ganze Karte bei ruhendem Rotor (nur Rauschen)
+        v_lo, v_hi = _expanded_auto_range_int(v_min, v_max)
+        span = v_hi - v_lo
+        if span <= 0:
+            return QColor(0, 180, 120)
+        t = max(0.0, min(1.0, (float(v) - v_lo) / span))
         return _t_to_heatmap_color(t)
 
     painter.setPen(Qt.PenStyle.NoPen)

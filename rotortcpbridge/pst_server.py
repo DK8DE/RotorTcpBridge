@@ -66,12 +66,13 @@ class PstAxisServer:
                 self.ctrl.set_el_from_spid(cmd.el_d10)
 
     def _apply_stop(self):
+        # Kein STOP-Befehl: SETPOSDG auf aktuelle Position, damit SPID-/Windows-Client den Sollstand mitbekommt
         if self.axis == "az":
             if bool(getattr(self.ctrl, "enable_az", True)):
-                self.ctrl.stop_az()
+                self.ctrl.hold_az_at_current_pos()
         else:
             if bool(getattr(self.ctrl, "enable_el", True)):
-                self.ctrl.stop_el()
+                self.ctrl.hold_el_at_current_pos()
 
     def _loop(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

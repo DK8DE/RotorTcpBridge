@@ -87,8 +87,8 @@ ERROR_DETAILS_LEGACY: dict[int, tuple[str, str, str, str]] = {
     0: ("SE_NONE", "Kein Fehler", "-", "-"),
     10: (
         "SE_TIMEOUT",
-        "Deadman/Keepalive Timeout",
-        "Master sendet zu lange keine Befehle während Bewegung.",
+        "Deadman/Keepalive (Fehlercode 10 aus GETERR — kein App-Bus-Timeout)",
+        "Firmware: zu lange keine gültigen Befehle während Bewegung; Log kann trotzdem Telegramme zeigen.",
         "SETREF (quittiert) / Deadman anpassen",
     ),
     11: (
@@ -134,33 +134,10 @@ ERRORS = {k: (v[0], v[1]) for k, v in ERROR_DETAILS_LEGACY.items()}
 
 
 def error_info(code: int) -> tuple[str, str]:
-    """Fehlercode -> (Name, Text) für UI (Popup + Statusfeld)."""
-    try:
-        c = int(code)
-    except Exception:
-        c = 0
+    """Fehlercode -> (Name, Text) für UI (Popup + Statusfeld). Texte aus de/en-Locales."""
+    from .error_popup_text import error_popup_text
 
-    doc = ERROR_DETAILS_DOC.get(c)
-    legacy = ERROR_DETAILS_LEGACY.get(c)
-
-    # Doku bevorzugen, aber Legacy als Zusatz (wenn unterschiedlich) anzeigen
-    if doc and legacy and doc[0] != legacy[0]:
-        name = f"{doc[0]} (alt: {legacy[0]})"
-        urs, todo, clear = doc[1], doc[2], doc[3]
-        extra = (
-            f"\n\nAlt/Legacy:\nUrsache: {legacy[1]}\nWas tun: {legacy[2]}\nWie löschen: {legacy[3]}"
-        )
-        text = f"Ursache: {urs}\nWas tun: {todo}\nWie löschen: {clear}{extra}"
-        return name, text
-
-    if doc:
-        name, urs, todo, clear = doc
-        return name, f"Ursache: {urs}\nWas tun: {todo}\nWie löschen: {clear}"
-    if legacy:
-        name, urs, todo, clear = legacy
-        return name, f"Ursache: {urs}\nWas tun: {todo}\nWie löschen: {clear}"
-
-    return ("SE_UNKNOWN", "Ursache: Unbekannt\nWas tun: -\nWie löschen: -")
+    return error_popup_text(code)
 
 
 @dataclass

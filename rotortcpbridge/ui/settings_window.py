@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QEventLoop, Qt, QTimer
+from PySide6.QtCore import QEvent, QEventLoop, QMetaObject, Qt, QTimer
 from PySide6.QtGui import QColor, QCloseEvent, QFont, QKeyEvent, QPalette, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -34,7 +35,22 @@ from ..command_catalog import command_specs, format_cmd_tooltip
 from ..ports import list_serial_ports
 from ..i18n import t, load_lang
 from ..net_utils import ipv4_subnet_broadcast_default
+from ..rotor_controller import SYNC_UI_NAK_PREFIX
 from .ui_utils import px_to_dip
+
+
+def _sync_got_ack_value(r: str | None) -> bool:
+    """True nur bei gültigem ACK-Parameter (nicht Timeout None, nicht NAK-Präfix)."""
+    if r is None:
+        return False
+    return not str(r).startswith(SYNC_UI_NAK_PREFIX)
+
+
+def _sync_nak_notimpl(r: str | None) -> bool:
+    """NAK mit NOTIMPL (optionale Befehle nicht in Firmware) — für LED als Bus-OK zählen."""
+    if r is None or not str(r).startswith(SYNC_UI_NAK_PREFIX):
+        return False
+    return "NOTIMPL" in str(r).upper()
 
 
 def _settings_tooltip_html(text: str, max_width_px: int = 360) -> str:
@@ -70,6 +86,9 @@ class SettingsWindow(QDialog):
         self.rebuild_ui_cb = rebuild_ui_cb
         self._map_window = map_window
         self._antenna_giveup_done = False
+        # Nur ein Controller-Bus-Load gleichzeitig (sonst verschachteln sich QEventLoops → doppelte TX)
+        self._controller_load_busy = False
+        self._controller_load_queued = False
 
         self.setWindowTitle(t("settings.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
@@ -459,6 +478,109 @@ class SettingsWindow(QDialog):
         vl_st.addWidget(gb_hm_el)
         vl_st.addStretch(1)
 
+        _chw = cfg.setdefault("controller_hw", {})
+        pg_controller = QWidget()
+        vl_ctrl = QVBoxLayout(pg_controller)
+        _ctrl_pad = px_to_dip(self, 5)
+        vl_ctrl.setContentsMargins(_ctrl_pad, _ctrl_pad, _ctrl_pad, _ctrl_pad)
+        vl_ctrl.setSpacing(10)
+        self.chk_hw_controller_enabled = QCheckBox(t("settings.controller_hw_enable"))
+        self.chk_hw_controller_enabled.setChecked(bool(_chw.get("enabled", True)))
+        self.chk_hw_controller_enabled.setToolTip(t("settings.controller_hw_enable_tooltip"))
+        self.chk_hw_controller_enabled.toggled.connect(self._on_hw_controller_toggled)
+        vl_ctrl.addWidget(self.chk_hw_controller_enabled)
+        self.gb_controller = QGroupBox(t("settings.controller_group"))
+        fl_ctrl = QFormLayout(self.gb_controller)
+        self.sp_controller_id = QSpinBox()
+        self.sp_controller_id.setRange(0, 245)
+        try:
+            self.sp_controller_id.setValue(int(_chw.get("cont_id", 0)))
+        except (TypeError, ValueError):
+            self.sp_controller_id.setValue(0)
+        self.sp_controller_id.setToolTip(t("settings.controller_id_tooltip"))
+        _row_cont_id = QWidget()
+        _lay_cont_id = QHBoxLayout(_row_cont_id)
+        _lay_cont_id.setContentsMargins(0, 0, 0, 0)
+        _lay_cont_id.setSpacing(px_to_dip(self, 8))
+        _lay_cont_id.addWidget(self.sp_controller_id, 0)
+        self.btn_setconidf = QPushButton(t("settings.controller_btn_setconidf"))
+        self.btn_setconidf.setAutoDefault(False)
+        self.btn_setconidf.setDefault(False)
+        self.btn_setconidf.setToolTip(t("settings.controller_setconidf_tooltip"))
+        self.btn_setconidf.clicked.connect(self._on_broadcast_setconidf)
+        _lay_cont_id.addWidget(self.btn_setconidf, 0)
+        self._lbl_controller_led = QLabel()
+        self._lbl_controller_led.setObjectName("controllerReadLed")
+        self._lbl_controller_led.setToolTip(t("settings.controller_led_tooltip"))
+        _led = px_to_dip(self, 12)
+        self._lbl_controller_led.setFixedSize(_led, _led)
+        self._set_controller_led_ok(False)
+        _lay_cont_id.addWidget(self._lbl_controller_led, 0, Qt.AlignmentFlag.AlignVCenter)
+        _lay_cont_id.addStretch(1)
+        fl_ctrl.addRow(t("settings.controller_id"), _row_cont_id)
+        self.ed_cont_ant_1 = QLineEdit(str(_chw.get("ant_name_1", "") or "")[:9])
+        self.ed_cont_ant_1.setMaxLength(9)
+        self.ed_cont_ant_1.setToolTip(t("settings.controller_ant_name_tooltip"))
+        self.ed_cont_ant_2 = QLineEdit(str(_chw.get("ant_name_2", "") or "")[:9])
+        self.ed_cont_ant_2.setMaxLength(9)
+        self.ed_cont_ant_2.setToolTip(t("settings.controller_ant_name_tooltip"))
+        self.ed_cont_ant_3 = QLineEdit(str(_chw.get("ant_name_3", "") or "")[:9])
+        self.ed_cont_ant_3.setMaxLength(9)
+        self.ed_cont_ant_3.setToolTip(t("settings.controller_ant_name_tooltip"))
+        fl_ctrl.addRow(t("settings.controller_ant_name", n=1), self.ed_cont_ant_1)
+        fl_ctrl.addRow(t("settings.controller_ant_name", n=2), self.ed_cont_ant_2)
+        fl_ctrl.addRow(t("settings.controller_ant_name", n=3), self.ed_cont_ant_3)
+        self._controller_name_dirty = [False, False, False]
+        self._controller_pwm_dirty = [False, False]
+        for _i, _ed in enumerate(
+            (self.ed_cont_ant_1, self.ed_cont_ant_2, self.ed_cont_ant_3),
+        ):
+            _ed.textChanged.connect(
+                lambda _=None, idx=_i: self._mark_controller_name_dirty(idx),
+            )
+        self.sp_cont_pwm_slow = QSpinBox()
+        self.sp_cont_pwm_slow.setRange(0, 100)
+        try:
+            self.sp_cont_pwm_slow.setValue(int(_chw.get("slow_pwm", 30)))
+        except (TypeError, ValueError):
+            self.sp_cont_pwm_slow.setValue(30)
+        self.sp_cont_pwm_slow.setToolTip(t("settings.controller_pwm_tooltip"))
+        self.sp_cont_pwm_fast = QSpinBox()
+        self.sp_cont_pwm_fast.setRange(0, 100)
+        try:
+            self.sp_cont_pwm_fast.setValue(int(_chw.get("fast_pwm", 80)))
+        except (TypeError, ValueError):
+            self.sp_cont_pwm_fast.setValue(80)
+        self.sp_cont_pwm_fast.setToolTip(t("settings.controller_pwm_tooltip"))
+        self.sp_cont_pwm_slow.valueChanged.connect(lambda: self._mark_pwm_dirty(0))
+        self.sp_cont_pwm_fast.valueChanged.connect(lambda: self._mark_pwm_dirty(1))
+        fl_ctrl.addRow(t("settings.controller_pwm_slow"), self.sp_cont_pwm_slow)
+        fl_ctrl.addRow(t("settings.controller_pwm_fast"), self.sp_cont_pwm_fast)
+        self.sp_cont_beep_freq = QSpinBox()
+        self.sp_cont_beep_freq.setRange(100, 4000)
+        try:
+            self.sp_cont_beep_freq.setValue(
+                max(100, min(4000, int(_chw.get("speaker_freq_hz", 1000))))
+            )
+        except (TypeError, ValueError):
+            self.sp_cont_beep_freq.setValue(1000)
+        self.sp_cont_beep_freq.setToolTip(t("settings.controller_beep_freq_tooltip"))
+        self.sp_cont_beep_vol = QSpinBox()
+        self.sp_cont_beep_vol.setRange(0, 50)
+        try:
+            self.sp_cont_beep_vol.setValue(max(0, min(50, int(_chw.get("speaker_volume", 50)))))
+        except (TypeError, ValueError):
+            self.sp_cont_beep_vol.setValue(50)
+        self.sp_cont_beep_vol.setToolTip(t("settings.controller_beep_volume_tooltip"))
+        self._controller_beep_dirty = [False, False]
+        self.sp_cont_beep_freq.valueChanged.connect(lambda: self._mark_beep_dirty(0))
+        self.sp_cont_beep_vol.valueChanged.connect(lambda: self._mark_beep_dirty(1))
+        fl_ctrl.addRow(t("settings.controller_beep_freq"), self.sp_cont_beep_freq)
+        fl_ctrl.addRow(t("settings.controller_beep_volume"), self.sp_cont_beep_vol)
+        vl_ctrl.addWidget(self.gb_controller)
+        vl_ctrl.addStretch(1)
+        self._apply_controller_enabled_ui()
+
         self.cb_wind_dir_display = QComboBox()
         self.cb_wind_dir_display.addItem(t("settings.wind_dir_from"), "from")
         self.cb_wind_dir_display.addItem(t("settings.wind_dir_to"), "to")
@@ -745,13 +867,16 @@ class SettingsWindow(QDialog):
         self._settings_stack.addWidget(_scroll_page(pg_ant))
         self._settings_stack.addWidget(_scroll_page(pg_compass))
         self._settings_stack.addWidget(_scroll_page(pg_stats))
+        self._settings_stack.addWidget(_scroll_page(pg_controller))
         self._tab_antenna_index = 2
+        self._tab_controller_index = 5
         for _lbl in (
             t("settings.group_ui"),
             t("settings.group_connection"),
             t("settings.tab_antenna"),
             t("settings.tab_compass"),
             t("settings.tab_statistics"),
+            t("settings.tab_controller"),
         ):
             self._settings_nav.addItem(_lbl)
         self._settings_nav.currentRowChanged.connect(self._on_settings_nav_changed)
@@ -830,6 +955,7 @@ class SettingsWindow(QDialog):
         self._antenna_refresh_timer.start()
         self._antenna_request_timer.start()
         self._antenna_giveup_timer.start()
+        # Controller-Werte nur beim Wechsel auf den Tab „Controller“ laden (nicht zusätzlich beim Öffnen)
         # Snapshot der aktuellen Spinbox-Werte – nur wenn User etwas ändert, wird ins EEPROM geschrieben
         self._snapshot_antoff = [
             self.sp_az_antoff_1.value(),
@@ -1037,11 +1163,12 @@ class SettingsWindow(QDialog):
         """SETANTOFF senden und auf ACK warten. Gibt True nur bei gültigem ACK zurück."""
         result: list[bool | None] = [None]
 
+        event_loop = QEventLoop(self)
+
         def on_done(ok: bool):
             result[0] = ok
-            QTimer.singleShot(0, event_loop.quit)
+            QMetaObject.invokeMethod(event_loop, "quit", Qt.ConnectionType.QueuedConnection)
 
-        event_loop = QEventLoop(self)
         safety_timer = QTimer(self)
         safety_timer.setSingleShot(True)
         safety_timer.timeout.connect(event_loop.quit)
@@ -1055,11 +1182,12 @@ class SettingsWindow(QDialog):
         """SETANGLE senden und auf ACK warten. Gibt True nur bei gültigem ACK zurück."""
         result: list[bool | None] = [None]
 
+        event_loop = QEventLoop(self)
+
         def on_done(ok: bool):
             result[0] = ok
-            QTimer.singleShot(0, event_loop.quit)
+            QMetaObject.invokeMethod(event_loop, "quit", Qt.ConnectionType.QueuedConnection)
 
-        event_loop = QEventLoop(self)
         safety_timer = QTimer(self)
         safety_timer.setSingleShot(True)
         safety_timer.timeout.connect(event_loop.quit)
@@ -1093,6 +1221,8 @@ class SettingsWindow(QDialog):
         if row < 0 or row >= self._settings_stack.count():
             return
         self._settings_stack.setCurrentIndex(row)
+        if row == getattr(self, "_tab_controller_index", -1):
+            QTimer.singleShot(0, self._load_controller_from_bus)
 
     def _apply_settings_nav_style(self) -> None:
         """Sidebar wie große Kacheln; Farben aus der System-/App-Palette (Highlight, Base, …)."""
@@ -1297,6 +1427,17 @@ class SettingsWindow(QDialog):
         if not self._heatmap_scale_valid():
             return False
 
+        mid = int(self.sp_master.value())
+        cid = int(self.sp_controller_id.value())
+        if self._controller_hw_enabled() and cid == mid:
+            QMessageBox.warning(
+                self,
+                t("settings.title"),
+                t("settings.controller_err_same_as_master", mid=mid),
+            )
+            self.lbl_status.setText("")
+            return False
+
         self.cfg["pst_server"]["enabled"] = bool(self.chk_pst_enabled.isChecked())
         self.cfg["pst_server"]["listen_host"] = self.ed_listen_host.text().strip()
         self.cfg["pst_server"]["listen_port_az"] = int(self.sp_listen_port_az.value())
@@ -1380,6 +1521,18 @@ class SettingsWindow(QDialog):
         uih["compass_dwell_sectors"] = int(self.sp_compass_dwell_sectors.value())
         uih["compass_dwell_full_minutes"] = float(self.sp_compass_dwell_minutes.value())
 
+        chw = self.cfg.setdefault("controller_hw", {})
+        chw["enabled"] = bool(self.chk_hw_controller_enabled.isChecked())
+        chw["cont_id"] = int(self.sp_controller_id.value())
+        chw["cont_id_configured"] = True
+        chw["ant_name_1"] = self._sanitize_controller_name(self.ed_cont_ant_1.text())
+        chw["ant_name_2"] = self._sanitize_controller_name(self.ed_cont_ant_2.text())
+        chw["ant_name_3"] = self._sanitize_controller_name(self.ed_cont_ant_3.text())
+        chw["slow_pwm"] = int(self.sp_cont_pwm_slow.value())
+        chw["fast_pwm"] = int(self.sp_cont_pwm_fast.value())
+        chw["speaker_freq_hz"] = int(self.sp_cont_beep_freq.value())
+        chw["speaker_volume"] = int(self.sp_cont_beep_vol.value())
+
         # AZ-Antennenversatz und Öffnungswinkel in den Rotor schreiben (SETANTOFF1–3, SETANGLE1–3)
         # Nur übertragen wenn Wert sich gegenüber dem Snapshot beim Öffnen tatsächlich geändert hat
         snapshot_antoff = getattr(self, "_snapshot_antoff", [None, None, None])
@@ -1422,8 +1575,6 @@ class SettingsWindow(QDialog):
             )
             QApplication.processEvents()
             if not all_ok:
-                from PySide6.QtWidgets import QMessageBox
-
                 QMessageBox.warning(
                     self,
                     t("settings.msgbox_az_title"),
@@ -1432,6 +1583,15 @@ class SettingsWindow(QDialog):
         else:
             self.lbl_status.setText(t("settings.status_saved"))
             QApplication.processEvents()
+
+        if not self._save_controller_hw_if_changed():
+            self.lbl_status.setText(t("settings.controller_status_write_fail"))
+            QApplication.processEvents()
+            QMessageBox.warning(
+                self,
+                t("settings.title"),
+                t("settings.controller_status_write_fail"),
+            )
 
         self.save_cfg_cb(self.cfg)
         self._apply_ids_live()
@@ -1456,6 +1616,325 @@ class SettingsWindow(QDialog):
         if lang_changed and self.rebuild_ui_cb:
             self.rebuild_ui_cb()
         return True
+
+    @staticmethod
+    def _parse_hw_int(s: str | None) -> int | None:
+        if s is None:
+            return None
+        try:
+            return int(float(str(s).strip().split(";")[0].replace(",", ".")))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _sanitize_controller_name(s: str) -> str:
+        bad = "#:$"
+        t = (s or "").strip()
+        return "".join(c for c in t[:9] if c not in bad)[:9]
+
+    def _controller_hw_enabled(self) -> bool:
+        """True: Hardware-Controller ist eingeschaltet (Checkbox / Config)."""
+        if hasattr(self, "chk_hw_controller_enabled"):
+            return self.chk_hw_controller_enabled.isChecked()
+        ch = self.cfg.get("controller_hw") or {}
+        return bool(ch.get("enabled", True))
+
+    def _on_hw_controller_toggled(self, _checked: bool) -> None:
+        self._apply_controller_enabled_ui()
+
+    def _apply_controller_enabled_ui(self) -> None:
+        """Gruppe „Hardware-Controller“ ein-/ausgrauen; Checkbox bleibt bedienbar."""
+        if not hasattr(self, "gb_controller"):
+            return
+        self.gb_controller.setEnabled(self._controller_hw_enabled())
+
+    def _controller_bus_dst(self) -> int:
+        """RS485-Zieladresse für den Hardware-Controller (Einstellungsfeld Controller-ID)."""
+        return int(self.sp_controller_id.value())
+
+    def _controller_bus_read_enabled(self) -> bool:
+        """GET* nur, wenn die Controller-ID mindestens einmal gespeichert wurde (bekannt)."""
+        if not self._controller_hw_enabled():
+            return False
+        ch = self.cfg.get("controller_hw") or {}
+        if not ch.get("cont_id_configured") and "cont_id" not in ch:
+            return False
+        if self._controller_bus_dst() == int(self.sp_master.value()):
+            return False
+        return True
+
+    def _controller_snapshot_from_ui(
+        self,
+    ) -> tuple[int, str, str, str, int, int, int, int]:
+        return (
+            int(self.sp_controller_id.value()),
+            self._sanitize_controller_name(self.ed_cont_ant_1.text()),
+            self._sanitize_controller_name(self.ed_cont_ant_2.text()),
+            self._sanitize_controller_name(self.ed_cont_ant_3.text()),
+            int(self.sp_cont_pwm_slow.value()),
+            int(self.sp_cont_pwm_fast.value()),
+            int(self.sp_cont_beep_freq.value()),
+            int(self.sp_cont_beep_vol.value()),
+        )
+
+    def _mark_controller_name_dirty(self, idx: int) -> None:
+        if getattr(self, "_controller_suppress_dirty", False):
+            return
+        try:
+            self._controller_name_dirty[idx] = True
+        except Exception:
+            pass
+
+    def _mark_pwm_dirty(self, idx: int) -> None:
+        if getattr(self, "_controller_suppress_dirty", False):
+            return
+        try:
+            self._controller_pwm_dirty[idx] = True
+        except Exception:
+            pass
+
+    def _mark_beep_dirty(self, idx: int) -> None:
+        if getattr(self, "_controller_suppress_dirty", False):
+            return
+        try:
+            self._controller_beep_dirty[idx] = True
+        except Exception:
+            pass
+
+    def _clear_controller_field_dirty(self) -> None:
+        self._controller_name_dirty = [False, False, False]
+        self._controller_pwm_dirty = [False, False]
+        self._controller_beep_dirty = [False, False]
+
+    def _apply_controller_from_cfg_only(self) -> None:
+        self._controller_suppress_dirty = True
+        try:
+            ch = self.cfg.get("controller_hw") or {}
+            try:
+                self.sp_controller_id.setValue(max(0, min(245, int(ch.get("cont_id", 0)))))
+            except (TypeError, ValueError):
+                self.sp_controller_id.setValue(0)
+            self.ed_cont_ant_1.setText(self._sanitize_controller_name(str(ch.get("ant_name_1", "") or "")))
+            self.ed_cont_ant_2.setText(self._sanitize_controller_name(str(ch.get("ant_name_2", "") or "")))
+            self.ed_cont_ant_3.setText(self._sanitize_controller_name(str(ch.get("ant_name_3", "") or "")))
+            try:
+                self.sp_cont_pwm_slow.setValue(max(0, min(100, int(ch.get("slow_pwm", 30)))))
+            except (TypeError, ValueError):
+                self.sp_cont_pwm_slow.setValue(30)
+            try:
+                self.sp_cont_pwm_fast.setValue(max(0, min(100, int(ch.get("fast_pwm", 80)))))
+            except (TypeError, ValueError):
+                self.sp_cont_pwm_fast.setValue(80)
+            try:
+                self.sp_cont_beep_freq.setValue(
+                    max(100, min(4000, int(ch.get("speaker_freq_hz", 1000))))
+                )
+            except (TypeError, ValueError):
+                self.sp_cont_beep_freq.setValue(1000)
+            try:
+                self.sp_cont_beep_vol.setValue(max(0, min(50, int(ch.get("speaker_volume", 50)))))
+            except (TypeError, ValueError):
+                self.sp_cont_beep_vol.setValue(50)
+            self._snapshot_controller = self._controller_snapshot_from_ui()
+            self._set_controller_led_ok(False)
+            self._clear_controller_field_dirty()
+        finally:
+            self._controller_suppress_dirty = False
+
+    def _set_controller_led_ok(self, ok: bool) -> None:
+        """LED neben „ID setzen“: grün = alle Controller-Werte vom Bus gelesen, sonst rot."""
+        if not hasattr(self, "_lbl_controller_led"):
+            return
+        d = px_to_dip(self, 6)
+        s = px_to_dip(self, 12)
+        if ok:
+            bg, br = "#2e7d32", "#1b5e20"
+        else:
+            bg, br = "#c62828", "#8e0000"
+        self._lbl_controller_led.setStyleSheet(
+            f"QLabel#controllerReadLed {{ background-color: {bg}; border: 1px solid {br}; "
+            f"border-radius: {d}px; min-width: {s}px; max-width: {s}px; "
+            f"min-height: {s}px; max-height: {s}px; }}"
+        )
+
+    def _load_controller_from_bus(self) -> None:
+        """Controller-Werte vom Bus lesen. Seriell: kein zweiter paralleler Lauf (QEventLoop-Reentranz)."""
+        if getattr(self, "_controller_load_busy", False):
+            self._controller_load_queued = True
+            return
+        self._controller_load_busy = True
+        self._controller_load_queued = False
+        try:
+            self._load_controller_from_bus_impl()
+        finally:
+            self._controller_load_busy = False
+            if self._controller_load_queued:
+                QTimer.singleShot(0, self._load_controller_from_bus)
+
+    def _load_controller_from_bus_impl(self) -> None:
+        if not self._controller_hw_enabled():
+            self._apply_controller_from_cfg_only()
+            return
+        if not hasattr(self.ctrl, "sync_ui_command_response"):
+            self._apply_controller_from_cfg_only()
+            return
+        if not self.hw.is_connected():
+            self._apply_controller_from_cfg_only()
+            return
+        if not self._controller_bus_read_enabled():
+            self._apply_controller_from_cfg_only()
+            return
+        dst = self._controller_bus_dst()
+        self.lbl_status.setText(t("settings.controller_status_reading"))
+        self._set_controller_led_ok(False)
+        QApplication.processEvents()
+        c = self.ctrl
+        self._controller_suppress_dirty = True
+        try:
+            acks: list[bool] = []
+            p = c.sync_ui_command_response(dst, "GETCONTID", "0", "ACK_GETCONTID")
+            acks.append(_sync_got_ack_value(p))
+            if p is not None and _sync_got_ack_value(p):
+                v = self._parse_hw_int(p)
+                if v is None:
+                    v = self._parse_hw_int(str(p).split(";")[0].strip())
+                if v is not None:
+                    self.sp_controller_id.setValue(max(0, min(245, v)))
+            eds = (self.ed_cont_ant_1, self.ed_cont_ant_2, self.ed_cont_ant_3)
+            for i, (cmd, exp) in enumerate(
+                (
+                    ("GETCONANTNAME1", "ACK_GETCONANTNAME1"),
+                    ("GETCONANTNAME2", "ACK_GETCONANTNAME2"),
+                    ("GETCONANTNAME3", "ACK_GETCONANTNAME3"),
+                ),
+                start=1,
+            ):
+                rp = c.sync_ui_command_response(dst, cmd, "0", exp)
+                acks.append(_sync_got_ack_value(rp))
+                if rp is not None and _sync_got_ack_value(rp):
+                    eds[i - 1].setText(self._sanitize_controller_name(rp.split(";")[0]))
+            for sp, cmd, exp, lo, hi in (
+                (self.sp_cont_pwm_slow, "GETCONSPWM", "ACK_GETCONSPWM", 0, 100),
+                (self.sp_cont_pwm_fast, "GETCONFPWM", "ACK_GETCONFPWM", 0, 100),
+                (self.sp_cont_beep_freq, "GETCONFRQ", "ACK_GETCONFRQ", 100, 4000),
+                (self.sp_cont_beep_vol, "GETLSL", "ACK_GETLSL", 0, 50),
+            ):
+                rp = c.sync_ui_command_response(dst, cmd, "0", exp)
+                if cmd in ("GETCONFRQ", "GETLSL"):
+                    if _sync_nak_notimpl(rp):
+                        acks.append(True)
+                        continue
+                    if rp is not None and str(rp).startswith(SYNC_UI_NAK_PREFIX):
+                        acks.append(False)
+                        continue
+                acks.append(_sync_got_ack_value(rp))
+                if rp is None or not _sync_got_ack_value(rp):
+                    continue
+                w = self._parse_hw_int(rp)
+                if w is None:
+                    w = self._parse_hw_int(str(rp).split(";")[0].strip())
+                if w is not None:
+                    sp.setValue(max(lo, min(hi, w)))
+            # LED: alle Kern-Abfragen mit ACK; Piep (GETCONFRQ/GETLSL): NAK NOTIMPL zählt als Bus-OK.
+            # Anzahl = 1 (GETCONTID) + 3 (GETCONANTNAME1–3) + 4 (GETCONSPWM, GETCONFPWM, GETCONFRQ, GETLSL)
+            _n_ctrl_reads = 1 + 3 + 4
+            all_ok = len(acks) == _n_ctrl_reads and all(acks)
+            self.lbl_status.setText(t("settings.controller_status_saved"))
+            self._set_controller_led_ok(all_ok)
+            self._snapshot_controller = self._controller_snapshot_from_ui()
+            self._clear_controller_field_dirty()
+        finally:
+            self._controller_suppress_dirty = False
+
+    def _save_controller_hw_if_changed(self) -> bool:
+        if not self._controller_hw_enabled():
+            self._snapshot_controller = self._controller_snapshot_from_ui()
+            self._clear_controller_field_dirty()
+            return True
+        if not hasattr(self.ctrl, "sync_ui_command_response"):
+            self._snapshot_controller = self._controller_snapshot_from_ui()
+            return True
+        snap = getattr(self, "_snapshot_controller", None)
+        cur = self._controller_snapshot_from_ui()
+        if snap is None:
+            snap = cur
+        if snap == cur:
+            return True
+        if not self.hw.is_connected():
+            self._snapshot_controller = cur
+            return True
+        c = self.ctrl
+        all_ok = True
+        dst = int(cur[0])
+        if snap[0] != cur[0]:
+            # Ziel: bisherige Adresse (Adresswechsel), außer Snapshot war noch 0 (erstes Speichern):
+            # dann an die eingetragene neue ID senden (Gerät erwartet dort).
+            id_dst = int(cur[0]) if int(snap[0]) == 0 else int(snap[0])
+            r = c.sync_ui_command_response(id_dst, "SETCONTID", str(int(cur[0])), "ACK_SETCONTID")
+            if not _sync_got_ack_value(r):
+                all_ok = False
+        for i in range(3):
+            if snap[1 + i] != cur[1 + i] or self._controller_name_dirty[i]:
+                cmd = f"SETCONANTNAME{i + 1}"
+                r = c.sync_ui_command_response(dst, cmd, cur[1 + i], f"ACK_{cmd}")
+                if not _sync_got_ack_value(r):
+                    all_ok = False
+        if snap[4] != cur[4] or self._controller_pwm_dirty[0]:
+            r = c.sync_ui_command_response(dst, "SETCONSPWM", str(int(cur[4])), "ACK_SETCONSPWM")
+            if not _sync_got_ack_value(r):
+                all_ok = False
+        if snap[5] != cur[5] or self._controller_pwm_dirty[1]:
+            r = c.sync_ui_command_response(dst, "SETCONFPWM", str(int(cur[5])), "ACK_SETCONFPWM")
+            if not _sync_got_ack_value(r):
+                all_ok = False
+        if snap[6] != cur[6] or self._controller_beep_dirty[0]:
+            r = c.sync_ui_command_response(dst, "SETCONFRQ", str(int(cur[6])), "ACK_SETCONFRQ")
+            if not _sync_got_ack_value(r):
+                all_ok = False
+        if snap[7] != cur[7] or self._controller_beep_dirty[1]:
+            r = c.sync_ui_command_response(dst, "SETLSL", str(int(cur[7])), "ACK_SETLSL")
+            if not _sync_got_ack_value(r):
+                all_ok = False
+        if all_ok:
+            self._snapshot_controller = cur
+            self._clear_controller_field_dirty()
+        return all_ok
+
+    def _on_broadcast_setconidf(self) -> None:
+        """SETCONIDF an Broadcast 255: neue Controller-ID (Wert aus dem Feld)."""
+        if not self._controller_hw_enabled():
+            QMessageBox.information(
+                self,
+                t("settings.title"),
+                t("settings.controller_broadcast_disabled"),
+            )
+            return
+        if not self.hw.is_connected():
+            QMessageBox.information(
+                self,
+                t("settings.title"),
+                t("settings.controller_setconidf_offline"),
+            )
+            return
+        mid = int(self.sp_master.value())
+        cid = int(self.sp_controller_id.value())
+        if cid == mid:
+            QMessageBox.warning(
+                self,
+                t("settings.title"),
+                t("settings.controller_err_same_as_master", mid=mid),
+            )
+            return
+        if not hasattr(self.ctrl, "broadcast_setconidf"):
+            return
+        self.ctrl.broadcast_setconidf(cid)
+        ch = self.cfg.setdefault("controller_hw", {})
+        ch["cont_id_configured"] = True
+        ch["cont_id"] = int(cid)
+        self.lbl_status.setText(t("settings.controller_setconidf_sent"))
+        QApplication.processEvents()
+        # Kurze Pause, dann alle Controller-Werte wie beim Öffnen der Seite vom Bus lesen
+        QTimer.singleShot(250, self._load_controller_from_bus)
 
     def _save_and_close(self):
         """Speichern (inkl. Antennen-Versätze), Status anzeigen, dann Fenster schließen."""

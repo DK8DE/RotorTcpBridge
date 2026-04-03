@@ -8,9 +8,11 @@ from typing import Callable, Optional
 from .rs485_protocol import BROADCAST_DST, build, Telegram
 from .hardware_client import HardwareClient, HwRequest
 from .rotor_model import AxisState
-
 from .rotor_controller_async import RotorControllerAsyncMixin
 from .rotor_controller_polling import RotorControllerPollingMixin
+
+# sync_ui_command_response: Firmware-NAK (Checksumme ok) — nicht mit Timeout (None) verwechseln
+SYNC_UI_NAK_PREFIX = "__NAK__:"
 
 
 class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
@@ -198,6 +200,36 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 self.el.telemetry.wind_beaufort = None
             except Exception:
                 pass
+
+    def request_immediate_error_poll(self) -> None:
+        """GETERR sofort für alle aktivierten Achsen (z. B. nach App-Start, damit Fehler sichtbar werden)."""
+        if not self.hw.is_connected():
+            return
+        try:
+            if self.enable_az:
+                line = build(self.master_id, self.slave_az, "GETERR", "0")
+                self.hw.send_request(
+                    HwRequest(
+                        line=line,
+                        expect_prefix=None,
+                        timeout_s=0.8,
+                        on_done=None,
+                        priority=5,
+                    )
+                )
+            if self.enable_el:
+                line = build(self.master_id, self.slave_el, "GETERR", "0")
+                self.hw.send_request(
+                    HwRequest(
+                        line=line,
+                        expect_prefix=None,
+                        timeout_s=0.8,
+                        on_done=None,
+                        priority=5,
+                    )
+                )
+        except Exception:
+            pass
 
     def request_immediate_pos(self) -> None:
         """Positionsabfrage sofort mit höchster Priorität (beim Öffnen des Kompassfensters)."""
@@ -446,6 +478,17 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         # Direkt senden: Worker blockiert die Queue bei ausstehendem Poll-ACK
         self.hw.send_line_fire_and_forget(line)
 
+    def broadcast_setconidf(self, new_controller_id: int) -> None:
+        """Broadcast (DST 255): Controller-ID per SETCONIDF setzen. Keine Antwort erwartet."""
+        try:
+            n = int(new_controller_id)
+            if n < 0 or n > 245:
+                return
+        except Exception:
+            return
+        line = build(int(self.master_id), int(BROADCAST_DST), "SETCONIDF", str(n))
+        self.hw.send_line_fire_and_forget(line)
+
     def send_ui_command(
         self,
         dst: int,
@@ -455,6 +498,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         timeout_s: float = 0.8,
         priority: int = 0,
         on_done=None,
+        apply_local_state: bool = True,
     ) -> None:
         """Beliebiges RS485-Kommando mit hoher Priorität senden.
 
@@ -479,7 +523,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         #
         # Daher: Für relevante Kommandos (SETPOSDG/STOP/SETREF) aktualisieren
         # wir den lokalen State SOFORT.
-        self._apply_local_state_for_ui_command(int(dst), str(cmd).strip().upper(), str(params))
+        if apply_local_state:
+            self._apply_local_state_for_ui_command(int(dst), str(cmd).strip().upper(), str(params))
 
         line = self.build_line(dst, cmd, params)
         self.hw.send_request(
@@ -491,6 +536,84 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 priority=int(priority),
             )
         )
+
+    @staticmethod
+    def _ack_cmd_matches_expect(cmd: str, expect_prefix: str) -> bool:
+        c = str(cmd or "").strip().upper()
+        e = str(expect_prefix or "").strip().upper()
+        if not e:
+            return False
+        if c.startswith(e):
+            return True
+        # z. B. ACK_CONTID statt ACK_GETCONTID
+        if "GET" in e and e.startswith("ACK_"):
+            alt = e.replace("GET", "", 1)
+            if c.startswith(alt):
+                return True
+        if "SET" in e and e.startswith("ACK_"):
+            alt = e.replace("SET", "", 1)
+            if c.startswith(alt):
+                return True
+        return False
+
+    def sync_ui_command_response(
+        self,
+        dst: int,
+        cmd: str,
+        params: str,
+        expect_prefix: str,
+        timeout_s: float = 5.0,
+    ) -> Optional[str]:
+        """Ein RS485-Kommando mit pending; blockiert den Qt-Thread (nur für UI).
+
+        Rückgabe: tel.params bei passendem ACK, sonst None.
+
+        Kein verschachteltes QEventLoop.exec(): on_done läuft im Reader-Thread; ein zweites
+        QEventLoop.quit() über Threads hinweg ist in Qt/PySide fehleranfällig. Stattdessen
+        pollt der GUI-Thread mit processEvents(), bis on_done das Ergebnis gesetzt hat.
+
+        timeout_s ist mit HwRequest.timeout_s identisch: RS485/TCP kann >1 s pro Telegramm
+        brauchen; bei 1,2 s kommt die RX-Zeile oft noch im Log, aber on_done war schon „timeout“.
+        """
+        from PySide6.QtCore import QEventLoop, QElapsedTimer
+        from PySide6.QtWidgets import QApplication
+
+        result: list[Optional[str]] = [None]
+        done = [False]
+        to = float(max(0.35, timeout_s))
+
+        def on_done(tel: Optional[Telegram], err: Optional[str]) -> None:
+            if tel and not err:
+                cmd_u = str(tel.cmd or "").strip().upper()
+                if cmd_u.startswith("NAK_"):
+                    result[0] = SYNC_UI_NAK_PREFIX + str(tel.params)
+                elif self._ack_cmd_matches_expect(cmd_u, expect_prefix):
+                    result[0] = str(tel.params)
+            done[0] = True
+
+        self.send_ui_command(
+            int(dst),
+            cmd,
+            params,
+            expect_prefix=expect_prefix,
+            timeout_s=to,
+            priority=0,
+            on_done=on_done,
+            apply_local_state=False,
+        )
+        app = QApplication.instance()
+        timer = QElapsedTimer()
+        timer.start()
+        timeout_ms = int(to * 1000.0)
+        while not done[0]:
+            if timer.elapsed() > timeout_ms:
+                break
+            time.sleep(0)  # GIL freigeben, damit der Reader-Thread on_done ausführen kann
+            if app is not None:
+                app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+            else:
+                time.sleep(0.005)
+        return result[0]
 
     def _apply_local_state_for_ui_command(self, dst: int, cmd: str, params: str) -> None:
         """Setzt lokale Statusfelder für UI-Direktkommandos.

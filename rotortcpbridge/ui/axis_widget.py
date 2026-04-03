@@ -537,7 +537,10 @@ def fill_axis_panel(fields: dict, axis_state) -> None:
     now = float(_time_mod.time())
     p = float(axis_state.get_smoothed_pos_d10f(now))
     fields["pos"].setText(f"{p / 10.0:.1f}")
-    fields["target"].setText(f"{axis_state.target_d10 / 10:.1f}")
+    if bool(getattr(axis_state, "referenced", False)):
+        fields["target"].setText(f"{axis_state.target_d10 / 10:.1f}")
+    else:
+        fields["target"].setText("–")
 
     offline = not bool(getattr(axis_state, "online", False))
     try:

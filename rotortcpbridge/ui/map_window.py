@@ -732,14 +732,17 @@ class MapWindow(QDialog):
             tgt = wrap_deg(float(tgt_d10) / 10.0 + off) if tgt_d10 is not None else None
         except Exception:
             tgt = None
-        # Bei unbekanntem Ziel (z.B. erste Öffnung): Soll = Ist
+        ref_ok = bool(getattr(az_axis, "referenced", False))
+        # Bei unbekanntem Ziel (z.B. erste Öffnung): Soll = Ist — nur wenn referenziert
         unknown_target = (tgt_d10 is None) or (
             int(tgt_d10 or 0) == 0
             and float(getattr(az_axis, "last_set_sent_ts", 0.0) or 0.0) <= 0.0
             and getattr(az_axis, "last_set_sent_target_d10", None) is None
         )
-        if cur is not None and unknown_target:
+        if cur is not None and unknown_target and ref_ok:
             tgt = cur
+        if not ref_ok:
+            tgt = None
         self._lbl_ist.setText(t("compass.ist_prefix") + (fmt_deg(cur) if cur is not None else "–"))
         self._lbl_soll_value.setText(fmt_deg(tgt) if tgt is not None else "–")
         self._led_moving.set_state(bool(getattr(az_axis, "moving", False)))

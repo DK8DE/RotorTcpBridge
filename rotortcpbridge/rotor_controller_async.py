@@ -188,6 +188,19 @@ class RotorControllerAsyncMixin:
                     self.log.write("WARN", f"{axis_name} GETPOSDG NAK: {tel.params}")
                     return
 
+                # SETREF-Antwort vom Slave (Mitschnitt vom Bus, z. B. SETREF über USB-Serial vom PC)
+                if tel.cmd.startswith("ACK_SETREF"):
+                    axis_state.last_rx_ts = time.time()
+                    p0 = str(tel.params).strip().split(";")[0]
+                    try:
+                        start_homing = int(float(p0.replace(",", "."))) != 0
+                    except Exception:
+                        start_homing = True
+                    axis_state.ref_poll_active = True
+                    if start_homing:
+                        axis_state.moving = True
+                    return
+
                 # Referenz-Status (GETREF Polling ohne pending)
                 if tel.cmd.startswith("ACK_GETREF") or tel.cmd.startswith("ACK_REF"):
                     axis_state.last_rx_ts = time.time()

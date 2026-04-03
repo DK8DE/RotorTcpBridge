@@ -1003,12 +1003,21 @@ class CompassWindow(QDialog):
         if tgt is None:
             tgt = self._target_az
         if cur is not None and unknown_target and self._target_az is None:
-            tgt = cur
+            if bool(getattr(self.ctrl.az, "referenced", False)):
+                tgt = cur
         # Bei falschem Offline-Reset: axis_target_d10=0, last_set_sent_target_d10=None,
         # aber User hatte zuvor Ziel gewählt -> _target_az beibehalten statt 0 zeigen
         if tgt == 0.0 and self._target_az is not None:
             if getattr(self.ctrl.az, "last_set_sent_target_d10", None) is None:
                 tgt = self._target_az
+
+        # Ohne Referenz kein Soll aus Bus (target_d10=0 flackert sonst mit „–“)
+        if (
+            not bool(getattr(self.ctrl.az, "referenced", False))
+            and self._target_az is None
+            and self._stop_az_ts is None
+        ):
+            tgt = None
 
         if cur is not None:
             cur_display = wrap_deg(cur + off_az)
@@ -1084,6 +1093,7 @@ class CompassWindow(QDialog):
                     self.ed_az_soll.selectAll()
             self._compass_last_bus_target_d10_az = bus_d10
         else:
+            self.az_compass.set_target_deg(None)
             if not self.ed_az_soll.hasFocus():
                 self.ed_az_soll.clear()
             self._compass_last_bus_target_d10_az = None
@@ -1164,11 +1174,19 @@ class CompassWindow(QDialog):
         if tgt is None:
             tgt = self._target_el
         if cur is not None and unknown_target and self._target_el is None:
-            tgt = cur
+            if bool(getattr(self.ctrl.el, "referenced", False)):
+                tgt = cur
         # Bei falschem Offline-Reset: _target_el beibehalten statt 0 zeigen
         if tgt == 0.0 and self._target_el is not None:
             if getattr(self.ctrl.el, "last_set_sent_target_d10", None) is None:
                 tgt = self._target_el
+
+        if (
+            not bool(getattr(self.ctrl.el, "referenced", False))
+            and self._target_el is None
+            and self._stop_el_ts is None
+        ):
+            tgt = None
 
         if cur is not None:
             cur_clamped = clamp_el(cur)
@@ -1215,6 +1233,7 @@ class CompassWindow(QDialog):
                     self.ed_el_soll.selectAll()
             self._compass_last_bus_target_d10_el = bus_d10
         else:
+            self.el_compass.set_target_deg(None)
             if not self.ed_el_soll.hasFocus():
                 self.ed_el_soll.clear()
             self._compass_last_bus_target_d10_el = None

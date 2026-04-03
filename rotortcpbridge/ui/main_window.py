@@ -376,6 +376,7 @@ class MainWindow(QMainWindow):
         self._last_wind_vis: bool | None = None
         self._error_popup = ErrorPopupHandler()
         self._warning_popup = WarningPopupHandler()
+        self._startup_error_check_scheduled = False
 
         apply_theme_mode(self.cfg)
         self._update_axis_visibility()
@@ -931,6 +932,33 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         self._update_axis_visibility()
         self._apply_fixed_mainwindow_size()
+        if not self._startup_error_check_scheduled:
+            self._startup_error_check_scheduled = True
+            QTimer.singleShot(400, self._startup_error_poll_and_show)
+            QTimer.singleShot(2200, self._startup_error_poll_and_show)
+
+    def _startup_error_poll_and_show(self) -> None:
+        """Nach Start GETERR anstoßen und nach kurzer Wartezeit Fehler-Popup wie im normalen Takt."""
+        try:
+            self.ctrl.request_immediate_error_poll()
+        except Exception:
+            pass
+
+        def _show() -> None:
+            try:
+                self._update_axis_visibility()
+                if self.gb_az.isVisible():
+                    self._error_popup.maybe_show(
+                        self, "AZ", getattr(self.ctrl.az, "error_code", 0)
+                    )
+                if self.gb_el.isVisible():
+                    self._error_popup.maybe_show(
+                        self, "EL", getattr(self.ctrl.el, "error_code", 0)
+                    )
+            except Exception:
+                pass
+
+        QTimer.singleShot(450, _show)
 
     def closeEvent(self, event):
         try:

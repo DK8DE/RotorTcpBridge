@@ -25,6 +25,7 @@ _GUI_CONFIG_KEYS = (
     "spid",
     "pwm",
     "behavior",
+    "controller_hw",
 )
 
 # SET-Befehle ohne GET oder Steuerbefehle – nicht backupbar

@@ -27,7 +27,13 @@ from ..angle_utils import clamp_el, fmt_deg, shortest_delta_deg, wrap_deg
 from ..ui.led_widget import Led
 from ..ui.ui_utils import px_to_dip
 from ..app_icon import get_app_icon
-from ..geo_utils import beam_center_line_points, beam_polygon_points, bearing_deg, grayline_points
+from ..geo_utils import (
+    beam_center_line_points,
+    beam_polygon_points,
+    bearing_deg,
+    effective_station_lat_lon,
+    grayline_points,
+)
 from ..i18n import t
 from .elevation_window import ElevationProfileWindow
 from .map_html import build_map_html
@@ -301,9 +307,8 @@ class MapWindow(QDialog):
 
     def _get_params(self) -> dict:
         """Aktuelle Parameter für die Karte."""
-        ui = self.cfg.get("ui", {})
-        lat = float(ui.get("location_lat", 49.502651))
-        lon = float(ui.get("location_lon", 8.375019))
+        ui = self.cfg.get("ui", {}) or {}
+        lat, lon = effective_station_lat_lon(ui)
         antenna_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
         slot = antenna_idx + 1
         offs = ui.get("antenna_offsets_az", [0.0, 0.0, 0.0])
@@ -366,9 +371,8 @@ class MapWindow(QDialog):
     def _compute_beams(self, rotor_az_deg: float, antenna_idx: int) -> list[dict]:
         """Nur der Beam der im Dropdown gewählten Antenne; Farbe je nach Slot 1–3; Richtung = Rotor + Offset."""
         i = max(0, min(2, antenna_idx))
-        ui = self.cfg.get("ui", {})
-        lat = float(ui.get("location_lat", 49.502651))
-        lon = float(ui.get("location_lon", 8.375019))
+        ui = self.cfg.get("ui", {}) or {}
+        lat, lon = effective_station_lat_lon(ui)
         offs = ui.get("antenna_offsets_az", [0.0, 0.0, 0.0])
         angles = ui.get("antenna_angles_az", [0.0, 0.0, 0.0])
         ranges = ui.get("antenna_ranges_az", [100.0, 100.0, 100.0])
@@ -791,14 +795,12 @@ class MapWindow(QDialog):
 
         # Offenes Höhenprofil-Fenster sofort aktualisieren
         if self._elevation_win is not None and self._elevation_win.isVisible():
-            ui = self.cfg.get("ui", {})
-            home_lat = float(ui.get("location_lat", 49.502651))
-            home_lon = float(ui.get("location_lon", 8.375019))
+            ui = self.cfg.get("ui", {}) or {}
+            home_lat, home_lon = effective_station_lat_lon(ui)
             self._elevation_win.update_target(home_lat, home_lon, lat, lon)
 
-        ui = self.cfg.get("ui", {})
-        lat0 = float(ui.get("location_lat", 49.502651))
-        lon0 = float(ui.get("location_lon", 8.375019))
+        ui = self.cfg.get("ui", {}) or {}
+        lat0, lon0 = effective_station_lat_lon(ui)
         bearing = bearing_deg(lat0, lon0, lat, lon)
         off = self._get_antenna_offset_az()
         rotor_deg = wrap_deg(bearing - off)
@@ -842,9 +844,8 @@ class MapWindow(QDialog):
             self._elevation_win.activateWindow()
             return
 
-        ui = self.cfg.get("ui", {})
-        home_lat = float(ui.get("location_lat", 49.502651))
-        home_lon = float(ui.get("location_lon", 8.375019))
+        ui = self.cfg.get("ui", {}) or {}
+        home_lat, home_lon = effective_station_lat_lon(ui)
         dark = bool(ui.get("force_dark_mode", True))
         antenna_height = float(ui.get("antenna_height_m", 0.0))
         freq_mhz = float(ui.get("rf_freq_mhz", 145.0))

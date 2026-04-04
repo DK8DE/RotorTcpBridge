@@ -7,6 +7,39 @@ from datetime import datetime, timezone
 
 _EARTH_RADIUS_KM = 6371.0
 
+# Standard-Standort in app_config (Einstellungen) — Abgleich für Locator-Logik
+_DEFAULT_LOCATION_LAT = 49.502651
+_DEFAULT_LOCATION_LON = 8.375019
+
+
+def effective_station_lat_lon(ui: dict) -> tuple[float, float]:
+    """Effektiven Standort für Karte/Beams ermitteln.
+
+    - Sind **Breite/Länge** von den Installations-Defaults abweichend gesetzt, zählen die
+      Koordinaten (expliziter Standort, ggf. nach „Koordinaten übernehmen“ verfeinert).
+    - Sind die Koordinaten noch **Default** und ein **Maidenhead-Locator** ist gesetzt,
+      wird die **Zellenmitte** des Locators verwendet (Karte: Antenne in Locator-Mitte).
+    - Ohne gültigen Locator: gespeicherte Koordinaten.
+    """
+    try:
+        lat = float(ui.get("location_lat", _DEFAULT_LOCATION_LAT))
+    except (TypeError, ValueError):
+        lat = _DEFAULT_LOCATION_LAT
+    try:
+        lon = float(ui.get("location_lon", _DEFAULT_LOCATION_LON))
+    except (TypeError, ValueError):
+        lon = _DEFAULT_LOCATION_LON
+    loc = str(ui.get("location_locator", "") or "").strip()
+    if not loc:
+        return lat, lon
+    ll = maidenhead_to_lat_lon(loc)
+    if ll is None:
+        return lat, lon
+    clat, clon = ll
+    if abs(lat - _DEFAULT_LOCATION_LAT) > 1e-5 or abs(lon - _DEFAULT_LOCATION_LON) > 1e-5:
+        return lat, lon
+    return clat, clon
+
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Großkreis-Distanz zwischen zwei Punkten in Kilometern."""

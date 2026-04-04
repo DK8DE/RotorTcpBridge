@@ -42,11 +42,12 @@ from io import StringIO
 from typing import Any, Callable
 
 from .geo_utils import (
+    destination_point,
+    effective_station_lat_lon,
     haversine_km,
     maidenhead_to_lat_lon,
     point_along_path_km,
     reflection_path_fraction_and_midpoint_factor,
-    destination_point,
 )
 from .logutil import appdata_dir
 from .net_utils import normalize_udp_bind_host
@@ -443,9 +444,9 @@ class UdpAswatchlistListener:
         ll = maidenhead_to_lat_lon(sender_loc)
         if ll is not None:
             return ll
-        ui = self.cfg.get("ui", {})
+        ui = self.cfg.get("ui", {}) or {}
         try:
-            return float(ui.get("location_lat", 0.0)), float(ui.get("location_lon", 0.0))
+            return effective_station_lat_lon(ui)
         except (TypeError, ValueError):
             return None
 
@@ -572,11 +573,8 @@ class UdpAswatchlistListener:
         ]
 
     def _own_lat_lon_cfg(self) -> tuple[float, float]:
-        ui = self.cfg.get("ui", {})
-        try:
-            return float(ui.get("location_lat", 0.0)), float(ui.get("location_lon", 0.0))
-        except (TypeError, ValueError):
-            return 0.0, 0.0
+        ui = self.cfg.get("ui", {}) or {}
+        return effective_station_lat_lon(ui)
 
     def _summary_max_rows(self) -> int:
         try:

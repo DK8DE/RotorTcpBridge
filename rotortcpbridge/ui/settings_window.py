@@ -34,6 +34,7 @@ from ..app_icon import get_app_icon
 from ..command_catalog import command_specs, format_cmd_tooltip
 from ..ports import list_serial_ports
 from ..i18n import t, load_lang
+from ..geo_utils import maidenhead_to_lat_lon
 from ..net_utils import ipv4_subnet_broadcast_default
 from ..rotor_controller import SYNC_UI_NAK_PREFIX
 from .ui_utils import px_to_dip
@@ -516,6 +517,10 @@ class SettingsWindow(QDialog):
         self._lbl_controller_led.setFixedSize(_led, _led)
         self._set_controller_led_ok(False)
         _lay_cont_id.addWidget(self._lbl_controller_led, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._lbl_controller_wait = QLabel(t("settings.controller_wait"))
+        self._lbl_controller_wait.setVisible(False)
+        self._lbl_controller_wait.setToolTip(t("settings.controller_wait_tooltip"))
+        _lay_cont_id.addWidget(self._lbl_controller_wait, 0, Qt.AlignmentFlag.AlignVCenter)
         _lay_cont_id.addStretch(1)
         fl_ctrl.addRow(t("settings.controller_id"), _row_cont_id)
         self.ed_cont_ant_1 = QLineEdit(str(_chw.get("ant_name_1", "") or "")[:9])
@@ -556,6 +561,29 @@ class SettingsWindow(QDialog):
         self.sp_cont_pwm_fast.valueChanged.connect(lambda: self._mark_pwm_dirty(1))
         fl_ctrl.addRow(t("settings.controller_pwm_slow"), self.sp_cont_pwm_slow)
         fl_ctrl.addRow(t("settings.controller_pwm_fast"), self.sp_cont_pwm_fast)
+        self.chk_cont_wind_anemo = QCheckBox(t("settings.controller_wind_anemo"))
+        self.chk_cont_wind_anemo.setChecked(bool(_chw.get("wind_anemometer", False)))
+        self.chk_cont_wind_anemo.setToolTip(t("settings.controller_wind_anemo_tooltip"))
+        self.chk_cont_wind_anemo.toggled.connect(self._mark_anemo_dirty)
+        fl_ctrl.addRow(self.chk_cont_wind_anemo)
+        self.cb_cont_encoder_delta = QComboBox()
+        self.cb_cont_encoder_delta.addItem(t("settings.controller_encoder_delta_0_1"), 1)
+        self.cb_cont_encoder_delta.addItem(t("settings.controller_encoder_delta_1"), 10)
+        try:
+            _ed = int(_chw.get("encoder_delta", 10))
+        except (TypeError, ValueError):
+            _ed = 10
+        if _ed not in (1, 10):
+            _ed = 10
+        self.cb_cont_encoder_delta.setCurrentIndex(0 if _ed == 1 else 1)
+        self.cb_cont_encoder_delta.setToolTip(t("settings.controller_encoder_delta_tooltip"))
+        self.cb_cont_encoder_delta.currentIndexChanged.connect(self._mark_delta_dirty)
+        fl_ctrl.addRow(t("settings.controller_encoder_delta"), self.cb_cont_encoder_delta)
+        self.chk_cont_antenna_realign = QCheckBox(t("settings.controller_antenna_realign"))
+        self.chk_cont_antenna_realign.setChecked(bool(_chw.get("antenna_realign_on_switch", False)))
+        self.chk_cont_antenna_realign.setToolTip(t("settings.controller_antenna_realign_tooltip"))
+        self.chk_cont_antenna_realign.toggled.connect(self._mark_cha_dirty)
+        fl_ctrl.addRow(self.chk_cont_antenna_realign)
         self.sp_cont_beep_freq = QSpinBox()
         self.sp_cont_beep_freq.setRange(100, 4000)
         try:
@@ -573,6 +601,9 @@ class SettingsWindow(QDialog):
             self.sp_cont_beep_vol.setValue(50)
         self.sp_cont_beep_vol.setToolTip(t("settings.controller_beep_volume_tooltip"))
         self._controller_beep_dirty = [False, False]
+        self._controller_anemo_dirty = False
+        self._controller_delta_dirty = False
+        self._controller_cha_dirty = False
         self.sp_cont_beep_freq.valueChanged.connect(lambda: self._mark_beep_dirty(0))
         self.sp_cont_beep_vol.valueChanged.connect(lambda: self._mark_beep_dirty(1))
         fl_ctrl.addRow(t("settings.controller_beep_freq"), self.sp_cont_beep_freq)
@@ -618,6 +649,22 @@ class SettingsWindow(QDialog):
         self.ed_location_lon.setSuffix("°")
         self.ed_location_lon.setToolTip(t("settings.location_lon_tooltip"))
         form_ui.addRow(t("settings.location_lon"), self.ed_location_lon)
+        _row_locator = QWidget()
+        _lay_locator = QHBoxLayout(_row_locator)
+        _lay_locator.setContentsMargins(0, 0, 0, 0)
+        _lay_locator.setSpacing(px_to_dip(self, 8))
+        self.ed_location_locator = QLineEdit(str(cfg.get("ui", {}).get("location_locator", "") or ""))
+        self.ed_location_locator.setMaxLength(10)
+        self.ed_location_locator.setPlaceholderText("JO31jg")
+        self.ed_location_locator.setToolTip(t("settings.location_locator_tooltip"))
+        _lay_locator.addWidget(self.ed_location_locator, 1)
+        self.btn_locator_apply_coords = QPushButton(t("settings.btn_locator_apply_coords"))
+        self.btn_locator_apply_coords.setAutoDefault(False)
+        self.btn_locator_apply_coords.setDefault(False)
+        self.btn_locator_apply_coords.setToolTip(t("settings.btn_locator_apply_coords_tooltip"))
+        self.btn_locator_apply_coords.clicked.connect(self._on_locator_apply_coords)
+        _lay_locator.addWidget(self.btn_locator_apply_coords, 0)
+        form_ui.addRow(t("settings.location_locator"), _row_locator)
         self.sp_antenna_height = QDoubleSpinBox()
         self.sp_antenna_height.setRange(0.0, 500.0)
         self.sp_antenna_height.setDecimals(1)
@@ -1394,6 +1441,28 @@ class SettingsWindow(QDialog):
         except Exception:
             pass
 
+    def _on_locator_apply_coords(self) -> None:
+        """Maidenhead-Locator → Zellenmitte in die Koordinatenfelder übernehmen (offline)."""
+        s = "".join(str(self.ed_location_locator.text() or "").strip().upper().split())
+        if not s:
+            QMessageBox.information(
+                self,
+                t("settings.title"),
+                t("settings.locator_empty"),
+            )
+            return
+        ll = maidenhead_to_lat_lon(s)
+        if ll is None:
+            QMessageBox.warning(
+                self,
+                t("settings.title"),
+                t("settings.locator_invalid"),
+            )
+            return
+        self.ed_location_locator.setText(s)
+        self.ed_location_lat.setValue(ll[0])
+        self.ed_location_lon.setValue(ll[1])
+
     def _refresh_com_ports(self, select: str = ""):
         ports = list_serial_ports()
         current = select or self.cb_hw_com.currentText()
@@ -1485,6 +1554,9 @@ class SettingsWindow(QDialog):
         self.cfg.setdefault("ui", {})["language"] = new_lang
         self.cfg.setdefault("ui", {})["location_lat"] = float(self.ed_location_lat.value())
         self.cfg.setdefault("ui", {})["location_lon"] = float(self.ed_location_lon.value())
+        self.cfg.setdefault("ui", {})["location_locator"] = str(
+            self.ed_location_locator.text() or ""
+        ).strip()
         self.cfg.setdefault("ui", {})["antenna_height_m"] = float(self.sp_antenna_height.value())
         self.cfg.setdefault("ui", {})["antenna_names"] = [
             self.ed_antenna_name_1.text().strip() or t("settings.antenna_1"),
@@ -1532,6 +1604,9 @@ class SettingsWindow(QDialog):
         chw["fast_pwm"] = int(self.sp_cont_pwm_fast.value())
         chw["speaker_freq_hz"] = int(self.sp_cont_beep_freq.value())
         chw["speaker_volume"] = int(self.sp_cont_beep_vol.value())
+        chw["wind_anemometer"] = bool(self.chk_cont_wind_anemo.isChecked())
+        chw["encoder_delta"] = int(self.cb_cont_encoder_delta.currentData())
+        chw["antenna_realign_on_switch"] = bool(self.chk_cont_antenna_realign.isChecked())
 
         # AZ-Antennenversatz und Öffnungswinkel in den Rotor schreiben (SETANTOFF1–3, SETANGLE1–3)
         # Nur übertragen wenn Wert sich gegenüber dem Snapshot beim Öffnen tatsächlich geändert hat
@@ -1663,9 +1738,17 @@ class SettingsWindow(QDialog):
             return False
         return True
 
+    def _controller_encoder_delta_value(self) -> int:
+        v = self.cb_cont_encoder_delta.currentData()
+        try:
+            i = int(v)
+        except (TypeError, ValueError):
+            i = 10
+        return 1 if i == 1 else 10
+
     def _controller_snapshot_from_ui(
         self,
-    ) -> tuple[int, str, str, str, int, int, int, int]:
+    ) -> tuple[int, str, str, str, int, int, int, int, int, int, int]:
         return (
             int(self.sp_controller_id.value()),
             self._sanitize_controller_name(self.ed_cont_ant_1.text()),
@@ -1675,6 +1758,9 @@ class SettingsWindow(QDialog):
             int(self.sp_cont_pwm_fast.value()),
             int(self.sp_cont_beep_freq.value()),
             int(self.sp_cont_beep_vol.value()),
+            1 if self.chk_cont_wind_anemo.isChecked() else 0,
+            self._controller_encoder_delta_value(),
+            1 if self.chk_cont_antenna_realign.isChecked() else 0,
         )
 
     def _mark_controller_name_dirty(self, idx: int) -> None:
@@ -1701,10 +1787,28 @@ class SettingsWindow(QDialog):
         except Exception:
             pass
 
+    def _mark_anemo_dirty(self, _checked: bool = False) -> None:
+        if getattr(self, "_controller_suppress_dirty", False):
+            return
+        self._controller_anemo_dirty = True
+
+    def _mark_delta_dirty(self, _idx: int = -1) -> None:
+        if getattr(self, "_controller_suppress_dirty", False):
+            return
+        self._controller_delta_dirty = True
+
+    def _mark_cha_dirty(self, _checked: bool = False) -> None:
+        if getattr(self, "_controller_suppress_dirty", False):
+            return
+        self._controller_cha_dirty = True
+
     def _clear_controller_field_dirty(self) -> None:
         self._controller_name_dirty = [False, False, False]
         self._controller_pwm_dirty = [False, False]
         self._controller_beep_dirty = [False, False]
+        self._controller_anemo_dirty = False
+        self._controller_delta_dirty = False
+        self._controller_cha_dirty = False
 
     def _apply_controller_from_cfg_only(self) -> None:
         self._controller_suppress_dirty = True
@@ -1735,11 +1839,26 @@ class SettingsWindow(QDialog):
                 self.sp_cont_beep_vol.setValue(max(0, min(50, int(ch.get("speaker_volume", 50)))))
             except (TypeError, ValueError):
                 self.sp_cont_beep_vol.setValue(50)
+            self.chk_cont_wind_anemo.setChecked(bool(ch.get("wind_anemometer", False)))
+            try:
+                _ed = int(ch.get("encoder_delta", 10))
+            except (TypeError, ValueError):
+                _ed = 10
+            if _ed not in (1, 10):
+                _ed = 10
+            self.cb_cont_encoder_delta.setCurrentIndex(0 if _ed == 1 else 1)
+            self.chk_cont_antenna_realign.setChecked(bool(ch.get("antenna_realign_on_switch", False)))
             self._snapshot_controller = self._controller_snapshot_from_ui()
             self._set_controller_led_ok(False)
             self._clear_controller_field_dirty()
         finally:
             self._controller_suppress_dirty = False
+
+    def _set_controller_wait_visible(self, visible: bool) -> None:
+        """„Warten“ neben der LED nur während laufender Bus-Abfrage."""
+        if not hasattr(self, "_lbl_controller_wait"):
+            return
+        self._lbl_controller_wait.setVisible(bool(visible))
 
     def _set_controller_led_ok(self, ok: bool) -> None:
         """LED neben „ID setzen“: grün = alle Controller-Werte vom Bus gelesen, sonst rot."""
@@ -1787,6 +1906,7 @@ class SettingsWindow(QDialog):
         dst = self._controller_bus_dst()
         self.lbl_status.setText(t("settings.controller_status_reading"))
         self._set_controller_led_ok(False)
+        self._set_controller_wait_visible(True)
         QApplication.processEvents()
         c = self.ctrl
         self._controller_suppress_dirty = True
@@ -1835,9 +1955,52 @@ class SettingsWindow(QDialog):
                     w = self._parse_hw_int(str(rp).split(";")[0].strip())
                 if w is not None:
                     sp.setValue(max(lo, min(hi, w)))
+            rp_ano = c.sync_ui_command_response(dst, "GETCONANO", "0", "ACK_GETCONANO")
+            if _sync_nak_notimpl(rp_ano):
+                acks.append(True)
+            elif rp_ano is not None and str(rp_ano).startswith(SYNC_UI_NAK_PREFIX):
+                acks.append(False)
+            else:
+                acks.append(_sync_got_ack_value(rp_ano))
+                if rp_ano is not None and _sync_got_ack_value(rp_ano):
+                    w = self._parse_hw_int(rp_ano)
+                    if w is None:
+                        w = self._parse_hw_int(str(rp_ano).split(";")[0].strip())
+                    if w is not None:
+                        self.chk_cont_wind_anemo.setChecked(bool(int(w)))
+            rp_del = c.sync_ui_command_response(dst, "GETCONDELTA", "0", "ACK_GETCONDELTA")
+            if _sync_nak_notimpl(rp_del):
+                acks.append(True)
+            elif rp_del is not None and str(rp_del).startswith(SYNC_UI_NAK_PREFIX):
+                acks.append(False)
+            else:
+                acks.append(_sync_got_ack_value(rp_del))
+                if rp_del is not None and _sync_got_ack_value(rp_del):
+                    w = self._parse_hw_int(rp_del)
+                    if w is None:
+                        w = self._parse_hw_int(str(rp_del).split(";")[0].strip())
+                    if w is not None:
+                        wi = int(w)
+                        if wi == 1:
+                            self.cb_cont_encoder_delta.setCurrentIndex(0)
+                        elif wi == 10:
+                            self.cb_cont_encoder_delta.setCurrentIndex(1)
+            rp_cha = c.sync_ui_command_response(dst, "GETCONCHA", "0", "ACK_GETCONCHA")
+            if _sync_nak_notimpl(rp_cha):
+                acks.append(True)
+            elif rp_cha is not None and str(rp_cha).startswith(SYNC_UI_NAK_PREFIX):
+                acks.append(False)
+            else:
+                acks.append(_sync_got_ack_value(rp_cha))
+                if rp_cha is not None and _sync_got_ack_value(rp_cha):
+                    w = self._parse_hw_int(rp_cha)
+                    if w is None:
+                        w = self._parse_hw_int(str(rp_cha).split(";")[0].strip())
+                    if w is not None:
+                        self.chk_cont_antenna_realign.setChecked(bool(int(w)))
             # LED: alle Kern-Abfragen mit ACK; Piep (GETCONFRQ/GETLSL): NAK NOTIMPL zählt als Bus-OK.
-            # Anzahl = 1 (GETCONTID) + 3 (GETCONANTNAME1–3) + 4 (GETCONSPWM, GETCONFPWM, GETCONFRQ, GETLSL)
-            _n_ctrl_reads = 1 + 3 + 4
+            # Anzahl = 1 + 3 Namen + 4 PWM/Beep + GETCONANO + GETCONDELTA + GETCONCHA
+            _n_ctrl_reads = 1 + 3 + 4 + 1 + 1 + 1
             all_ok = len(acks) == _n_ctrl_reads and all(acks)
             self.lbl_status.setText(t("settings.controller_status_saved"))
             self._set_controller_led_ok(all_ok)
@@ -1845,6 +2008,7 @@ class SettingsWindow(QDialog):
             self._clear_controller_field_dirty()
         finally:
             self._controller_suppress_dirty = False
+            self._set_controller_wait_visible(False)
 
     def _save_controller_hw_if_changed(self) -> bool:
         if not self._controller_hw_enabled():
@@ -1856,6 +2020,8 @@ class SettingsWindow(QDialog):
             return True
         snap = getattr(self, "_snapshot_controller", None)
         cur = self._controller_snapshot_from_ui()
+        if snap is not None and len(snap) < len(cur):
+            snap = tuple(snap) + tuple(cur[i] for i in range(len(snap), len(cur)))
         if snap is None:
             snap = cur
         if snap == cur:
@@ -1893,6 +2059,18 @@ class SettingsWindow(QDialog):
                 all_ok = False
         if snap[7] != cur[7] or self._controller_beep_dirty[1]:
             r = c.sync_ui_command_response(dst, "SETLSL", str(int(cur[7])), "ACK_SETLSL")
+            if not _sync_got_ack_value(r):
+                all_ok = False
+        if snap[8] != cur[8] or self._controller_anemo_dirty:
+            r = c.sync_ui_command_response(dst, "SETCONANO", str(int(cur[8])), "ACK_SETCONANO")
+            if not _sync_got_ack_value(r):
+                all_ok = False
+        if snap[9] != cur[9] or self._controller_delta_dirty:
+            r = c.sync_ui_command_response(dst, "SETCONDELTA", str(int(cur[9])), "ACK_SETCONDELTA")
+            if not _sync_got_ack_value(r):
+                all_ok = False
+        if snap[10] != cur[10] or self._controller_cha_dirty:
+            r = c.sync_ui_command_response(dst, "SETCONCHA", str(int(cur[10])), "ACK_SETCONCHA")
             if not _sync_got_ack_value(r):
                 all_ok = False
         if all_ok:

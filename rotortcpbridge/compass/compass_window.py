@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from ..app_icon import get_app_icon
 from ..angle_utils import clamp_el, fmt_deg, om_beam_contributions_per_sector, wrap_deg
-from ..geo_utils import bearing_deg, haversine_km
+from ..geo_utils import bearing_deg, effective_station_lat_lon, haversine_km
 from ..i18n import t
 from ..ui.ui_utils import px_to_dip
 from .compass_az_window import CompassWidget
@@ -589,12 +589,8 @@ class CompassWindow(QDialog):
         """Erwartete OM-Dichte je Sektor: nur Stationen mit d ≤ Reichweite; Gewichtung über Öffnungswinkel."""
         n = self._om_radar_sector_count()
         counts = [0.0] * n
-        ui = self.cfg.get("ui", {})
-        try:
-            lat0 = float(ui.get("location_lat", 49.502651))
-            lon0 = float(ui.get("location_lon", 8.375019))
-        except (TypeError, ValueError):
-            return counts
+        ui = self.cfg.get("ui", {}) or {}
+        lat0, lon0 = effective_station_lat_lon(ui)
         fn = self._aswatch_marker_fn
         markers = fn() if fn else []
         if not markers:

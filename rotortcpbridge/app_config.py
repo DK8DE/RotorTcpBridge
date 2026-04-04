@@ -104,6 +104,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # Standortkoordinaten (Breite/Länge in Grad dezimal)
         "location_lat": 49.502651,
         "location_lon": 8.375019,
+        "location_locator": "",
         # Offline-Karte: True = lokale Tiles aus KartenLight-/KartenDark-Ordner verwenden
         "map_offline": False,
         # Amateurfunk-Locator: True = Maidenhead-Grid als Overlay einblenden

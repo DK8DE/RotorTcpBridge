@@ -4,7 +4,7 @@ import time
 from typing import Callable, Optional
 
 from PySide6.QtCore import QEvent, QTimer, Qt, Slot
-from PySide6.QtGui import QAction, QCloseEvent, QPalette, QShowEvent
+from PySide6.QtGui import QAction, QCloseEvent, QHideEvent, QPalette, QShowEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -23,6 +23,11 @@ from ..app_icon import get_app_icon
 from ..angle_utils import clamp_el, fmt_deg, om_beam_contributions_per_sector, wrap_deg
 from ..geo_utils import bearing_deg, effective_station_lat_lon, haversine_km
 from ..i18n import t
+from ..ui.favorite_selection_sync import (
+    apply_saved_selection_to_favorites_combo,
+    clear_selection_if_favorite_removed,
+    persist_favorite_selection,
+)
 from ..ui.ui_utils import px_to_dip
 from .compass_az_window import CompassWidget
 from .compass_el_window import ElevationCompassWidget
@@ -64,9 +69,11 @@ class CompassWindow(QDialog):
         # AZ Standzeit-Ring (nur Session): je Antenne (0–2) eigene Sektorliste, parallel geführt
         self._dwell_az_seconds_per_ant: list[list[float]] = [[], [], []]
         self._dwell_prev_mono: Optional[float] = None
-        # Bei SETPOSDG o.ä.: target_d10 ändert sich → Soll-Eingabe auch bei Fokus nachziehen
+        # Bei SETPOSDG / SETPOSCC: effektives Bus-Soll ändert sich → Eingabe auch bei Fokus nachziehen
         self._compass_last_bus_target_d10_az: Optional[int] = None
         self._compass_last_bus_target_d10_el: Optional[int] = None
+        # Letzte gemeldete Strommap an Controller — nur bei Änderung neu setzen (wie die gezeichneten Ringe)
+        self._last_strom_notify_key: tuple[bool, bool] | None = None
 
         root = QVBoxLayout(self)
 
@@ -269,7 +276,7 @@ class CompassWindow(QDialog):
         self._refresh_antenna_dropdown()
 
     def _refresh_antenna_dropdown(self) -> None:
-        """Dropdown-Einträge mit aktuellen Versatzwerten aktualisieren; Index aus cfg (single source of truth)."""
+        """Dropdown-Einträge mit aktuellen Versatzwerten aktualisieren; Index aus cfg."""
         idx = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
         self.cb_antenna.blockSignals(True)
         self.cb_antenna.clear()
@@ -317,8 +324,10 @@ class CompassWindow(QDialog):
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
+        self._last_strom_notify_key = None
         self._apply_label_colors_from_palette()
         self._refresh_antenna_dropdown()
+        self._refresh_favorites_dropdown()
         if hasattr(self.ctrl, "set_compass_window_open"):
             self.ctrl.set_compass_window_open(True)
         self.sync_heatmap_controls_from_cfg()
@@ -335,6 +344,13 @@ class CompassWindow(QDialog):
         QTimer.singleShot(300, self._request_immediate_stats_delayed)
         self._tick()
 
+    def hideEvent(self, event: QHideEvent) -> None:
+        """Minimieren: wie schließen für Bus-Polling (closeEvent fehlt bei Minimize)."""
+        self._antenna_request_timer.stop()
+        if hasattr(self.ctrl, "set_compass_window_open"):
+            self.ctrl.set_compass_window_open(False)
+        super().hideEvent(event)
+
     def closeEvent(self, event: QCloseEvent) -> None:
         self._antenna_request_timer.stop()
         if hasattr(self.ctrl, "on_antenna_offsets_changed"):
@@ -347,13 +363,34 @@ class CompassWindow(QDialog):
         super().changeEvent(event)
         if event.type() == QEvent.Type.PaletteChange:
             self._apply_label_colors_from_palette()
+        elif event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
+            self._antenna_request_timer.stop()
+            if hasattr(self.ctrl, "set_compass_window_open"):
+                self.ctrl.set_compass_window_open(False)
+
+    def sync_az_rotor_target_from_controller(self) -> None:
+        """Internes AZ-Soll (Rotor) an ctrl.target_d10 anpassen (nach SETPOSDG)."""
+        try:
+            self._target_az = float(self.ctrl.az.target_d10) / 10.0
+        except Exception:
+            pass
 
     @Slot()
     def _on_antenna_changed(self) -> None:
         """Antenne gewechselt → Versatz für Zeiger, Heatmap und Dreieck aktualisieren."""
+        old = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
         idx = max(0, min(2, self.cb_antenna.currentIndex()))
         if "ui" not in self.cfg:
             self.cfg["ui"] = {}
+        if old != idx and hasattr(self.ctrl, "align_az_bearing_after_antenna_switch"):
+            try:
+                self.ctrl.align_az_bearing_after_antenna_switch(old, idx, self.cfg)
+            except Exception:
+                pass
+            try:
+                self.sync_az_rotor_target_from_controller()
+            except Exception:
+                pass
         self.cfg["ui"]["compass_antenna"] = idx
         try:
             self.save_cfg_cb(self.cfg)
@@ -512,6 +549,7 @@ class CompassWindow(QDialog):
         mode_el = str(ui.get("compass_heatmap_el", "off"))
         self._set_heatmap_el_combo_to_mode(mode_el)
         self.el_compass.set_heatmap_visible(str(self.cb_heatmap_el.currentData() or "off") == "strom")
+        self._notify_ctrl_strom_heatmap_flags()
 
     def set_aswatch_marker_provider(self, fn: Optional[Callable[[], list]]) -> None:
         """Liefert die letzte AirScout/KST-Markerliste [{lat, lon, ...}, ...]."""
@@ -534,6 +572,32 @@ class CompassWindow(QDialog):
         self._fill_heatmap_az_list()
         self._sync_heatmap_az_list_checks_from_cfg()
         self._apply_heatmap_az_modes_to_widget()
+        ui = self.cfg.setdefault("ui", {})
+        mode_el = str(ui.get("compass_heatmap_el", "off"))
+        self._set_heatmap_el_combo_to_mode(mode_el)
+        self.el_compass.set_heatmap_visible(str(self.cb_heatmap_el.currentData() or "off") == "strom")
+        self._notify_ctrl_strom_heatmap_flags()
+
+    def _notify_ctrl_strom_heatmap_flags(self) -> None:
+        """Controller: schneller ACC-Takt nur wenn Strom-Ring gezeichnet wird (Haken „Strommap“)."""
+        if not hasattr(self.ctrl, "set_compass_strom_heatmap_active"):
+            return
+        modes = self._get_heatmap_az_modes_from_list()
+        az_strom = "strom" in modes
+        # EL: Anzeige/Combobox ist maßgeblich (nicht nur cfg — kann bei abgewähltem Strom noch „strom“ enthalten)
+        try:
+            el_mode = str(self.cb_heatmap_el.currentData() or "off").lower()
+        except Exception:
+            el_mode = str((self.cfg.get("ui") or {}).get("compass_heatmap_el", "off")).lower()
+        el_strom = el_mode == "strom"
+        key = (az_strom, el_strom)
+        if self._last_strom_notify_key == key:
+            return
+        self._last_strom_notify_key = key
+        try:
+            self.ctrl.set_compass_strom_heatmap_active(az_strom, el_strom)
+        except Exception:
+            pass
 
     def _om_radar_sector_count(self) -> int:
         try:
@@ -664,6 +728,7 @@ class CompassWindow(QDialog):
         except Exception:
             pass
         self._apply_heatmap_az_modes_to_widget()
+        self._notify_ctrl_strom_heatmap_flags()
 
     def _on_reset_dwell_az(self) -> None:
         """Kumulative Standzeiten pro Sektor (Session) für alle drei Antennen auf 0 setzen."""
@@ -680,6 +745,7 @@ class CompassWindow(QDialog):
         except Exception:
             pass
         self.el_compass.set_heatmap_visible(mode == "strom")
+        self._notify_ctrl_strom_heatmap_flags()
 
     def _get_favorites(self) -> list[dict]:
         """Liefert Liste der gespeicherten Favoriten aus der Config."""
@@ -718,6 +784,7 @@ class CompassWindow(QDialog):
         else:
             for f in favs:
                 self.cb_fav.addItem(f"{f['name']} ({f['az']:.1f}°, {f['el']:.1f}°)", f)
+        apply_saved_selection_to_favorites_combo(self.cb_fav, self.cfg)
         self.cb_fav.blockSignals(False)
 
     @Slot(int)
@@ -749,6 +816,11 @@ class CompassWindow(QDialog):
         except Exception:
             pass
         self._sync_compass_bus_cache_from_ctrl()
+        persist_favorite_selection(self.cfg, data)
+        try:
+            self.save_cfg_cb(self.cfg)
+        except Exception:
+            pass
 
     @Slot()
     def _on_fav_save(self) -> None:
@@ -804,6 +876,7 @@ class CompassWindow(QDialog):
         ]
         if "ui" not in self.cfg:
             self.cfg["ui"] = {}
+        clear_selection_if_favorite_removed(self.cfg, data)
         self.cfg["ui"]["compass_favorites"] = favs
         try:
             self.save_cfg_cb(self.cfg)
@@ -893,6 +966,12 @@ class CompassWindow(QDialog):
             self._tick_az()
         if bool(self.gb_el.isVisible()):
             self._tick_el()
+        # Controller-Flags = gleiche Logik wie Ring-Anzeige (Haken Strommap), sonst falscher ACC-Takt
+        if self.isVisible():
+            try:
+                self._notify_ctrl_strom_heatmap_flags()
+            except Exception:
+                pass
 
     def _get_antenna_offset_az(self) -> float:
         """Versatz der gewählten Antenne für AZ (0–360°). Rotor-Werte vor Config-Fallback."""
@@ -916,6 +995,19 @@ class CompassWindow(QDialog):
             return float(offsets[slot - 1])
         except (IndexError, TypeError, ValueError):
             return 0.0
+
+    def _effective_az_bus_target_d10(self) -> int:
+        """Rotor-target_d10 oder SETPOSCC (Kompass/Encoder), was gerade den Sollzeiger speist."""
+        try:
+            cc = getattr(self.ctrl.az, "compass_target_d10", None)
+            if cc is not None:
+                return int(cc)
+        except Exception:
+            pass
+        try:
+            return int(getattr(self.ctrl.az, "target_d10", 0))
+        except Exception:
+            return 0
 
     def _tick_az(self) -> None:
         now = time.time()
@@ -983,7 +1075,10 @@ class CompassWindow(QDialog):
         elif tgt is None:
             try:
                 axis = self.ctrl.az
-                axis_target_d10 = int(getattr(axis, "target_d10"))
+                cc = getattr(axis, "compass_target_d10", None)
+                axis_target_d10 = (
+                    int(cc) if cc is not None else int(getattr(axis, "target_d10"))
+                )
                 axis_last_set_ts = float(getattr(axis, "last_set_sent_ts", 0.0) or 0.0)
                 axis_last_set_target_d10 = getattr(axis, "last_set_sent_target_d10", None)
                 tgt = float(axis_target_d10) / 10.0
@@ -991,6 +1086,7 @@ class CompassWindow(QDialog):
                     axis_target_d10 == 0
                     and axis_last_set_ts <= 0.0
                     and axis_last_set_target_d10 is None
+                    and cc is None
                 )
             except Exception:
                 tgt = None
@@ -1007,11 +1103,13 @@ class CompassWindow(QDialog):
             if getattr(self.ctrl.az, "last_set_sent_target_d10", None) is None:
                 tgt = self._target_az
 
-        # Ohne Referenz kein Soll aus Bus (target_d10=0 flackert sonst mit „–“)
+        # Ohne Referenz kein Soll aus Bus (target_d10=0 flackert sonst mit „–“);
+        # SETPOSCC (Encoder) darf trotzdem den Sollzeiger setzen.
         if (
             not bool(getattr(self.ctrl.az, "referenced", False))
             and self._target_az is None
             and self._stop_az_ts is None
+            and getattr(self.ctrl.az, "compass_target_d10", None) is None
         ):
             tgt = None
 
@@ -1067,10 +1165,7 @@ class CompassWindow(QDialog):
             tgt_display = wrap_deg(tgt + off_az)
             self.az_compass.set_target_deg(tgt_display)
             desired_txt = f"{tgt_display:.1f}"
-            try:
-                bus_d10 = int(getattr(self.ctrl.az, "target_d10", 0))
-            except Exception:
-                bus_d10 = 0
+            bus_d10 = self._effective_az_bus_target_d10()
             bus_changed = (
                 self._compass_last_bus_target_d10_az is None
                 or bus_d10 != self._compass_last_bus_target_d10_az
@@ -1275,7 +1370,7 @@ class CompassWindow(QDialog):
     def _sync_compass_bus_cache_from_ctrl(self) -> None:
         """Nach lokalem Setzen von target_d10: Tick erkennt kein falsches „Bus geändert“."""
         try:
-            self._compass_last_bus_target_d10_az = int(getattr(self.ctrl.az, "target_d10", 0))
+            self._compass_last_bus_target_d10_az = self._effective_az_bus_target_d10()
         except Exception:
             pass
         try:
@@ -1322,7 +1417,7 @@ class CompassWindow(QDialog):
         except Exception:
             pass
         try:
-            self._compass_last_bus_target_d10_az = int(getattr(self.ctrl.az, "target_d10", 0))
+            self._compass_last_bus_target_d10_az = self._effective_az_bus_target_d10()
         except Exception:
             pass
 
@@ -1361,7 +1456,7 @@ class CompassWindow(QDialog):
             self._target_az = wrap_deg(cur)  # Soll springt auf Position bei STOP
             # Controller mitschreiben, damit keine andere Stelle alte Soll-Position zurückholt
             self.ctrl.az.target_d10 = int(round(self._target_az * 10.0))
-            self._compass_last_bus_target_d10_az = int(self.ctrl.az.target_d10)
+            self._compass_last_bus_target_d10_az = self._effective_az_bus_target_d10()
         except Exception:
             pass
         try:

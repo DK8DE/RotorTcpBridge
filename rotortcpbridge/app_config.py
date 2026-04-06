@@ -40,6 +40,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "slave_el": 21,
         "enable_az": True,
         "enable_el": False,
+        # SETPOSCC vom Bus: Master-IDs ignorieren (z. B. [2] wenn Stör-Telegramme den Soll verfälschen)
+        "setposcc_ignore_src_master_ids": [],
     },
     "spid": {"ph": 10, "pv": 10},
     "polling_ms": {

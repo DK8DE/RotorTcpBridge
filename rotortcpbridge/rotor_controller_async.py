@@ -27,7 +27,7 @@ class RotorControllerAsyncMixin:
             # SETPOSDG an unseren Rotor (Mitschnitt; auch bei gleicher Master-ID wie wir,
             # z. B. zweiter Rechner / Echo auf dem Bus – Ziel muss trotzdem ins UI)
             cmd_u = str(tel.cmd or "").strip().upper()
-            if cmd_u == "SETPOSDG" and (d == saz or d == sel):
+            if cmd_u in ("SETPOSDG", "SETPOSCC") and (d == saz or d == sel):
                 return True
             # Broadcast: gewählte Antenne (alle Teilnehmer)
             if cmd_u == "SETASELECT" and d == int(BROADCAST_DST):
@@ -63,8 +63,49 @@ class RotorControllerAsyncMixin:
                 saz = int(self.slave_az)
                 sel = int(self.slave_el)
                 if dst == saz or dst == sel:
-                    self._apply_local_state_for_ui_command(dst, "SETPOSDG", tel.params)
+                    self._apply_local_state_for_ui_command(
+                        dst, "SETPOSDG", tel.params, from_bus_sniff=True
+                    )
                     ax = self.az if dst == saz else self.el
+                    ax.online = True
+                    ax.last_rx_ts = time.time()
+            except Exception:
+                pass
+            return
+        if cmd_u == "SETPOSCC":
+            try:
+                dst = int(tel.dst)
+                saz = int(self.slave_az)
+                sel = int(self.slave_el)
+                mid = int(self.master_id)
+                # Encoder kann SETPOSCC an Rotor-Slave ODER an unsere Master-ID senden (Kompass-Soll).
+                axis_dst: int | None = None
+                if dst == saz or dst == sel:
+                    axis_dst = dst
+                elif dst == mid:
+                    if self.enable_az:
+                        axis_dst = saz
+                    elif self.enable_el:
+                        axis_dst = sel
+                if axis_dst is not None:
+                    try:
+                        self.note_setposcc_bus_activity()
+                    except Exception:
+                        pass
+                    skip = False
+                    try:
+                        ign = getattr(
+                            self, "setposcc_ignore_src_master_ids", None
+                        ) or []
+                        if ign and int(tel.src) in [int(x) for x in ign]:
+                            skip = True
+                    except Exception:
+                        pass
+                    if not skip:
+                        self._apply_local_state_for_ui_command(
+                            int(axis_dst), "SETPOSCC", tel.params
+                        )
+                    ax = self.az if int(axis_dst) == saz else self.el
                     ax.online = True
                     ax.last_rx_ts = time.time()
             except Exception:
@@ -365,6 +406,14 @@ class RotorControllerAsyncMixin:
                     state = parse_int(parts[0]) if parts else None
                     if state is not None:
                         axis_state.cal_state = int(state)
+                        if state == 2:
+                            axis_state.cal_progress = 100
+                        elif state in (0, 3):
+                            axis_state.cal_progress = 0
+                        elif len(parts) > 1:
+                            pg = parse_int(parts[1].strip())
+                            if pg is not None:
+                                axis_state.cal_progress = max(0, min(100, int(pg)))
                         if state != 2 and axis_name == "AZ":
                             axis_state.cal_bins_cw = None
                             axis_state.cal_bins_ccw = None

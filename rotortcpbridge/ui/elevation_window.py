@@ -347,6 +347,26 @@ def _sky_wave_analysis(
     }
 
 
+def _chart_index_for_distance_km(dists: List[float], km: float) -> Optional[int]:
+    """Index des Stützpunkts nächst bei km (Chart-x = Kategorien aus dists)."""
+    if km <= 0 or not dists:
+        return None
+    if km > float(dists[-1]) + 1e-9:
+        return None
+    return min(range(len(dists)), key=lambda i: abs(float(dists[i]) - km))
+
+
+def _merge_chart_annotation_js(base_js: str, extra_blocks: List[str]) -> str:
+    """Chart.js annotation: JS-Objekt-Text erweitern (unquoted keys wie bisher)."""
+    if not extra_blocks:
+        return base_js
+    b = base_js.strip()
+    if b == "{}":
+        return "{\n" + ",\n".join(extra_blocks) + "\n}"
+    inner = b[1:-1].strip()
+    return "{\n" + inner + ",\n" + ",\n".join(extra_blocks) + "\n}"
+
+
 # ── Optimales Band / Frequenzempfehlung ───────────────────────────────────
 
 # Amateurfunkbänder: (center MHz, Bandname, untere Grenze MHz, obere Grenze MHz)
@@ -1024,6 +1044,11 @@ html, body {{ height: 100%; background: {v["bg"]}; color: {v["fg"]};
         if horizon_dist_km > self._dist_km * 1.05:
             horizon_idx = None  # Horizont außerhalb des Profils
 
+        swpc = self._swpc_data
+        fo_f2 = float(swpc["fo_f2"]) if swpc else None
+        fo_e = float(swpc["fo_e"]) if swpc else None
+        sky = _sky_wave_analysis(self._dist_km, self._freq_mhz, fo_f2=fo_f2, fo_e=fo_e)
+
         # ── Infokarten ────────────────────────────────────────────────────
         diff_cards = ""
         annotation_js = "{}"  # Chart.js annotation – wird bei Hindernis befüllt
@@ -1129,6 +1154,87 @@ html, body {{ height: 100%; background: {v["bg"]}; color: {v["fg"]};
               }}
             }}"""
 
+        # Theoretische Mindest-Sprungweiten (E / F2) als Vertikale im Diagramm
+        skip_blocks: List[str] = []
+        if sky:
+            e_min = float(sky["e_min_km"])
+            f2_min = float(sky["f2_min_km"])
+            idx_e = _chart_index_for_distance_km(dists, e_min)
+            idx_f2 = _chart_index_for_distance_km(dists, f2_min)
+            col_e = "#a855f7" if self._dark else "#7c3aed"
+            col_f2 = "#38bdf8" if self._dark else "#0284c7"
+            if idx_e is not None and idx_f2 is not None and idx_e == idx_f2:
+                skip_blocks.append(
+                    f"""skipMin: {{
+                type: 'line',
+                scaleID: 'x',
+                value: {idx_e},
+                borderColor: '{col_e}',
+                borderWidth: 1.5,
+                borderDash: [2, 3],
+                label: {{
+                  display: true,
+                  content: {json.dumps(_tr("elevation.chart_skip_combined", e=f"{e_min:.0f}", f2=f"{f2_min:.0f}"))},
+                  position: 'start',
+                  yAdjust: 18,
+                  clamp: true,
+                  color: '{col_e}',
+                  backgroundColor: '{v["card_bg"]}cc',
+                  font: {{ size: 10 }},
+                  padding: 3,
+                  borderRadius: 3
+                }}
+              }}"""
+                )
+            else:
+                if idx_e is not None:
+                    skip_blocks.append(
+                        f"""skipE: {{
+                type: 'line',
+                scaleID: 'x',
+                value: {idx_e},
+                borderColor: '{col_e}',
+                borderWidth: 1.5,
+                borderDash: [2, 3],
+                label: {{
+                  display: true,
+                  content: {json.dumps(_tr("elevation.chart_skip_e", km=f"{e_min:.0f}"))},
+                  position: 'start',
+                  yAdjust: 18,
+                  clamp: true,
+                  color: '{col_e}',
+                  backgroundColor: '{v["card_bg"]}cc',
+                  font: {{ size: 10 }},
+                  padding: 3,
+                  borderRadius: 3
+                }}
+              }}"""
+                    )
+                if idx_f2 is not None:
+                    skip_blocks.append(
+                        f"""skipF2: {{
+                type: 'line',
+                scaleID: 'x',
+                value: {idx_f2},
+                borderColor: '{col_f2}',
+                borderWidth: 1.5,
+                borderDash: [3, 2],
+                label: {{
+                  display: true,
+                  content: {json.dumps(_tr("elevation.chart_skip_f2", km=f"{f2_min:.0f}"))},
+                  position: 'center',
+                  yAdjust: 0,
+                  clamp: true,
+                  color: '{col_f2}',
+                  backgroundColor: '{v["card_bg"]}cc',
+                  font: {{ size: 10 }},
+                  padding: 3,
+                  borderRadius: 3
+                }}
+              }}"""
+                    )
+        annotation_js = _merge_chart_annotation_js(annotation_js, skip_blocks)
+
         # Sichtlinie-Status (einfach, für Karten ohne diff)
         blocked = any(e > l for e, l in list(zip(elevations, los))[1:-1])
         los_txt = (
@@ -1144,10 +1250,6 @@ html, body {{ height: 100%; background: {v["bg"]}; color: {v["fg"]};
         _tt_los = self._html_title_attr("elevation.tooltip_card_los")
 
         # ── Ionosphärische Ausbreitung (nur KW < 30 MHz) ─────────────────
-        swpc = self._swpc_data
-        fo_f2 = float(swpc["fo_f2"]) if swpc else None
-        fo_e = float(swpc["fo_e"]) if swpc else None
-        sky = _sky_wave_analysis(self._dist_km, self._freq_mhz, fo_f2=fo_f2, fo_e=fo_e)
         skywave_section = ""
         if sky:
             mode_cards_html = ""

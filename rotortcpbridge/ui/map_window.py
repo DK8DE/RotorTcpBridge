@@ -35,6 +35,11 @@ from ..geo_utils import (
     grayline_points,
 )
 from ..i18n import t
+from .favorite_selection_sync import (
+    apply_saved_selection_to_favorites_combo,
+    clear_selection_if_favorite_removed,
+    persist_favorite_selection,
+)
 from .elevation_window import ElevationProfileWindow
 from .map_html import build_map_html
 from .map_tiles import (
@@ -397,6 +402,54 @@ class MapWindow(QDialog):
             }
         ]
 
+    def _compute_az_target_bearing_line(
+        self, antenna_idx: int
+    ) -> tuple[list[list[float]] | None, str | None]:
+        """Soll-Linie wie Kompass-Sollzeiger: SETPOSCC (compass_target_d10) oder Motor-ziel target_d10."""
+        az_axis = getattr(self.ctrl, "az", None)
+        if az_axis is None:
+            return None, None
+        cc = getattr(az_axis, "compass_target_d10", None)
+        ref_ok = bool(getattr(az_axis, "referenced", False))
+        # Wie compass_window._tick_az: ohne Referenz kein Bus-Soll — SETPOSCC darf trotzdem zeigen.
+        if not ref_ok and cc is None:
+            return None, None
+        try:
+            tgt_d10 = int(cc) if cc is not None else int(getattr(az_axis, "target_d10", 0))
+        except Exception:
+            return None, None
+        axis_last_set_ts = float(getattr(az_axis, "last_set_sent_ts", 0.0) or 0.0)
+        axis_last_set_target_d10 = getattr(az_axis, "last_set_sent_target_d10", None)
+        unknown_target = (
+            tgt_d10 == 0
+            and axis_last_set_ts <= 0.0
+            and axis_last_set_target_d10 is None
+            and cc is None
+        )
+        if unknown_target:
+            return None, None
+        pos_d10 = getattr(az_axis, "pos_d10", None)
+        target_rotor_az = float(tgt_d10) / 10.0
+        if pos_d10 is not None:
+            cur_rotor = float(pos_d10) / 10.0
+            if abs(shortest_delta_deg(cur_rotor, target_rotor_az)) < 0.2:
+                return None, None
+        ui = self.cfg.get("ui", {}) or {}
+        lat, lon = effective_station_lat_lon(ui)
+        i = max(0, min(2, antenna_idx))
+        offs = ui.get("antenna_offsets_az", [0.0, 0.0, 0.0])
+        ranges = ui.get("antenna_ranges_az", [100.0, 100.0, 100.0])
+        offset = float(offs[i]) if i < len(offs) else 0.0
+        range_km = float(ranges[i]) if i < len(ranges) else 100.0
+        if range_km <= 0:
+            range_km = 100.0
+        range_km = min(4000.0, range_km)
+        bearing_display = wrap_deg(target_rotor_az + offset)
+        center_line = beam_center_line_points(lat, lon, bearing_display, range_km)
+        stroke = _MAP_ANTENNA_BEAM_COLORS[i][0]
+        darker = QColor(stroke).darker(150).name()
+        return [[p[0], p[1]] for p in center_line], darker
+
     def _get_antenna_offset_az(self) -> float:
         """Versatz der gewählten Antenne (wie Compass)."""
         ui = self.cfg.get("ui", {})
@@ -480,6 +533,7 @@ class MapWindow(QDialog):
         else:
             for f in favs:
                 self._cb_fav.addItem(f"{f['name']} ({f['az']:.1f}°, {f['el']:.1f}°)", f)
+        apply_saved_selection_to_favorites_combo(self._cb_fav, self.cfg)
         self._cb_fav.blockSignals(False)
 
     def _refresh_antenna_dropdown(self) -> None:
@@ -499,9 +553,15 @@ class MapWindow(QDialog):
 
     def _on_antenna_changed(self) -> None:
         """Antenne gewechselt → Config speichern, Karte aktualisiert sich über cfg."""
+        old = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
         idx = max(0, min(2, self._cb_antenna.currentIndex()))
         if "ui" not in self.cfg:
             self.cfg["ui"] = {}
+        if old != idx and hasattr(self.ctrl, "align_az_bearing_after_antenna_switch"):
+            try:
+                self.ctrl.align_az_bearing_after_antenna_switch(old, idx, self.cfg)
+            except Exception:
+                pass
         self.cfg["ui"]["compass_antenna"] = idx
         try:
             if self.save_cfg_cb:
@@ -527,6 +587,12 @@ class MapWindow(QDialog):
             self.ctrl.set_az_deg(rotor_az, force=True)
             if hasattr(self.ctrl, "set_el_deg"):
                 self.ctrl.set_el_deg(rotor_el, force=True)
+        except Exception:
+            pass
+        persist_favorite_selection(self.cfg, data)
+        try:
+            if self.save_cfg_cb:
+                self.save_cfg_cb(self.cfg)
         except Exception:
             pass
         self._refresh_map()
@@ -586,6 +652,7 @@ class MapWindow(QDialog):
         ]
         if "ui" not in self.cfg:
             self.cfg["ui"] = {}
+        clear_selection_if_favorite_removed(self.cfg, data)
         self.cfg["ui"]["compass_favorites"] = favs
         try:
             if self.save_cfg_cb:
@@ -899,6 +966,9 @@ class MapWindow(QDialog):
         ui = self.cfg.get("ui", {})
         antenna_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
         params["beams"] = self._compute_beams(self._smooth_rotor_az, antenna_idx)
+        tb_line, tb_color = self._compute_az_target_bearing_line(antenna_idx)
+        params["target_bearing_line"] = tb_line
+        params["target_bearing_color"] = tb_color
         offs = ui.get("antenna_offsets_az", [0.0, 0.0, 0.0])
         offset_sel = float(offs[antenna_idx]) if antenna_idx < len(offs) else 0.0
         params["azimuth"] = wrap_deg(float(self._smooth_rotor_az or 0.0) + offset_sel)
@@ -917,6 +987,8 @@ class MapWindow(QDialog):
                 "horizon_dist_km": params.get("horizon_dist_km", 0.0),
                 "popup_antenna": params.get("popup_antenna", "Antennenstandort"),
                 "popup_target": params.get("popup_target", "Ziel"),
+                "target_bearing_line": tb_line,
+                "target_bearing_color": tb_color,
             }
             js = f"if (typeof window.updateBeam === 'function') window.updateBeam({json.dumps(data)});"
             self._view.page().runJavaScript(js)

@@ -796,6 +796,43 @@ class CommandButtonsWindow(QDialog):
                     str(getattr(tel, "params", "") or ""),
                     "",
                 )
+                if cmd == "SETRAMP":
+                    cal_key = (dst, "SETCALIGNDG")
+                    if cal_key in self._send_set_inflight:
+                        return
+                    self._send_set_inflight.add(cal_key)
+
+                    def done_cal(tel2, err2):
+                        self._send_set_inflight.discard(cal_key)
+                        if err2 or tel2 is None:
+                            self.sig_send_result.emit(
+                                "SETCALIGNDG",
+                                "",
+                                "",
+                                str(err2 or "keine Antwort"),
+                            )
+                        else:
+                            self.sig_send_result.emit(
+                                "SETCALIGNDG",
+                                str(getattr(tel2, "cmd", "") or ""),
+                                str(getattr(tel2, "params", "") or ""),
+                                "",
+                            )
+
+                    try:
+                        self.ctrl.send_ui_command(
+                            dst,
+                            "SETCALIGNDG",
+                            params,
+                            expect_prefix="ACK_SETCALIGNDG",
+                            timeout_s=1.0,
+                            priority=0,
+                            on_done=done_cal,
+                            apply_local_state=False,
+                        )
+                    except Exception as e:
+                        self._send_set_inflight.discard(cal_key)
+                        self.sig_send_result.emit("SETCALIGNDG", "", "", str(e))
 
         try:
             self.ctrl.send_ui_command(

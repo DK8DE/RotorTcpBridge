@@ -35,6 +35,7 @@ _EXCLUDED_SET = frozenset(
         "NSTOP",
         "SETREF",
         "SETPOSDG",
+        "SETPOSCC",
         "SETCAL",
         "ABORTCAL",
         "DELCAL",

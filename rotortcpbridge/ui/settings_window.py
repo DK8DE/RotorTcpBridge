@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QEventLoop, QMetaObject, Qt, QTimer
-from PySide6.QtGui import QColor, QCloseEvent, QFont, QKeyEvent, QPalette, QShowEvent
+import time
+
+from PySide6.QtCore import QEvent, QEventLoop, QMetaObject, QRegularExpression, Qt, QTimer
+from PySide6.QtGui import (
+    QColor,
+    QCloseEvent,
+    QFont,
+    QHideEvent,
+    QKeyEvent,
+    QPalette,
+    QRegularExpressionValidator,
+    QShowEvent,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -19,6 +30,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -37,6 +49,7 @@ from ..i18n import t, load_lang
 from ..geo_utils import maidenhead_to_lat_lon
 from ..net_utils import ipv4_subnet_broadcast_default
 from ..rotor_controller import SYNC_UI_NAK_PREFIX
+from .led_widget import Led
 from .ui_utils import px_to_dip
 
 
@@ -94,9 +107,11 @@ class SettingsWindow(QDialog):
         self.setWindowTitle(t("settings.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        # Etwas breiter: linke Navigationsliste + Inhalt rechts
-        # +120 px zur Breite des rechten Inhaltsbereichs (Sidebar-Breite unverändert)
-        self.setFixedSize(px_to_dip(self, 600), px_to_dip(self, 620))
+        # Breite fix; Höhe orientiert sich am rechten Inhalt (Tab) und bleibt per Resize anpassbar.
+        self._settings_base_width_dip = 600
+        self._settings_min_height_dip = 760
+        self.setFixedWidth(px_to_dip(self, self._settings_base_width_dip))
+        self.setMinimumHeight(px_to_dip(self, self._settings_min_height_dip))
 
         main = QVBoxLayout(self)
 
@@ -387,15 +402,23 @@ class SettingsWindow(QDialog):
         _all_cmd_spec = {s.name.upper(): s for s in command_specs()}
         _spec_setcal = _all_cmd_spec.get("SETCAL")
         _spec_clrstat = _all_cmd_spec.get("CLRSTAT")
+        _spec_delcal = _all_cmd_spec.get("DELCAL")
+        _spec_getcalvalid = _all_cmd_spec.get("GETCALVALID")
+        _spec_getcalstate = _all_cmd_spec.get("GETCALSTATE")
 
         self.btn_cal_start = QPushButton(t("cmd.btn_start_cal"))
         self.btn_cal_start.setAutoDefault(False)
         self.btn_cal_start.setDefault(False)
-        self.btn_cal_reset = QPushButton(t("cmd.btn_reset_cal"))
+        self.btn_cal_del = QPushButton(t("settings.cal_btn_reset_ref"))
+        self.btn_cal_del.setAutoDefault(False)
+        self.btn_cal_del.setDefault(False)
+        self.btn_cal_reset = QPushButton(t("settings.cal_btn_reset_log"))
         self.btn_cal_reset.setAutoDefault(False)
         self.btn_cal_reset.setDefault(False)
         if _spec_setcal:
             self.btn_cal_start.setToolTip(format_cmd_tooltip(_spec_setcal))
+        if _spec_delcal:
+            self.btn_cal_del.setToolTip(format_cmd_tooltip(_spec_delcal))
         if _spec_clrstat:
             self.btn_cal_reset.setToolTip(format_cmd_tooltip(_spec_clrstat))
 
@@ -406,24 +429,40 @@ class SettingsWindow(QDialog):
         _st_pad = px_to_dip(self, 5)
         vl_st.setContentsMargins(_st_pad, _st_pad, _st_pad, _st_pad)
         vl_st.setSpacing(10)
-        gb_strom_cal = QGroupBox(t("settings.cal_label"))
+        self.gb_strom_cal = QGroupBox(t("settings.cal_label"))
         # Gleiches Layout wie Last-Heatmap-Gruppen (Standard-QGroupBox, kein Sonder-Stylesheet).
-        fl_strom_cal = QFormLayout(gb_strom_cal)
+        fl_strom_cal = QFormLayout(self.gb_strom_cal)
         self.btn_cal_help = QPushButton(t("settings.stats_help_btn"))
         self.btn_cal_help.setAutoDefault(False)
         self.btn_cal_help.setDefault(False)
         self.btn_cal_help.setToolTip(t("settings.stats_help_title"))
         self.btn_cal_help.clicked.connect(self._show_stats_calibration_help)
+        _led_cal_d = px_to_dip(self, 12)
+        self._led_cal_valid = Led(diameter=max(6, _led_cal_d))
+        if _spec_getcalvalid:
+            self._led_cal_valid.setToolTip(format_cmd_tooltip(_spec_getcalvalid))
         cal_btns = QHBoxLayout()
         cal_btns.setContentsMargins(0, 0, 0, 0)
         cal_btns.addWidget(self.btn_cal_start)
+        cal_btns.addWidget(self.btn_cal_del)
         cal_btns.addWidget(self.btn_cal_reset)
         cal_btns.addWidget(self.btn_cal_help)
         cal_btns.addStretch(1)
+        cal_btns.addWidget(self._led_cal_valid, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         _w_cal_btns = QWidget()
         _w_cal_btns.setLayout(cal_btns)
         fl_strom_cal.addRow(_w_cal_btns)
-        vl_st.addWidget(gb_strom_cal)
+        self._pb_cal = QProgressBar()
+        self._pb_cal.setRange(0, 100)
+        self._pb_cal.setValue(0)
+        self._pb_cal.setVisible(False)
+        self._pb_cal.setTextVisible(True)
+        self._pb_cal.setFormat("%p%")
+        self._pb_cal.setMinimumHeight(px_to_dip(self, 14))
+        if _spec_getcalstate:
+            self._pb_cal.setToolTip(format_cmd_tooltip(_spec_getcalstate))
+        fl_strom_cal.addRow(self._pb_cal)
+        vl_st.addWidget(self.gb_strom_cal)
 
         _stats_field_w = px_to_dip(self, 100)
 
@@ -456,8 +495,58 @@ class SettingsWindow(QDialog):
         fl_hm_az.addRow(self.btn_apply_cal_az)
         vl_st.addWidget(gb_hm_az)
 
-        gb_hm_el = QGroupBox(t("settings.stats_heatmap_group_el"))
-        fl_hm_el = QFormLayout(gb_hm_el)
+        self.gb_strom_cal_el = QGroupBox(t("settings.cal_label_el"))
+        fl_strom_cal_el = QFormLayout(self.gb_strom_cal_el)
+        self.btn_cal_start_el = QPushButton(t("cmd.btn_start_cal"))
+        self.btn_cal_start_el.setAutoDefault(False)
+        self.btn_cal_start_el.setDefault(False)
+        self.btn_cal_del_el = QPushButton(t("settings.cal_btn_reset_ref"))
+        self.btn_cal_del_el.setAutoDefault(False)
+        self.btn_cal_del_el.setDefault(False)
+        self.btn_cal_reset_el = QPushButton(t("settings.cal_btn_reset_log"))
+        self.btn_cal_reset_el.setAutoDefault(False)
+        self.btn_cal_reset_el.setDefault(False)
+        if _spec_setcal:
+            self.btn_cal_start_el.setToolTip(format_cmd_tooltip(_spec_setcal))
+        if _spec_delcal:
+            self.btn_cal_del_el.setToolTip(format_cmd_tooltip(_spec_delcal))
+        if _spec_clrstat:
+            self.btn_cal_reset_el.setToolTip(format_cmd_tooltip(_spec_clrstat))
+        self.btn_cal_help_el = QPushButton(t("settings.stats_help_btn"))
+        self.btn_cal_help_el.setAutoDefault(False)
+        self.btn_cal_help_el.setDefault(False)
+        self.btn_cal_help_el.setToolTip(t("settings.stats_help_title"))
+        self.btn_cal_help_el.clicked.connect(self._show_stats_calibration_help)
+        self._led_cal_valid_el = Led(diameter=max(6, _led_cal_d))
+        if _spec_getcalvalid:
+            self._led_cal_valid_el.setToolTip(format_cmd_tooltip(_spec_getcalvalid))
+        cal_btns_el = QHBoxLayout()
+        cal_btns_el.setContentsMargins(0, 0, 0, 0)
+        cal_btns_el.addWidget(self.btn_cal_start_el)
+        cal_btns_el.addWidget(self.btn_cal_del_el)
+        cal_btns_el.addWidget(self.btn_cal_reset_el)
+        cal_btns_el.addWidget(self.btn_cal_help_el)
+        cal_btns_el.addStretch(1)
+        cal_btns_el.addWidget(
+            self._led_cal_valid_el, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        _w_cal_btns_el = QWidget()
+        _w_cal_btns_el.setLayout(cal_btns_el)
+        fl_strom_cal_el.addRow(_w_cal_btns_el)
+        self._pb_cal_el = QProgressBar()
+        self._pb_cal_el.setRange(0, 100)
+        self._pb_cal_el.setValue(0)
+        self._pb_cal_el.setVisible(False)
+        self._pb_cal_el.setTextVisible(True)
+        self._pb_cal_el.setFormat("%p%")
+        self._pb_cal_el.setMinimumHeight(px_to_dip(self, 14))
+        if _spec_getcalstate:
+            self._pb_cal_el.setToolTip(format_cmd_tooltip(_spec_getcalstate))
+        fl_strom_cal_el.addRow(self._pb_cal_el)
+        vl_st.addWidget(self.gb_strom_cal_el)
+
+        self.gb_hm_el = QGroupBox(t("settings.stats_heatmap_group_el"))
+        fl_hm_el = QFormLayout(self.gb_hm_el)
         self.chk_heatmap_custom_el = QCheckBox(t("settings.stats_heatmap_custom"))
         self.chk_heatmap_custom_el.setChecked(bool(_ui_hm.get("heatmap_custom_el", False)))
         fl_hm_el.addRow(self.chk_heatmap_custom_el)
@@ -476,10 +565,20 @@ class SettingsWindow(QDialog):
         self.btn_apply_cal_el = QPushButton(t("settings.stats_apply_from_cal"))
         self.btn_apply_cal_el.setToolTip(t("settings.stats_apply_from_cal_tooltip"))
         fl_hm_el.addRow(self.btn_apply_cal_el)
-        vl_st.addWidget(gb_hm_el)
+        vl_st.addWidget(self.gb_hm_el)
         vl_st.addStretch(1)
 
         _chw = cfg.setdefault("controller_hw", {})
+        _ui_names = cfg.setdefault("ui", {})
+        _antenna_names_cfg = list(
+            _ui_names.get(
+                "antenna_names",
+                [t("settings.antenna_1"), t("settings.antenna_2"), t("settings.antenna_3")],
+            )
+        )
+        while len(_antenna_names_cfg) < 3:
+            _antenna_names_cfg.append(f"Antenne {len(_antenna_names_cfg) + 1}")
+
         pg_controller = QWidget()
         vl_ctrl = QVBoxLayout(pg_controller)
         _ctrl_pad = px_to_dip(self, 5)
@@ -523,26 +622,8 @@ class SettingsWindow(QDialog):
         _lay_cont_id.addWidget(self._lbl_controller_wait, 0, Qt.AlignmentFlag.AlignVCenter)
         _lay_cont_id.addStretch(1)
         fl_ctrl.addRow(t("settings.controller_id"), _row_cont_id)
-        self.ed_cont_ant_1 = QLineEdit(str(_chw.get("ant_name_1", "") or "")[:9])
-        self.ed_cont_ant_1.setMaxLength(9)
-        self.ed_cont_ant_1.setToolTip(t("settings.controller_ant_name_tooltip"))
-        self.ed_cont_ant_2 = QLineEdit(str(_chw.get("ant_name_2", "") or "")[:9])
-        self.ed_cont_ant_2.setMaxLength(9)
-        self.ed_cont_ant_2.setToolTip(t("settings.controller_ant_name_tooltip"))
-        self.ed_cont_ant_3 = QLineEdit(str(_chw.get("ant_name_3", "") or "")[:9])
-        self.ed_cont_ant_3.setMaxLength(9)
-        self.ed_cont_ant_3.setToolTip(t("settings.controller_ant_name_tooltip"))
-        fl_ctrl.addRow(t("settings.controller_ant_name", n=1), self.ed_cont_ant_1)
-        fl_ctrl.addRow(t("settings.controller_ant_name", n=2), self.ed_cont_ant_2)
-        fl_ctrl.addRow(t("settings.controller_ant_name", n=3), self.ed_cont_ant_3)
         self._controller_name_dirty = [False, False, False]
         self._controller_pwm_dirty = [False, False]
-        for _i, _ed in enumerate(
-            (self.ed_cont_ant_1, self.ed_cont_ant_2, self.ed_cont_ant_3),
-        ):
-            _ed.textChanged.connect(
-                lambda _=None, idx=_i: self._mark_controller_name_dirty(idx),
-            )
         self.sp_cont_pwm_slow = QSpinBox()
         self.sp_cont_pwm_slow.setRange(0, 100)
         try:
@@ -674,14 +755,7 @@ class SettingsWindow(QDialog):
         self.sp_antenna_height.setToolTip(t("settings.antenna_height_tooltip"))
         form_ui.addRow(t("settings.antenna_height"), self.sp_antenna_height)
         # --- Linke Spalte: Verbindung ---
-        antenna_names = list(
-            cfg.get("ui", {}).get(
-                "antenna_names",
-                [t("settings.antenna_1"), t("settings.antenna_2"), t("settings.antenna_3")],
-            )
-        )
-        while len(antenna_names) < 3:
-            antenna_names.append(f"Antenne {len(antenna_names) + 1}")
+        antenna_names = _antenna_names_cfg
 
         def _antenna_row(
             title: str,
@@ -695,7 +769,11 @@ class SettingsWindow(QDialog):
             _f = QFont(lbl_title.font())
             _f.setBold(True)
             lbl_title.setFont(_f)
-            name_ed = QLineEdit(name_text)
+            name_ed = QLineEdit(self._sanitize_controller_name(name_text))
+            name_ed.setMaxLength(9)
+            name_ed.setValidator(
+                QRegularExpressionValidator(QRegularExpression(r"[^#:$]*"))
+            )
             name_ed.setMinimumWidth(120)
             sp_off.setRange(0, 360)
             sp_off.setValue(0)
@@ -739,6 +817,23 @@ class SettingsWindow(QDialog):
         form_az = QFormLayout(self.gb_antenna_az)
         form_az.setHorizontalSpacing(10)
         form_az.setVerticalSpacing(8)
+        _row_ant_bus = QWidget()
+        _lay_ant_bus = QHBoxLayout(_row_ant_bus)
+        _lay_ant_bus.setContentsMargins(0, 0, 0, 0)
+        _lay_ant_bus.setSpacing(px_to_dip(self, 8))
+        self._lbl_antenna_names_led = QLabel()
+        self._lbl_antenna_names_led.setObjectName("antennaNamesReadLed")
+        self._lbl_antenna_names_led.setToolTip(t("settings.antenna_names_led_tooltip"))
+        _led_ant = px_to_dip(self, 12)
+        self._lbl_antenna_names_led.setFixedSize(_led_ant, _led_ant)
+        self._set_antenna_names_led_ok(False)
+        _lay_ant_bus.addWidget(self._lbl_antenna_names_led, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._lbl_antenna_names_wait = QLabel(t("settings.controller_wait"))
+        self._lbl_antenna_names_wait.setVisible(False)
+        self._lbl_antenna_names_wait.setToolTip(t("settings.controller_wait_tooltip"))
+        _lay_ant_bus.addWidget(self._lbl_antenna_names_wait, 0, Qt.AlignmentFlag.AlignVCenter)
+        _lay_ant_bus.addStretch(1)
+        form_az.addRow(t("settings.antenna_names_bus_row"), _row_ant_bus)
         self.sp_az_antoff_1 = QSpinBox()
         self.sp_az_antoff_2 = QSpinBox()
         self.sp_az_antoff_3 = QSpinBox()
@@ -827,13 +922,22 @@ class SettingsWindow(QDialog):
             self.ed_antenna_name_2,
             self.ed_antenna_name_3,
         ]
+        self._wire_antenna_name_sync()
 
         def _scroll_page(inner: QWidget) -> QScrollArea:
+            inner.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Preferred,
+            )
             sc = QScrollArea()
             sc.setWidgetResizable(True)
             sc.setFrameShape(QFrame.Shape.NoFrame)
             sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             sc.setWidget(inner)
+            sc.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Preferred,
+            )
             return sc
 
         pg_conn = QWidget()
@@ -905,10 +1009,14 @@ class SettingsWindow(QDialog):
         self._settings_nav.setMaximumWidth(_nav_w_max)
         self._settings_nav.setSizePolicy(
             QSizePolicy.Policy.Fixed,
-            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
         )
         self._settings_nav.setUniformItemSizes(True)
         self._settings_stack = QStackedWidget()
+        self._settings_stack.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
         self._settings_stack.addWidget(_scroll_page(pg_ui))
         self._settings_stack.addWidget(_scroll_page(pg_conn))
         self._settings_stack.addWidget(_scroll_page(pg_ant))
@@ -916,7 +1024,20 @@ class SettingsWindow(QDialog):
         self._settings_stack.addWidget(_scroll_page(pg_stats))
         self._settings_stack.addWidget(_scroll_page(pg_controller))
         self._tab_antenna_index = 2
+        self._tab_statistics_index = 4
         self._tab_controller_index = 5
+        self._calvalid_timer = QTimer(self)
+        self._calvalid_timer.setInterval(5000)
+        self._calvalid_timer.timeout.connect(self._poll_getcalvalid_once)
+        self._cal_progress_timer = QTimer(self)
+        self._cal_progress_timer.setInterval(1000)
+        self._cal_progress_timer.timeout.connect(self._tick_cal_progress_poll)
+        self._prev_cal_state_for_led_az: int | None = None
+        self._prev_cal_state_for_led_el: int | None = None
+        self._cal_poll_deadline_ts_az: float = 0.0
+        self._cal_poll_deadline_ts_el: float = 0.0
+        self._prev_cal_prog_st_az: int = -1
+        self._prev_cal_prog_st_el: int = -1
         for _lbl in (
             t("settings.group_ui"),
             t("settings.group_connection"),
@@ -935,13 +1056,21 @@ class SettingsWindow(QDialog):
         _nav_lay.addWidget(self._settings_nav)
         self._apply_settings_nav_style()
 
-        _tabs_body = QWidget()
-        _tabs_h = QHBoxLayout(_tabs_body)
+        self._tabs_body = QWidget()
+        self._tabs_body.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        _tabs_h = QHBoxLayout(self._tabs_body)
         _tabs_h.setContentsMargins(0, 0, 0, 0)
         _tabs_h.setSpacing(px_to_dip(self, 8))
+        _tabs_h.setAlignment(Qt.AlignmentFlag.AlignTop)
         _tabs_h.addWidget(self._settings_nav_wrap, 0)
         _tabs_h.addWidget(self._settings_stack, 1)
-        main.addWidget(_tabs_body, 1)
+        main.addWidget(self._tabs_body, 1)
+        self._settings_stack.currentChanged.connect(
+            lambda _idx: QTimer.singleShot(0, self._fit_settings_window_to_content)
+        )
 
         self.chk_enable_az.installEventFilter(self)
         self.chk_enable_el.installEventFilter(self)
@@ -977,8 +1106,12 @@ class SettingsWindow(QDialog):
         self.lbl_status = QLabel("")
         self.lbl_status.setStyleSheet("color: gray; font-style: italic;")
         self.lbl_status.setWordWrap(True)
-        self.btn_cal_start.clicked.connect(self._on_settings_cal_start)
-        self.btn_cal_reset.clicked.connect(self._on_settings_cal_reset)
+        self.btn_cal_start.clicked.connect(self._on_settings_cal_start_az)
+        self.btn_cal_reset.clicked.connect(self._on_settings_cal_reset_az)
+        self.btn_cal_del.clicked.connect(self._on_settings_cal_delcal_az)
+        self.btn_cal_start_el.clicked.connect(self._on_settings_cal_start_el)
+        self.btn_cal_reset_el.clicked.connect(self._on_settings_cal_reset_el)
+        self.btn_cal_del_el.clicked.connect(self._on_settings_cal_delcal_el)
         self.btn_apply_cal_az.clicked.connect(self._on_apply_cal_heatmap_az)
         self.btn_apply_cal_el.clicked.connect(self._on_apply_cal_heatmap_el)
         btnrow = QHBoxLayout()
@@ -987,6 +1120,45 @@ class SettingsWindow(QDialog):
         btn_save_close.clicked.connect(self._save_and_close)
         btnrow.addWidget(btn_save_close)
         main.addLayout(btnrow)
+
+    def _fit_settings_window_to_content(self) -> None:
+        """Fensterhöhe an den aktuellen rechten Tab-Inhalt anpassen (Breite bleibt fix)."""
+        lay = self.layout()
+        if lay is None or getattr(self, "_tabs_body", None) is None:
+            return
+        w = self.width()
+        if w <= 0:
+            w = px_to_dip(self, self._settings_base_width_dip)
+        cw = self._settings_stack.currentWidget()
+        if cw is not None:
+            cw.updateGeometry()
+        self._settings_stack.updateGeometry()
+        self._tabs_body.updateGeometry()
+        self.updateGeometry()
+
+        margins = lay.contentsMargins()
+        sp = lay.spacing() if lay.spacing() >= 0 else 0
+        n = lay.count()
+        total = margins.top() + margins.bottom()
+        for i in range(n):
+            it = lay.itemAt(i)
+            if it is None:
+                continue
+            wdg = it.widget()
+            if wdg is not None:
+                total += wdg.sizeHint().height()
+            elif it.layout() is not None:
+                total += it.layout().sizeHint().height()
+            if i < n - 1:
+                total += sp
+
+        min_h = px_to_dip(self, self._settings_min_height_dip)
+        total = max(min_h, total)
+        scr = self.screen()
+        if scr is not None:
+            cap = int(scr.availableGeometry().height() * 0.92)
+            total = min(total, cap)
+        self.resize(w, total)
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
@@ -1002,8 +1174,9 @@ class SettingsWindow(QDialog):
         self._antenna_refresh_timer.start()
         self._antenna_request_timer.start()
         self._antenna_giveup_timer.start()
-        # Controller-Werte nur beim Wechsel auf den Tab „Controller“ laden (nicht zusätzlich beim Öffnen)
-        # Snapshot der aktuellen Spinbox-Werte – nur wenn User etwas ändert, wird ins EEPROM geschrieben
+        if self._settings_nav.currentRow() == getattr(self, "_tab_statistics_index", -1):
+            self._start_calvalid_timer()
+        # Snapshots: nur geänderte Werte gehen auf den Bus (SETANTOFF / SETCON* …)
         self._snapshot_antoff = [
             self.sp_az_antoff_1.value(),
             self.sp_az_antoff_2.value(),
@@ -1014,11 +1187,38 @@ class SettingsWindow(QDialog):
             self.sp_az_angle_2.value(),
             self.sp_az_angle_3.value(),
         ]
+        # Vergleichsbasis für SETCON* beim Speichern (sonst snap=None → kein Schreiben)
+        self._snapshot_controller = self._controller_snapshot_from_ui()
+        # Antennennamen vom Hardware-Controller (wie Tab „Controller“)
+        QTimer.singleShot(0, self._load_controller_antenna_names_from_bus)
+        QTimer.singleShot(0, self._fit_settings_window_to_content)
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        """Minimieren: Polling-Flag zurück (closeEvent kommt bei Minimize nicht)."""
+        self._antenna_refresh_timer.stop()
+        self._antenna_request_timer.stop()
+        self._antenna_giveup_timer.stop()
+        self._stop_calvalid_timer()
+        if hasattr(self.ctrl, "set_settings_window_open"):
+            self.ctrl.set_settings_window_open(False)
+        super().hideEvent(event)
+
+    def changeEvent(self, event: QEvent) -> None:
+        """Minimize ohne hideEvent: Timer stoppen wie bei hideEvent."""
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
+            self._antenna_refresh_timer.stop()
+            self._antenna_request_timer.stop()
+            self._antenna_giveup_timer.stop()
+            self._stop_calvalid_timer()
+            if hasattr(self.ctrl, "set_settings_window_open"):
+                self.ctrl.set_settings_window_open(False)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._antenna_refresh_timer.stop()
         self._antenna_request_timer.stop()
         self._antenna_giveup_timer.stop()
+        self._stop_calvalid_timer()
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(False)
         super().closeEvent(event)
@@ -1041,23 +1241,240 @@ class SettingsWindow(QDialog):
                 dsts.append(v)
         return dsts or [0]
 
-    def _on_settings_cal_start(self) -> None:
-        """SETCAL an alle aktiven Achsen senden (wie im Rotor-Konfigurationsfenster)."""
-        for dst in self._cal_active_dsts_from_ui():
-            try:
-                self.ctrl.send_ui_command(dst, "SETCAL", "0", expect_prefix=None, priority=0)
-            except Exception:
-                pass
-        self.lbl_status.setText(t("cmd.hint_cal_start"))
+    def _calvalid_tab_active(self) -> bool:
+        return self._settings_nav.currentRow() == getattr(self, "_tab_statistics_index", -1)
 
-    def _on_settings_cal_reset(self) -> None:
-        """CLRSTAT an alle aktiven Achsen senden (wie im Rotor-Konfigurationsfenster)."""
-        for dst in self._cal_active_dsts_from_ui():
+    def _start_calvalid_timer(self) -> None:
+        self._calvalid_timer.start()
+        self._cal_progress_timer.start()
+        self._poll_getcalvalid_once()
+        self._tick_cal_progress_poll()
+
+    def _stop_calvalid_timer(self) -> None:
+        self._calvalid_timer.stop()
+        self._cal_progress_timer.stop()
+        self._prev_cal_state_for_led_az = None
+        self._prev_cal_state_for_led_el = None
+        self._cal_poll_deadline_ts_az = 0.0
+        self._cal_poll_deadline_ts_el = 0.0
+        self._prev_cal_prog_st_az = -1
+        self._prev_cal_prog_st_el = -1
+        self._apply_cal_progress_bar_ui(self._pb_cal, 0, 0)
+        self._apply_cal_progress_bar_ui(self._pb_cal_el, 0, 0)
+
+    def _update_strom_cal_sections_visibility(self) -> None:
+        """Stromkalibrierung und EL-Heatmap nur bei jeweils aktivierter Achse (Verbindung)."""
+        self.gb_strom_cal.setVisible(self.chk_enable_az.isChecked())
+        self.gb_strom_cal_el.setVisible(self.chk_enable_el.isChecked())
+        self.gb_hm_el.setVisible(self.chk_enable_el.isChecked())
+
+    def _apply_cal_progress_bar_ui(self, pb: QProgressBar, st: int, prog: int) -> None:
+        """Fortschrittsbalken: sichtbar bei Kalibrierfahrt (GETCALSTATE state/progress)."""
+        prog = max(0, min(100, int(prog)))
+        if st == 1:
+            pb.setVisible(True)
+            pb.setRange(0, 100)
+            pb.setValue(prog)
+            pb.setFormat("%p%")
+        elif st == 2:
+            pb.setVisible(True)
+            pb.setRange(0, 100)
+            pb.setValue(100)
+            pb.setFormat(t("settings.cal_progress_done_fmt"))
+        elif st == 3:
+            pb.setVisible(True)
+            pb.setRange(0, 100)
+            pb.setValue(0)
+            pb.setFormat(t("settings.cal_progress_abort_fmt"))
+        else:
+            pb.setVisible(False)
+            pb.setValue(0)
+            pb.setFormat("%p%")
+
+    def _tick_cal_progress_poll(self) -> None:
+        if not self.isVisible() or not self._calvalid_tab_active():
+            return
+        self._tick_cal_progress_one_axis("az")
+        self._tick_cal_progress_one_axis("el")
+
+    def _tick_cal_progress_one_axis(self, which: str) -> None:
+        if which == "az":
+            if not self.chk_enable_az.isChecked():
+                self._apply_cal_progress_bar_ui(self._pb_cal, 0, 0)
+                return
+            dst = int(self.sp_slave_az.value())
+            ax = self.ctrl.az
+            pb = self._pb_cal
+            dl_attr = "_cal_poll_deadline_ts_az"
+            prev_attr = "_prev_cal_prog_st_az"
+        else:
+            if not self.chk_enable_el.isChecked():
+                self._apply_cal_progress_bar_ui(self._pb_cal_el, 0, 0)
+                return
+            dst = int(self.sp_slave_el.value())
+            ax = self.ctrl.el
+            pb = self._pb_cal_el
+            dl_attr = "_cal_poll_deadline_ts_el"
+            prev_attr = "_prev_cal_prog_st_el"
+        st = int(getattr(ax, "cal_state", 0))
+        prog = int(getattr(ax, "cal_progress", 0))
+        self._apply_cal_progress_bar_ui(pb, st, prog)
+        now = time.time()
+        dl = float(getattr(self, dl_attr) or 0.0)
+        prev = int(getattr(self, prev_attr))
+        want_poll = st == 1 or now < dl
+        if prev == 1 and st == 2:
+            QTimer.singleShot(300, self._poll_getcalvalid_once)
+            setattr(self, dl_attr, min(dl, now + 25.0) if dl > now else 0.0)
+        elif prev == 1 and st == 3:
+            setattr(self, dl_attr, min(dl, now + 15.0) if dl > now else 0.0)
+        setattr(self, prev_attr, st)
+        if want_poll:
             try:
-                self.ctrl.send_ui_command(dst, "CLRSTAT", "0", expect_prefix=None, priority=0)
+                self.ctrl.send_ui_command(
+                    int(dst),
+                    "GETCALSTATE",
+                    "0",
+                    expect_prefix=None,
+                    priority=0,
+                    apply_local_state=False,
+                )
             except Exception:
                 pass
+
+    def _apply_calvalid_led(self, led: Led, r: str | None) -> None:
+        if r is None or str(r).startswith(SYNC_UI_NAK_PREFIX):
+            led.set_state(False)
+            return
+        s = str(r).strip().split(";")[0].strip()
+        led.set_state(s == "1")
+
+    def _poll_getcalvalid_axis(
+        self, sync, which: str, led: Led, prev_attr: str
+    ) -> None:
+        ax = self.ctrl.az if which == "az" else self.ctrl.el
+        dst = int(self.sp_slave_az.value() if which == "az" else self.sp_slave_el.value())
+        try:
+            r = sync(
+                dst,
+                "GETCALVALID",
+                "0",
+                expect_prefix="ACK_GETCALVALID",
+                timeout_s=1.2,
+            )
+        except Exception:
+            r = None
+        self._apply_calvalid_led(led, r)
+        try:
+            st = int(getattr(ax, "cal_state", 0))
+            prev = getattr(self, prev_attr)
+            if prev is not None and prev == 1 and st == 2:
+                QTimer.singleShot(400, self._poll_getcalvalid_once)
+            setattr(self, prev_attr, st)
+        except Exception:
+            setattr(self, prev_attr, None)
+
+    def _poll_getcalvalid_once(self) -> None:
+        """GETCALVALID je Achse nur wenn AZ/EL unter Verbindung aktiv."""
+        if not self.isVisible() or not self._calvalid_tab_active():
+            return
+        sync = getattr(self.ctrl, "sync_ui_command_response", None)
+        if sync is None:
+            return
+        if self.chk_enable_az.isChecked():
+            self._poll_getcalvalid_axis(
+                sync, "az", self._led_cal_valid, "_prev_cal_state_for_led_az"
+            )
+        if self.chk_enable_el.isChecked():
+            self._poll_getcalvalid_axis(
+                sync, "el", self._led_cal_valid_el, "_prev_cal_state_for_led_el"
+            )
+
+    def _on_settings_cal_start_az(self) -> None:
+        """SETCAL nur AZ-Slave."""
+        if not self.chk_enable_az.isChecked():
+            return
+        self._cal_poll_deadline_ts_az = time.time() + 300.0
+        self._prev_cal_prog_st_az = -1
+        dst = int(self.sp_slave_az.value())
+        try:
+            self.ctrl.send_ui_command(dst, "SETCAL", "0", expect_prefix=None, priority=0)
+        except Exception:
+            pass
+        self.lbl_status.setText(t("cmd.hint_cal_start"))
+        if self._calvalid_tab_active():
+            QTimer.singleShot(0, self._tick_cal_progress_poll)
+            for ms in (800, 2500, 8000):
+                QTimer.singleShot(ms, self._poll_getcalvalid_once)
+
+    def _on_settings_cal_start_el(self) -> None:
+        """SETCAL nur EL-Slave."""
+        if not self.chk_enable_el.isChecked():
+            return
+        self._cal_poll_deadline_ts_el = time.time() + 300.0
+        self._prev_cal_prog_st_el = -1
+        dst = int(self.sp_slave_el.value())
+        try:
+            self.ctrl.send_ui_command(dst, "SETCAL", "0", expect_prefix=None, priority=0)
+        except Exception:
+            pass
+        self.lbl_status.setText(t("cmd.hint_cal_start"))
+        if self._calvalid_tab_active():
+            QTimer.singleShot(0, self._tick_cal_progress_poll)
+            for ms in (800, 2500, 8000):
+                QTimer.singleShot(ms, self._poll_getcalvalid_once)
+
+    def _on_settings_cal_reset_az(self) -> None:
+        """CLRSTAT nur AZ."""
+        if not self.chk_enable_az.isChecked():
+            return
+        dst = int(self.sp_slave_az.value())
+        try:
+            self.ctrl.send_ui_command(dst, "CLRSTAT", "0", expect_prefix=None, priority=0)
+        except Exception:
+            pass
         self.lbl_status.setText(t("cmd.hint_cal_reset"))
+        if self._calvalid_tab_active():
+            QTimer.singleShot(300, self._poll_getcalvalid_once)
+
+    def _on_settings_cal_reset_el(self) -> None:
+        """CLRSTAT nur EL."""
+        if not self.chk_enable_el.isChecked():
+            return
+        dst = int(self.sp_slave_el.value())
+        try:
+            self.ctrl.send_ui_command(dst, "CLRSTAT", "0", expect_prefix=None, priority=0)
+        except Exception:
+            pass
+        self.lbl_status.setText(t("cmd.hint_cal_reset"))
+        if self._calvalid_tab_active():
+            QTimer.singleShot(300, self._poll_getcalvalid_once)
+
+    def _on_settings_cal_delcal_az(self) -> None:
+        """DELCAL nur AZ."""
+        if not self.chk_enable_az.isChecked():
+            return
+        dst = int(self.sp_slave_az.value())
+        try:
+            self.ctrl.send_ui_command(dst, "DELCAL", "0", expect_prefix=None, priority=0)
+        except Exception:
+            pass
+        self.lbl_status.setText(t("cmd.hint_cal_delcal"))
+        if self._calvalid_tab_active():
+            QTimer.singleShot(300, self._poll_getcalvalid_once)
+
+    def _on_settings_cal_delcal_el(self) -> None:
+        """DELCAL nur EL."""
+        if not self.chk_enable_el.isChecked():
+            return
+        dst = int(self.sp_slave_el.value())
+        try:
+            self.ctrl.send_ui_command(dst, "DELCAL", "0", expect_prefix=None, priority=0)
+        except Exception:
+            pass
+        self.lbl_status.setText(t("cmd.hint_cal_delcal"))
+        if self._calvalid_tab_active():
+            QTimer.singleShot(300, self._poll_getcalvalid_once)
 
     def _stats_calibration_help_text(self) -> str:
         """Hilfetext: Stromkalibrierung + Last-Heatmap (wie früher im Tab-Text)."""
@@ -1268,6 +1685,12 @@ class SettingsWindow(QDialog):
         if row < 0 or row >= self._settings_stack.count():
             return
         self._settings_stack.setCurrentIndex(row)
+        if row == getattr(self, "_tab_statistics_index", -1):
+            self._start_calvalid_timer()
+        else:
+            self._stop_calvalid_timer()
+        if row == getattr(self, "_tab_antenna_index", -1):
+            QTimer.singleShot(0, self._load_controller_antenna_names_from_bus)
         if row == getattr(self, "_tab_controller_index", -1):
             QTimer.singleShot(0, self._load_controller_from_bus)
 
@@ -1323,6 +1746,7 @@ class SettingsWindow(QDialog):
         )
 
     def _update_antenna_visibility(self) -> None:
+        self._update_strom_cal_sections_visibility()
         show = self.chk_enable_az.isChecked()
         self.gb_antenna_az.setVisible(show)
         try:
@@ -1334,6 +1758,9 @@ class SettingsWindow(QDialog):
         except Exception:
             pass
         self._update_antenna_offset_enabled()
+        row = self._settings_nav.currentRow()
+        if row in (self._tab_antenna_index, self._tab_statistics_index):
+            QTimer.singleShot(0, self._fit_settings_window_to_content)
 
     def _update_antenna_offset_enabled(self) -> None:
         """Versatz-Felder aktivieren: online+Daten ODER Giveup (Rotor offline). Nur AZ."""
@@ -1382,6 +1809,35 @@ class SettingsWindow(QDialog):
             ]
         except Exception:
             pass
+
+    def _push_antenna_names_to_config(self) -> None:
+        """Antennennamen (Kompass/Karte) — gleiche Quelle wie Hardware-Controller."""
+        try:
+            self.cfg.setdefault("ui", {})["antenna_names"] = [
+                self.ed_antenna_name_1.text().strip() or t("settings.antenna_1"),
+                self.ed_antenna_name_2.text().strip() or t("settings.antenna_2"),
+                self.ed_antenna_name_3.text().strip() or t("settings.antenna_3"),
+            ]
+        except Exception:
+            pass
+
+    def _antenna_display_name(self, idx: int) -> str:
+        """Anzeige-/Controller-Name (max. 9 Zeichen, ohne # : $)."""
+        fb = (t("settings.antenna_1"), t("settings.antenna_2"), t("settings.antenna_3"))
+        return self._sanitize_controller_name(
+            self._antenna_name_edits_az[idx].text().strip() or fb[idx],
+        )
+
+    def _wire_antenna_name_sync(self) -> None:
+        """Namen nur unter Tab „Antennen“; Config + Controller-Dirty bei Änderung."""
+        for i in range(3):
+            self._antenna_name_edits_az[i].textChanged.connect(
+                lambda _txt="", idx=i: self._on_antenna_name_text_changed(idx),
+            )
+
+    def _on_antenna_name_text_changed(self, idx: int) -> None:
+        self._push_antenna_names_to_config()
+        self._mark_controller_name_dirty(idx)
 
     def _refresh_antenna_data_once(self) -> None:
         """Versatz- und Öffnungswinkel-SpinBoxen aus Controller-State übernehmen."""
@@ -1597,9 +2053,9 @@ class SettingsWindow(QDialog):
         chw["enabled"] = bool(self.chk_hw_controller_enabled.isChecked())
         chw["cont_id"] = int(self.sp_controller_id.value())
         chw["cont_id_configured"] = True
-        chw["ant_name_1"] = self._sanitize_controller_name(self.ed_cont_ant_1.text())
-        chw["ant_name_2"] = self._sanitize_controller_name(self.ed_cont_ant_2.text())
-        chw["ant_name_3"] = self._sanitize_controller_name(self.ed_cont_ant_3.text())
+        chw["ant_name_1"] = self._antenna_display_name(0)
+        chw["ant_name_2"] = self._antenna_display_name(1)
+        chw["ant_name_3"] = self._antenna_display_name(2)
         chw["slow_pwm"] = int(self.sp_cont_pwm_slow.value())
         chw["fast_pwm"] = int(self.sp_cont_pwm_fast.value())
         chw["speaker_freq_hz"] = int(self.sp_cont_beep_freq.value())
@@ -1608,7 +2064,7 @@ class SettingsWindow(QDialog):
         chw["encoder_delta"] = int(self.cb_cont_encoder_delta.currentData())
         chw["antenna_realign_on_switch"] = bool(self.chk_cont_antenna_realign.isChecked())
 
-        # AZ-Antennenversatz und Öffnungswinkel in den Rotor schreiben (SETANTOFF1–3, SETANGLE1–3)
+        # AZ-Versatz und Öffnungswinkel in den Rotor schreiben (SETANTOFF1–3, SETANGLE1–3)
         # Nur übertragen wenn Wert sich gegenüber dem Snapshot beim Öffnen tatsächlich geändert hat
         snapshot_antoff = getattr(self, "_snapshot_antoff", [None, None, None])
         snapshot_angle = getattr(self, "_snapshot_angle", [None, None, None])
@@ -1751,9 +2207,9 @@ class SettingsWindow(QDialog):
     ) -> tuple[int, str, str, str, int, int, int, int, int, int, int]:
         return (
             int(self.sp_controller_id.value()),
-            self._sanitize_controller_name(self.ed_cont_ant_1.text()),
-            self._sanitize_controller_name(self.ed_cont_ant_2.text()),
-            self._sanitize_controller_name(self.ed_cont_ant_3.text()),
+            self._antenna_display_name(0),
+            self._antenna_display_name(1),
+            self._antenna_display_name(2),
             int(self.sp_cont_pwm_slow.value()),
             int(self.sp_cont_pwm_fast.value()),
             int(self.sp_cont_beep_freq.value()),
@@ -1818,9 +2274,13 @@ class SettingsWindow(QDialog):
                 self.sp_controller_id.setValue(max(0, min(245, int(ch.get("cont_id", 0)))))
             except (TypeError, ValueError):
                 self.sp_controller_id.setValue(0)
-            self.ed_cont_ant_1.setText(self._sanitize_controller_name(str(ch.get("ant_name_1", "") or "")))
-            self.ed_cont_ant_2.setText(self._sanitize_controller_name(str(ch.get("ant_name_2", "") or "")))
-            self.ed_cont_ant_3.setText(self._sanitize_controller_name(str(ch.get("ant_name_3", "") or "")))
+            _ui_n = self.cfg.get("ui") or {}
+            _names = list(_ui_n.get("antenna_names", []))
+            while len(_names) < 3:
+                _names.append("")
+            for _i, _ed in enumerate(self._antenna_name_edits_az):
+                _ed.setText(self._sanitize_controller_name(str(_names[_i] or "")))
+            self._set_antenna_names_led_ok(False)
             try:
                 self.sp_cont_pwm_slow.setValue(max(0, min(100, int(ch.get("slow_pwm", 30)))))
             except (TypeError, ValueError):
@@ -1876,6 +2336,27 @@ class SettingsWindow(QDialog):
             f"min-height: {s}px; max-height: {s}px; }}"
         )
 
+    def _set_antenna_names_wait_visible(self, visible: bool) -> None:
+        if not hasattr(self, "_lbl_antenna_names_wait"):
+            return
+        self._lbl_antenna_names_wait.setVisible(bool(visible))
+
+    def _set_antenna_names_led_ok(self, ok: bool) -> None:
+        """LED Tab Antennen: grün = GETCONANTNAME1–3 alle OK."""
+        if not hasattr(self, "_lbl_antenna_names_led"):
+            return
+        d = px_to_dip(self, 6)
+        s = px_to_dip(self, 12)
+        if ok:
+            bg, br = "#2e7d32", "#1b5e20"
+        else:
+            bg, br = "#c62828", "#8e0000"
+        self._lbl_antenna_names_led.setStyleSheet(
+            f"QLabel#antennaNamesReadLed {{ background-color: {bg}; border: 1px solid {br}; "
+            f"border-radius: {d}px; min-width: {s}px; max-width: {s}px; "
+            f"min-height: {s}px; max-height: {s}px; }}"
+        )
+
     def _load_controller_from_bus(self) -> None:
         """Controller-Werte vom Bus lesen. Seriell: kein zweiter paralleler Lauf (QEventLoop-Reentranz)."""
         if getattr(self, "_controller_load_busy", False):
@@ -1889,6 +2370,76 @@ class SettingsWindow(QDialog):
             self._controller_load_busy = False
             if self._controller_load_queued:
                 QTimer.singleShot(0, self._load_controller_from_bus)
+
+    def _load_controller_antenna_names_from_bus(self) -> None:
+        """Nur GETCONANTNAME1–3 → Felder unter Tab „Antennen“ (+ LED)."""
+        if getattr(self, "_controller_load_busy", False):
+            QTimer.singleShot(150, self._load_controller_antenna_names_from_bus)
+            return
+        self._controller_load_busy = True
+        try:
+            self._load_controller_antenna_names_from_bus_impl()
+        finally:
+            self._controller_load_busy = False
+            if self._controller_load_queued:
+                QTimer.singleShot(0, self._load_controller_from_bus)
+
+    def _read_controller_conant_names_into_ui(self, dst: int) -> list[bool]:
+        """GETCONANTNAME1–3 → Namensfelder unter Tab „Antennen“."""
+        c = self.ctrl
+        acks: list[bool] = []
+        eds = self._antenna_name_edits_az
+        for i, (cmd, exp) in enumerate(
+            (
+                ("GETCONANTNAME1", "ACK_GETCONANTNAME1"),
+                ("GETCONANTNAME2", "ACK_GETCONANTNAME2"),
+                ("GETCONANTNAME3", "ACK_GETCONANTNAME3"),
+            ),
+            start=1,
+        ):
+            rp = c.sync_ui_command_response(dst, cmd, "0", exp)
+            acks.append(_sync_got_ack_value(rp))
+            if rp is not None and _sync_got_ack_value(rp):
+                eds[i - 1].setText(self._sanitize_controller_name(rp.split(";")[0]))
+        return acks
+
+    def _merge_snapshot_controller_antenna_names(self) -> None:
+        """Nach Namens-Lesezugriff: Snapshot der drei Namen an UI anpassen (Speichern ohne Phantom-SET)."""
+        cur = self._controller_snapshot_from_ui()
+        snap = getattr(self, "_snapshot_controller", None)
+        if snap is None or len(snap) < len(cur):
+            self._snapshot_controller = cur
+            return
+        s = list(snap)
+        s[1], s[2], s[3] = cur[1], cur[2], cur[3]
+        self._snapshot_controller = tuple(s)
+
+    def _load_controller_antenna_names_from_bus_impl(self) -> None:
+        if not self._controller_hw_enabled():
+            self._set_antenna_names_led_ok(False)
+            return
+        if not hasattr(self.ctrl, "sync_ui_command_response"):
+            self._set_antenna_names_led_ok(False)
+            return
+        if not self.hw.is_connected():
+            self._set_antenna_names_led_ok(False)
+            return
+        if not self._controller_bus_read_enabled():
+            self._set_antenna_names_led_ok(False)
+            return
+        dst = self._controller_bus_dst()
+        self._set_antenna_names_wait_visible(True)
+        QApplication.processEvents()
+        self._controller_suppress_dirty = True
+        try:
+            name_acks = self._read_controller_conant_names_into_ui(dst)
+            self._set_antenna_names_led_ok(len(name_acks) == 3 and all(name_acks))
+            self._merge_snapshot_controller_antenna_names()
+            for i in range(3):
+                self._controller_name_dirty[i] = False
+        finally:
+            self._controller_suppress_dirty = False
+            self._set_antenna_names_wait_visible(False)
 
     def _load_controller_from_bus_impl(self) -> None:
         if not self._controller_hw_enabled():
@@ -1920,19 +2471,9 @@ class SettingsWindow(QDialog):
                     v = self._parse_hw_int(str(p).split(";")[0].strip())
                 if v is not None:
                     self.sp_controller_id.setValue(max(0, min(245, v)))
-            eds = (self.ed_cont_ant_1, self.ed_cont_ant_2, self.ed_cont_ant_3)
-            for i, (cmd, exp) in enumerate(
-                (
-                    ("GETCONANTNAME1", "ACK_GETCONANTNAME1"),
-                    ("GETCONANTNAME2", "ACK_GETCONANTNAME2"),
-                    ("GETCONANTNAME3", "ACK_GETCONANTNAME3"),
-                ),
-                start=1,
-            ):
-                rp = c.sync_ui_command_response(dst, cmd, "0", exp)
-                acks.append(_sync_got_ack_value(rp))
-                if rp is not None and _sync_got_ack_value(rp):
-                    eds[i - 1].setText(self._sanitize_controller_name(rp.split(";")[0]))
+            name_acks = self._read_controller_conant_names_into_ui(dst)
+            acks.extend(name_acks)
+            self._set_antenna_names_led_ok(len(name_acks) == 3 and all(name_acks))
             for sp, cmd, exp, lo, hi in (
                 (self.sp_cont_pwm_slow, "GETCONSPWM", "ACK_GETCONSPWM", 0, 100),
                 (self.sp_cont_pwm_fast, "GETCONFPWM", "ACK_GETCONFPWM", 0, 100),
@@ -2024,7 +2565,15 @@ class SettingsWindow(QDialog):
             snap = tuple(snap) + tuple(cur[i] for i in range(len(snap), len(cur)))
         if snap is None:
             snap = cur
-        if snap == cur:
+        _ctrl_hw_dirty = (
+            any(self._controller_name_dirty)
+            or any(self._controller_pwm_dirty)
+            or any(self._controller_beep_dirty)
+            or self._controller_anemo_dirty
+            or self._controller_delta_dirty
+            or self._controller_cha_dirty
+        )
+        if snap == cur and not _ctrl_hw_dirty:
             return True
         if not self.hw.is_connected():
             self._snapshot_controller = cur

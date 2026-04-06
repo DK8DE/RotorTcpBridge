@@ -342,6 +342,7 @@ class MainWindow(QMainWindow):
         )
         # Broadcast zuerst: Sync-Slots dürfen den TX nicht verhindern; Fire-and-Forget ist separat
         self._antenna_bridge.selection_changed.connect(self._on_antenna_broadcast_aselect)
+        self._antenna_bridge.selection_changed.connect(self._compass_win.sync_az_rotor_target_from_controller)
         self._antenna_bridge.selection_changed.connect(self._compass_win.sync_antenna_from_external)
         self._antenna_bridge.selection_changed.connect(self._map_win.sync_antenna_from_external)
         self._antenna_bridge.setaselect_from_bus.connect(self._apply_setaselect_from_bus_ui)
@@ -558,6 +559,7 @@ class MainWindow(QMainWindow):
             except TypeError:
                 pass
             self._antenna_bridge.selection_changed.connect(self._on_antenna_broadcast_aselect)
+            self._antenna_bridge.selection_changed.connect(self._compass_win.sync_az_rotor_target_from_controller)
             self._antenna_bridge.selection_changed.connect(self._compass_win.sync_antenna_from_external)
             self._antenna_bridge.selection_changed.connect(self._map_win.sync_antenna_from_external)
             # setaselect_from_bus bleibt an derselben Bridge verbunden (nur Callback am Controller setzen)
@@ -770,8 +772,14 @@ class MainWindow(QMainWindow):
         try:
             idx = max(0, min(2, int(antenna_id_1_to_3) - 1))
             ui = self.cfg.setdefault("ui", {})
-            if int(ui.get("compass_antenna", 0)) == idx:
+            old = int(ui.get("compass_antenna", 0))
+            if old == idx:
                 return
+            if hasattr(self.ctrl, "align_az_bearing_after_antenna_switch"):
+                try:
+                    self.ctrl.align_az_bearing_after_antenna_switch(old, idx, self.cfg)
+                except Exception:
+                    pass
             ui["compass_antenna"] = idx
             try:
                 if self.save_cfg_cb:
@@ -780,6 +788,11 @@ class MainWindow(QMainWindow):
                 pass
             cw = getattr(self, "_compass_win", None)
             if cw is not None:
+                if hasattr(cw, "sync_az_rotor_target_from_controller"):
+                    try:
+                        cw.sync_az_rotor_target_from_controller()
+                    except Exception:
+                        pass
                 cw.sync_antenna_from_external(idx)
             mw = getattr(self, "_map_win", None)
             if mw is not None:

@@ -165,6 +165,8 @@ class AxisState:
     _smooth_to_ts: float = 0.0
     _last_sample_ts: float = 0.0
     target_d10: int = 0
+    # Kompass-Soll aus Bus (SETPOSCC, z. B. Encoder-Panel): nur Anzeige; SETPOSDG/PST/manuell setzen das zurück.
+    compass_target_d10: Optional[int] = None
     referenced: bool = False
     moving: bool = False
     error_code: int = 0
@@ -176,6 +178,8 @@ class AxisState:
     # Letztes gesendetes Ziel (0,1°). Damit wir SETPOSDG nicht dauernd wiederholen.
     last_set_sent_target_d10: Optional[int] = None
     last_set_sent_ts: float = 0.0
+    # SETPOSCC vom Bus kurz nach SETPOSDG ignorieren (Encoder-Spam vs. neues Motorziel).
+    setposcc_ignore_until_ts: float = 0.0
     # Interne Entprellung für "steht am Ziel": erst nach mehreren stabilen Samples
     # wird moving=False gesetzt (sonst stockt die Anzeige beim Überschleifen).
     stop_confirm_samples: int = 0
@@ -189,6 +193,7 @@ class AxisState:
 
     # Kalibrier-Bins (nur wenn GETCALSTATE=2 DONE): 72 Stromwerte in mV pro Richtung
     cal_state: int = 0  # 0=IDLE, 1=RUNNING, 2=DONE, 3=ABORT
+    cal_progress: int = 0  # GETCALSTATE Fortschritt 0..100 (nur sinnvoll bei state==1)
     cal_bins_cw: Optional[list] = None  # DIR=1, 72 Werte
     cal_bins_ccw: Optional[list] = None  # DIR=2, 72 Werte
     # Live-Bins (GETLIVEBINS): 72 aktuelle Stromwerte in mV pro Richtung

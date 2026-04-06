@@ -271,7 +271,10 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             # In den ersten Sekunden nach Connect einmal schneller pollen, damit Werte "schnappen"
             if now < float(self._startup_burst_until or 0.0):
                 pos_period = min(pos_period, pos_fast_s)
-            if now - self._last_poll >= pos_period:
+            # Im Stand: während SETPOSCC-Strom kein GETPOSDG (sonst Bus-Kollisionen mit Encoder).
+            _defer_u = float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
+            skip_pos_for_cc = (not moving) and (now < _defer_u)
+            if (not skip_pos_for_cc) and (now - self._last_poll >= pos_period):
                 sent_any = False
                 if self.enable_az:
                     sent_any = (
@@ -302,7 +305,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     if self.enable_el:
                         self._poll_err(self.slave_el, self.el, "EL")
 
-            if not moving:
+            # Idle-Zusatzabfragen bei SETPOSCC-Strom kurz aussetzen (Bus frei für Encoder/GETPOSDG).
+            if not moving and now >= float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0):
                 # Idle: alle Zusatzabfragen – damit während der Fahrt GETPOSDG maximal priorisiert bleibt.
 
                 # GETERR: 10 s im Idle
@@ -358,16 +362,21 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                         self._last_live_bins_el = now
                         self._fetch_live_bins_el(self.slave_el, self.el, "EL")
 
-                # ACCBINS wenn Statistik- oder Kompass-Fenster offen (Strom-Heatmap)
+                # ACCBINS nur bei Statistik-Fenster oder aktiver Strom-Heatmap im Kompass.
+                # Nur Statistik (ohne Kompass-Strom): Langzeit ausreichend → 120 s.
                 # Nach Bewegung 10s Cooldown (Dead-Man-Vermeidung)
-                if (
-                    self._statistics_window_open or self._compass_window_open
-                ) and now >= self._stats_cooldown_until:
-                    acc_interval = 2.0 if (self.az.acc_bins_cw is None) else 10.0
+                if self._acc_bins_poll_enabled() and now >= self._stats_cooldown_until:
+                    # Nur bei Haken „Strom“ im Kompass: schnell (2 s / 10 s). Sonst immer 120 s
+                    # (Langzeitstatistik / Statistikfenster) — unabhängig davon, ob Statistikfenster offen ist.
+                    if self._acc_bins_strom_live():
+                        acc_interval = 2.0 if (self.az.acc_bins_cw is None) else 10.0
+                        acc_interval_el = 2.0 if (self.el.acc_bins_cw is None) else 10.0
+                    else:
+                        acc_interval = 120.0
+                        acc_interval_el = 120.0
                     if self.enable_az and (now - self._last_acc_bins_az >= acc_interval):
                         self._last_acc_bins_az = now
                         self._fetch_acc_bins(self.slave_az, self.az, "AZ")
-                    acc_interval_el = 2.0 if (self.el.acc_bins_cw is None) else 10.0
                     if self.enable_el and (now - self._last_acc_bins_el >= acc_interval_el):
                         self._last_acc_bins_el = now
                         self._fetch_acc_bins_el(self.slave_el, self.el, "EL")

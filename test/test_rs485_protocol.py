@@ -36,6 +36,15 @@ def test_build_with_params_decimal_checksum() -> None:
     assert t.ok is True
 
 
+def test_build_setposcc_roundtrip() -> None:
+    line = build(1, 20, "SETPOSCC", "45,00")
+    t = parse(line)
+    assert t is not None
+    assert t.cmd == "SETPOSCC"
+    assert t.params == "45,00"
+    assert t.ok is True
+
+
 def test_parse_invalid_line() -> None:
     assert parse("") is None
     assert parse("no hash") is None

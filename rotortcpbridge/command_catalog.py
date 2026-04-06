@@ -522,6 +522,17 @@ SPECS_DATA: list[dict] = [
         "help_text_en": "Start position move in degrees. Target angle e.g. 160.00. For small steps increase ARRTOL if needed.",
     },
     {
+        "name": "SETPOSCC",
+        "kind": "float",
+        "min_value": 0.0,
+        "max_value": 360.0,
+        "decimals": 2,
+        "step": 0.01,
+        "default": 0.0,
+        "help_text": "Kompass-Soll AZ in Grad (Anzeige). Setzt nur den Sollzeiger, keine Positionsfahrt. Encoder-Panel kann wiederholt Winkel senden.",
+        "help_text_en": "Compass AZ target in degrees (display only). Moves the target pointer only, no position move. Encoder panel may send angles repeatedly.",
+    },
+    {
         "name": "SETID",
         "kind": "int",
         "min_value": 1.0,

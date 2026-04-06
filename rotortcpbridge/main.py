@@ -45,6 +45,9 @@ def main():
         log,
         enable_az=bool(rb.get("enable_az", True)),
         enable_el=bool(rb.get("enable_el", True)),
+        setposcc_ignore_src_master_ids=rb.get(
+            "setposcc_ignore_src_master_ids", []
+        ),
     )
     ctrl.update_polling(cfg.get("polling_ms", {}))
 

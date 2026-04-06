@@ -24,6 +24,8 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     opening = params["opening"]
     range_km = params["range_km"]
     beams_json = json.dumps(params.get("beams", []))
+    target_bearing_line_json = json.dumps(params.get("target_bearing_line"))
+    target_bearing_color_json = json.dumps(params.get("target_bearing_color") or "")
     grayline = params.get("grayline", [])
     # Am Antimeridian (±180°) aufteilen, damit Leaflet die Kurve korrekt zeichnet
     grayline_segments: list[list[list[float]]] = []
@@ -260,6 +262,8 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     const lat = {lat};
     const lon = {lon};
     const beamsInitial = {beams_json};
+    const targetBearingLineInitial = {target_bearing_line_json};
+    const targetBearingColorInitial = {target_bearing_color_json};
     const graylineCoords = {grayline_json};
     const graylineColor = {json.dumps(grayline_color)};
     const horizonDistKm = {params.get("horizon_dist_km", 0.0)};
@@ -663,9 +667,25 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         beamDashLines.push(dash);
       }});
     }}
+    let targetBearingLineLayer = null;
+    function clearTargetBearingLine() {{
+      if (targetBearingLineLayer) {{
+        map.removeLayer(targetBearingLineLayer);
+        targetBearingLineLayer = null;
+      }}
+    }}
+    function drawTargetBearingLine(coords, color) {{
+      clearTargetBearingLine();
+      if (!coords || coords.length < 2 || !color) return;
+      targetBearingLineLayer = L.polyline(coords, {{
+        color: color, weight: 2, dashArray: '8, 8', interactive: false
+      }}).addTo(map);
+    }}
     drawBeamLayers(beamsInitial);
+    drawTargetBearingLine(targetBearingLineInitial, targetBearingColorInitial);
 
     const allLayerItems = [marker].concat(beamPolys, beamDashLines);
+    if (targetBearingLineLayer) allLayerItems.push(targetBearingLineLayer);
     if (horizonCircle) allLayerItems.push(horizonCircle);
     const allLayer = L.featureGroup(allLayerItems);
     map.fitBounds(allLayer.getBounds().pad(0.1));
@@ -702,6 +722,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       marker = L.marker([data.lat, data.lon], antennaIcon ? {{ icon: antennaIcon }} : {{}}).addTo(map);
       marker.bindPopup(data.popup_antenna || popupAntenna);
       drawBeamLayers(data.beams || []);
+      drawTargetBearingLine(data.target_bearing_line, data.target_bearing_color);
       const hKm = data.horizon_dist_km || 0;
       if (hKm > 0.5) {{
         horizonCircle = L.circle([data.lat, data.lon], {{ radius: hKm * 1000, color: horizonColor, weight: 2, dashArray: '8, 8', fill: false, fillOpacity: 0, interactive: false }}).addTo(map);

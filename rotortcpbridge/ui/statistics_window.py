@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Slot
-from PySide6.QtGui import QShowEvent, QCloseEvent
+from PySide6.QtCore import QEvent, Qt, QTimer, Slot
+from PySide6.QtGui import QCloseEvent, QHideEvent, QShowEvent
 from PySide6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -100,6 +100,21 @@ class StatisticsWindow(QDialog):
             self.ctrl.request_immediate_stats()  # Priorität 0, sofort vor GETPOSDG
         self._timer.start(200)
         self._tick()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        """Minimieren/Verstecken: Flag zurücksetzen (closeEvent kommt bei Minimize nicht)."""
+        self._timer.stop()
+        if hasattr(self.ctrl, "set_statistics_window_open"):
+            self.ctrl.set_statistics_window_open(False)
+        super().hideEvent(event)
+
+    def changeEvent(self, event: QEvent) -> None:
+        """Windows: Minimize löst nicht immer hideEvent aus — StateChange abfangen."""
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
+            self._timer.stop()
+            if hasattr(self.ctrl, "set_statistics_window_open"):
+                self.ctrl.set_statistics_window_open(False)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._timer.stop()

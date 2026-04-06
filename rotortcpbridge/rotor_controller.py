@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Callable, Optional
 
+from .angle_utils import shortest_delta_deg, wrap_deg
 from .rs485_protocol import BROADCAST_DST, build, Telegram
 from .hardware_client import HardwareClient, HwRequest
 from .rotor_model import AxisState
@@ -13,6 +14,12 @@ from .rotor_controller_polling import RotorControllerPollingMixin
 
 # sync_ui_command_response: Firmware-NAK (Checksumme ok) — nicht mit Timeout (None) verwechseln
 SYNC_UI_NAK_PREFIX = "__NAK__:"
+
+# Nach SETPOSDG: SETPOSCC vom Encoder nicht sofort anwenden (Reihenfolge auf dem Bus).
+_SETPOSCC_SUPPRESS_S = 0.6
+
+# SETPOSCC vom Bus: Idle-Polling (inkl. GETPOSDG) aussetzen — nach jedem CC mindestens diese Zeit.
+_CC_IDLE_DEFER_S = 1.0
 
 
 class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
@@ -32,10 +39,15 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         log,
         enable_az: bool = True,
         enable_el: bool = True,
+        setposcc_ignore_src_master_ids: Optional[list[int]] = None,
     ):
         self.hw = hw
         self.log = log
         self.master_id = master_id
+        # SETPOSCC vom Bus: diese Master-IDs nicht ins UI übernehmen (z. B. [2] bei Stör-Telegrammen)
+        self.setposcc_ignore_src_master_ids = self._normalize_master_id_list(
+            setposcc_ignore_src_master_ids
+        )
         self.slave_az = slave_az
         self.slave_el = slave_el
         self.enable_az = bool(enable_az)
@@ -43,6 +55,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
         self.az = AxisState()
         self.el = AxisState()
+        self._idle_poll_defer_until: float = 0.0
 
         self._last_poll = 0.0
         self._last_warn = 0.0
@@ -100,8 +113,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._statistics_window_open: bool = False
         # Einstellungen offen: CAL/LIVE wie Statistik pollen (Tab Statistik / „aus Kalibrierung“)
         self._settings_window_open: bool = False
-        # Kompass-Fenster offen: ACCBINS pollen für Strom-Heatmap
+        # Kompass-Fenster offen (Anzeige); Strom-Bins nur wenn Heatmap „strom“ aktiv (siehe set_compass_strom_heatmap_active)
         self._compass_window_open: bool = False
+        self._compass_strom_heatmap_az: bool = False
+        self._compass_strom_heatmap_el: bool = False
         # Nach Bewegung: ACCBINS sofort abbrechen, erst nach 10s Idle wieder starten (Dead-Man-Vermeidung)
         self._stats_cooldown_until: float = 0.0
         # Kompass-Manual-Eingabe: PST-SET für 10s ignorieren, damit nicht überschrieben wird
@@ -149,6 +164,18 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         except Exception:
             pass
 
+    @staticmethod
+    def _normalize_master_id_list(ids: Optional[list]) -> list[int]:
+        if not ids:
+            return []
+        out: list[int] = []
+        for x in ids:
+            try:
+                out.append(int(x))
+            except Exception:
+                pass
+        return out
+
     def update_ids(
         self,
         master_id: int,
@@ -175,9 +202,35 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """Einstellungen offen/geschlossen. Wenn offen: CAL/LIVE wie beim Statistik-Fenster pollen."""
         self._settings_window_open = bool(open)
 
+    def set_compass_strom_heatmap_active(self, az: bool, el: bool) -> None:
+        """Ob im Kompass die Strom-Heatmap (AZ/EL) eingeschaltet ist — steuert GETACCBINS-Polling."""
+        self._compass_strom_heatmap_az = bool(az)
+        self._compass_strom_heatmap_el = bool(el)
+
+    def _acc_bins_poll_enabled(self) -> bool:
+        """GETACCBINS wenn Statistik- oder Kompassfenster offen (Langzeit braucht Daten).
+
+        Der Takt (2s/10s vs. 120s) steuert allein `_acc_bins_strom_live()` — nur bei sichtbar
+        aktiver Strommap (Haken) schnell, sonst alle 2 Minuten.
+        """
+        if bool(getattr(self, "_statistics_window_open", False)):
+            return True
+        return bool(getattr(self, "_compass_window_open", False))
+
+    def _acc_bins_strom_live(self) -> bool:
+        """GETACCBINS im 2s/10s-Takt nur mit geöffnetem Kompass und aktivem Strom-Ring (Haken)."""
+        return bool(getattr(self, "_compass_window_open", False)) and (
+            bool(getattr(self, "_compass_strom_heatmap_az", False))
+            or bool(getattr(self, "_compass_strom_heatmap_el", False))
+        )
+
     def set_compass_window_open(self, open: bool) -> None:
-        """Kompass-Fenster offen/geschlossen. Wenn offen: ACCBINS pollen für Strom-Heatmap."""
+        """Kompass-Fenster offen/geschlossen."""
         self._compass_window_open = bool(open)
+        # Strom-Flags immer leeren: beim Öffnen kamen sonst stale Werte aus CompassWindow-Init
+        # (cfg) bis zur nächsten Heatmap-Änderung — dann lief GETACCBINS trotz abgewählter Strom-Heatmap.
+        self._compass_strom_heatmap_az = False
+        self._compass_strom_heatmap_el = False
 
     def set_wind_enabled_from_value(self, value: int | str) -> None:
         """Windmesser-Status setzen (z.B. nach SETWINDENABLE im Befehlsfenster)."""
@@ -426,8 +479,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._last_cal_state_el = 0.0
         self._last_live_bins_az = 0.0
         self._last_live_bins_el = 0.0
-        self._last_acc_bins_az = 0.0
-        self._last_acc_bins_el = 0.0
+        # ACC: Sofort-Burst nur bei Live-Strom-Heatmap; sonst Langzeit (120 s) aus tick_polling
+        if self._acc_bins_strom_live():
+            self._last_acc_bins_az = 0.0
+            self._last_acc_bins_el = 0.0
         if self.hw.is_connected():
             try:
                 prio = 0  # Höchste Priorität, vor GETPOSDG
@@ -439,10 +494,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     self._fetch_live_bins(self.slave_az, self.az, "AZ", priority=prio)
                 if self.enable_el and not self._live_bins_inflight_el:
                     self._fetch_live_bins_el(self.slave_el, self.el, "EL", priority=prio)
-                if self.enable_az and not self._acc_bins_inflight_az:
-                    self._fetch_acc_bins(self.slave_az, self.az, "AZ", priority=prio)
-                if self.enable_el and not self._acc_bins_inflight_el:
-                    self._fetch_acc_bins_el(self.slave_el, self.el, "EL", priority=prio)
+                if self._acc_bins_poll_enabled() and self._acc_bins_strom_live():
+                    if self.enable_az and not self._acc_bins_inflight_az:
+                        self._fetch_acc_bins(self.slave_az, self.az, "AZ", priority=prio)
+                    if self.enable_el and not self._acc_bins_inflight_el:
+                        self._fetch_acc_bins_el(self.slave_el, self.el, "EL", priority=prio)
             except Exception:
                 pass
 
@@ -477,6 +533,87 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         line = build(int(self.master_id), int(BROADCAST_DST), "SETASELECT", str(n))
         # Direkt senden: Worker blockiert die Queue bei ausstehendem Poll-ACK
         self.hw.send_line_fire_and_forget(line)
+
+    def note_setposcc_bus_activity(self) -> None:
+        """SETPOSCC auf dem Bus (Mitschnitt): Idle-Polling bis Zeitstempel pausieren (je CC neu verlängert)."""
+        self._idle_poll_defer_until = time.time() + _CC_IDLE_DEFER_S
+
+    def _az_antenna_offset_deg(self, idx_0_to_2: int, cfg: Optional[dict] = None) -> float:
+        """Versatz der Antenne idx (0..2) aus Achsen-State, sonst cfg-Fallback wie Kompass."""
+        try:
+            slot = int(idx_0_to_2) + 1
+            if 1 <= slot <= 3:
+                v = getattr(self.az, f"antoff{slot}", None)
+                if v is not None:
+                    return float(v)
+        except Exception:
+            pass
+        if cfg is not None:
+            try:
+                offs = (cfg.get("ui") or {}).get("antenna_offsets_az", [0.0, 0.0, 0.0])
+                i = max(0, min(2, int(idx_0_to_2)))
+                return float(offs[i])
+            except (IndexError, TypeError, ValueError):
+                pass
+        return 0.0
+
+    def snap_az_soll_to_ist_for_antenna_switch(self) -> None:
+        """Ohne Nachführen: lokales AZ-Soll = Ist (Rotor), Kompass-SETPOSCC löschen — kein Bus-Befehl."""
+        if not self.enable_az:
+            return
+        try:
+            now = time.time()
+            cur = float(self.az.get_smoothed_pos_d10f(now)) / 10.0
+        except Exception:
+            try:
+                cur = float(self.az.pos_d10) / 10.0
+            except Exception:
+                return
+        d10 = int(round(cur * 10.0))
+        self.az.compass_target_d10 = None
+        self.az.target_d10 = d10
+        self.az.last_set_sent_target_d10 = d10
+        self.az.last_set_sent_ts = time.time()
+        self.az.moving = False
+
+    def align_az_bearing_after_antenna_switch(
+        self, old_idx: int, new_idx: int, cfg: Optional[dict] = None
+    ) -> None:
+        """Mit ``controller_hw.antenna_realign_on_switch``: SETPOSDG, gleiche Luftpeilung wie zuvor.
+
+        Ohne Nachführen: Soll = aktuelle Rotor-Istposition (Anzeige folgt der neu gewählten Antenne).
+
+        Anzeige = Rotor + Versatz → rotor_soll = (rotor_ist + versatz_alt) − versatz_neu (mod 360).
+        """
+        if not cfg or not bool((cfg.get("controller_hw") or {}).get("antenna_realign_on_switch", False)):
+            self.snap_az_soll_to_ist_for_antenna_switch()
+            return
+        try:
+            oi = max(0, min(2, int(old_idx)))
+            ni = max(0, min(2, int(new_idx)))
+        except Exception:
+            return
+        if oi == ni:
+            return
+        if not self.enable_az:
+            return
+        O_old = self._az_antenna_offset_deg(oi, cfg)
+        O_new = self._az_antenna_offset_deg(ni, cfg)
+        if abs(O_old - O_new) < 1e-6:
+            return
+        try:
+            now = time.time()
+            cur = float(self.az.get_smoothed_pos_d10f(now)) / 10.0
+        except Exception:
+            try:
+                cur = float(self.az.pos_d10) / 10.0
+            except Exception:
+                return
+        D = wrap_deg(cur + O_old)
+        rotor_target = wrap_deg(D - O_new)
+        if abs(shortest_delta_deg(cur, rotor_target)) < 0.05:
+            return
+        self.set_az_deg(rotor_target, force=True)
 
     def broadcast_setconidf(self, new_controller_id: int) -> None:
         """Broadcast (DST 255): Controller-ID per SETCONIDF setzen. Keine Antwort erwartet."""
@@ -521,7 +658,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         # nach einem Status-/Positions-Polling umspringen oder gar nicht,
         # wenn der Befehl außerhalb der "spid"-Wege gesendet wird.
         #
-        # Daher: Für relevante Kommandos (SETPOSDG/STOP/SETREF) aktualisieren
+        # Daher: Für relevante Kommandos (SETPOSDG/SETPOSCC/STOP/SETREF) aktualisieren
         # wir den lokalen State SOFORT.
         if apply_local_state:
             self._apply_local_state_for_ui_command(int(dst), str(cmd).strip().upper(), str(params))
@@ -615,7 +752,9 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 time.sleep(0.005)
         return result[0]
 
-    def _apply_local_state_for_ui_command(self, dst: int, cmd: str, params: str) -> None:
+    def _apply_local_state_for_ui_command(
+        self, dst: int, cmd: str, params: str, *, from_bus_sniff: bool = False
+    ) -> None:
         """Setzt lokale Statusfelder für UI-Direktkommandos.
 
         Ziel:
@@ -656,13 +795,35 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     pass
                 return
 
+            # -------------------- Kompass-Soll (Bus / Encoder-Panel, kein Motor-SET) --------------------
+            if cmd == "SETPOSCC":
+                # Kurz nach SETPOSDG: erstes SETPOSCC ignorieren (Bus-Reihenfolge / Echo).
+                # Während Fahrt: SETPOSCC trotzdem anwenden — Sollzeiger = Encoder, Motorziel bleibt target_d10.
+                try:
+                    if time.time() < float(
+                        getattr(axis, "setposcc_ignore_until_ts", 0.0) or 0.0
+                    ):
+                        return
+                except Exception:
+                    pass
+                try:
+                    p = str(params).strip()
+                    if ";" in p:
+                        p = p.split(";")[-1]
+                    p = p.replace(" ", "")
+                    v = float(p.replace(",", "."))
+                    d10 = int(round(v * 10.0))
+                except Exception:
+                    d10 = None
+                if d10 is not None:
+                    axis.compass_target_d10 = d10
+                return
+
             # -------------------- Fahrziel setzen --------------------
             if cmd == "SETPOSDG":
-                self._abort_stats_fetch_and_cooldown()
                 # params ist i.d.R. Grad als Float mit "," oder ".".
                 try:
                     p = str(params).strip()
-                    # Falls mehrere Teile (z.B. "X;Y"), nehmen wir den letzten Wert
                     if ";" in p:
                         p = p.split(";")[-1]
                     p = p.replace(" ", "")
@@ -671,10 +832,32 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 except Exception:
                     d10 = None
 
+                # Bus-Mitschnitt kann SETPOSDG zum aktuellen Motorziel wiederholen (Echo/andere Master).
+                # Dann compass_target_d10 (Encoder-Soll) nicht löschen — sonst springt der Sollzeiger zurück.
+                # Gilt auch während Fahrt: Wiederhol-Echo trifft ein, während SETPOSCC noch ein neues Soll zeigt —
+                # ohne diese Abfrage würde moving==True den Schutz umgehen und der Kompass aufs alte Ziel springen.
+                if d10 is not None and from_bus_sniff:
+                    try:
+                        cc = getattr(axis, "compass_target_d10", None)
+                        if (
+                            int(axis.target_d10) == int(d10)
+                            and cc is not None
+                            and int(cc) != int(d10)
+                        ):
+                            return
+                    except Exception:
+                        pass
+
+                self._abort_stats_fetch_and_cooldown()
                 if d10 is not None:
                     axis.target_d10 = d10
+                    axis.compass_target_d10 = None
                     axis.last_set_sent_target_d10 = d10
                     axis.last_set_sent_ts = time.time()
+                    try:
+                        axis.setposcc_ignore_until_ts = time.time() + _SETPOSCC_SUPPRESS_S
+                    except Exception:
+                        pass
                 axis.moving = True
                 return
 
@@ -694,12 +877,17 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         if force:
             if not self.enable_az:
                 return
+            self.az.compass_target_d10 = None
             self.az.target_d10 = d10
             self._compass_manual_az_ts = time.time()
             self._send_setpos(self.slave_az, d10, axis="AZ")
             self.az.last_set_sent_target_d10 = d10
             self.az.last_set_sent_ts = time.time()
             self.az.moving = True
+            try:
+                self.az.setposcc_ignore_until_ts = time.time() + _SETPOSCC_SUPPRESS_S
+            except Exception:
+                pass
             return
         self.set_az_from_spid(d10)
 
@@ -715,12 +903,17 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         if force:
             if not self.enable_el:
                 return
+            self.el.compass_target_d10 = None
             self.el.target_d10 = d10
             self._compass_manual_el_ts = time.time()
             self._send_setpos(self.slave_el, d10, axis="EL")
             self.el.last_set_sent_target_d10 = d10
             self.el.last_set_sent_ts = time.time()
             self.el.moving = True
+            try:
+                self.el.setposcc_ignore_until_ts = time.time() + _SETPOSCC_SUPPRESS_S
+            except Exception:
+                pass
             return
         self.set_el_from_spid(d10)
 
@@ -756,6 +949,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """
         if (time.time() - self._compass_manual_az_ts) < 10.0:
             return
+        self.az.compass_target_d10 = None
         self.az.target_d10 = az_d10
 
         if not self.enable_az:
@@ -780,6 +974,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.az.last_set_sent_target_d10 = az_d10
         self.az.last_set_sent_ts = time.time()
         self.az.moving = True
+        try:
+            self.az.setposcc_ignore_until_ts = time.time() + _SETPOSCC_SUPPRESS_S
+        except Exception:
+            pass
 
     def set_el_from_spid(self, el_d10: int):
         """Zielposition von PstRotator (0,1°) für EL.
@@ -789,6 +987,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """
         if (time.time() - self._compass_manual_el_ts) < 10.0:
             return
+        self.el.compass_target_d10 = None
         self.el.target_d10 = el_d10
 
         if not self.enable_el:
@@ -811,6 +1010,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.el.last_set_sent_target_d10 = el_d10
         self.el.last_set_sent_ts = time.time()
         self.el.moving = True
+        try:
+            self.el.setposcc_ignore_until_ts = time.time() + _SETPOSCC_SUPPRESS_S
+        except Exception:
+            pass
 
     def stop_all(self):
         self.stop_az()
@@ -825,6 +1028,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             d10 = int(self.az.pos_d10)
         except Exception:
             return
+        self.az.compass_target_d10 = None
         self.az.target_d10 = d10
         self.az.last_set_sent_target_d10 = d10
         self.az.last_set_sent_ts = time.time()
@@ -842,6 +1046,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             d10 = int(self.el.pos_d10)
         except Exception:
             return
+        self.el.compass_target_d10 = None
         self.el.target_d10 = d10
         self.el.last_set_sent_target_d10 = d10
         self.el.last_set_sent_ts = time.time()
@@ -861,6 +1066,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._abort_stats_fetch_and_cooldown()
         self._send_simple(self.slave_az, "STOP", "0", expect="ACK_STOP", prio=0)
         self.az.moving = False
+        self.az.compass_target_d10 = None
 
     def stop_el(self):
         if not self.enable_el:
@@ -868,6 +1074,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._abort_stats_fetch_and_cooldown()
         self._send_simple(self.slave_el, "STOP", "0", expect="ACK_STOP", prio=0)
         self.el.moving = False
+        self.el.compass_target_d10 = None
 
     def reference_all(self, start_homing: bool = True) -> None:
         """Referenziert alle aktiven Rotoren (AZ und/oder EL laut Config)."""
@@ -886,6 +1093,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return
         v = "1" if start_homing else "0"
         try:
+            self.az.compass_target_d10 = None
             self.az.target_d10 = 0
             self.az.last_set_sent_target_d10 = None
             self.az.last_set_sent_ts = 0.0
@@ -946,6 +1154,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return
         v = "1" if start_homing else "0"
         try:
+            self.el.compass_target_d10 = None
             self.el.target_d10 = 0
             self.el.last_set_sent_target_d10 = None
             self.el.last_set_sent_ts = 0.0

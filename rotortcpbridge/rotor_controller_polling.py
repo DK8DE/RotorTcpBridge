@@ -794,6 +794,142 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             )
         )
 
+    def _bins_block_idx_from_tel(self, tel: Optional[Telegram]) -> Optional[int]:
+        """DIR/START aus ACK-Params → Index in _CAL_LIVE_BLOCKS (CAL/LIVE/ACC gleiches Raster)."""
+        if tel is None:
+            return None
+        parts = (tel.params or "").strip().split(";")
+        if len(parts) < 2:
+            return None
+        dir_val = parse_int(parts[0])
+        start_val = parse_int(parts[1])
+        if dir_val is None or start_val is None:
+            return None
+        for i, (d, s) in enumerate(self._CAL_LIVE_BLOCKS):
+            if d == dir_val and s == start_val:
+                return i
+        return None
+
+    def _async_reconcile_cal_bins_ack_az(
+        self, tel: Optional[Telegram], axis_state: AxisState
+    ) -> None:
+        """CAL-Bin-ACK aus Async-Pfad, wenn HW-Pending auf ein anderes ACK wartet (z. B. GETLIVEBINS)."""
+        dst = int(self.slave_az)
+        idx = self._bins_block_idx_from_tel(tel)
+        if idx is None:
+            idx = int(getattr(self, "_cal_bins_received_az", 0) or 0)
+        if tel:
+            axis_state.last_rx_ts = time.time()
+            axis_state.online = True
+        temp_cw, temp_ccw = self._cal_bins_temp_cw, self._cal_bins_temp_ccw
+        if tel and tel.params and temp_cw is not None and temp_ccw is not None:
+            parts = (tel.params or "").strip().split(";")
+            if len(parts) >= 4:
+                dir_val = parse_int(parts[0])
+                start_val = parse_int(parts[1])
+                count_val = parse_int(parts[2])
+                if dir_val is not None and start_val is not None and count_val is not None:
+                    bins = temp_cw if dir_val == 1 else temp_ccw
+                    if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
+                        ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
+                        if not ok_m:
+                            pass
+                        elif not plausible:
+                            self.log.write(
+                                "WARN",
+                                f"AZ GETCALBINS Block {idx + 1} (async): verdächtige Nullen/Lücken, Rohwerte übernommen",
+                            )
+        self._cal_bins_received_az = idx + 1
+        self._send_next_cal_block(dst, axis_state, idx + 1)
+
+    def _async_reconcile_cal_bins_ack_el(
+        self, tel: Optional[Telegram], axis_state: AxisState, dst: int
+    ) -> None:
+        idx = self._bins_block_idx_from_tel(tel)
+        if idx is None:
+            return
+        if tel:
+            axis_state.last_rx_ts = time.time()
+            axis_state.online = True
+        temp_cw, temp_ccw = self._cal_bins_temp_cw_el, self._cal_bins_temp_ccw_el
+        if tel and tel.params and temp_cw is not None and temp_ccw is not None:
+            parts = (tel.params or "").strip().split(";")
+            if len(parts) >= 4:
+                dir_val = parse_int(parts[0])
+                start_val = parse_int(parts[1])
+                count_val = parse_int(parts[2])
+                if dir_val is not None and start_val is not None and count_val is not None:
+                    bins = temp_cw if dir_val == 1 else temp_ccw
+                    if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
+                        ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
+                        if not ok_m:
+                            pass
+                        elif not plausible:
+                            self.log.write(
+                                "WARN",
+                                f"EL GETCALBINS Block {idx + 1} (async): verdächtige Nullen/Lücken, Rohwerte übernommen",
+                            )
+        self._send_next_cal_block_el(int(dst), axis_state, idx + 1)
+
+    def _async_reconcile_live_bins_ack_az(
+        self, tel: Optional[Telegram], axis_state: AxisState
+    ) -> None:
+        dst = int(self.slave_az)
+        idx = self._bins_block_idx_from_tel(tel)
+        if idx is None:
+            return
+        if tel:
+            axis_state.last_rx_ts = time.time()
+            axis_state.online = True
+        temp_cw, temp_ccw = self._live_bins_temp_cw, self._live_bins_temp_ccw
+        if tel and tel.params and temp_cw is not None and temp_ccw is not None:
+            parts = (tel.params or "").strip().split(";")
+            if len(parts) >= 4:
+                dir_val = parse_int(parts[0])
+                start_val = parse_int(parts[1])
+                count_val = parse_int(parts[2])
+                if dir_val is not None and start_val is not None and count_val is not None:
+                    bins = temp_cw if dir_val == 1 else temp_ccw
+                    if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
+                        ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
+                        if not ok_m:
+                            pass
+                        elif not plausible:
+                            self.log.write(
+                                "WARN",
+                                f"AZ GETLIVEBINS Block {idx + 1} (async): verdächtige Nullen/Lücken, Rohwerte übernommen",
+                            )
+        self._send_next_live_block(dst, axis_state, idx + 1)
+
+    def _async_reconcile_live_bins_ack_el(
+        self, tel: Optional[Telegram], axis_state: AxisState, dst: int
+    ) -> None:
+        idx = self._bins_block_idx_from_tel(tel)
+        if idx is None:
+            return
+        if tel:
+            axis_state.last_rx_ts = time.time()
+            axis_state.online = True
+        temp_cw, temp_ccw = self._live_bins_temp_cw_el, self._live_bins_temp_ccw_el
+        if tel and tel.params and temp_cw is not None and temp_ccw is not None:
+            parts = (tel.params or "").strip().split(";")
+            if len(parts) >= 4:
+                dir_val = parse_int(parts[0])
+                start_val = parse_int(parts[1])
+                count_val = parse_int(parts[2])
+                if dir_val is not None and start_val is not None and count_val is not None:
+                    bins = temp_cw if dir_val == 1 else temp_ccw
+                    if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
+                        ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
+                        if not ok_m:
+                            pass
+                        elif not plausible:
+                            self.log.write(
+                                "WARN",
+                                f"EL GETLIVEBINS Block {idx + 1} (async): verdächtige Nullen/Lücken, Rohwerte übernommen",
+                            )
+        self._send_next_live_block_el(int(dst), axis_state, idx + 1)
+
     _CAL_LIVE_BLOCKS = [
         (1, 0),
         (1, 12),
@@ -877,7 +1013,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             HwRequest(
                 line=line,
                 expect_prefix="ACK_GETCALBINS",
-                timeout_s=0.5,
+                timeout_s=1.2,
                 on_done=on_done,
                 priority=prio,
                 dont_disconnect_on_timeout=True,
@@ -948,7 +1084,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             HwRequest(
                 line=line,
                 expect_prefix="ACK_GETCALBINS",
-                timeout_s=0.5,
+                timeout_s=1.2,
                 on_done=on_done,
                 priority=prio,
                 dont_disconnect_on_timeout=True,
@@ -1014,7 +1150,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             HwRequest(
                 line=line,
                 expect_prefix="ACK_GETLIVEBINS",
-                timeout_s=0.5,
+                timeout_s=1.2,
                 on_done=on_done,
                 priority=prio,
                 dont_disconnect_on_timeout=True,
@@ -1077,7 +1213,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             HwRequest(
                 line=line,
                 expect_prefix="ACK_GETLIVEBINS",
-                timeout_s=0.5,
+                timeout_s=1.2,
                 on_done=on_done,
                 priority=prio,
                 dont_disconnect_on_timeout=True,
@@ -1147,7 +1283,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             HwRequest(
                 line=line,
                 expect_prefix="ACK_GETACCBINS",
-                timeout_s=0.5,
+                timeout_s=1.2,
                 on_done=on_done,
                 priority=prio,
                 dont_disconnect_on_timeout=True,
@@ -1215,7 +1351,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             HwRequest(
                 line=line,
                 expect_prefix="ACK_GETACCBINS",
-                timeout_s=0.5,
+                timeout_s=1.2,
                 on_done=on_done,
                 priority=prio,
                 dont_disconnect_on_timeout=True,

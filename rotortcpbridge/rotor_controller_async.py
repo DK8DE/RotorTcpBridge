@@ -12,6 +12,18 @@ from .rotor_parse_utils import parse_float, parse_float_any, parse_int
 class RotorControllerAsyncMixin:
     """Dispatch für eingehende ACK/NAK ohne zugeordneten HwRequest."""
 
+    def _hw_pending_expect_upper(self) -> str:
+        """Erwartetes ACK-Präfix des aktuellen HwRequest (für Async vs. Pending-Zuordnung)."""
+        hw = getattr(self, "hw", None)
+        if hw is None:
+            return ""
+        try:
+            with hw._lock:
+                p = hw._pending
+        except Exception:
+            return ""
+        return (getattr(p, "expect_prefix", None) or "").strip().upper()
+
     def _tel_dst_allowed(self, tel: Telegram) -> bool:
         """Eigene Antworten (dst = unsere Master-ID) oder Antworten der konfigurierten Slaves an einen fremden Master."""
         try:
@@ -422,8 +434,13 @@ class RotorControllerAsyncMixin:
                             axis_state.cal_bins_cw = None
                             axis_state.cal_bins_ccw = None
                             self._cal_bins_fetched_el = False
-                        elif state == 2 and axis_name == "AZ" and (
-                            self._statistics_window_open or self._settings_window_open
+                        elif (
+                            state == 2
+                            and axis_name == "AZ"
+                            and bool(getattr(self, "enable_az", True))
+                            and (
+                                self._statistics_window_open or self._settings_window_open
+                            )
                         ):
                             if not self._cal_bins_inflight_az and (
                                 axis_state.cal_bins_cw is None
@@ -434,8 +451,13 @@ class RotorControllerAsyncMixin:
                             elif not self._live_bins_inflight_az and self._cal_bins_fetched_az:
                                 self._fetch_live_bins(int(self.slave_az), axis_state, "AZ")
                                 self._last_live_bins_az = time.time()
-                        elif state == 2 and axis_name == "EL" and (
-                            self._statistics_window_open or self._settings_window_open
+                        elif (
+                            state == 2
+                            and axis_name == "EL"
+                            and bool(getattr(self, "enable_el", True))
+                            and (
+                                self._statistics_window_open or self._settings_window_open
+                            )
                         ):
                             dst_el = int(self.slave_el)
                             if not self._cal_bins_inflight_el and (
@@ -452,6 +474,27 @@ class RotorControllerAsyncMixin:
                 # Kalibrier-Bins + Live-Bins (case-insensitiv für Firmware-Varianten)
                 cmd_u = (tel.cmd or "").upper()
                 if cmd_u.startswith("ACK_GETCALBINS") or cmd_u.startswith("ACK_CALBINS"):
+                    # Sequenz läuft: nur auswerten, wenn Pending NICHT selbst auf CAL-Bins wartet
+                    # (sonst übernimmt on_done). Andernfalls ACK hier mergen — sonst geht es verloren,
+                    # wenn gleichzeitig z. B. GETLIVEBINS pending ist (Statistikfenster sofort + CAL).
+                    exp = self._hw_pending_expect_upper()
+                    cal_pend = exp.startswith("ACK_GETCALBINS") or exp.startswith("ACK_CALBINS")
+                    if axis_name == "AZ" and getattr(self, "_cal_bins_inflight_az", False):
+                        if not cal_pend:
+                            try:
+                                self._async_reconcile_cal_bins_ack_az(tel, axis_state)
+                            except Exception:
+                                pass
+                        return
+                    if axis_name == "EL" and getattr(self, "_cal_bins_inflight_el", False):
+                        if not cal_pend:
+                            try:
+                                self._async_reconcile_cal_bins_ack_el(
+                                    tel, axis_state, int(self.slave_el)
+                                )
+                            except Exception:
+                                pass
+                        return
                     parts = (tel.params or "").strip().split(";")
                     if len(parts) >= 4:
                         dir_val = parse_int(parts[0])
@@ -468,18 +511,28 @@ class RotorControllerAsyncMixin:
                                         idx = start_val + i
                                         if idx < 72:
                                             bins[idx] = int(v)
-                            # Fertig wenn alle 12 Blöcke angekommen
-                            if axis_name == "AZ":
-                                self._cal_bins_received_az = (
-                                    int(getattr(self, "_cal_bins_received_az", 0)) + 1
-                                )
-                                if self._cal_bins_received_az >= 12:
-                                    self._cal_bins_inflight_az = False
-                                    self._cal_bins_fetched_az = True
                     return
 
                 # Live-Bins (ACK_GETLIVEBINS: dir;start;count;v0;v1;...;vn)
                 if cmd_u.startswith("ACK_GETLIVEBINS") or cmd_u.startswith("ACK_LIVEBINS"):
+                    exp = self._hw_pending_expect_upper()
+                    live_pend = exp.startswith("ACK_GETLIVEBINS") or exp.startswith("ACK_LIVEBINS")
+                    if axis_name == "AZ" and getattr(self, "_live_bins_inflight_az", False):
+                        if not live_pend:
+                            try:
+                                self._async_reconcile_live_bins_ack_az(tel, axis_state)
+                            except Exception:
+                                pass
+                        return
+                    if axis_name == "EL" and getattr(self, "_live_bins_inflight_el", False):
+                        if not live_pend:
+                            try:
+                                self._async_reconcile_live_bins_ack_el(
+                                    tel, axis_state, int(self.slave_el)
+                                )
+                            except Exception:
+                                pass
+                        return
                     parts = (tel.params or "").strip().split(";")
                     if len(parts) >= 4:
                         dir_val = parse_int(parts[0])
@@ -498,12 +551,6 @@ class RotorControllerAsyncMixin:
                                         idx = start_val + i
                                         if idx < 72:
                                             bins[idx] = int(v)
-                            if axis_name == "AZ":
-                                self._live_bins_received_az = (
-                                    int(getattr(self, "_live_bins_received_az", 0)) + 1
-                                )
-                                if self._live_bins_received_az >= 12:
-                                    self._live_bins_inflight_az = False
                     return
         except Exception:
             pass

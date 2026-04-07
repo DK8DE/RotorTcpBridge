@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QEvent, QEventLoop, QMetaObject, QRegularExpression, Qt, QTimer
+from PySide6.QtCore import (
+    QEvent,
+    QEventLoop,
+    QMetaObject,
+    QRegularExpression,
+    QSize,
+    Qt,
+    QTimer,
+)
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -67,6 +75,20 @@ def _sync_nak_notimpl(r: str | None) -> bool:
     return "NOTIMPL" in str(r).upper()
 
 
+class _SettingsScrollArea(QScrollArea):
+    """Scroll-Bereich ohne riesige minimumSizeHint vom Formular-Inhalt (Dialog-Höhe bleibt steuerbar)."""
+
+    def minimumSizeHint(self) -> QSize:
+        sh = super().minimumSizeHint()
+        cap_h = px_to_dip(self, 120)
+        return QSize(sh.width(), min(sh.height(), cap_h))
+
+    def sizeHint(self) -> QSize:
+        sh = super().sizeHint()
+        cap_h = px_to_dip(self, 560)
+        return QSize(sh.width(), min(sh.height(), cap_h))
+
+
 def _settings_tooltip_html(text: str, max_width_px: int = 360) -> str:
     """HTML für Tooltips mit begrenzter Breite und Umbruch (Qt zeigt HTML in Tooltips)."""
     e = str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -107,9 +129,10 @@ class SettingsWindow(QDialog):
         self.setWindowTitle(t("settings.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        # Breite fix; Höhe orientiert sich am rechten Inhalt (Tab) und bleibt per Resize anpassbar.
+        # Breite fix; Höhe frei skalierbar (niedrige Mindesthöhe). Start-Höhe beim Öffnen: _settings_open_height_dip.
         self._settings_base_width_dip = 600
-        self._settings_min_height_dip = 760
+        self._settings_min_height_dip = 320
+        self._settings_open_height_dip = 710
         self.setFixedWidth(px_to_dip(self, self._settings_base_width_dip))
         self.setMinimumHeight(px_to_dip(self, self._settings_min_height_dip))
 
@@ -929,7 +952,7 @@ class SettingsWindow(QDialog):
                 QSizePolicy.Policy.Expanding,
                 QSizePolicy.Policy.Preferred,
             )
-            sc = QScrollArea()
+            sc = _SettingsScrollArea()
             sc.setWidgetResizable(True)
             sc.setFrameShape(QFrame.Shape.NoFrame)
             sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1038,6 +1061,10 @@ class SettingsWindow(QDialog):
         self._cal_poll_deadline_ts_el: float = 0.0
         self._prev_cal_prog_st_az: int = -1
         self._prev_cal_prog_st_el: int = -1
+        self._cal_led_want_blink_az: bool = False
+        self._cal_led_want_blink_el: bool = False
+        self._prev_cal_led_blink_az: bool = False
+        self._prev_cal_led_blink_el: bool = False
         for _lbl in (
             t("settings.group_ui"),
             t("settings.group_connection"),
@@ -1067,10 +1094,9 @@ class SettingsWindow(QDialog):
         _tabs_h.setAlignment(Qt.AlignmentFlag.AlignTop)
         _tabs_h.addWidget(self._settings_nav_wrap, 0)
         _tabs_h.addWidget(self._settings_stack, 1)
+        self._settings_stack.setMinimumSize(0, 0)
+        self._tabs_body.setMinimumSize(0, 0)
         main.addWidget(self._tabs_body, 1)
-        self._settings_stack.currentChanged.connect(
-            lambda _idx: QTimer.singleShot(0, self._fit_settings_window_to_content)
-        )
 
         self.chk_enable_az.installEventFilter(self)
         self.chk_enable_el.installEventFilter(self)
@@ -1121,44 +1147,23 @@ class SettingsWindow(QDialog):
         btnrow.addWidget(btn_save_close)
         main.addLayout(btnrow)
 
-    def _fit_settings_window_to_content(self) -> None:
-        """Fensterhöhe an den aktuellen rechten Tab-Inhalt anpassen (Breite bleibt fix)."""
-        lay = self.layout()
-        if lay is None or getattr(self, "_tabs_body", None) is None:
-            return
+    def _apply_settings_window_open_size(self) -> None:
+        """Beim Öffnen: Zielhöhe 710 Referenzpixel (skaliert), Breite unverändert."""
         w = self.width()
         if w <= 0:
             w = px_to_dip(self, self._settings_base_width_dip)
-        cw = self._settings_stack.currentWidget()
-        if cw is not None:
-            cw.updateGeometry()
-        self._settings_stack.updateGeometry()
-        self._tabs_body.updateGeometry()
-        self.updateGeometry()
+        h = px_to_dip(self, self._settings_open_height_dip)
+        self.resize(w, h)
 
-        margins = lay.contentsMargins()
-        sp = lay.spacing() if lay.spacing() >= 0 else 0
-        n = lay.count()
-        total = margins.top() + margins.bottom()
-        for i in range(n):
-            it = lay.itemAt(i)
-            if it is None:
-                continue
-            wdg = it.widget()
-            if wdg is not None:
-                total += wdg.sizeHint().height()
-            elif it.layout() is not None:
-                total += it.layout().sizeHint().height()
-            if i < n - 1:
-                total += sp
+    def minimumSizeHint(self) -> QSize:
+        w = px_to_dip(self, self._settings_base_width_dip)
+        h = px_to_dip(self, self._settings_min_height_dip)
+        return QSize(w, h)
 
-        min_h = px_to_dip(self, self._settings_min_height_dip)
-        total = max(min_h, total)
-        scr = self.screen()
-        if scr is not None:
-            cap = int(scr.availableGeometry().height() * 0.92)
-            total = min(total, cap)
-        self.resize(w, total)
+    def sizeHint(self) -> QSize:
+        w = px_to_dip(self, self._settings_base_width_dip)
+        h = px_to_dip(self, self._settings_open_height_dip)
+        return QSize(w, h)
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
@@ -1191,7 +1196,8 @@ class SettingsWindow(QDialog):
         self._snapshot_controller = self._controller_snapshot_from_ui()
         # Antennennamen vom Hardware-Controller (wie Tab „Controller“)
         QTimer.singleShot(0, self._load_controller_antenna_names_from_bus)
-        QTimer.singleShot(0, self._fit_settings_window_to_content)
+        self._apply_settings_window_open_size()
+        QTimer.singleShot(0, self._apply_settings_window_open_size)
 
     def hideEvent(self, event: QHideEvent) -> None:
         """Minimieren: Polling-Flag zurück (closeEvent kommt bei Minimize nicht)."""
@@ -1259,6 +1265,12 @@ class SettingsWindow(QDialog):
         self._cal_poll_deadline_ts_el = 0.0
         self._prev_cal_prog_st_az = -1
         self._prev_cal_prog_st_el = -1
+        self._cal_led_want_blink_az = False
+        self._cal_led_want_blink_el = False
+        self._prev_cal_led_blink_az = False
+        self._prev_cal_led_blink_el = False
+        self._led_cal_valid.set_blinking_green(False)
+        self._led_cal_valid_el.set_blinking_green(False)
         self._apply_cal_progress_bar_ui(self._pb_cal, 0, 0)
         self._apply_cal_progress_bar_ui(self._pb_cal_el, 0, 0)
 
@@ -1301,6 +1313,9 @@ class SettingsWindow(QDialog):
         if which == "az":
             if not self.chk_enable_az.isChecked():
                 self._apply_cal_progress_bar_ui(self._pb_cal, 0, 0)
+                self._cal_led_want_blink_az = False
+                self._prev_cal_led_blink_az = False
+                self._led_cal_valid.set_blinking_green(False)
                 return
             dst = int(self.sp_slave_az.value())
             ax = self.ctrl.az
@@ -1310,6 +1325,9 @@ class SettingsWindow(QDialog):
         else:
             if not self.chk_enable_el.isChecked():
                 self._apply_cal_progress_bar_ui(self._pb_cal_el, 0, 0)
+                self._cal_led_want_blink_el = False
+                self._prev_cal_led_blink_el = False
+                self._led_cal_valid_el.set_blinking_green(False)
                 return
             dst = int(self.sp_slave_el.value())
             ax = self.ctrl.el
@@ -1322,6 +1340,27 @@ class SettingsWindow(QDialog):
         now = time.time()
         dl = float(getattr(self, dl_attr) or 0.0)
         prev = int(getattr(self, prev_attr))
+        if which == "az":
+            want_b_attr = "_cal_led_want_blink_az"
+            led = self._led_cal_valid
+            prev_blink_attr = "_prev_cal_led_blink_az"
+        else:
+            want_b_attr = "_cal_led_want_blink_el"
+            led = self._led_cal_valid_el
+            prev_blink_attr = "_prev_cal_led_blink_el"
+        want_b = bool(getattr(self, want_b_attr))
+        if st in (2, 3):
+            setattr(self, want_b_attr, False)
+            want_b = False
+        elif want_b and st == 0 and dl > 0.0 and now >= dl:
+            setattr(self, want_b_attr, False)
+            want_b = False
+        prev_blink = bool(getattr(self, prev_blink_attr, False))
+        do_blink = want_b and (st == 1 or (st == 0 and now < dl))
+        led.set_blinking_green(do_blink)
+        if prev_blink and not do_blink:
+            QTimer.singleShot(0, self._poll_getcalvalid_once)
+        setattr(self, prev_blink_attr, do_blink)
         want_poll = st == 1 or now < dl
         if prev == 1 and st == 2:
             QTimer.singleShot(300, self._poll_getcalvalid_once)
@@ -1352,6 +1391,10 @@ class SettingsWindow(QDialog):
     def _poll_getcalvalid_axis(
         self, sync, which: str, led: Led, prev_attr: str
     ) -> None:
+        if which == "az" and getattr(self, "_cal_led_want_blink_az", False):
+            return
+        if which == "el" and getattr(self, "_cal_led_want_blink_el", False):
+            return
         ax = self.ctrl.az if which == "az" else self.ctrl.el
         dst = int(self.sp_slave_az.value() if which == "az" else self.sp_slave_el.value())
         try:
@@ -1390,10 +1433,39 @@ class SettingsWindow(QDialog):
                 sync, "el", self._led_cal_valid_el, "_prev_cal_state_for_led_el"
             )
 
+    def _can_start_cal(self, which: str) -> bool:
+        """Verbindung und Referenz vor SETCAL prüfen; sonst Meldung und kein Senden."""
+        hw = getattr(self.ctrl, "hw", None)
+        if hw is None or not hw.is_connected():
+            msg = t("settings.cal_start_not_connected")
+            QMessageBox.warning(self, t("settings.cal_start_title"), msg)
+            self.lbl_status.setText(msg)
+            return False
+        ax = self.ctrl.az if which == "az" else self.ctrl.el
+        if not bool(getattr(ax, "online", False)):
+            msg = (
+                t("settings.cal_start_axis_offline_az")
+                if which == "az"
+                else t("settings.cal_start_axis_offline_el")
+            )
+            QMessageBox.warning(self, t("settings.cal_start_title"), msg)
+            self.lbl_status.setText(msg)
+            return False
+        if not bool(getattr(ax, "referenced", False)):
+            msg = t("settings.cal_start_need_ref")
+            QMessageBox.warning(self, t("settings.cal_start_title"), msg)
+            self.lbl_status.setText(msg)
+            return False
+        return True
+
     def _on_settings_cal_start_az(self) -> None:
         """SETCAL nur AZ-Slave."""
         if not self.chk_enable_az.isChecked():
             return
+        if not self._can_start_cal("az"):
+            return
+        self._cal_led_want_blink_az = True
+        self._led_cal_valid.set_blinking_green(True)
         self._cal_poll_deadline_ts_az = time.time() + 300.0
         self._prev_cal_prog_st_az = -1
         dst = int(self.sp_slave_az.value())
@@ -1411,6 +1483,10 @@ class SettingsWindow(QDialog):
         """SETCAL nur EL-Slave."""
         if not self.chk_enable_el.isChecked():
             return
+        if not self._can_start_cal("el"):
+            return
+        self._cal_led_want_blink_el = True
+        self._led_cal_valid_el.set_blinking_green(True)
         self._cal_poll_deadline_ts_el = time.time() + 300.0
         self._prev_cal_prog_st_el = -1
         dst = int(self.sp_slave_el.value())
@@ -1758,9 +1834,6 @@ class SettingsWindow(QDialog):
         except Exception:
             pass
         self._update_antenna_offset_enabled()
-        row = self._settings_nav.currentRow()
-        if row in (self._tab_antenna_index, self._tab_statistics_index):
-            QTimer.singleShot(0, self._fit_settings_window_to_content)
 
     def _update_antenna_offset_enabled(self) -> None:
         """Versatz-Felder aktivieren: online+Daten ODER Giveup (Rotor offline). Nur AZ."""

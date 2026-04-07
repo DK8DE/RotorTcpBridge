@@ -403,8 +403,11 @@ class MainWindow(QMainWindow):
             self._log_win.refresh()
 
     def _update_title_bar(self) -> None:
-        """Titelleiste: App-Name und Version (ohne Live-AZ/EL)."""
-        title = f"{t('app.title')} v{APP_VERSION}"
+        """Titelleiste: App-Name, Version und konfigurierte HW-Art (TCP/COM)."""
+        hl = self.cfg.get("hardware_link", {})
+        mode = str(hl.get("mode", "tcp")).strip().lower()
+        link = "COM" if mode == "com" else "TCP"
+        title = f"{t('app.title')} v{APP_VERSION} {link}"
         if title != self._last_title:
             self._last_title = title
             self.setWindowTitle(title)

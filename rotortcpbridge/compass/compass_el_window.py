@@ -195,8 +195,8 @@ class ElevationCompassWidget(QWidget):
 
     def set_bins(self, cw: Optional[List[int]], ccw: Optional[List[int]]) -> None:
         """ACCBINS für 5px Heatmap-Ring. 18 Werte je Richtung (EL)."""
-        self._bins_cw = list(cw) if cw and len(cw) >= 18 else None
-        self._bins_ccw = list(ccw) if ccw and len(ccw) >= 18 else None
+        self._bins_cw = list(cw) if cw is not None and len(cw) >= 18 else None
+        self._bins_ccw = list(ccw) if ccw is not None and len(ccw) >= 18 else None
         self.update()
 
     def set_heatmap_visible(self, on: bool) -> None:

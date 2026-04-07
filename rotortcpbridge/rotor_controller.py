@@ -472,13 +472,18 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
     def request_immediate_stats(self) -> None:
         """Statistik-Abfrage sofort auslösen (beim Öffnen des Statistik-Fensters). Priorität 0 = vor allem anderen.
-        Wird während Cooldown (10s nach Bewegung) übersprungen."""
+        Wird während Cooldown (10s nach Bewegung) übersprungen.
+
+        GETLIVEBINS hier nicht parallel starten: sonst blockiert das Pending die CAL-Bin-ACKs,
+        und der Async-Pfad verwirft sie fälschlich. LIVE startet nach GETCALBINS (Kettenende) oder per tick_polling.
+        """
         if time.time() < self._stats_cooldown_until:
             return
         self._last_cal_state_az = 0.0
         self._last_cal_state_el = 0.0
-        self._last_live_bins_az = 0.0
-        self._last_live_bins_el = 0.0
+        now = time.time()
+        self._last_live_bins_az = now
+        self._last_live_bins_el = now
         # ACC: Sofort-Burst nur bei Live-Strom-Heatmap; sonst Langzeit (120 s) aus tick_polling
         if self._acc_bins_strom_live():
             self._last_acc_bins_az = 0.0
@@ -490,10 +495,6 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     self._poll_cal_state(self.slave_az, self.az, priority=prio)
                 if self.enable_el and not self._cal_bins_inflight_el:
                     self._poll_cal_state(self.slave_el, self.el, priority=prio)
-                if self.enable_az and not self._live_bins_inflight_az:
-                    self._fetch_live_bins(self.slave_az, self.az, "AZ", priority=prio)
-                if self.enable_el and not self._live_bins_inflight_el:
-                    self._fetch_live_bins_el(self.slave_el, self.el, "EL", priority=prio)
                 if self._acc_bins_poll_enabled() and self._acc_bins_strom_live():
                     if self.enable_az and not self._acc_bins_inflight_az:
                         self._fetch_acc_bins(self.slave_az, self.az, "AZ", priority=prio)

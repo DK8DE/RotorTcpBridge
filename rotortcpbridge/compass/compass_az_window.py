@@ -260,8 +260,8 @@ class CompassWidget(QWidget):
 
     def set_bins(self, cw: Optional[List[int]], ccw: Optional[List[int]]) -> None:
         """ACCBINS für 5px Heatmap-Ring. 72 Werte je Richtung."""
-        self._bins_cw = list(cw) if cw and len(cw) >= 72 else None
-        self._bins_ccw = list(ccw) if ccw and len(ccw) >= 72 else None
+        self._bins_cw = list(cw) if cw is not None and len(cw) >= 72 else None
+        self._bins_ccw = list(ccw) if ccw is not None and len(ccw) >= 72 else None
         self.update()
 
     def set_heatmap_visible(self, on: bool) -> None:

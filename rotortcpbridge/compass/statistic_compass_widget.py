@@ -408,8 +408,8 @@ class StatisticCompassWidget(QWidget):
     def set_bins(self, cw: Optional[List[int]], ccw: Optional[List[int]]) -> None:
         """Bins setzen: AZ=72 Werte/Richtung, EL=18 Werte/Richtung (mV)."""
         need = EL_N_SEG if self._elevation else 72
-        self._bins_cw = list(cw) if cw and len(cw) >= need else None
-        self._bins_ccw = list(ccw) if ccw and len(ccw) >= need else None
+        self._bins_cw = list(cw) if cw is not None and len(cw) >= need else None
+        self._bins_ccw = list(ccw) if ccw is not None and len(ccw) >= need else None
         self.update()
 
     def set_heatmap_scale(self, scale: Optional[HeatmapScale]) -> None:

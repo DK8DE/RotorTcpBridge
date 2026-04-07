@@ -308,6 +308,17 @@ class HardwareClient:
             except Exception:
                 return False
 
+            # Antwort muss vom angefragten Slave stammen (tel.src = Slave, TX-Ziel = dst im #M:S:…).
+            # Sonst passen z. B. ACK_GETLIVEBINS/ACK_GETACCBINS von EL fälschlich zum AZ-Pending
+            # (gleicher Präfix, anderer Slave) — Merge in falsche Temp-Buffer, Timeouts, leere UI.
+            try:
+                tx_meta = parse(str(pending.line).strip())
+                if tx_meta is not None:
+                    if int(tel.src) != int(tx_meta.dst):
+                        return False
+            except Exception:
+                pass
+
             prefixes = {exp}
 
             # ACK_GETFOO -> auch ACK_FOO akzeptieren

@@ -54,6 +54,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     info_offnung = params.get("info_offnung", "Öffnungswinkel")
     info_reichweite = params.get("info_reichweite", "Reichweite")
     asnearest_title = params.get("asnearest_title", "Nächste Verbindungen")
+    aswatch_users_online = params.get("aswatch_users_online", "User online: {count}")
     asnearest_col_call = params.get("asnearest_col_call", "Rufzeichen")
     asnearest_col_dist = params.get("asnearest_col_dist", "Entfernung")
     asnearest_col_eta = params.get("asnearest_col_eta", "Zeit (min)")
@@ -62,6 +63,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     asnearest_tooltip_catpath = params.get("asnearest_tooltip_catpath", "Strecke/Kategorie")
     offline = bool(params.get("offline", False))
     locator_overlay = bool(params.get("map_locator_overlay", False))
+    aswatch_use_cluster = bool(params.get("aswatch_use_cluster", True))
     offline_min_z, offline_max_z = _offline_zoom_range(dark)
     if offline:
         tile_url = _offline_tile_url(dark) or (
@@ -129,6 +131,21 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
             break
         except OSError:
             continue
+    # Ein gemeinsames background-image für alle User-Marker (ein Dekodieren/GPU-Cache statt vieler <img src=data:…>).
+    aswatch_userimg_css = ""
+    if user_watch_data_url:
+        _u = json.dumps(user_watch_data_url)
+        aswatch_userimg_css = f"""
+    .rotor-aswatch-userimg-24 {{
+      width: 24px; height: 24px; margin-top: 2px; flex-shrink: 0;
+      background-image: url({_u}); background-size: contain; background-repeat: no-repeat; background-position: center;
+      filter: drop-shadow(0 1px 2px rgba(0,0,0,0.45)); pointer-events: auto;
+    }}
+    .rotor-aswatch-userimg-28 {{
+      width: 28px; height: 28px; flex-shrink: 0;
+      background-image: url({_u}); background-size: contain; background-repeat: no-repeat; background-position: center;
+      filter: drop-shadow(0 1px 2px rgba(0,0,0,0.45)); pointer-events: auto;
+    }}"""
     # Kein großes PNG per Base64 im Inline-Skript (Qt WebEngine: sehr große Seiten → weiße Karte).
     # Kompaktes SVG; optional kann später rotortiles:assets/ genutzt werden, wenn die Seite nicht about:blank ist.
     _airplane_svg = (
@@ -210,6 +227,8 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     }}
     #asnearestTitle {{ color: #1a1a1a; }}
     body.map-dark #asnearestTitle {{ color: #eaeaea; }}
+    #asnearestUserOnline {{ font-size: 11px; line-height: 1.25; color: #333; margin-bottom: 6px; opacity: 0.92; }}
+    body.map-dark #asnearestUserOnline {{ color: #c8c8c8; }}
     #asnearestList table {{ width: 100%; border-collapse: collapse; font-size: 11px;
       background: rgba(255, 255, 255, 0.15); border-radius: 4px; color: #1f1f1f; }}
     body.map-dark #asnearestList table {{
@@ -239,6 +258,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     img.rotor-asnearest-hover-fallback-img {{
       filter: drop-shadow(0 0 5px rgba(76, 175, 80, 0.9)) drop-shadow(0 1px 2px rgba(0,0,0,0.45));
     }}
+    {aswatch_userimg_css}
     {_cluster_extra_css}
   </style>
 </head>
@@ -251,6 +271,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     </div>
     <div id="asnearestBlock" style="display:none;">
       <div id="asnearestTitle" style="font-weight:600;margin-bottom:4px;"></div>
+      <div id="asnearestUserOnline"></div>
       <div id="asnearestList"></div>
     </div>
   </div>
@@ -271,6 +292,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     const popupAntenna = {json.dumps(popup_antenna)};
     const popupTarget = {json.dumps(popup_target)};
     const ASNEAREST_TITLE = {json.dumps(asnearest_title)};
+    const ASWATCH_USERS_ONLINE_TMPL = {json.dumps(aswatch_users_online)};
     const ASNEAREST_COL_CALL = {json.dumps(asnearest_col_call)};
     const ASNEAREST_COL_DIST = {json.dumps(asnearest_col_dist)};
     const ASNEAREST_COL_ETA = {json.dumps(asnearest_col_eta)};
@@ -286,8 +308,10 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     let _currentOffline = isOffline;
     const offlineMinZ = {offline_min_z};
     const offlineMaxZ = {offline_max_z};
-    const tileOpts = isOffline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION }}
-      : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }};
+    const tileOpts = isOffline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION,
+      fadeAnimation: false, keepBuffer: 1, updateWhenIdle: true }}
+      : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION,
+      fadeAnimation: false, keepBuffer: 1, updateWhenIdle: true }};
 
     console.log('[Map] Init isOffline=' + isOffline + ' tileUrl=' + {json.dumps(tile_url)} + ' origin=' + (document.location && document.location.origin ? document.location.origin : '?'));
     const initZoom = isOffline ? {offline_max_z} : 10;
@@ -307,40 +331,135 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     let asnearestHoverFlightLayer = null;
     let _hoverDestKey = null;
     let _hiddenAswatchForHover = null;
-    /* Offline: max. Zoom = Tile-Limit → Einzelmarker ab diesem Level; Online: ab 16 */
-    const aswatchDisableClusterZoom = isOffline ? offlineMaxZ : 16;
+    /* Offline: eine Zoomstufe → immer volle Marker. Online + Cluster: bis Zoom ≤17 nur Cluster; ab 18 Einzelmarker mit vollem Symbol (kein Zwischen-Punkt). Ohne Cluster: niedriger Zoom schlanke Labels, ab 19 voll. */
+    const aswatchDisableClusterZoom = isOffline ? offlineMaxZ : 18;
+    const aswatchFullIconZoom = isOffline ? offlineMaxZ : 19;
     let aswatchLayer;
-    if (typeof L.markerClusterGroup === 'function') {{
+    const _aswatchUseClusterLayer = {str(aswatch_use_cluster).lower()} && typeof L.markerClusterGroup === 'function';
+    if (_aswatchUseClusterLayer) {{
       aswatchLayer = L.markerClusterGroup({{
         spiderfyOnMaxZoom: true,
-        showCoverageOnHover: false,
+        showCoverageOnHover: true,
         zoomToBoundsOnClick: true,
-        maxClusterRadius: 72,
+        maxClusterRadius: 96,
         disableClusteringAtZoom: aswatchDisableClusterZoom,
         removeOutsideVisibleBounds: true,
-        chunkedLoading: true
+        animate: false,
+        chunkedLoading: true,
+        chunkInterval: 100,
+        chunkDelay: 40
       }}).addTo(map);
     }} else {{
       aswatchLayer = L.layerGroup().addTo(map);
     }}
+    function _aswatchWantFullDetailByZoom() {{
+      if (isOffline) return true;
+      if (_lastAswatch.length <= 1) return true;
+      if (_aswatchUseClusterLayer) return map.getZoom() >= aswatchDisableClusterZoom;
+      return map.getZoom() >= aswatchFullIconZoom;
+    }}
     let _lastAswatch = [];
+    let _aswatchTotalOnline = 0;
+    let _aswatchMarkerRefs = [];
     let _mapDarkAswatch = {str(dark).lower()};
+    function _updateAswatchUsersOnlineLine() {{
+      const el = document.getElementById('asnearestUserOnline');
+      if (!el) return;
+      const block = document.getElementById('asnearestBlock');
+      if (!block || block.style.display === 'none') {{
+        el.textContent = '';
+        return;
+      }}
+      el.textContent = ASWATCH_USERS_ONLINE_TMPL.split('{{count}}').join(String(_aswatchTotalOnline));
+    }}
     function _escapeHtmlAswatch(s) {{
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
     }}
     function _escapeAttrAswatch(s) {{
       return String(s).replace(/&/g,'&amp;').replace(/\"/g,'&quot;');
     }}
+    function _buildAswatchDivIcon(m, fullDetail) {{
+      const bubbleBg = _mapDarkAswatch ? 'rgba(40,40,40,0.95)' : 'rgba(255,255,255,0.95)';
+      const bubbleFg = _mapDarkAswatch ? '#f0f0f0' : '#111';
+      const bubbleBr = _mapDarkAswatch ? '#888' : '#333';
+      const call = _escapeHtmlAswatch(m.call || '');
+      if (!fullDetail) {{
+        let symS = '';
+        if (userWatchIconUrl) {{
+          symS = '<div class="rotor-aswatch-userimg-24" role="img" aria-hidden="true"></div>';
+        }} else {{
+          symS = '<div style="width:10px;height:10px;margin-top:2px;border-radius:50%;background:#5B9BD5;border:2px solid #2e6da4;box-shadow:0 1px 2px rgba(0,0,0,0.35);"></div>';
+        }}
+        const html = '<div style="display:flex;flex-direction:column;align-items:center;pointer-events:auto;">'
+          + '<div style="background:' + bubbleBg + ';border:1px solid ' + bubbleBr + ';border-radius:5px;padding:1px 5px;font-size:10px;font-weight:700;line-height:1.2;color:' + bubbleFg + ';white-space:nowrap;max-width:118px;overflow:hidden;text-overflow:ellipsis;">' + call + '</div>'
+          + symS + '</div>';
+        return L.divIcon({{ html: html, iconSize: [126, 52], iconAnchor: [63, 52], className: 'rotor-aswatch-marker rotor-aswatch-marker-simple' }});
+      }}
+      const qrgRaw = (m.qrg != null && String(m.qrg).trim()) ? String(m.qrg).trim() : '';
+      const qrgHtml = qrgRaw
+        ? ('<div style="font-size:10px;font-weight:600;line-height:1.15;margin-top:2px;white-space:nowrap;text-align:center;color:' + bubbleFg + ';">' + _escapeHtmlAswatch(qrgRaw) + '</div>')
+        : '';
+      let symbol = '';
+      if (userWatchIconUrl) {{
+        symbol = '<div class="rotor-aswatch-userimg-28" role="img" aria-hidden="true"></div>';
+      }} else {{
+        symbol = '<div style="width:28px;height:28px;border-radius:50%;background:#5B9BD5;border:2px solid #2e6da4;box-shadow:0 1px 3px rgba(0,0,0,0.4);pointer-events:auto;"></div>';
+      }}
+      const bubbleInner = '<div style="white-space:nowrap;text-align:center;line-height:1.15;">' + call + '</div>' + qrgHtml;
+      const html = '<div style="display:flex;flex-direction:column;align-items:center;">'
+        + '<div style="background:' + bubbleBg + ';border:1px solid ' + bubbleBr + ';border-radius:7px;padding:2px 6px;font-size:10px;font-weight:600;line-height:1.15;margin-bottom:3px;color:' + bubbleFg + ';">' + bubbleInner + '</div>'
+        + symbol + '</div>';
+      const hasQrg = !!qrgRaw;
+      const iconH = hasQrg ? 72 : 56;
+      return L.divIcon({{ html: html, iconSize: [120, iconH], iconAnchor: [60, iconH], className: 'rotor-aswatch-marker' }});
+    }}
+    function _syncAswatchMarkerIconsByZoom() {{
+      if (!_aswatchMarkerRefs.length) return;
+      const wantFull = _aswatchWantFullDetailByZoom();
+      let changed = false;
+      _aswatchMarkerRefs.forEach(function(mk) {{
+        const mm = mk._rotorAswatchData;
+        if (!mm) return;
+        if (mk._rotorAswatchFullDetail === wantFull) return;
+        mk._rotorAswatchFullDetail = wantFull;
+        mk.setIcon(_buildAswatchDivIcon(mm, wantFull));
+        changed = true;
+      }});
+      if (changed && aswatchLayer && typeof aswatchLayer.refreshClusters === 'function') {{
+        try {{
+          requestAnimationFrame(function() {{
+            try {{ aswatchLayer.refreshClusters(); }} catch (e2) {{}}
+          }});
+        }} catch (e) {{
+          try {{ aswatchLayer.refreshClusters(); }} catch (e3) {{}}
+        }}
+      }}
+    }}
+    let _aswatchSyncZoomTimer = null;
+    function _scheduleSyncAswatchMarkerIconsByZoom() {{
+      if (_aswatchSyncZoomTimer !== null) clearTimeout(_aswatchSyncZoomTimer);
+      _aswatchSyncZoomTimer = setTimeout(function() {{
+        _aswatchSyncZoomTimer = null;
+        _syncAswatchMarkerIconsByZoom();
+      }}, 100);
+    }}
     let _lastAsnearestSummary = [];
     function _findAswatchMarkerByDestKey(destKey) {{
-      if (!destKey || !aswatchLayer || !aswatchLayer.eachLayer) return null;
+      if (!destKey) return null;
+      var ri;
+      for (ri = 0; ri < _aswatchMarkerRefs.length; ri++) {{
+        var ref = _aswatchMarkerRefs[ri];
+        if (ref && ref._rotorDestKey === destKey) return ref;
+      }}
       var found = null;
-      try {{
-        aswatchLayer.eachLayer(function(layer) {{
-          if (found) return;
-          if (layer instanceof L.Marker && layer._rotorDestKey === destKey) found = layer;
-        }});
-      }} catch (e) {{}}
+      if (aswatchLayer && aswatchLayer.eachLayer) {{
+        try {{
+          aswatchLayer.eachLayer(function(layer) {{
+            if (found) return;
+            if (layer instanceof L.Marker && layer._rotorDestKey === destKey) found = layer;
+          }});
+        }} catch (e) {{}}
+      }}
       return found;
     }}
     function _clearAsnearestHover() {{
@@ -458,6 +577,8 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         block.style.display = 'none';
         listEl.innerHTML = '';
         if (titleEl) titleEl.textContent = '';
+        const uoHide = document.getElementById('asnearestUserOnline');
+        if (uoHide) uoHide.textContent = '';
         return;
       }}
       block.style.display = 'block';
@@ -484,46 +605,41 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       html += '</tbody></table>';
       listEl.innerHTML = html;
       _bindAsnearestRowHover(listEl);
+      _updateAswatchUsersOnlineLine();
     }}
     window.setAsnearestSummary = function(rows) {{
       _lastAsnearestSummary = (rows && rows.length) ? rows.slice() : [];
       _redrawAsnearestPanel();
     }};
-    window.setAswatchMarkers = function(arr) {{
+    window.setAswatchMarkers = function(arr, totalOnline) {{
+      if (_aswatchSyncZoomTimer !== null) {{
+        clearTimeout(_aswatchSyncZoomTimer);
+        _aswatchSyncZoomTimer = null;
+      }}
       _lastAswatch = (arr && arr.length) ? arr.slice() : [];
+      if (typeof totalOnline === 'number' && !isNaN(totalOnline) && totalOnline >= 0) {{
+        _aswatchTotalOnline = Math.floor(totalOnline);
+      }} else {{
+        _aswatchTotalOnline = _lastAswatch.length;
+      }}
+      _aswatchMarkerRefs = [];
       _hiddenAswatchForHover = null;
       if (asnearestHoverFlightLayer) asnearestHoverFlightLayer.clearLayers();
       asnearestHoverLayer.clearLayers();
       aswatchLayer.clearLayers();
       if (!_lastAswatch.length) {{
         if (_hoverDestKey) _clearAsnearestHover();
+        _updateAswatchUsersOnlineLine();
         return;
       }}
-      const bubbleBg = _mapDarkAswatch ? 'rgba(40,40,40,0.95)' : 'rgba(255,255,255,0.95)';
-      const bubbleFg = _mapDarkAswatch ? '#f0f0f0' : '#111';
-      const bubbleBr = _mapDarkAswatch ? '#888' : '#333';
+      const wantFullInit = _aswatchWantFullDetailByZoom();
       _lastAswatch.forEach(function(m) {{
-        const call = _escapeHtmlAswatch(m.call || '');
-        const qrgRaw = (m.qrg != null && String(m.qrg).trim()) ? String(m.qrg).trim() : '';
-        const qrgHtml = qrgRaw
-          ? ('<div style="font-size:10px;font-weight:600;line-height:1.15;margin-top:2px;white-space:nowrap;text-align:center;color:' + bubbleFg + ';">' + _escapeHtmlAswatch(qrgRaw) + '</div>')
-          : '';
-        let symbol = '';
-        if (userWatchIconUrl) {{
-          symbol = '<img src="' + userWatchIconUrl + '" width="28" height="28" alt="" style="display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.45));pointer-events:auto;"/>';
-        }} else {{
-          symbol = '<div style="width:28px;height:28px;border-radius:50%;background:#5B9BD5;border:2px solid #2e6da4;box-shadow:0 1px 3px rgba(0,0,0,0.4);pointer-events:auto;"></div>';
-        }}
-        const bubbleInner = '<div style="white-space:nowrap;text-align:center;line-height:1.15;">' + call + '</div>' + qrgHtml;
-        const html = '<div style="display:flex;flex-direction:column;align-items:center;">'
-          + '<div style="background:' + bubbleBg + ';border:1px solid ' + bubbleBr + ';border-radius:7px;padding:2px 6px;font-size:10px;font-weight:600;line-height:1.15;margin-bottom:3px;color:' + bubbleFg + ';">' + bubbleInner + '</div>'
-          + symbol + '</div>';
-        const hasQrg = !!qrgRaw;
-        const iconH = hasQrg ? 72 : 56;
-        const icon = L.divIcon({{ html: html, iconSize: [120, iconH], iconAnchor: [60, iconH], className: 'rotor-aswatch-marker' }});
+        const icon = _buildAswatchDivIcon(m, wantFullInit);
         const mk = L.marker([m.lat, m.lon], {{ icon: icon, interactive: true }});
         mk._rotorDestKey = (m.dest_key != null && String(m.dest_key).trim()) ? String(m.dest_key).trim() : '';
-        /* MarkerClusterGroup fängt Klicks ab: map.on('click') feuert auf User-Icon nicht → Rotor wie bei Kartenklick */
+        mk._rotorAswatchData = m;
+        mk._rotorAswatchFullDetail = wantFullInit;
+        _aswatchMarkerRefs.push(mk);
         mk.on('click', function(ev) {{
           if (ev && ev.originalEvent) {{ L.DomEvent.stopPropagation(ev.originalEvent); }}
           const lat2 = Number(m.lat);
@@ -537,6 +653,8 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       if (_hoverDestKey) {{
         _showAsnearestListHover(_hoverDestKey);
       }}
+      _syncAswatchMarkerIconsByZoom();
+      _updateAswatchUsersOnlineLine();
       // Kein fitBounds bei ASWATCH-Updates: sonst zoomt die Karte bei jedem UDP-
       // Tick heraus, sobald ein Marker außerhalb des Viewports liegt. Zoom und
       // Pan bleiben in der Hand des Nutzers.
@@ -779,7 +897,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         horizonCircle.setStyle({{ color: dark ? '#7eb87e' : '#2e7d32' }});
       }}
       _mapDarkAswatch = dark;
-      if (typeof window.setAswatchMarkers === 'function') window.setAswatchMarkers(_lastAswatch);
+      if (typeof window.setAswatchMarkers === 'function') window.setAswatchMarkers(_lastAswatch, _aswatchTotalOnline);
       if (typeof window.setAirplaneMarkers === 'function') window.setAirplaneMarkers(_lastAirplanes);
       if (typeof _redrawAsnearestPanel === 'function') _redrawAsnearestPanel();
       if (locatorVisible) {{
@@ -913,6 +1031,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     }});
     map.on('zoomend', function() {{
       if (locatorVisible) _updateLocatorPrecision();
+      _scheduleSyncAswatchMarkerIconsByZoom();
     }});
     // Beim Verschieben der Karte nur die Labels neu positionieren (Gitternetz bleibt)
     map.on('moveend', function() {{

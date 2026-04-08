@@ -10,6 +10,13 @@ a = Analysis(
         ('rotortcpbridge\\windPfeil.png',       'rotortcpbridge'),
         ('rotortcpbridge\\locales\\de.json',    'rotortcpbridge\\locales'),
         ('rotortcpbridge\\locales\\en.json',    'rotortcpbridge\\locales'),
+        # Karte: Leaflet + MarkerCluster (sonst kein Gruppieren der User-Marker)
+        ('rotortcpbridge\\static\\leaflet.min.js', 'rotortcpbridge\\static'),
+        ('rotortcpbridge\\static\\leaflet.css', 'rotortcpbridge\\static'),
+        ('rotortcpbridge\\static\\maidenhead.js', 'rotortcpbridge\\static'),
+        ('rotortcpbridge\\static\\leaflet.markercluster.js', 'rotortcpbridge\\static'),
+        ('rotortcpbridge\\static\\MarkerCluster.css', 'rotortcpbridge\\static'),
+        ('rotortcpbridge\\static\\MarkerCluster.Default.css', 'rotortcpbridge\\static'),
     ],
     hiddenimports=[],
     hookspath=[],

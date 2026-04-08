@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 from ..app_icon import get_app_icon
 from ..angle_utils import clamp_el, fmt_deg, om_beam_contributions_per_sector, wrap_deg
 from ..geo_utils import bearing_deg, effective_station_lat_lon, haversine_km
-from ..i18n import t
+from ..i18n import t, tt
 from ..ui.favorite_selection_sync import (
     apply_saved_selection_to_favorites_combo,
     clear_selection_if_favorite_removed,
@@ -100,7 +100,7 @@ class CompassWindow(QDialog):
             self._btn_open_map = QPushButton(t("main.btn_map"))
             self._btn_open_map.setAutoDefault(False)
             self._btn_open_map.setDefault(False)
-            self._btn_open_map.setToolTip(t("compass.open_map_tooltip"))
+            self._btn_open_map.setToolTip(tt("compass.open_map_tooltip"))
             self._btn_open_map.clicked.connect(open_map_cb)
             az_antenna_row.addWidget(self._btn_open_map)
         az_antenna_row.addStretch(1)
@@ -138,7 +138,7 @@ class CompassWindow(QDialog):
         self._act_heatmap_strom.setData("strom")
         self._act_heatmap_om = QAction(t("compass.heatmap_om_radar"), self)
         self._act_heatmap_om.setCheckable(True)
-        self._act_heatmap_om.setToolTip(t("compass.heatmap_om_radar_tooltip"))
+        self._act_heatmap_om.setToolTip(tt("compass.heatmap_om_radar_tooltip"))
         self._act_heatmap_om.setData("om_radar")
         self._act_heatmap_dwell = QAction(t("compass.heatmap_dwell"), self)
         self._act_heatmap_dwell.setCheckable(True)
@@ -149,13 +149,13 @@ class CompassWindow(QDialog):
         for _a in (self._act_heatmap_strom, self._act_heatmap_om, self._act_heatmap_dwell):
             _a.toggled.connect(self._on_heatmap_az_action_toggled)
         self.btn_heatmap_az = QToolButton()
-        self.btn_heatmap_az.setToolTip(t("compass.heatmap_az_rings_tooltip"))
+        self.btn_heatmap_az.setToolTip(tt("compass.heatmap_az_rings_tooltip"))
         self.btn_heatmap_az.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.btn_heatmap_az.setMenu(self.menu_heatmap_az)
         self.btn_heatmap_az.setMinimumWidth(px_to_dip(self, 120))
         self._update_heatmap_az_button_text()
         self.btn_reset_dwell_az = QPushButton(t("compass.btn_reset_dwell"))
-        self.btn_reset_dwell_az.setToolTip(t("compass.btn_reset_dwell_tooltip"))
+        self.btn_reset_dwell_az.setToolTip(tt("compass.btn_reset_dwell_tooltip"))
         self.btn_reset_dwell_az.setAutoDefault(False)
         self.btn_reset_dwell_az.setDefault(False)
         self.btn_reset_dwell_az.clicked.connect(self._on_reset_dwell_az)
@@ -913,7 +913,7 @@ class CompassWindow(QDialog):
         self.setWindowTitle(t("compass.title"))
         if self._btn_open_map is not None:
             self._btn_open_map.setText(t("main.btn_map"))
-            self._btn_open_map.setToolTip(t("compass.open_map_tooltip"))
+            self._btn_open_map.setToolTip(tt("compass.open_map_tooltip"))
 
     def refresh_visibility(self) -> None:
         az_on = bool(getattr(self.ctrl, "enable_az", True))

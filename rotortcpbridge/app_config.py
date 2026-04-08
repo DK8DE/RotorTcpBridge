@@ -149,6 +149,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "asnearest_use_category_path": True,
         # Gleiches Flugzeug pro DX beibehalten (sonst springt Restzeit beim Wechsel des „Besten“)
         "asnearest_sticky_flight": True,
+        # Karte: nur Stationen mit dest_key aus der ASNEAREST-Tabelle „Nächste Verbindungen“
+        "map_aswatch_only_asnearest_list": False,
+        # Karte: Leaflet MarkerCluster für ASWATCH-User (aus = einzelne Marker)
+        "map_aswatch_cluster_enabled": True,
     },
 }
 

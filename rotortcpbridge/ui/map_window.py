@@ -34,7 +34,7 @@ from ..geo_utils import (
     effective_station_lat_lon,
     grayline_points,
 )
-from ..i18n import t
+from ..i18n import t, tt
 from .favorite_selection_sync import (
     apply_saved_selection_to_favorites_combo,
     clear_selection_if_favorite_removed,
@@ -140,12 +140,12 @@ class MapWindow(QDialog):
         toolbar.addWidget(self._btn_fav_save)
         toolbar.addWidget(self._btn_fav_delete)
         toolbar.addWidget(self._btn_elevation)
-        self._cb_antenna.setToolTip(t("map.tooltip_antenna"))
-        self._cb_fav.setToolTip(t("map.tooltip_favorites"))
-        self._ed_fav_name.setToolTip(t("map.tooltip_fav_name"))
-        self._btn_fav_save.setToolTip(t("map.tooltip_fav_save"))
-        self._btn_fav_delete.setToolTip(t("map.tooltip_fav_delete"))
-        self._btn_elevation.setToolTip(t("map.tooltip_elevation"))
+        self._cb_antenna.setToolTip(tt("map.tooltip_antenna"))
+        self._cb_fav.setToolTip(tt("map.tooltip_favorites"))
+        self._ed_fav_name.setToolTip(tt("map.tooltip_fav_name"))
+        self._btn_fav_save.setToolTip(tt("map.tooltip_fav_save"))
+        self._btn_fav_delete.setToolTip(tt("map.tooltip_fav_delete"))
+        self._btn_elevation.setToolTip(tt("map.tooltip_elevation"))
         layout.addLayout(toolbar)
 
         self._cb_fav.activated.connect(self._on_fav_activated)
@@ -205,9 +205,9 @@ class MapWindow(QDialog):
         self._btn_ref_az.setAutoDefault(False)
         self._btn_ref_az.setDefault(False)
         self._btn_ref_az.clicked.connect(self._on_ref_az)
-        self._chk_offline.setToolTip(t("map.tooltip_offline"))
-        self._chk_locator.setToolTip(t("map.tooltip_locator"))
-        self._btn_ref_az.setToolTip(t("map.tooltip_ref_az"))
+        self._chk_offline.setToolTip(tt("map.tooltip_offline"))
+        self._chk_locator.setToolTip(tt("map.tooltip_locator"))
+        self._btn_ref_az.setToolTip(tt("map.tooltip_ref_az"))
 
         status_bar.addWidget(self._lbl_ist)
         status_bar.addWidget(self._lbl_soll)
@@ -259,22 +259,48 @@ class MapWindow(QDialog):
         # True erst nach loadFinished – sonst existiert setAswatchMarkers in JS noch nicht
         self._map_page_ready = False
 
+    def _filter_aswatch_for_map(self, items: list) -> list:
+        """Nur Marker, deren dest_key in der aktuellen ASNEAREST-Liste steht (optional)."""
+        ui = self.cfg.get("ui", {}) or {}
+        if not ui.get("map_aswatch_only_asnearest_list", False):
+            return list(items) if items else []
+        keys = {
+            str(r.get("dest_key", "")).strip()
+            for r in self._asnearest_summary_last
+            if r and str(r.get("dest_key", "")).strip()
+        }
+        if not keys:
+            return []
+        out = []
+        for it in items or []:
+            if not isinstance(it, dict):
+                continue
+            dk = str(it.get("dest_key", "")).strip()
+            if dk and dk in keys:
+                out.append(it)
+        return out
+
+    def _push_aswatch_markers_js(self) -> None:
+        if not self._view or not getattr(self, "_map_page_ready", False):
+            return
+        to_send = self._filter_aswatch_for_map(self._aswatch_last)
+        n_total = len(self._aswatch_last) if self._aswatch_last else 0
+        try:
+            js = (
+                f"if (typeof window.setAswatchMarkers === 'function') "
+                f"window.setAswatchMarkers({json.dumps(to_send)}, {int(n_total)});"
+            )
+            self._view.page().runJavaScript(js)
+        except Exception:
+            pass
+
     def update_aswatch_users(self, items: list) -> None:
         """Zeigt andere User-Marker (User.png + Rufzeichen) aus UDP ASWATCHLIST/ASSETPATH."""
         try:
             self._aswatch_last = list(items) if items else []
         except Exception:
             self._aswatch_last = []
-        if not self._view or not getattr(self, "_map_page_ready", False):
-            return
-        try:
-            js = (
-                f"if (typeof window.setAswatchMarkers === 'function') "
-                f"window.setAswatchMarkers({json.dumps(self._aswatch_last)});"
-            )
-            self._view.page().runJavaScript(js)
-        except Exception:
-            pass
+        self._push_aswatch_markers_js()
 
     def update_aircraft_markers(self, items: list) -> None:
         """ASNEAREST: Flugzeug-Icon + Linie nur bei link_ok (vom Listener gefiltert)."""
@@ -309,6 +335,7 @@ class MapWindow(QDialog):
             self._view.page().runJavaScript(js)
         except Exception:
             pass
+        self._push_aswatch_markers_js()
 
     def _get_params(self) -> dict:
         """Aktuelle Parameter für die Karte."""
@@ -365,12 +392,14 @@ class MapWindow(QDialog):
             "popup_antenna": t("map.popup_antenna"),
             "popup_target": t("map.popup_target"),
             "asnearest_title": t("map.asnearest_title"),
+            "aswatch_users_online": t("map.aswatch_users_online"),
             "asnearest_col_call": t("map.asnearest_col_call"),
             "asnearest_col_dist": t("map.asnearest_col_dist"),
             "asnearest_col_eta": t("map.asnearest_col_eta"),
             "asnearest_col_score": t("map.asnearest_col_score"),
             "asnearest_tooltip_path": t("map.asnearest_tooltip_path"),
             "asnearest_tooltip_catpath": t("map.asnearest_tooltip_catpath"),
+            "aswatch_use_cluster": bool(ui.get("map_aswatch_cluster_enabled", True)),
         }
 
     def _compute_beams(self, rotor_az_deg: float, antenna_idx: int) -> list[dict]:

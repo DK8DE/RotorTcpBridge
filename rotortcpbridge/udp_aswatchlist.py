@@ -673,15 +673,24 @@ class UdpAswatchlistListener:
         return rows[:mr]
 
     def _emit_aircraft_merged(self) -> None:
+        """Flugzeug-Marker nur bei aktivem Flugzeug-Feature; ASNEAREST-Liste immer aus Parser."""
+        summary = self._build_asnearest_summary_rows()
+        self.packet_received_flag = True
         if not self._aircraft_enabled():
             try:
                 if self._emit_air_fn:
                     self._emit_air_fn([])
-                if self._emit_summary_fn:
-                    self._emit_summary_fn([])
             except Exception as e:
                 try:
                     self.log.write("WARN", f"UDP ASNEAREST emit: {e}")
+                except Exception:
+                    pass
+            try:
+                if self._emit_summary_fn:
+                    self._emit_summary_fn(summary)
+            except Exception as e:
+                try:
+                    self.log.write("WARN", f"UDP ASNEAREST summary emit: {e}")
                 except Exception:
                     pass
             return
@@ -701,8 +710,6 @@ class UdpAswatchlistListener:
                     m for m in markers if m.get("link_ok") and marker_asnearest_score(m) >= min_score
                 ]
         # Ohne Klick auf ein Rufzeichen in der Liste: keine Flugzeug-Marker (kein „alle auf einmal“)
-        summary = self._build_asnearest_summary_rows()
-        self.packet_received_flag = True
         try:
             if self._emit_air_fn:
                 self._emit_air_fn(flat_map)
@@ -901,13 +908,11 @@ class UdpAswatchlistListener:
             elif nachricht.upper().startswith("ASNEAREST:"):
                 if not self._aircraft_enabled():
                     self._planes_by_dest.clear()
-                    self._asnearest_parsed_by_dest.clear()
                     self._asnearest_selected_dest_key = None
                     self._asnearest_sticky_flight.clear()
-                    self._emit_aircraft_merged()
-                    continue
                 parsed = parse_asnearest(nachricht)
-                self._append_asnearest_jsonl(nachricht, parsed)
+                if self._aircraft_enabled():
+                    self._append_asnearest_jsonl(nachricht, parsed)
                 if parsed is not None:
                     try:
                         c = int(parsed.get("count") or 0)

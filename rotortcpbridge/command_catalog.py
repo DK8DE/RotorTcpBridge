@@ -1314,6 +1314,24 @@ SPECS_DATA: list[dict] = [
         "help_text_en": "Read beep volume from the controller.",
     },
     {
+        "name": "SETCONLEDP",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 100.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 100.0,
+        "help_text": "LED-Ring-Helligkeit am Controller in Prozent (0–100).",
+        "help_text_en": "Controller LED ring brightness in percent (0–100).",
+    },
+    {
+        "name": "GETCONLEDP",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "LED-Ring-Helligkeit (0–100 %) vom Controller lesen.",
+        "help_text_en": "Read LED ring brightness (0–100 %) from the controller.",
+    },
+    {
         "name": "SETCONANO",
         "kind": "int",
         "min_value": 0.0,
@@ -1402,7 +1420,7 @@ def command_specs() -> list[CommandSpec]:
 
 def format_cmd_tooltip(spec: CommandSpec) -> str:
     """Erzeugt einen Tooltip-Text (mehrzeilig) für einen CMD-Eintrag – sprachabhängig via i18n."""
-    from .i18n import LANG_CODE, t
+    from .i18n import LANG_CODE, format_tooltip, t
 
     use_en = LANG_CODE == "en"
     i18n_key = f"catalog.help.{spec.name}"
@@ -1423,4 +1441,4 @@ def format_cmd_tooltip(spec: CommandSpec) -> str:
         if spec.kind == "float" and spec.decimals is not None:
             lines.append(f"{t('catalog.decimals')}: {spec.decimals}")
 
-    return "\n".join(lines)
+    return format_tooltip("\n".join(lines))

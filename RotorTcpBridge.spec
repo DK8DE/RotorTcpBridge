@@ -57,10 +57,14 @@ a = Analysis(
         # Sprachdateien
         ('rotortcpbridge\\locales\\de.json',         'rotortcpbridge\\locales'),
         ('rotortcpbridge\\locales\\en.json',         'rotortcpbridge\\locales'),
-        # Leaflet + Maidenhead (Offline-Karte, inline eingebettet)
+        # Leaflet + Maidenhead + MarkerCluster (Offline-Karte, inline eingebettet;
+        # ohne leaflet.markercluster.js kein User-Clustering auf der Karte)
         ('rotortcpbridge\\static\\leaflet.min.js',   'rotortcpbridge\\static'),
         ('rotortcpbridge\\static\\leaflet.css',      'rotortcpbridge\\static'),
         ('rotortcpbridge\\static\\maidenhead.js',    'rotortcpbridge\\static'),
+        ('rotortcpbridge\\static\\leaflet.markercluster.js', 'rotortcpbridge\\static'),
+        ('rotortcpbridge\\static\\MarkerCluster.css', 'rotortcpbridge\\static'),
+        ('rotortcpbridge\\static\\MarkerCluster.Default.css', 'rotortcpbridge\\static'),
     ],
     hiddenimports=[],
     hookspath=[],

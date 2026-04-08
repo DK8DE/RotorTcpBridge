@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QStackedWidget,
     QTextEdit,
@@ -53,7 +54,7 @@ from ..compass.statistic_compass_widget import compute_bin_min_max
 from ..app_icon import get_app_icon
 from ..command_catalog import command_specs, format_cmd_tooltip
 from ..ports import list_serial_ports
-from ..i18n import t, load_lang
+from ..i18n import format_tooltip_html, load_lang, t, tt
 from ..geo_utils import maidenhead_to_lat_lon
 from ..net_utils import ipv4_subnet_broadcast_default
 from ..rotor_controller import SYNC_UI_NAK_PREFIX
@@ -87,12 +88,6 @@ class _SettingsScrollArea(QScrollArea):
         sh = super().sizeHint()
         cap_h = px_to_dip(self, 560)
         return QSize(sh.width(), min(sh.height(), cap_h))
-
-
-def _settings_tooltip_html(text: str, max_width_px: int = 360) -> str:
-    """HTML für Tooltips mit begrenzter Breite und Umbruch (Qt zeigt HTML in Tooltips)."""
-    e = str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return f"<p style='white-space: pre-wrap; max-width: {max_width_px}px;'>{e}</p>"
 
 
 class SettingsWindow(QDialog):
@@ -138,16 +133,14 @@ class SettingsWindow(QDialog):
 
         main = QVBoxLayout(self)
 
-        gb_conn = QWidget()
-        form_conn = QFormLayout(gb_conn)
+        gb_master_rotor = QGroupBox(t("settings.group_master_rotor_ids"))
+        form_master_rotor = QFormLayout(gb_master_rotor)
+        gb_bus_connection = QGroupBox(t("settings.group_bus_connection"))
+        form_bus_connection = QFormLayout(gb_bus_connection)
+        gb_axes = QGroupBox(t("settings.group_axes"))
+        form_axes = QFormLayout(gb_axes)
         gb_ui = QWidget()
         form_ui = QFormLayout(gb_ui)
-
-        def _hsep() -> QFrame:
-            s = QFrame()
-            s.setFrameShape(QFrame.Shape.HLine)
-            s.setFrameShadow(QFrame.Shadow.Sunken)
-            return s
 
         self.ed_listen_host = QLineEdit(cfg["pst_server"]["listen_host"])
         self.sp_listen_port_az = QSpinBox()
@@ -173,27 +166,28 @@ class SettingsWindow(QDialog):
         self.sp_slave_el = QSpinBox()
         self.sp_slave_el.setRange(1, 254)
         self.sp_slave_el.setValue(_clamp_slave_id(cfg["rotor_bus"]["slave_el"]))
-        self.sp_master.setToolTip(t("settings.tooltip_master_id"))
-        self.sp_slave_az.setToolTip(t("settings.tooltip_slave_az"))
-        self.sp_slave_el.setToolTip(t("settings.tooltip_slave_el"))
-        form_conn.addRow(t("settings.master_id"), self.sp_master)
-        form_conn.addRow(t("settings.slave_id_az"), self.sp_slave_az)
-        form_conn.addRow(t("settings.slave_id_el"), self.sp_slave_el)
-        form_conn.addRow(_hsep())
+        self.sp_master.setToolTip(tt("settings.tooltip_master_id"))
+        self.sp_slave_az.setToolTip(tt("settings.tooltip_slave_az"))
+        self.sp_slave_el.setToolTip(tt("settings.tooltip_slave_el"))
+        form_master_rotor.addRow(t("settings.master_id"), self.sp_master)
+        form_master_rotor.addRow(t("settings.slave_id_az"), self.sp_slave_az)
+        form_master_rotor.addRow(t("settings.slave_id_el"), self.sp_slave_el)
 
         self.chk_pst_enabled = QCheckBox(t("settings.chk_pst_enabled"))
         self.chk_pst_enabled.setChecked(bool(cfg["pst_server"].get("enabled", False)))
-        self.chk_pst_enabled.setToolTip(t("settings.chk_pst_enabled_tooltip"))
-        self.ed_listen_host.setToolTip(t("settings.pst_listen_host_tooltip"))
-        self.sp_listen_port_az.setToolTip(t("settings.pst_port_az_tooltip"))
-        self.sp_listen_port_el.setToolTip(t("settings.pst_port_el_tooltip"))
+        self.chk_pst_enabled.setToolTip(tt("settings.chk_pst_enabled_tooltip"))
+        self.ed_listen_host.setToolTip(tt("settings.pst_listen_host_tooltip"))
+        self.sp_listen_port_az.setToolTip(tt("settings.pst_port_az_tooltip"))
+        self.sp_listen_port_el.setToolTip(tt("settings.pst_port_el_tooltip"))
         _conn_ip_w = px_to_dip(self, 152)  # typ. IPv4-Feld +20 px ggü. 132
         self.ed_listen_host.setMinimumWidth(_conn_ip_w)
-        form_conn.addRow(self.chk_pst_enabled)
-        form_conn.addRow(t("settings.pst_listen_host"), self.ed_listen_host)
-        form_conn.addRow(t("settings.pst_port_az"), self.sp_listen_port_az)
-        form_conn.addRow(t("settings.pst_port_el"), self.sp_listen_port_el)
-        form_conn.addRow(_hsep())
+        w_spid_tcp_pst = QWidget()
+        fl_spid_tcp_pst = QFormLayout(w_spid_tcp_pst)
+        fl_spid_tcp_pst.setContentsMargins(0, 0, 0, 0)
+        fl_spid_tcp_pst.addRow(self.chk_pst_enabled)
+        fl_spid_tcp_pst.addRow(t("settings.pst_listen_host"), self.ed_listen_host)
+        fl_spid_tcp_pst.addRow(t("settings.pst_port_az"), self.sp_listen_port_az)
+        fl_spid_tcp_pst.addRow(t("settings.pst_port_el"), self.sp_listen_port_el)
 
         self.cb_hw_mode = QComboBox()
         self.cb_hw_mode.addItems(["tcp", "com"])
@@ -213,20 +207,16 @@ class SettingsWindow(QDialog):
         com_row_widget = QWidget()
         com_row_widget.setLayout(com_row)
 
-        self.lbl_baud = QLabel(str(cfg["hardware_link"]["baudrate"]))
-        self.cb_hw_mode.setToolTip(t("settings.hw_mode_tooltip"))
-        self.ed_hw_ip.setToolTip(t("settings.hw_ip_tooltip"))
-        self.sp_hw_port.setToolTip(t("settings.hw_port_tooltip"))
-        self.cb_hw_com.setToolTip(t("settings.hw_com_tooltip"))
-        self.btn_com_refresh.setToolTip(t("settings.btn_com_refresh_tooltip"))
-        self.lbl_baud.setToolTip(t("settings.baudrate_tooltip"))
+        self.cb_hw_mode.setToolTip(tt("settings.hw_mode_tooltip"))
+        self.ed_hw_ip.setToolTip(tt("settings.hw_ip_tooltip"))
+        self.sp_hw_port.setToolTip(tt("settings.hw_port_tooltip"))
+        self.cb_hw_com.setToolTip(tt("settings.hw_com_tooltip"))
+        self.btn_com_refresh.setToolTip(tt("settings.btn_com_refresh_tooltip"))
 
-        form_conn.addRow(t("settings.hw_mode"), self.cb_hw_mode)
-        form_conn.addRow(t("settings.hw_ip"), self.ed_hw_ip)
-        form_conn.addRow(t("settings.hw_port"), self.sp_hw_port)
-        form_conn.addRow(t("settings.hw_com"), com_row_widget)
-        form_conn.addRow(t("settings.baudrate"), self.lbl_baud)
-        form_conn.addRow(_hsep())
+        form_bus_connection.addRow(t("settings.hw_mode"), self.cb_hw_mode)
+        form_bus_connection.addRow(t("settings.hw_ip"), self.ed_hw_ip)
+        form_bus_connection.addRow(t("settings.hw_port"), self.sp_hw_port)
+        form_bus_connection.addRow(t("settings.hw_com"), com_row_widget)
 
         self.chk_enable_az = QCheckBox(t("settings.chk_enable_az"))
         self.chk_enable_el = QCheckBox(t("settings.chk_enable_el"))
@@ -234,15 +224,17 @@ class SettingsWindow(QDialog):
         self.chk_enable_el.setChecked(bool(cfg["rotor_bus"].get("enable_el", True)))
         if not self.chk_enable_az.isChecked() and not self.chk_enable_el.isChecked():
             self.chk_enable_az.setChecked(True)
-        self.chk_enable_az.setToolTip(t("settings.chk_enable_az_tooltip"))
-        self.chk_enable_el.setToolTip(t("settings.chk_enable_el_tooltip"))
-        form_conn.addRow(self.chk_enable_az)
-        form_conn.addRow(self.chk_enable_el)
+        self.chk_enable_az.setToolTip(tt("settings.chk_enable_az_tooltip"))
+        self.chk_enable_el.setToolTip(tt("settings.chk_enable_el_tooltip"))
+        form_axes.addRow(self.chk_enable_az)
+        form_axes.addRow(self.chk_enable_el)
 
         self.chk_force_dark_mode = QCheckBox(t("settings.chk_dark_mode"))
         self.chk_force_dark_mode.setChecked(bool(cfg.get("ui", {}).get("force_dark_mode", True)))
-        self.chk_force_dark_mode.setToolTip(t("settings.chk_dark_mode_tooltip"))
-        form_ui.addRow(self.chk_force_dark_mode)
+        self.chk_force_dark_mode.setToolTip(tt("settings.chk_dark_mode_tooltip"))
+        gb_display = QGroupBox(t("settings.group_display"))
+        fl_display = QFormLayout(gb_display)
+        fl_display.addRow(self.chk_force_dark_mode)
 
         _ui0 = cfg.get("ui", {})
 
@@ -260,39 +252,39 @@ class SettingsWindow(QDialog):
             return w
 
         self.chk_udp_ucxlog = QCheckBox(t("settings.chk_udp_ucxlog"))
-        self.chk_udp_ucxlog.setToolTip(t("settings.chk_udp_ucxlog_tooltip"))
+        self.chk_udp_ucxlog.setToolTip(tt("settings.chk_udp_ucxlog_tooltip"))
         self.chk_udp_ucxlog.setChecked(bool(_ui0.get("udp_ucxlog_enabled", True)))
         self.ed_udp_ucxlog_listen = QLineEdit()
         self.ed_udp_ucxlog_listen.setText(str(_ui0.get("udp_ucxlog_listen_host", "0.0.0.0")))
         self.ed_udp_ucxlog_listen.setFixedWidth(_udp_ip_field_w)
-        self.ed_udp_ucxlog_listen.setToolTip(t("settings.ucxlog_udp_listen_tooltip"))
+        self.ed_udp_ucxlog_listen.setToolTip(tt("settings.ucxlog_udp_listen_tooltip"))
         self.sp_udp_ucxlog_port = QSpinBox()
         self.sp_udp_ucxlog_port.setRange(1, 65535)
         self.sp_udp_ucxlog_port.setValue(int(_ui0.get("udp_ucxlog_port", 12040)))
         self.sp_udp_ucxlog_port.setFixedWidth(_udp_port_field_w)
-        self.sp_udp_ucxlog_port.setToolTip(t("settings.ucxlog_udp_port_tooltip"))
+        self.sp_udp_ucxlog_port.setToolTip(tt("settings.ucxlog_udp_port_tooltip"))
 
         self.chk_aswatch_udp = QCheckBox(t("settings.chk_aswatch_udp"))
-        self.chk_aswatch_udp.setToolTip(t("settings.chk_aswatch_udp_tooltip"))
+        self.chk_aswatch_udp.setToolTip(tt("settings.chk_aswatch_udp_tooltip"))
         self.chk_aswatch_udp.setChecked(bool(_ui0.get("aswatch_udp_enabled", True)))
         self.ed_aswatch_udp_listen = QLineEdit()
         self.ed_aswatch_udp_listen.setText(str(_ui0.get("aswatch_udp_listen_host", "0.0.0.0")))
         self.ed_aswatch_udp_listen.setFixedWidth(_udp_ip_field_w)
-        self.ed_aswatch_udp_listen.setToolTip(t("settings.aswatch_udp_listen_tooltip"))
+        self.ed_aswatch_udp_listen.setToolTip(tt("settings.aswatch_udp_listen_tooltip"))
         self.sp_aswatch_udp_port = QSpinBox()
         self.sp_aswatch_udp_port.setRange(1, 65535)
         self.sp_aswatch_udp_port.setValue(int(_ui0.get("aswatch_udp_port", 9872)))
         self.sp_aswatch_udp_port.setFixedWidth(_udp_port_field_w)
-        self.sp_aswatch_udp_port.setToolTip(t("settings.aswatch_udp_port_tooltip"))
+        self.sp_aswatch_udp_port.setToolTip(tt("settings.aswatch_udp_port_tooltip"))
 
         self.chk_aswatch_aircraft = QCheckBox(t("settings.chk_aswatch_aircraft"))
-        self.chk_aswatch_aircraft.setToolTip(_settings_tooltip_html(t("settings.chk_aswatch_aircraft_tooltip")))
+        self.chk_aswatch_aircraft.setToolTip(format_tooltip_html(t("settings.chk_aswatch_aircraft_tooltip")))
         self.chk_aswatch_aircraft.setChecked(bool(_ui0.get("aswatch_aircraft_enabled", True)))
         self.lbl_asnearest_min_score = _asnearest_lbl_row(t("settings.asnearest_min_score_label"))
         self.sp_asnearest_min_score = QSpinBox()
         self.sp_asnearest_min_score.setRange(0, 100)
         self.sp_asnearest_min_score.setValue(int(_ui0.get("asnearest_min_score", 45)))
-        self.sp_asnearest_min_score.setToolTip(_settings_tooltip_html(t("settings.asnearest_min_score_tooltip")))
+        self.sp_asnearest_min_score.setToolTip(format_tooltip_html(t("settings.asnearest_min_score_tooltip")))
         self.lbl_asnearest_min_score.setToolTip(self.sp_asnearest_min_score.toolTip())
         self.sp_asnearest_min_score.setFixedWidth(_udp_port_field_w)
         self.lbl_asnearest_geom_min = _asnearest_lbl_row(t("settings.asnearest_geom_min_label"))
@@ -301,7 +293,7 @@ class SettingsWindow(QDialog):
         self.sp_asnearest_geom_min.setValue(
             int(round(float(_ui0.get("asnearest_geom_factor_min", 0.20)) * 100.0))
         )
-        self.sp_asnearest_geom_min.setToolTip(_settings_tooltip_html(t("settings.asnearest_geom_min_tooltip")))
+        self.sp_asnearest_geom_min.setToolTip(format_tooltip_html(t("settings.asnearest_geom_min_tooltip")))
         self.lbl_asnearest_geom_min.setToolTip(self.sp_asnearest_geom_min.toolTip())
         self.sp_asnearest_geom_min.setFixedWidth(_udp_port_field_w)
         self.lbl_asnearest_list_max_min = _asnearest_lbl_row(t("settings.asnearest_list_max_minutes_label"))
@@ -310,67 +302,55 @@ class SettingsWindow(QDialog):
         self.sp_asnearest_list_max_min.setValue(
             max(0, int(_ui0.get("asnearest_list_max_minutes", 0)))
         )
-        self.sp_asnearest_list_max_min.setToolTip(_settings_tooltip_html(t("settings.asnearest_list_max_minutes_tooltip")))
+        self.sp_asnearest_list_max_min.setToolTip(format_tooltip_html(t("settings.asnearest_list_max_minutes_tooltip")))
         self.lbl_asnearest_list_max_min.setToolTip(self.sp_asnearest_list_max_min.toolTip())
         self.sp_asnearest_list_max_min.setFixedWidth(_udp_port_field_w)
         self.lbl_asnearest_list_max_rows = _asnearest_lbl_row(t("settings.asnearest_list_max_rows_label"))
         self.sp_asnearest_list_max_rows = QSpinBox()
         self.sp_asnearest_list_max_rows.setRange(1, 500)
         self.sp_asnearest_list_max_rows.setValue(int(_ui0.get("asnearest_list_max_rows", 20)))
-        self.sp_asnearest_list_max_rows.setToolTip(_settings_tooltip_html(t("settings.asnearest_list_max_rows_tooltip")))
+        self.sp_asnearest_list_max_rows.setToolTip(format_tooltip_html(t("settings.asnearest_list_max_rows_tooltip")))
         self.lbl_asnearest_list_max_rows.setToolTip(self.sp_asnearest_list_max_rows.toolTip())
         self.sp_asnearest_list_max_rows.setFixedWidth(_udp_port_field_w)
 
+        self.chk_map_aswatch_only_asnearest_list = QCheckBox(
+            t("settings.map_aswatch_only_asnearest_list")
+        )
+        self.chk_map_aswatch_only_asnearest_list.setChecked(
+            bool(_ui0.get("map_aswatch_only_asnearest_list", False))
+        )
+        self.chk_map_aswatch_only_asnearest_list.setToolTip(
+            format_tooltip_html(t("settings.map_aswatch_only_asnearest_list_tooltip"))
+        )
+        self.chk_map_aswatch_cluster = QCheckBox(t("settings.map_aswatch_cluster_enabled"))
+        self.chk_map_aswatch_cluster.setChecked(bool(_ui0.get("map_aswatch_cluster_enabled", True)))
+        self.chk_map_aswatch_cluster.setToolTip(
+            format_tooltip_html(t("settings.map_aswatch_cluster_tooltip"))
+        )
+
         self.chk_udp_pst = QCheckBox(t("settings.chk_udp_pst"))
-        self.chk_udp_pst.setToolTip(t("settings.chk_udp_pst_tooltip"))
+        self.chk_udp_pst.setToolTip(tt("settings.chk_udp_pst_tooltip"))
         self.chk_udp_pst.setChecked(bool(_ui0.get("udp_pst_enabled", True)))
         self.ed_udp_pst_listen = QLineEdit()
         self.ed_udp_pst_listen.setText(str(_ui0.get("udp_pst_listen_host", "0.0.0.0")))
         self.ed_udp_pst_listen.setFixedWidth(_udp_ip_field_w)
-        self.ed_udp_pst_listen.setToolTip(t("settings.udp_pst_listen_tooltip"))
+        self.ed_udp_pst_listen.setToolTip(tt("settings.udp_pst_listen_tooltip"))
         self.sp_udp_pst_port = QSpinBox()
         self.sp_udp_pst_port.setRange(1, 65534)
         self.sp_udp_pst_port.setValue(int(_ui0.get("udp_pst_port", 12000)))
         self.sp_udp_pst_port.setFixedWidth(_udp_port_field_w)
-        self.sp_udp_pst_port.setToolTip(t("settings.udp_pst_port_tooltip"))
+        self.sp_udp_pst_port.setToolTip(tt("settings.udp_pst_port_tooltip"))
         self.ed_udp_pst_send_host = QLineEdit()
         _pst_auto_host = ipv4_subnet_broadcast_default()
         _pst_saved = str(_ui0.get("udp_pst_send_host", "")).strip()
         self.ed_udp_pst_send_host.setText(_pst_saved if _pst_saved else _pst_auto_host)
         self.ed_udp_pst_send_host.setPlaceholderText(_pst_auto_host)
         self.ed_udp_pst_send_host.setFixedWidth(_udp_target_field_w)
-        self.ed_udp_pst_send_host.setToolTip(t("settings.udp_pst_send_host_tooltip"))
+        self.ed_udp_pst_send_host.setToolTip(tt("settings.udp_pst_send_host_tooltip"))
 
         _lbl_ip = t("settings.udp_listen_ip_label")
         _lbl_port = t("settings.udp_listen_port_label")
         _lbl_tgt = t("settings.udp_pst_target_short_label")
-
-        grid_udp = QGridLayout()
-        grid_udp.setContentsMargins(0, 0, 0, 0)
-        grid_udp.setHorizontalSpacing(8)
-        grid_udp.setVerticalSpacing(6)
-        grid_udp.setColumnMinimumWidth(0, _udp_chk_col_w)
-
-        grid_udp.addWidget(self.chk_udp_ucxlog, 0, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(QLabel(_lbl_ip), 0, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(self.ed_udp_ucxlog_listen, 0, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(QLabel(_lbl_port), 0, 3, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(self.sp_udp_ucxlog_port, 0, 4, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-
-        grid_udp.addWidget(self.chk_aswatch_udp, 1, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(QLabel(_lbl_ip), 1, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(self.ed_aswatch_udp_listen, 1, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(QLabel(_lbl_port), 1, 3, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(self.sp_aswatch_udp_port, 1, 4, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-
-        grid_udp.addWidget(
-            self.chk_aswatch_aircraft,
-            2,
-            0,
-            1,
-            5,
-            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-        )
 
         def _asn_full_row(lbl: QLabel, sp: QSpinBox) -> QWidget:
             """Eine Zeile: Beschriftung links (wie Checkbox-Zeilen), Wert rechts."""
@@ -382,23 +362,113 @@ class SettingsWindow(QDialog):
             lay.addWidget(sp, 0, Qt.AlignmentFlag.AlignRight)
             return row
 
-        grid_udp.addWidget(_asn_full_row(self.lbl_asnearest_min_score, self.sp_asnearest_min_score), 3, 0, 1, 5)
-        grid_udp.addWidget(_asn_full_row(self.lbl_asnearest_geom_min, self.sp_asnearest_geom_min), 4, 0, 1, 5)
-        grid_udp.addWidget(_asn_full_row(self.lbl_asnearest_list_max_min, self.sp_asnearest_list_max_min), 5, 0, 1, 5)
-        grid_udp.addWidget(_asn_full_row(self.lbl_asnearest_list_max_rows, self.sp_asnearest_list_max_rows), 6, 0, 1, 5)
+        grid_ext_udp = QGridLayout()
+        grid_ext_udp.setContentsMargins(0, 0, 0, 0)
+        grid_ext_udp.setHorizontalSpacing(8)
+        grid_ext_udp.setVerticalSpacing(6)
+        grid_ext_udp.setColumnMinimumWidth(0, _udp_chk_col_w)
 
+        grid_ext_udp.addWidget(self.chk_udp_ucxlog, 0, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_ext_udp.addWidget(QLabel(_lbl_ip), 0, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid_ext_udp.addWidget(self.ed_udp_ucxlog_listen, 0, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_ext_udp.addWidget(QLabel(_lbl_port), 0, 3, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid_ext_udp.addWidget(self.sp_udp_ucxlog_port, 0, 4, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        grid_ext_udp.addWidget(self.chk_aswatch_udp, 1, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_ext_udp.addWidget(QLabel(_lbl_ip), 1, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid_ext_udp.addWidget(self.ed_aswatch_udp_listen, 1, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_ext_udp.addWidget(QLabel(_lbl_port), 1, 3, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid_ext_udp.addWidget(self.sp_aswatch_udp_port, 1, 4, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        udp_ext_block_w = QWidget()
+        udp_ext_block_w.setLayout(grid_ext_udp)
+
+        grid_map_airscout = QGridLayout()
+        grid_map_airscout.setContentsMargins(0, 0, 0, 0)
+        grid_map_airscout.setHorizontalSpacing(8)
+        grid_map_airscout.setVerticalSpacing(6)
+        grid_map_airscout.setColumnMinimumWidth(0, _udp_chk_col_w)
+
+        grid_map_airscout.addWidget(
+            self.chk_aswatch_aircraft,
+            0,
+            0,
+            1,
+            5,
+            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+
+        grid_map_airscout.addWidget(_asn_full_row(self.lbl_asnearest_min_score, self.sp_asnearest_min_score), 1, 0, 1, 5)
+        grid_map_airscout.addWidget(_asn_full_row(self.lbl_asnearest_geom_min, self.sp_asnearest_geom_min), 2, 0, 1, 5)
+        grid_map_airscout.addWidget(_asn_full_row(self.lbl_asnearest_list_max_min, self.sp_asnearest_list_max_min), 3, 0, 1, 5)
+        grid_map_airscout.addWidget(_asn_full_row(self.lbl_asnearest_list_max_rows, self.sp_asnearest_list_max_rows), 4, 0, 1, 5)
+        grid_map_airscout.addWidget(
+            self.chk_map_aswatch_only_asnearest_list,
+            5,
+            0,
+            1,
+            5,
+            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        grid_map_airscout.addWidget(
+            self.chk_map_aswatch_cluster,
+            6,
+            0,
+            1,
+            5,
+            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+
+        map_airscout_block_w = QWidget()
+        map_airscout_block_w.setLayout(grid_map_airscout)
+
+        gb_external_programs = QGroupBox(t("settings.group_external_programs"))
+        _vl_ext_box = QVBoxLayout(gb_external_programs)
+        _vl_ext_box.addWidget(udp_ext_block_w)
+
+        gb_map_airscout = QGroupBox(t("settings.group_map_airscout"))
+        _vl_map_as = QVBoxLayout(gb_map_airscout)
+        _vl_map_as.addWidget(map_airscout_block_w)
+
+        pg_external_programs = QWidget()
+        vl_external_programs = QVBoxLayout(pg_external_programs)
+        vl_external_programs.setContentsMargins(0, 0, 0, 0)
+        vl_external_programs.setSpacing(10)
+        vl_external_programs.addWidget(gb_external_programs)
+        vl_external_programs.addWidget(gb_map_airscout)
+        vl_external_programs.addStretch(1)
+
+        grid_pst = QGridLayout()
+        grid_pst.setContentsMargins(0, 0, 0, 0)
+        grid_pst.setHorizontalSpacing(8)
+        grid_pst.setVerticalSpacing(6)
+        grid_pst.setColumnMinimumWidth(0, _udp_chk_col_w)
         # PST: Checkbox über zwei Zeilen; Ziel-IP eine Zeile unter Listen-IP (unter „IP:“)
-        grid_udp.addWidget(self.chk_udp_pst, 7, 0, 2, 1, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(QLabel(_lbl_ip), 7, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(self.ed_udp_pst_listen, 7, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(QLabel(_lbl_port), 7, 3, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(self.sp_udp_pst_port, 7, 4, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(QLabel(_lbl_tgt), 8, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid_udp.addWidget(self.ed_udp_pst_send_host, 8, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_pst.addWidget(self.chk_udp_pst, 0, 0, 2, 1, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_pst.addWidget(QLabel(_lbl_ip), 0, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid_pst.addWidget(self.ed_udp_pst_listen, 0, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_pst.addWidget(QLabel(_lbl_port), 0, 3, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid_pst.addWidget(self.sp_udp_pst_port, 0, 4, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_pst.addWidget(QLabel(_lbl_tgt), 1, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid_pst.addWidget(self.ed_udp_pst_send_host, 1, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        udp_block_w = QWidget()
-        udp_block_w.setLayout(grid_udp)
-        form_ui.addRow(udp_block_w)
+        udp_pst_block_w = QWidget()
+        udp_pst_block_w.setLayout(grid_pst)
+
+        gb_udp_pst_connection = QGroupBox(t("settings.group_udp_pst_connection"))
+        _vl_pst_box = QVBoxLayout(gb_udp_pst_connection)
+        _vl_pst_box.addWidget(w_spid_tcp_pst)
+        _vl_pst_box.addWidget(udp_pst_block_w)
+
+        pg_links = QWidget()
+        vl_links = QVBoxLayout(pg_links)
+        vl_links.setContentsMargins(0, 0, 0, 0)
+        vl_links.setSpacing(10)
+        vl_links.addWidget(gb_master_rotor)
+        vl_links.addWidget(gb_udp_pst_connection)
+        vl_links.addWidget(gb_bus_connection)
+        vl_links.addWidget(gb_axes)
+        vl_links.addStretch(1)
 
         # SPID BIG-RAS (TCP) und UDP PST-Rotator schließen sich aus; beide aus ist erlaubt.
         if self.chk_pst_enabled.isChecked() and self.chk_udp_pst.isChecked():
@@ -408,6 +478,8 @@ class SettingsWindow(QDialog):
 
         def _sync_aswatch_aircraft_row():
             en = self.chk_aswatch_udp.isChecked()
+            self.chk_map_aswatch_only_asnearest_list.setEnabled(en)
+            self.chk_map_aswatch_cluster.setEnabled(en)
             self.chk_aswatch_aircraft.setEnabled(en)
             self.lbl_asnearest_min_score.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
             self.sp_asnearest_min_score.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
@@ -458,10 +530,11 @@ class SettingsWindow(QDialog):
         self.btn_cal_help = QPushButton(t("settings.stats_help_btn"))
         self.btn_cal_help.setAutoDefault(False)
         self.btn_cal_help.setDefault(False)
-        self.btn_cal_help.setToolTip(t("settings.stats_help_title"))
+        self.btn_cal_help.setToolTip(tt("settings.stats_help_title"))
         self.btn_cal_help.clicked.connect(self._show_stats_calibration_help)
-        _led_cal_d = px_to_dip(self, 12)
-        self._led_cal_valid = Led(diameter=max(6, _led_cal_d))
+        # Sichtbarer Kreis wie Controller-LED (12×12 dip, radius 6): Led malt mit 1px-Inset kleiner.
+        _led_cal_d = px_to_dip(self, 12) + px_to_dip(self, 2)
+        self._led_cal_valid = Led(diameter=max(8, _led_cal_d))
         if _spec_getcalvalid:
             self._led_cal_valid.setToolTip(format_cmd_tooltip(_spec_getcalvalid))
         cal_btns = QHBoxLayout()
@@ -505,16 +578,16 @@ class SettingsWindow(QDialog):
         self.sp_norm_min_az = _hm_spin(int(_ui_hm.get("heatmap_norm_min_az", 0)))
         self.sp_norm_max_az = _hm_spin(int(_ui_hm.get("heatmap_norm_max_az", 0)))
         self.sp_thr_red_az = _hm_spin(int(_ui_hm.get("heatmap_thr_red_az", 0)))
-        self.sp_thr_blue_az.setToolTip(t("settings.stats_heatmap_thr_blue_tooltip"))
-        self.sp_norm_min_az.setToolTip(t("settings.stats_heatmap_norm_tooltip"))
-        self.sp_norm_max_az.setToolTip(t("settings.stats_heatmap_norm_tooltip"))
-        self.sp_thr_red_az.setToolTip(t("settings.stats_heatmap_thr_red_tooltip"))
+        self.sp_thr_blue_az.setToolTip(tt("settings.stats_heatmap_thr_blue_tooltip"))
+        self.sp_norm_min_az.setToolTip(tt("settings.stats_heatmap_norm_tooltip"))
+        self.sp_norm_max_az.setToolTip(tt("settings.stats_heatmap_norm_tooltip"))
+        self.sp_thr_red_az.setToolTip(tt("settings.stats_heatmap_thr_red_tooltip"))
         fl_hm_az.addRow(t("settings.stats_heatmap_thr_blue"), self.sp_thr_blue_az)
         fl_hm_az.addRow(t("settings.stats_heatmap_norm_min"), self.sp_norm_min_az)
         fl_hm_az.addRow(t("settings.stats_heatmap_norm_max"), self.sp_norm_max_az)
         fl_hm_az.addRow(t("settings.stats_heatmap_thr_red"), self.sp_thr_red_az)
         self.btn_apply_cal_az = QPushButton(t("settings.stats_apply_from_cal"))
-        self.btn_apply_cal_az.setToolTip(t("settings.stats_apply_from_cal_tooltip"))
+        self.btn_apply_cal_az.setToolTip(tt("settings.stats_apply_from_cal_tooltip"))
         fl_hm_az.addRow(self.btn_apply_cal_az)
         vl_st.addWidget(gb_hm_az)
 
@@ -538,9 +611,9 @@ class SettingsWindow(QDialog):
         self.btn_cal_help_el = QPushButton(t("settings.stats_help_btn"))
         self.btn_cal_help_el.setAutoDefault(False)
         self.btn_cal_help_el.setDefault(False)
-        self.btn_cal_help_el.setToolTip(t("settings.stats_help_title"))
+        self.btn_cal_help_el.setToolTip(tt("settings.stats_help_title"))
         self.btn_cal_help_el.clicked.connect(self._show_stats_calibration_help)
-        self._led_cal_valid_el = Led(diameter=max(6, _led_cal_d))
+        self._led_cal_valid_el = Led(diameter=max(8, _led_cal_d))
         if _spec_getcalvalid:
             self._led_cal_valid_el.setToolTip(format_cmd_tooltip(_spec_getcalvalid))
         cal_btns_el = QHBoxLayout()
@@ -577,16 +650,16 @@ class SettingsWindow(QDialog):
         self.sp_norm_min_el = _hm_spin(int(_ui_hm.get("heatmap_norm_min_el", 0)))
         self.sp_norm_max_el = _hm_spin(int(_ui_hm.get("heatmap_norm_max_el", 0)))
         self.sp_thr_red_el = _hm_spin(int(_ui_hm.get("heatmap_thr_red_el", 0)))
-        self.sp_thr_blue_el.setToolTip(t("settings.stats_heatmap_thr_blue_tooltip"))
-        self.sp_norm_min_el.setToolTip(t("settings.stats_heatmap_norm_tooltip"))
-        self.sp_norm_max_el.setToolTip(t("settings.stats_heatmap_norm_tooltip"))
-        self.sp_thr_red_el.setToolTip(t("settings.stats_heatmap_thr_red_tooltip"))
+        self.sp_thr_blue_el.setToolTip(tt("settings.stats_heatmap_thr_blue_tooltip"))
+        self.sp_norm_min_el.setToolTip(tt("settings.stats_heatmap_norm_tooltip"))
+        self.sp_norm_max_el.setToolTip(tt("settings.stats_heatmap_norm_tooltip"))
+        self.sp_thr_red_el.setToolTip(tt("settings.stats_heatmap_thr_red_tooltip"))
         fl_hm_el.addRow(t("settings.stats_heatmap_thr_blue"), self.sp_thr_blue_el)
         fl_hm_el.addRow(t("settings.stats_heatmap_norm_min"), self.sp_norm_min_el)
         fl_hm_el.addRow(t("settings.stats_heatmap_norm_max"), self.sp_norm_max_el)
         fl_hm_el.addRow(t("settings.stats_heatmap_thr_red"), self.sp_thr_red_el)
         self.btn_apply_cal_el = QPushButton(t("settings.stats_apply_from_cal"))
-        self.btn_apply_cal_el.setToolTip(t("settings.stats_apply_from_cal_tooltip"))
+        self.btn_apply_cal_el.setToolTip(tt("settings.stats_apply_from_cal_tooltip"))
         fl_hm_el.addRow(self.btn_apply_cal_el)
         vl_st.addWidget(self.gb_hm_el)
         vl_st.addStretch(1)
@@ -609,7 +682,7 @@ class SettingsWindow(QDialog):
         vl_ctrl.setSpacing(10)
         self.chk_hw_controller_enabled = QCheckBox(t("settings.controller_hw_enable"))
         self.chk_hw_controller_enabled.setChecked(bool(_chw.get("enabled", True)))
-        self.chk_hw_controller_enabled.setToolTip(t("settings.controller_hw_enable_tooltip"))
+        self.chk_hw_controller_enabled.setToolTip(tt("settings.controller_hw_enable_tooltip"))
         self.chk_hw_controller_enabled.toggled.connect(self._on_hw_controller_toggled)
         vl_ctrl.addWidget(self.chk_hw_controller_enabled)
         self.gb_controller = QGroupBox(t("settings.controller_group"))
@@ -620,7 +693,7 @@ class SettingsWindow(QDialog):
             self.sp_controller_id.setValue(int(_chw.get("cont_id", 0)))
         except (TypeError, ValueError):
             self.sp_controller_id.setValue(0)
-        self.sp_controller_id.setToolTip(t("settings.controller_id_tooltip"))
+        self.sp_controller_id.setToolTip(tt("settings.controller_id_tooltip"))
         _row_cont_id = QWidget()
         _lay_cont_id = QHBoxLayout(_row_cont_id)
         _lay_cont_id.setContentsMargins(0, 0, 0, 0)
@@ -629,19 +702,19 @@ class SettingsWindow(QDialog):
         self.btn_setconidf = QPushButton(t("settings.controller_btn_setconidf"))
         self.btn_setconidf.setAutoDefault(False)
         self.btn_setconidf.setDefault(False)
-        self.btn_setconidf.setToolTip(t("settings.controller_setconidf_tooltip"))
+        self.btn_setconidf.setToolTip(tt("settings.controller_setconidf_tooltip"))
         self.btn_setconidf.clicked.connect(self._on_broadcast_setconidf)
         _lay_cont_id.addWidget(self.btn_setconidf, 0)
         self._lbl_controller_led = QLabel()
         self._lbl_controller_led.setObjectName("controllerReadLed")
-        self._lbl_controller_led.setToolTip(t("settings.controller_led_tooltip"))
+        self._lbl_controller_led.setToolTip(tt("settings.controller_led_tooltip"))
         _led = px_to_dip(self, 12)
         self._lbl_controller_led.setFixedSize(_led, _led)
         self._set_controller_led_ok(False)
         _lay_cont_id.addWidget(self._lbl_controller_led, 0, Qt.AlignmentFlag.AlignVCenter)
         self._lbl_controller_wait = QLabel(t("settings.controller_wait"))
         self._lbl_controller_wait.setVisible(False)
-        self._lbl_controller_wait.setToolTip(t("settings.controller_wait_tooltip"))
+        self._lbl_controller_wait.setToolTip(tt("settings.controller_wait_tooltip"))
         _lay_cont_id.addWidget(self._lbl_controller_wait, 0, Qt.AlignmentFlag.AlignVCenter)
         _lay_cont_id.addStretch(1)
         fl_ctrl.addRow(t("settings.controller_id"), _row_cont_id)
@@ -653,22 +726,23 @@ class SettingsWindow(QDialog):
             self.sp_cont_pwm_slow.setValue(int(_chw.get("slow_pwm", 30)))
         except (TypeError, ValueError):
             self.sp_cont_pwm_slow.setValue(30)
-        self.sp_cont_pwm_slow.setToolTip(t("settings.controller_pwm_tooltip"))
+        self.sp_cont_pwm_slow.setToolTip(tt("settings.controller_pwm_tooltip"))
         self.sp_cont_pwm_fast = QSpinBox()
         self.sp_cont_pwm_fast.setRange(0, 100)
         try:
             self.sp_cont_pwm_fast.setValue(int(_chw.get("fast_pwm", 80)))
         except (TypeError, ValueError):
             self.sp_cont_pwm_fast.setValue(80)
-        self.sp_cont_pwm_fast.setToolTip(t("settings.controller_pwm_tooltip"))
+        self.sp_cont_pwm_fast.setToolTip(tt("settings.controller_pwm_tooltip"))
         self.sp_cont_pwm_slow.valueChanged.connect(lambda: self._mark_pwm_dirty(0))
         self.sp_cont_pwm_fast.valueChanged.connect(lambda: self._mark_pwm_dirty(1))
         fl_ctrl.addRow(t("settings.controller_pwm_slow"), self.sp_cont_pwm_slow)
         fl_ctrl.addRow(t("settings.controller_pwm_fast"), self.sp_cont_pwm_fast)
         self.chk_cont_wind_anemo = QCheckBox(t("settings.controller_wind_anemo"))
         self.chk_cont_wind_anemo.setChecked(bool(_chw.get("wind_anemometer", False)))
-        self.chk_cont_wind_anemo.setToolTip(t("settings.controller_wind_anemo_tooltip"))
+        self.chk_cont_wind_anemo.setToolTip(tt("settings.controller_wind_anemo_tooltip"))
         self.chk_cont_wind_anemo.toggled.connect(self._mark_anemo_dirty)
+        self.chk_cont_wind_anemo.toggled.connect(self._update_wind_dir_display_row_visibility)
         fl_ctrl.addRow(self.chk_cont_wind_anemo)
         self.cb_cont_encoder_delta = QComboBox()
         self.cb_cont_encoder_delta.addItem(t("settings.controller_encoder_delta_0_1"), 1)
@@ -680,14 +754,9 @@ class SettingsWindow(QDialog):
         if _ed not in (1, 10):
             _ed = 10
         self.cb_cont_encoder_delta.setCurrentIndex(0 if _ed == 1 else 1)
-        self.cb_cont_encoder_delta.setToolTip(t("settings.controller_encoder_delta_tooltip"))
+        self.cb_cont_encoder_delta.setToolTip(tt("settings.controller_encoder_delta_tooltip"))
         self.cb_cont_encoder_delta.currentIndexChanged.connect(self._mark_delta_dirty)
         fl_ctrl.addRow(t("settings.controller_encoder_delta"), self.cb_cont_encoder_delta)
-        self.chk_cont_antenna_realign = QCheckBox(t("settings.controller_antenna_realign"))
-        self.chk_cont_antenna_realign.setChecked(bool(_chw.get("antenna_realign_on_switch", False)))
-        self.chk_cont_antenna_realign.setToolTip(t("settings.controller_antenna_realign_tooltip"))
-        self.chk_cont_antenna_realign.toggled.connect(self._mark_cha_dirty)
-        fl_ctrl.addRow(self.chk_cont_antenna_realign)
         self.sp_cont_beep_freq = QSpinBox()
         self.sp_cont_beep_freq.setRange(100, 4000)
         try:
@@ -696,14 +765,14 @@ class SettingsWindow(QDialog):
             )
         except (TypeError, ValueError):
             self.sp_cont_beep_freq.setValue(1000)
-        self.sp_cont_beep_freq.setToolTip(t("settings.controller_beep_freq_tooltip"))
+        self.sp_cont_beep_freq.setToolTip(tt("settings.controller_beep_freq_tooltip"))
         self.sp_cont_beep_vol = QSpinBox()
         self.sp_cont_beep_vol.setRange(0, 50)
         try:
             self.sp_cont_beep_vol.setValue(max(0, min(50, int(_chw.get("speaker_volume", 50)))))
         except (TypeError, ValueError):
             self.sp_cont_beep_vol.setValue(50)
-        self.sp_cont_beep_vol.setToolTip(t("settings.controller_beep_volume_tooltip"))
+        self.sp_cont_beep_vol.setToolTip(tt("settings.controller_beep_volume_tooltip"))
         self._controller_beep_dirty = [False, False]
         self._controller_anemo_dirty = False
         self._controller_delta_dirty = False
@@ -712,6 +781,25 @@ class SettingsWindow(QDialog):
         self.sp_cont_beep_vol.valueChanged.connect(lambda: self._mark_beep_dirty(1))
         fl_ctrl.addRow(t("settings.controller_beep_freq"), self.sp_cont_beep_freq)
         fl_ctrl.addRow(t("settings.controller_beep_volume"), self.sp_cont_beep_vol)
+        _w_conled = QWidget()
+        _hl_conled = QHBoxLayout(_w_conled)
+        _hl_conled.setContentsMargins(0, 0, 0, 0)
+        self.sl_cont_display_brightness = QSlider(Qt.Orientation.Horizontal)
+        self.sl_cont_display_brightness.setRange(0, 100)
+        try:
+            _db = int(_chw.get("display_brightness_pct", 100))
+        except (TypeError, ValueError):
+            _db = 100
+        self.sl_cont_display_brightness.setValue(max(0, min(100, _db)))
+        self.sl_cont_display_brightness.setToolTip(tt("settings.controller_display_brightness_tooltip"))
+        self.lbl_cont_display_brightness = QLabel()
+        self.lbl_cont_display_brightness.setMinimumWidth(40)
+        self._update_conled_brightness_label()
+        self.sl_cont_display_brightness.valueChanged.connect(self._on_conled_brightness_value_changed)
+        self.sl_cont_display_brightness.sliderReleased.connect(self._on_conled_brightness_released)
+        _hl_conled.addWidget(self.sl_cont_display_brightness, 1)
+        _hl_conled.addWidget(self.lbl_cont_display_brightness)
+        fl_ctrl.addRow(t("settings.controller_display_brightness"), _w_conled)
         vl_ctrl.addWidget(self.gb_controller)
         vl_ctrl.addStretch(1)
         self._apply_controller_enabled_ui()
@@ -726,8 +814,13 @@ class SettingsWindow(QDialog):
         if idx < 0:
             idx = 1
         self.cb_wind_dir_display.setCurrentIndex(idx)
-        self.cb_wind_dir_display.setToolTip(t("settings.wind_dir_display_tooltip"))
-        form_ui.addRow(t("settings.wind_dir_display"), self.cb_wind_dir_display)
+        self._lbl_wind_dir_display = QLabel(t("settings.wind_dir_display"))
+        self._lbl_wind_dir_display.setToolTip(tt("settings.wind_dir_display_tooltip"))
+        self.cb_wind_dir_display.setToolTip(tt("settings.wind_dir_display_tooltip"))
+        self._gb_wind_dir_display = QGroupBox(t("settings.group_wind_dir_display"))
+        _fl_wind_dir = QFormLayout(self._gb_wind_dir_display)
+        _fl_wind_dir.addRow(self._lbl_wind_dir_display, self.cb_wind_dir_display)
+        self._update_wind_dir_display_row_visibility()
 
         self.cb_language = QComboBox()
         self.cb_language.addItem("Deutsch", "de")
@@ -736,23 +829,26 @@ class SettingsWindow(QDialog):
         lang_idx = self.cb_language.findData(cur_lang)
         if lang_idx >= 0:
             self.cb_language.setCurrentIndex(lang_idx)
-        self.cb_language.setToolTip(t("settings.language_label_tooltip"))
-        form_ui.addRow(t("settings.language_label"), self.cb_language)
+        self.cb_language.setToolTip(tt("settings.language_label_tooltip"))
+        fl_display.addRow(t("settings.language_label"), self.cb_language)
+        form_ui.addRow(gb_display)
 
+        gb_location = QGroupBox(t("settings.group_location"))
+        fl_location = QFormLayout(gb_location)
         self.ed_location_lat = QDoubleSpinBox()
         self.ed_location_lat.setRange(-90.0, 90.0)
         self.ed_location_lat.setDecimals(6)
         self.ed_location_lat.setValue(float(cfg.get("ui", {}).get("location_lat", 49.502651)))
         self.ed_location_lat.setSuffix("°")
-        self.ed_location_lat.setToolTip(t("settings.location_lat_tooltip"))
-        form_ui.addRow(t("settings.location_lat"), self.ed_location_lat)
+        self.ed_location_lat.setToolTip(tt("settings.location_lat_tooltip"))
+        fl_location.addRow(t("settings.location_lat"), self.ed_location_lat)
         self.ed_location_lon = QDoubleSpinBox()
         self.ed_location_lon.setRange(-180.0, 180.0)
         self.ed_location_lon.setDecimals(6)
         self.ed_location_lon.setValue(float(cfg.get("ui", {}).get("location_lon", 8.375019)))
         self.ed_location_lon.setSuffix("°")
-        self.ed_location_lon.setToolTip(t("settings.location_lon_tooltip"))
-        form_ui.addRow(t("settings.location_lon"), self.ed_location_lon)
+        self.ed_location_lon.setToolTip(tt("settings.location_lon_tooltip"))
+        fl_location.addRow(t("settings.location_lon"), self.ed_location_lon)
         _row_locator = QWidget()
         _lay_locator = QHBoxLayout(_row_locator)
         _lay_locator.setContentsMargins(0, 0, 0, 0)
@@ -760,23 +856,16 @@ class SettingsWindow(QDialog):
         self.ed_location_locator = QLineEdit(str(cfg.get("ui", {}).get("location_locator", "") or ""))
         self.ed_location_locator.setMaxLength(10)
         self.ed_location_locator.setPlaceholderText("JO31jg")
-        self.ed_location_locator.setToolTip(t("settings.location_locator_tooltip"))
+        self.ed_location_locator.setToolTip(tt("settings.location_locator_tooltip"))
         _lay_locator.addWidget(self.ed_location_locator, 1)
         self.btn_locator_apply_coords = QPushButton(t("settings.btn_locator_apply_coords"))
         self.btn_locator_apply_coords.setAutoDefault(False)
         self.btn_locator_apply_coords.setDefault(False)
-        self.btn_locator_apply_coords.setToolTip(t("settings.btn_locator_apply_coords_tooltip"))
+        self.btn_locator_apply_coords.setToolTip(tt("settings.btn_locator_apply_coords_tooltip"))
         self.btn_locator_apply_coords.clicked.connect(self._on_locator_apply_coords)
         _lay_locator.addWidget(self.btn_locator_apply_coords, 0)
-        form_ui.addRow(t("settings.location_locator"), _row_locator)
-        self.sp_antenna_height = QDoubleSpinBox()
-        self.sp_antenna_height.setRange(0.0, 500.0)
-        self.sp_antenna_height.setDecimals(1)
-        self.sp_antenna_height.setSingleStep(0.5)
-        self.sp_antenna_height.setValue(float(cfg.get("ui", {}).get("antenna_height_m", 0.0)))
-        self.sp_antenna_height.setSuffix(" m")
-        self.sp_antenna_height.setToolTip(t("settings.antenna_height_tooltip"))
-        form_ui.addRow(t("settings.antenna_height"), self.sp_antenna_height)
+        fl_location.addRow(t("settings.location_locator"), _row_locator)
+        form_ui.addRow(gb_location)
         # --- Linke Spalte: Verbindung ---
         antenna_names = _antenna_names_cfg
 
@@ -812,7 +901,7 @@ class SettingsWindow(QDialog):
             # Bis 4 Stellen + Suffix — war bei 60px abgeschnitten
             sp_range.setMinimumWidth(px_to_dip(self, 82))
             lbl_rng = QLabel(t("settings.antenna_range_label"))
-            lbl_rng.setToolTip(t("settings.tooltip_antenna_range"))
+            lbl_rng.setToolTip(tt("settings.tooltip_antenna_range"))
             row_vals = QHBoxLayout()
             row_vals.setSpacing(8)
             row_vals.setContentsMargins(0, 0, 0, 0)
@@ -836,7 +925,7 @@ class SettingsWindow(QDialog):
             w.setLayout(outer)
             return w, name_ed
 
-        self.gb_antenna_az = QWidget()
+        self.gb_antenna_az = QGroupBox(t("settings.group_antenna_config"))
         form_az = QFormLayout(self.gb_antenna_az)
         form_az.setHorizontalSpacing(10)
         form_az.setVerticalSpacing(8)
@@ -846,14 +935,14 @@ class SettingsWindow(QDialog):
         _lay_ant_bus.setSpacing(px_to_dip(self, 8))
         self._lbl_antenna_names_led = QLabel()
         self._lbl_antenna_names_led.setObjectName("antennaNamesReadLed")
-        self._lbl_antenna_names_led.setToolTip(t("settings.antenna_names_led_tooltip"))
+        self._lbl_antenna_names_led.setToolTip(tt("settings.antenna_names_led_tooltip"))
         _led_ant = px_to_dip(self, 12)
         self._lbl_antenna_names_led.setFixedSize(_led_ant, _led_ant)
         self._set_antenna_names_led_ok(False)
         _lay_ant_bus.addWidget(self._lbl_antenna_names_led, 0, Qt.AlignmentFlag.AlignVCenter)
         self._lbl_antenna_names_wait = QLabel(t("settings.controller_wait"))
         self._lbl_antenna_names_wait.setVisible(False)
-        self._lbl_antenna_names_wait.setToolTip(t("settings.controller_wait_tooltip"))
+        self._lbl_antenna_names_wait.setToolTip(tt("settings.controller_wait_tooltip"))
         _lay_ant_bus.addWidget(self._lbl_antenna_names_wait, 0, Qt.AlignmentFlag.AlignVCenter)
         _lay_ant_bus.addStretch(1)
         form_az.addRow(t("settings.antenna_names_bus_row"), _row_ant_bus)
@@ -887,10 +976,10 @@ class SettingsWindow(QDialog):
             self.sp_az_angle_3,
             self.sp_az_range_3,
         )
-        _tt_an = t("settings.tooltip_antenna_name")
-        _tt_off = t("settings.tooltip_antenna_offset")
-        _tt_ang = t("settings.tooltip_antenna_angle")
-        _tt_rng = t("settings.tooltip_antenna_range")
+        _tt_an = tt("settings.tooltip_antenna_name")
+        _tt_off = tt("settings.tooltip_antenna_offset")
+        _tt_ang = tt("settings.tooltip_antenna_angle")
+        _tt_rng = tt("settings.tooltip_antenna_range")
         for ed in (self.ed_antenna_name_1, self.ed_antenna_name_2, self.ed_antenna_name_3):
             ed.setToolTip(_tt_an)
         for sp in (self.sp_az_antoff_1, self.sp_az_antoff_2, self.sp_az_antoff_3):
@@ -902,6 +991,23 @@ class SettingsWindow(QDialog):
         form_az.addRow(w1)
         form_az.addRow(w2)
         form_az.addRow(w3)
+        self.gb_antenna_misc = QGroupBox(t("settings.group_antenna_misc"))
+        form_az_misc = QFormLayout(self.gb_antenna_misc)
+        form_az_misc.setHorizontalSpacing(10)
+        form_az_misc.setVerticalSpacing(8)
+        self.sp_antenna_height = QDoubleSpinBox()
+        self.sp_antenna_height.setRange(0.0, 500.0)
+        self.sp_antenna_height.setDecimals(1)
+        self.sp_antenna_height.setSingleStep(0.5)
+        self.sp_antenna_height.setValue(float(cfg.get("ui", {}).get("antenna_height_m", 0.0)))
+        self.sp_antenna_height.setSuffix(" m")
+        self.sp_antenna_height.setToolTip(tt("settings.antenna_height_tooltip"))
+        form_az_misc.addRow(t("settings.antenna_height"), self.sp_antenna_height)
+        self.chk_cont_antenna_realign = QCheckBox(t("settings.antenna_realign_on_switch"))
+        self.chk_cont_antenna_realign.setChecked(bool(_chw.get("antenna_realign_on_switch", False)))
+        self.chk_cont_antenna_realign.setToolTip(tt("settings.antenna_realign_on_switch_tooltip"))
+        self.chk_cont_antenna_realign.toggled.connect(self._mark_cha_dirty)
+        form_az_misc.addRow(self.chk_cont_antenna_realign)
         # Initial aus Config (Fallback wenn Rotor noch nicht geantwortet)
         for i, sp in enumerate([self.sp_az_antoff_1, self.sp_az_antoff_2, self.sp_az_antoff_3]):
             try:
@@ -963,12 +1069,6 @@ class SettingsWindow(QDialog):
             )
             return sc
 
-        pg_conn = QWidget()
-        vl_conn = QVBoxLayout(pg_conn)
-        vl_conn.setContentsMargins(0, 0, 0, 0)
-        vl_conn.addWidget(gb_conn)
-        vl_conn.addStretch(1)
-
         pg_ui = QWidget()
         vl_ui = QVBoxLayout(pg_ui)
         vl_ui.setContentsMargins(0, 0, 0, 0)
@@ -978,7 +1078,9 @@ class SettingsWindow(QDialog):
         pg_ant = QWidget()
         vl_ant = QVBoxLayout(pg_ant)
         vl_ant.setContentsMargins(0, 0, 0, 0)
+        vl_ant.setSpacing(10)
         vl_ant.addWidget(self.gb_antenna_az)
+        vl_ant.addWidget(self.gb_antenna_misc)
         vl_ant.addStretch(1)
 
         _om_sectors = int(cfg.get("ui", {}).get("compass_om_radar_sectors", 60))
@@ -1000,7 +1102,7 @@ class SettingsWindow(QDialog):
         self.sp_compass_om_sectors = QSpinBox()
         self.sp_compass_om_sectors.setRange(10, 100)
         self.sp_compass_om_sectors.setValue(_om_sectors)
-        self.sp_compass_om_sectors.setToolTip(t("settings.compass_om_radar_sectors_tooltip"))
+        self.sp_compass_om_sectors.setToolTip(tt("settings.compass_om_radar_sectors_tooltip"))
         fl_compass_om.addRow(t("settings.compass_om_radar_sectors"), self.sp_compass_om_sectors)
         vl_compass.addWidget(gb_compass_om)
         gb_compass_dwell = QGroupBox(t("settings.compass_dwell_group"))
@@ -1008,16 +1110,17 @@ class SettingsWindow(QDialog):
         self.sp_compass_dwell_sectors = QSpinBox()
         self.sp_compass_dwell_sectors.setRange(10, 100)
         self.sp_compass_dwell_sectors.setValue(_dwell_sec)
-        self.sp_compass_dwell_sectors.setToolTip(t("settings.compass_dwell_sectors_tooltip"))
+        self.sp_compass_dwell_sectors.setToolTip(tt("settings.compass_dwell_sectors_tooltip"))
         fl_compass_dwell.addRow(t("settings.compass_dwell_sectors"), self.sp_compass_dwell_sectors)
         self.sp_compass_dwell_minutes = QDoubleSpinBox()
         self.sp_compass_dwell_minutes.setRange(0.1, 240.0)
         self.sp_compass_dwell_minutes.setDecimals(1)
         self.sp_compass_dwell_minutes.setSingleStep(0.5)
         self.sp_compass_dwell_minutes.setValue(_dwell_min)
-        self.sp_compass_dwell_minutes.setToolTip(t("settings.compass_dwell_minutes_tooltip"))
+        self.sp_compass_dwell_minutes.setToolTip(tt("settings.compass_dwell_minutes_tooltip"))
         fl_compass_dwell.addRow(t("settings.compass_dwell_minutes"), self.sp_compass_dwell_minutes)
         vl_compass.addWidget(gb_compass_dwell)
+        vl_compass.addWidget(self._gb_wind_dir_display)
         vl_compass.addStretch(1)
 
         # Navigation: vertikale Liste links (scrollbar bei vielen Einträgen), Inhalt rechts
@@ -1041,14 +1144,15 @@ class SettingsWindow(QDialog):
             QSizePolicy.Policy.Preferred,
         )
         self._settings_stack.addWidget(_scroll_page(pg_ui))
-        self._settings_stack.addWidget(_scroll_page(pg_conn))
+        self._settings_stack.addWidget(_scroll_page(pg_links))
+        self._settings_stack.addWidget(_scroll_page(pg_external_programs))
         self._settings_stack.addWidget(_scroll_page(pg_ant))
         self._settings_stack.addWidget(_scroll_page(pg_compass))
         self._settings_stack.addWidget(_scroll_page(pg_stats))
         self._settings_stack.addWidget(_scroll_page(pg_controller))
-        self._tab_antenna_index = 2
-        self._tab_statistics_index = 4
-        self._tab_controller_index = 5
+        self._tab_antenna_index = 3
+        self._tab_statistics_index = 5
+        self._tab_controller_index = 6
         self._calvalid_timer = QTimer(self)
         self._calvalid_timer.setInterval(5000)
         self._calvalid_timer.timeout.connect(self._poll_getcalvalid_once)
@@ -1067,7 +1171,8 @@ class SettingsWindow(QDialog):
         self._prev_cal_led_blink_el: bool = False
         for _lbl in (
             t("settings.group_ui"),
-            t("settings.group_connection"),
+            t("settings.tab_connections"),
+            t("settings.tab_external_programs"),
             t("settings.tab_antenna"),
             t("settings.tab_compass"),
             t("settings.tab_statistics"),
@@ -1090,7 +1195,7 @@ class SettingsWindow(QDialog):
         )
         _tabs_h = QHBoxLayout(self._tabs_body)
         _tabs_h.setContentsMargins(0, 0, 0, 0)
-        _tabs_h.setSpacing(px_to_dip(self, 8))
+        _tabs_h.setSpacing(px_to_dip(self, 10))
         _tabs_h.setAlignment(Qt.AlignmentFlag.AlignTop)
         _tabs_h.addWidget(self._settings_nav_wrap, 0)
         _tabs_h.addWidget(self._settings_stack, 1)
@@ -1125,6 +1230,10 @@ class SettingsWindow(QDialog):
         self._antenna_giveup_timer.setSingleShot(True)
         self._antenna_giveup_timer.setInterval(1200)  # 1,2 s – schneller als offline_timeout (2 s)
         self._antenna_giveup_timer.timeout.connect(self._on_antenna_giveup)
+        # Hardware-Verbindung: Start CAL / Reset CAL / Reset log CAL; Antennennamen (HW-Controller)
+        self._hw_link_timer = QTimer(self)
+        self._hw_link_timer.setInterval(500)
+        self._hw_link_timer.timeout.connect(self._tick_hw_link_state)
 
         self.btn_com_refresh.clicked.connect(self._refresh_com_ports)
         self._refresh_com_ports(select=cfg["hardware_link"].get("com_port", ""))
@@ -1140,6 +1249,7 @@ class SettingsWindow(QDialog):
         self.btn_cal_del_el.clicked.connect(self._on_settings_cal_delcal_el)
         self.btn_apply_cal_az.clicked.connect(self._on_apply_cal_heatmap_az)
         self.btn_apply_cal_el.clicked.connect(self._on_apply_cal_heatmap_el)
+        QTimer.singleShot(0, self._update_strom_cal_buttons_enabled)
         btnrow = QHBoxLayout()
         btnrow.addWidget(self.lbl_status, 1)
         btn_save_close = QPushButton(t("settings.btn_save_close"))
@@ -1179,6 +1289,8 @@ class SettingsWindow(QDialog):
         self._antenna_refresh_timer.start()
         self._antenna_request_timer.start()
         self._antenna_giveup_timer.start()
+        self._hw_link_timer.start()
+        self._update_strom_cal_buttons_enabled()
         if self._settings_nav.currentRow() == getattr(self, "_tab_statistics_index", -1):
             self._start_calvalid_timer()
         # Snapshots: nur geänderte Werte gehen auf den Bus (SETANTOFF / SETCON* …)
@@ -1204,6 +1316,7 @@ class SettingsWindow(QDialog):
         self._antenna_refresh_timer.stop()
         self._antenna_request_timer.stop()
         self._antenna_giveup_timer.stop()
+        self._hw_link_timer.stop()
         self._stop_calvalid_timer()
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(False)
@@ -1216,6 +1329,7 @@ class SettingsWindow(QDialog):
             self._antenna_refresh_timer.stop()
             self._antenna_request_timer.stop()
             self._antenna_giveup_timer.stop()
+            self._hw_link_timer.stop()
             self._stop_calvalid_timer()
             if hasattr(self.ctrl, "set_settings_window_open"):
                 self.ctrl.set_settings_window_open(False)
@@ -1224,6 +1338,7 @@ class SettingsWindow(QDialog):
         self._antenna_refresh_timer.stop()
         self._antenna_request_timer.stop()
         self._antenna_giveup_timer.stop()
+        self._hw_link_timer.stop()
         self._stop_calvalid_timer()
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(False)
@@ -1279,6 +1394,24 @@ class SettingsWindow(QDialog):
         self.gb_strom_cal.setVisible(self.chk_enable_az.isChecked())
         self.gb_strom_cal_el.setVisible(self.chk_enable_el.isChecked())
         self.gb_hm_el.setVisible(self.chk_enable_el.isChecked())
+        self._update_strom_cal_buttons_enabled()
+
+    def _update_strom_cal_buttons_enabled(self) -> None:
+        """Start CAL / Reset CAL / Reset log CAL nur bei Hardware-Verbindung und aktiver Achse."""
+        try:
+            hw_on = bool(self.hw and self.hw.is_connected())
+        except Exception:
+            hw_on = False
+        az_en = bool(self.chk_enable_az.isChecked())
+        el_en = bool(self.chk_enable_el.isChecked())
+        en_az = hw_on and az_en
+        en_el = hw_on and el_en
+        self.btn_cal_start.setEnabled(en_az)
+        self.btn_cal_del.setEnabled(en_az)
+        self.btn_cal_reset.setEnabled(en_az)
+        self.btn_cal_start_el.setEnabled(en_el)
+        self.btn_cal_del_el.setEnabled(en_el)
+        self.btn_cal_reset_el.setEnabled(en_el)
 
     def _apply_cal_progress_bar_ui(self, pb: QProgressBar, st: int, prog: int) -> None:
         """Fortschrittsbalken: sichtbar bei Kalibrierfahrt (GETCALSTATE state/progress)."""
@@ -1787,6 +1920,7 @@ class SettingsWindow(QDialog):
         # Feste Zeilenhöhe 45 px (DIP); Hover dunkelgrau mit heller Schrift (nicht Weiß auf Weiß)
         row_h = px_to_dip(self, 45)
         pad_x = px_to_dip(self, 8)
+        pad_right_line = px_to_dip(self, 10)
         gap = px_to_dip(self, 2)
         rad = px_to_dip(self, 3)
         hover_bg = "#4f4f4f"
@@ -1800,6 +1934,7 @@ class SettingsWindow(QDialog):
                 border: none;
                 border-right: 1px solid {sep};
                 outline: none;
+                padding-right: {pad_right_line}px;
             }}
             QListWidget::item {{
                 background-color: {item_bg};
@@ -1825,6 +1960,7 @@ class SettingsWindow(QDialog):
         self._update_strom_cal_sections_visibility()
         show = self.chk_enable_az.isChecked()
         self.gb_antenna_az.setVisible(show)
+        self.gb_antenna_misc.setVisible(show)
         try:
             item = self._settings_nav.item(self._tab_antenna_index)
             if item is not None:
@@ -1837,6 +1973,8 @@ class SettingsWindow(QDialog):
 
     def _update_antenna_offset_enabled(self) -> None:
         """Versatz-Felder aktivieren: online+Daten ODER Giveup (Rotor offline). Nur AZ."""
+        if not hasattr(self, "_antenna_offset_spinboxes_az"):
+            return
         az_ready = False
         az_online = False
         try:
@@ -1858,8 +1996,22 @@ class SettingsWindow(QDialog):
             sp.setEnabled(az_enabled)
         for sp in self._antenna_range_spinboxes_az:
             sp.setEnabled(az_enabled)
+        if self._controller_hw_enabled():
+            names_en = (
+                self.chk_enable_az.isChecked()
+                and bool(self.hw and self.hw.is_connected())
+                and self._controller_bus_read_enabled()
+                and bool(getattr(self, "_antenna_names_bus_read_ok", False))
+            )
+        else:
+            names_en = az_enabled
         for ed in self._antenna_name_edits_az:
-            ed.setEnabled(az_enabled)
+            ed.setEnabled(names_en)
+
+    def _tick_hw_link_state(self) -> None:
+        """Periodisch: Verbindungsabhängige Buttons + Antennennamen (HW-Controller)."""
+        self._update_strom_cal_buttons_enabled()
+        self._update_antenna_offset_enabled()
 
     def _push_antenna_angles_to_config(self) -> None:
         """Öffnungswinkel-Spinboxen sofort in Config schreiben."""
@@ -2074,6 +2226,12 @@ class SettingsWindow(QDialog):
         self.cfg.setdefault("ui", {})["asnearest_list_max_rows"] = max(
             1, min(500, int(self.sp_asnearest_list_max_rows.value()))
         )
+        self.cfg.setdefault("ui", {})["map_aswatch_only_asnearest_list"] = bool(
+            self.chk_map_aswatch_only_asnearest_list.isChecked()
+        )
+        self.cfg.setdefault("ui", {})["map_aswatch_cluster_enabled"] = bool(
+            self.chk_map_aswatch_cluster.isChecked()
+        )
         self.cfg.setdefault("ui", {})["udp_pst_enabled"] = bool(self.chk_udp_pst.isChecked())
         self.cfg.setdefault("ui", {})["udp_pst_port"] = int(self.sp_udp_pst_port.value())
         self.cfg.setdefault("ui", {})["udp_pst_listen_host"] = self.ed_udp_pst_listen.text().strip()
@@ -2133,6 +2291,7 @@ class SettingsWindow(QDialog):
         chw["fast_pwm"] = int(self.sp_cont_pwm_fast.value())
         chw["speaker_freq_hz"] = int(self.sp_cont_beep_freq.value())
         chw["speaker_volume"] = int(self.sp_cont_beep_vol.value())
+        chw["display_brightness_pct"] = int(self.sl_cont_display_brightness.value())
         chw["wind_anemometer"] = bool(self.chk_cont_wind_anemo.isChecked())
         chw["encoder_delta"] = int(self.cb_cont_encoder_delta.currentData())
         chw["antenna_realign_on_switch"] = bool(self.chk_cont_antenna_realign.isChecked())
@@ -2251,6 +2410,14 @@ class SettingsWindow(QDialog):
         if not hasattr(self, "gb_controller"):
             return
         self.gb_controller.setEnabled(self._controller_hw_enabled())
+        self._update_antenna_offset_enabled()
+        self._update_wind_dir_display_row_visibility()
+
+    def _update_wind_dir_display_row_visibility(self) -> None:
+        """Wind-Richtung (UI): nur sinnvoll mit Windmesser (Controller)."""
+        if not hasattr(self, "_gb_wind_dir_display"):
+            return
+        self._gb_wind_dir_display.setVisible(bool(self.chk_cont_wind_anemo.isChecked()))
 
     def _controller_bus_dst(self) -> int:
         """RS485-Zieladresse für den Hardware-Controller (Einstellungsfeld Controller-ID)."""
@@ -2275,9 +2442,36 @@ class SettingsWindow(QDialog):
             i = 10
         return 1 if i == 1 else 10
 
+    def _update_conled_brightness_label(self) -> None:
+        if hasattr(self, "lbl_cont_display_brightness"):
+            self.lbl_cont_display_brightness.setText(
+                f"{int(self.sl_cont_display_brightness.value())} %"
+            )
+
+    def _on_conled_brightness_value_changed(self, _v: int) -> None:
+        self._update_conled_brightness_label()
+
+    def _on_conled_brightness_released(self) -> None:
+        self._update_conled_brightness_label()
+        if not self._controller_hw_enabled():
+            return
+        if not self.hw.is_connected():
+            return
+        if not hasattr(self.ctrl, "sync_ui_command_response"):
+            return
+        dst = self._controller_bus_dst()
+        val = int(self.sl_cont_display_brightness.value())
+        r = self.ctrl.sync_ui_command_response(
+            dst, "SETCONLEDP", str(val), "ACK_SETCONLEDP"
+        )
+        if _sync_got_ack_value(r):
+            self._snapshot_controller = self._controller_snapshot_from_ui()
+        else:
+            self.lbl_status.setText(t("settings.controller_status_write_fail"))
+
     def _controller_snapshot_from_ui(
         self,
-    ) -> tuple[int, str, str, str, int, int, int, int, int, int, int]:
+    ) -> tuple[int, str, str, str, int, int, int, int, int, int, int, int]:
         return (
             int(self.sp_controller_id.value()),
             self._antenna_display_name(0),
@@ -2287,6 +2481,7 @@ class SettingsWindow(QDialog):
             int(self.sp_cont_pwm_fast.value()),
             int(self.sp_cont_beep_freq.value()),
             int(self.sp_cont_beep_vol.value()),
+            int(self.sl_cont_display_brightness.value()),
             1 if self.chk_cont_wind_anemo.isChecked() else 0,
             self._controller_encoder_delta_value(),
             1 if self.chk_cont_antenna_realign.isChecked() else 0,
@@ -2372,6 +2567,13 @@ class SettingsWindow(QDialog):
                 self.sp_cont_beep_vol.setValue(max(0, min(50, int(ch.get("speaker_volume", 50)))))
             except (TypeError, ValueError):
                 self.sp_cont_beep_vol.setValue(50)
+            try:
+                self.sl_cont_display_brightness.setValue(
+                    max(0, min(100, int(ch.get("display_brightness_pct", 100))))
+                )
+            except (TypeError, ValueError):
+                self.sl_cont_display_brightness.setValue(100)
+            self._update_conled_brightness_label()
             self.chk_cont_wind_anemo.setChecked(bool(ch.get("wind_anemometer", False)))
             try:
                 _ed = int(ch.get("encoder_delta", 10))
@@ -2384,6 +2586,7 @@ class SettingsWindow(QDialog):
             self._snapshot_controller = self._controller_snapshot_from_ui()
             self._set_controller_led_ok(False)
             self._clear_controller_field_dirty()
+            self._update_wind_dir_display_row_visibility()
         finally:
             self._controller_suppress_dirty = False
 
@@ -2416,19 +2619,23 @@ class SettingsWindow(QDialog):
 
     def _set_antenna_names_led_ok(self, ok: bool) -> None:
         """LED Tab Antennen: grün = GETCONANTNAME1–3 alle OK."""
-        if not hasattr(self, "_lbl_antenna_names_led"):
-            return
-        d = px_to_dip(self, 6)
-        s = px_to_dip(self, 12)
-        if ok:
-            bg, br = "#2e7d32", "#1b5e20"
-        else:
-            bg, br = "#c62828", "#8e0000"
-        self._lbl_antenna_names_led.setStyleSheet(
-            f"QLabel#antennaNamesReadLed {{ background-color: {bg}; border: 1px solid {br}; "
-            f"border-radius: {d}px; min-width: {s}px; max-width: {s}px; "
-            f"min-height: {s}px; max-height: {s}px; }}"
-        )
+        self._antenna_names_bus_read_ok = bool(ok)
+        if hasattr(self, "_lbl_antenna_names_led"):
+            d = px_to_dip(self, 6)
+            s = px_to_dip(self, 12)
+            if ok:
+                bg, br = "#2e7d32", "#1b5e20"
+            else:
+                bg, br = "#c62828", "#8e0000"
+            self._lbl_antenna_names_led.setStyleSheet(
+                f"QLabel#antennaNamesReadLed {{ background-color: {bg}; border: 1px solid {br}; "
+                f"border-radius: {d}px; min-width: {s}px; max-width: {s}px; "
+                f"min-height: {s}px; max-height: {s}px; }}"
+            )
+        try:
+            self._update_antenna_offset_enabled()
+        except Exception:
+            pass
 
     def _load_controller_from_bus(self) -> None:
         """Controller-Werte vom Bus lesen. Seriell: kein zweiter paralleler Lauf (QEventLoop-Reentranz)."""
@@ -2552,9 +2759,10 @@ class SettingsWindow(QDialog):
                 (self.sp_cont_pwm_fast, "GETCONFPWM", "ACK_GETCONFPWM", 0, 100),
                 (self.sp_cont_beep_freq, "GETCONFRQ", "ACK_GETCONFRQ", 100, 4000),
                 (self.sp_cont_beep_vol, "GETLSL", "ACK_GETLSL", 0, 50),
+                (self.sl_cont_display_brightness, "GETCONLEDP", "ACK_GETCONLEDP", 0, 100),
             ):
                 rp = c.sync_ui_command_response(dst, cmd, "0", exp)
-                if cmd in ("GETCONFRQ", "GETLSL"):
+                if cmd in ("GETCONFRQ", "GETLSL", "GETCONLEDP"):
                     if _sync_nak_notimpl(rp):
                         acks.append(True)
                         continue
@@ -2612,9 +2820,9 @@ class SettingsWindow(QDialog):
                         w = self._parse_hw_int(str(rp_cha).split(";")[0].strip())
                     if w is not None:
                         self.chk_cont_antenna_realign.setChecked(bool(int(w)))
-            # LED: alle Kern-Abfragen mit ACK; Piep (GETCONFRQ/GETLSL): NAK NOTIMPL zählt als Bus-OK.
-            # Anzahl = 1 + 3 Namen + 4 PWM/Beep + GETCONANO + GETCONDELTA + GETCONCHA
-            _n_ctrl_reads = 1 + 3 + 4 + 1 + 1 + 1
+            # LED: alle Kern-Abfragen mit ACK; Piep/LED-Ring (GETCONFRQ/GETLSL/GETCONLEDP): NAK NOTIMPL zählt als Bus-OK.
+            # Anzahl = 1 + 3 Namen + 5 PWM/Beep/LED-Ring + GETCONANO + GETCONDELTA + GETCONCHA
+            _n_ctrl_reads = 1 + 3 + 5 + 1 + 1 + 1
             all_ok = len(acks) == _n_ctrl_reads and all(acks)
             self.lbl_status.setText(t("settings.controller_status_saved"))
             self._set_controller_led_ok(all_ok)
@@ -2623,6 +2831,7 @@ class SettingsWindow(QDialog):
         finally:
             self._controller_suppress_dirty = False
             self._set_controller_wait_visible(False)
+            self._update_wind_dir_display_row_visibility()
 
     def _save_controller_hw_if_changed(self) -> bool:
         if not self._controller_hw_enabled():
@@ -2683,16 +2892,20 @@ class SettingsWindow(QDialog):
             r = c.sync_ui_command_response(dst, "SETLSL", str(int(cur[7])), "ACK_SETLSL")
             if not _sync_got_ack_value(r):
                 all_ok = False
-        if snap[8] != cur[8] or self._controller_anemo_dirty:
-            r = c.sync_ui_command_response(dst, "SETCONANO", str(int(cur[8])), "ACK_SETCONANO")
+        if snap[8] != cur[8]:
+            r = c.sync_ui_command_response(dst, "SETCONLEDP", str(int(cur[8])), "ACK_SETCONLEDP")
             if not _sync_got_ack_value(r):
                 all_ok = False
-        if snap[9] != cur[9] or self._controller_delta_dirty:
-            r = c.sync_ui_command_response(dst, "SETCONDELTA", str(int(cur[9])), "ACK_SETCONDELTA")
+        if snap[9] != cur[9] or self._controller_anemo_dirty:
+            r = c.sync_ui_command_response(dst, "SETCONANO", str(int(cur[9])), "ACK_SETCONANO")
             if not _sync_got_ack_value(r):
                 all_ok = False
-        if snap[10] != cur[10] or self._controller_cha_dirty:
-            r = c.sync_ui_command_response(dst, "SETCONCHA", str(int(cur[10])), "ACK_SETCONCHA")
+        if snap[10] != cur[10] or self._controller_delta_dirty:
+            r = c.sync_ui_command_response(dst, "SETCONDELTA", str(int(cur[10])), "ACK_SETCONDELTA")
+            if not _sync_got_ack_value(r):
+                all_ok = False
+        if snap[11] != cur[11] or self._controller_cha_dirty:
+            r = c.sync_ui_command_response(dst, "SETCONCHA", str(int(cur[11])), "ACK_SETCONCHA")
             if not _sync_got_ack_value(r):
                 all_ok = False
         if all_ok:

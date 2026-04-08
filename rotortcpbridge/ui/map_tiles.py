@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Optional
@@ -21,8 +22,26 @@ _DEBUG_TILES = False
 
 
 def _static_lib_path() -> Path:
-    """Pfad zu rotortcpbridge/static (Leaflet, Maidenhead, MarkerCluster)."""
-    return Path(__file__).resolve().parent.parent / "static"
+    """Pfad zu rotortcpbridge/static (Leaflet, Maidenhead, MarkerCluster).
+
+    PyInstaller entpackt nach sys._MEIPASS/rotortcpbridge/static; Entwicklung: Paketpfad.
+    """
+    dev = Path(__file__).resolve().parent.parent / "static"
+    candidates: list[Path] = []
+    try:
+        meip = getattr(sys, "_MEIPASS", None)
+        if meip:
+            candidates.append(Path(meip) / "rotortcpbridge" / "static")
+    except Exception:
+        pass
+    candidates.append(dev)
+    for p in candidates:
+        try:
+            if p.is_dir() and (p / "leaflet.min.js").is_file():
+                return p
+        except Exception:
+            continue
+    return dev
 
 
 def set_pending_map_html(html: str) -> None:

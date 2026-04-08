@@ -156,7 +156,7 @@ class CompassWidget(QWidget):
         self._layout_corner_controls()
 
     def _layout_corner_controls(self) -> None:
-        """LED-Zeilen (Fährt/Online/Home) unter Wind/Richtung und Ist/Soll; Abstand unter Text."""
+        """LED-Zeilen unter Wind + Ist-Zeile; Soll/Target rechts auf Höhe der Ist-/Pos-Zeile."""
         margin = 7
         text_top = 13
         line_gap = 22
@@ -203,7 +203,12 @@ class CompassWidget(QWidget):
         self._ref_lbl.raise_()
 
         if self._soll_overlay is not None:
-            row_y = float(text_top + line_gap) if self._wind_visible else float(text_top)
+            # Mit Wind: gleiche Zeile wie die gemalte Ist-/Pos-Zeile (links unter „Wind:“); leicht nach oben für optische Ausrichtung zur Text-Baseline
+            # Ohne Wind: gleiche Zeile wie Ist-/Pos (nur eine Textzeile oben)
+            if self._wind_visible:
+                row_y = float(text_top + line_gap - px_to_dip(self, 2))
+            else:
+                row_y = float(text_top)
             sh = self._soll_overlay.sizeHint()
             ow = int(sh.width()) if sh.width() > 0 else 140
             oh = max(int(sh.height()) if sh.height() > 0 else 24, 22)
@@ -253,7 +258,7 @@ class CompassWidget(QWidget):
         self.update()
 
     def set_overlay_ist_soll(self, ist: str, soll: str) -> None:
-        """Ist/Soll als Textzeile(n) im oberen Bereich (unter Wind/Richtung)."""
+        """Ist/Soll als Textzeile(n) im oberen Bereich (unter der Wind-Zeile, falls sichtbar)."""
         self._overlay_ist = str(ist or "")
         self._overlay_soll = str(soll or "")
         self.update()
@@ -562,7 +567,7 @@ class CompassWidget(QWidget):
                     wd = wrap_deg(wd + 180.0)
                 self._draw_arrow(painter, cx, cy, r * 0.46, wd)
 
-            # Wind + Ist/Soll in den oberen Ecken: Zeile 1 Wind/Richtung, Zeile 2 Ist (links) / Soll (rechts)
+            # Wind (links) Zeile 1; Ist-Text Zeile 2. Ziel-Eingabe liegt als Widget oben rechts (Zeile 1).
             margin = 7
             top_y = 13
             line_gap = 22
@@ -580,12 +585,6 @@ class CompassWidget(QWidget):
                 if self._wind_kmh is not None:
                     speed_txt = f"Wind: {self._wind_kmh:.1f} km/h"
                 painter.drawText(QPointF(float(margin), float(top_y)), speed_txt)
-
-                dir_txt = "Richtung: --.-°"
-                if self._wind_dir_deg is not None:
-                    dir_txt = f"Richtung: {self._wind_dir_deg:.1f}°"
-                right_dir_x = float(self.width() - margin - fm_txt.horizontalAdvance(dir_txt))
-                painter.drawText(QPointF(right_dir_x, float(top_y)), dir_txt)
 
                 row2_y = float(top_y + line_gap)
                 painter.drawText(QPointF(float(margin), row2_y), ist_txt)

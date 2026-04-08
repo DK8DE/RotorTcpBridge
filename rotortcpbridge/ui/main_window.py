@@ -428,6 +428,22 @@ class MainWindow(QMainWindow):
             p = default_port
         return t("main.srv_udp_bind_suffix", host=h, port=p)
 
+    def _refresh_menubar_top_level(self) -> None:
+        """Top-Level-Menüs kurz von der Leiste lösen und wieder einhängen.
+
+        Unter Windows aktualisiert die native Titelleisten-Menüleiste die sichtbaren
+        Menünamen oft nicht, wenn nur QMenu.setTitle() aufgerufen wird — die
+        QAction-Texte in den geöffneten Menüs sind dagegen korrekt.
+        """
+        mb = self.menuBar()
+        menus = (self._menu_setup, self._menu_window, self._menu_help)
+        for m in menus:
+            act = m.menuAction()
+            if act is not None:
+                mb.removeAction(act)
+        for m in menus:
+            mb.addMenu(m)
+
     def _retranslate_ui(self):
         """Alle Texte des Hauptfensters auf die aktuelle Sprache aktualisieren."""
         self._last_title = ""  # Cache zurücksetzen damit Neuaufbau greift
@@ -445,6 +461,7 @@ class MainWindow(QMainWindow):
         self._menu_help.setTitle(t("main.menu_help"))
         self._act_version.setText(t("main.menu_version"))
         self._act_log.setText(t("main.btn_log"))
+        self._refresh_menubar_top_level()
         self.btn_open_compass.setText(t("main.btn_compass"))
         self.btn_open_map.setText(t("main.btn_map"))
         self.btn_ref.setText(t("main.btn_ref"))

@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from ..i18n import t
+from ..i18n import format_tooltip, t, tt
 
 
 def _html_greek_nu(text: str) -> str:
@@ -608,12 +608,12 @@ class ElevationProfileWindow(QDialog):
         self._sp_freq.setValue(freq_mhz)
         self._sp_freq.setSuffix(" MHz")
         self._sp_freq.setFixedWidth(130)
-        self._sp_freq.setToolTip(t("elevation.freq_tooltip"))
+        self._sp_freq.setToolTip(tt("elevation.freq_tooltip"))
         self._sp_freq.valueChanged.connect(self._on_freq_changed)
         row.addWidget(self._sp_freq)
         row.addSpacing(8)
         self._chk_live = QCheckBox(t("elevation.chk_live"))
-        self._chk_live.setToolTip(t("elevation.chk_live_tooltip"))
+        self._chk_live.setToolTip(tt("elevation.chk_live_tooltip"))
         live_on = bool((self._cfg or {}).get("ui", {}).get("elevation_live_swpc", False))
         self._chk_live.setChecked(live_on)
         self._chk_live.stateChanged.connect(self._on_live_changed)
@@ -883,8 +883,8 @@ class ElevationProfileWindow(QDialog):
         Unicode mit ensure_ascii als \\uXXXX (im title nicht als Zeichen lesbar).
         Stattdessen: Zeilen mit HTML-Zeilenumbruch &#10; verbinden, Inhalt escapen.
         """
-        text = t(key, **kwargs)
-        lines = text.split("\n")
+        text = format_tooltip(t(key, **kwargs))
+        lines = text.split("\n") if text else []
         safe = "&#10;".join(html_escape(line, quote=True) for line in lines)
         return f' title="{safe}"'
 

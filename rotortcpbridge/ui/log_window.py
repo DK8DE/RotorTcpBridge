@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..app_icon import get_app_icon
-from ..i18n import t
+from ..i18n import t, tt
 from .ui_utils import px_to_dip
 
 
@@ -64,7 +64,7 @@ class LogWindow(QDialog):
         self.btn_scroll.clicked.connect(self._toggle_scroll)
         btn_row.addWidget(self.btn_scroll, 0)
         btn_open = QPushButton(t("log.btn_open_folder"))
-        btn_open.setToolTip(t("log.btn_open_folder_tooltip"))
+        btn_open.setToolTip(tt("log.btn_open_folder_tooltip"))
         btn_open.clicked.connect(self._open_log_folder)
         btn_row.addWidget(btn_open, 0)
         btn_row.addStretch(1)

@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 from ..rs485_protocol import build
 from ..command_catalog import command_specs, format_cmd_tooltip
 from ..app_icon import get_app_icon
-from ..i18n import t
+from ..i18n import format_tooltip, t, tt
 from ..rotor_backup import (
     backupable_pairs,
     get_params_for_get,
@@ -161,7 +161,7 @@ class CommandButtonsWindow(QDialog):
 
         # Befehl zusammenstellen (oben)
         gb = QGroupBox(t("cmd.group_build"))
-        gb.setToolTip(t("cmd.tooltip_group_build"))
+        gb.setToolTip(tt("cmd.tooltip_group_build"))
         gb.setFixedHeight(255)
         root.addWidget(gb)
         gl = QGridLayout(gb)
@@ -191,43 +191,43 @@ class CommandButtonsWindow(QDialog):
         self.lbl_cmd_info.setStyleSheet(
             "color: #111; background: #f2f2f2; border: 1px solid #c8c8c8; border-radius: 4px; padding: 6px;"
         )
-        self.lbl_cmd_info.setToolTip(t("cmd.tooltip_cmd_info"))
+        self.lbl_cmd_info.setToolTip(tt("cmd.tooltip_cmd_info"))
 
         self.ed_params = QLineEdit("0")
         self.ed_params.setPlaceholderText(t("cmd.params_placeholder"))
-        self.ed_params.setToolTip(t("cmd.tooltip_params"))
+        self.ed_params.setToolTip(tt("cmd.tooltip_params"))
 
         self.ed_frame = QLineEdit()
         self.ed_frame.setReadOnly(True)
         self.ed_frame.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
-        self.ed_frame.setToolTip(t("cmd.tooltip_frame"))
+        self.ed_frame.setToolTip(tt("cmd.tooltip_frame"))
 
         btn_box = QVBoxLayout()
         self.btn_send = QPushButton(t("cmd.btn_send"))
         self.btn_send.setAutoDefault(False)
         self.btn_send.setDefault(False)
-        self.btn_send.setToolTip(t("cmd.tooltip_btn_send"))
+        self.btn_send.setToolTip(tt("cmd.tooltip_btn_send"))
         self.btn_backup = QPushButton(t("cmd.btn_backup"))
         self.btn_backup.setAutoDefault(False)
-        self.btn_backup.setToolTip(t("cmd.tooltip_btn_backup"))
+        self.btn_backup.setToolTip(tt("cmd.tooltip_btn_backup"))
         self.btn_restore = QPushButton(t("cmd.btn_restore"))
         self.btn_restore.setAutoDefault(False)
-        self.btn_restore.setToolTip(t("cmd.tooltip_btn_restore"))
+        self.btn_restore.setToolTip(tt("cmd.tooltip_btn_restore"))
         btn_box.addWidget(self.btn_send)
         btn_box.addWidget(self.btn_backup)
         btn_box.addWidget(self.btn_restore)
 
-        self.cb_dst.setToolTip(t("cmd.tooltip_dst"))
-        self.cb_cmd.setToolTip(t("cmd.tooltip_cmd"))
+        self.cb_dst.setToolTip(tt("cmd.tooltip_dst"))
+        self.cb_cmd.setToolTip(tt("cmd.tooltip_cmd"))
 
         lbl_dst = QLabel(t("cmd.dst_label"))
-        lbl_dst.setToolTip(t("cmd.tooltip_dst"))
+        lbl_dst.setToolTip(tt("cmd.tooltip_dst"))
         lbl_cmd = QLabel(t("cmd.cmd_label"))
-        lbl_cmd.setToolTip(t("cmd.tooltip_cmd"))
+        lbl_cmd.setToolTip(tt("cmd.tooltip_cmd"))
         lbl_params = QLabel(t("cmd.params_label"))
-        lbl_params.setToolTip(t("cmd.tooltip_params"))
+        lbl_params.setToolTip(tt("cmd.tooltip_params"))
         lbl_frame = QLabel(t("cmd.frame_label"))
-        lbl_frame.setToolTip(t("cmd.tooltip_frame"))
+        lbl_frame.setToolTip(tt("cmd.tooltip_frame"))
 
         gl.addWidget(lbl_dst, 0, 0)
         gl.addWidget(self.cb_dst, 0, 1)
@@ -534,12 +534,12 @@ class CommandButtonsWindow(QDialog):
         else:
             tooltip = format_cmd_tooltip(cmd_spec) if cmd_spec is not None else ""
         if tooltip:
-            lab.setToolTip(tooltip)
+            lab.setToolTip(format_tooltip(tooltip))
         ed = QLineEdit()
         ed.setPlaceholderText("–")
         ed.setFixedWidth(_PARAM_EDIT_WIDTH)
         if tooltip:
-            ed.setToolTip(tooltip)
+            ed.setToolTip(format_tooltip(tooltip))
         ed_wrap = QWidget()
         ed_layout = QHBoxLayout(ed_wrap)
         ed_layout.setContentsMargins(_PARAM_EDIT_LEFT_MARGIN, 0, 0, 0)

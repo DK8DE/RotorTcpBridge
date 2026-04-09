@@ -40,6 +40,7 @@ class ElevationCompassWidget(QWidget):
         self._heatmap_visible: bool = False
         self._heatmap_offset_deg: float = 0.0
         self._heatmap_scale: Optional[HeatmapScale] = None
+        self._heatmap_auto_smooth: List[float] = []
         self._top_center_widget: Optional[QWidget] = None
         self._soll_overlay: Optional[QWidget] = None
         self._overlay_ist: str = ""
@@ -197,6 +198,8 @@ class ElevationCompassWidget(QWidget):
         """ACCBINS für 5px Heatmap-Ring. 18 Werte je Richtung (EL)."""
         self._bins_cw = list(cw) if cw is not None and len(cw) >= 18 else None
         self._bins_ccw = list(ccw) if ccw is not None and len(ccw) >= 18 else None
+        if self._bins_cw is None and self._bins_ccw is None:
+            self._heatmap_auto_smooth.clear()
         self.update()
 
     def set_heatmap_visible(self, on: bool) -> None:
@@ -212,6 +215,8 @@ class ElevationCompassWidget(QWidget):
     def set_heatmap_scale(self, scale: Optional[HeatmapScale]) -> None:
         """Optionale Last-Skala; None = automatische Min/Max-Skala."""
         self._heatmap_scale = scale
+        if scale is not None:
+            self._heatmap_auto_smooth.clear()
         self.update()
 
     def _geom(self) -> tuple[float, float, float]:
@@ -348,6 +353,9 @@ class ElevationCompassWidget(QWidget):
                     ring_width=5.0,
                     offset_deg=self._heatmap_offset_deg,
                     scale=self._heatmap_scale,
+                    auto_smooth_state=self._heatmap_auto_smooth
+                    if self._heatmap_scale is None
+                    else None,
                 )
 
             # SOLL (gestrichelt)

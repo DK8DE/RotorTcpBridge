@@ -342,7 +342,33 @@ class HardwareClient:
                 if rest.startswith("SET"):
                     prefixes.add("NAK_" + rest[len("SET") :])
 
-            return any(cmd.startswith(p) for p in prefixes)
+            if not any(cmd.startswith(p) for p in prefixes):
+                return False
+
+            # Paging-Bins (GETACCBINS/GETLIVEBINS/…): gleicher ACK-Präfix für jeden Block —
+            # ein verspäteter ACK vom vorherigen Block darf nicht dem nächsten Pending zugeordnet werden
+            # (sonst falscher Merge / „Timeout“, obwohl die Antwort später noch kam).
+            try:
+                tx_meta = parse(str(pending.line).strip())
+                if tx_meta is not None:
+                    ucmd = (tx_meta.cmd or "").strip().upper()
+                    if ucmd in (
+                        "GETACCBINS",
+                        "GETLIVEBINS",
+                        "GETCALBINS",
+                        "GETDELTABINS",
+                    ):
+                        cmd_u = (cmd or "").strip().upper()
+                        if "NAK" not in cmd_u:
+                            req_p = (tx_meta.params or "").strip()
+                            if req_p:
+                                ack_p = (tel.params or "").strip()
+                                if not (ack_p == req_p or ack_p.startswith(req_p + ";")):
+                                    return False
+            except Exception:
+                pass
+
+            return True
 
         while self._running:
             if not self.is_connected():

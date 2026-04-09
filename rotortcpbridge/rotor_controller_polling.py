@@ -157,6 +157,21 @@ class _RotorPollingHost:
 class RotorControllerPollingMixin(_RotorPollingHost):
     """Polling-Logik: ``tick_polling``, ``_poll_*``, sequentielle Bins-Abfragen."""
 
+    def _acc_bins_chain_in_progress(self) -> bool:
+        """True, solange eine GETACCBINS-Kette (12 Blöcke) für AZ und/oder EL läuft.
+
+        Keine weiteren Polls einreihen: Die TX-Queue würde sonst voll, und z. B. GETREF
+        (prio 2) kann vor dem nächsten ACC-Block (prio 3) senden — verspätete ACC-ACKs
+        wirken wie Timeouts.
+        """
+        try:
+            return bool(
+                getattr(self, "_acc_bins_inflight_az", False)
+                or getattr(self, "_acc_bins_inflight_el", False)
+            )
+        except Exception:
+            return False
+
     # -------------------- Polling --------------------
     def tick_polling(self: _RotorPollingHost) -> None:
         now = time.time()
@@ -274,7 +289,12 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             # Im Stand: während SETPOSCC-Strom kein GETPOSDG (sonst Bus-Kollisionen mit Encoder).
             _defer_u = float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
             skip_pos_for_cc = (not moving) and (now < _defer_u)
-            if (not skip_pos_for_cc) and (now - self._last_poll >= pos_period):
+            acc_chain = self._acc_bins_chain_in_progress()
+            if (
+                (not skip_pos_for_cc)
+                and (now - self._last_poll >= pos_period)
+                and (not acc_chain)
+            ):
                 sent_any = False
                 if self.enable_az:
                     sent_any = (
@@ -297,7 +317,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
             # Während Bewegung: NUR Position (schnell) + ERR alle 5 s.
             # Kein WARN, keine Telemetrie, kein Wind, kein PWM – Bus-Priorität für Position.
-            if moving:
+            if moving and (not acc_chain):
                 if now - self._last_err >= err_moving_s:
                     self._last_err = now
                     if self.enable_az:
@@ -306,7 +326,13 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                         self._poll_err(self.slave_el, self.el, "EL")
 
             # Idle-Zusatzabfragen bei SETPOSCC-Strom kurz aussetzen (Bus frei für Encoder/GETPOSDG).
-            if not moving and now >= float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0):
+            # Während GETACCBINS-Kette ebenfalls aussetzen (sonst stauen andere Telegramme und
+            # überholen per Priorität den nächsten ACC-Block → falsche Timeouts).
+            if (
+                not moving
+                and now >= float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
+                and (not acc_chain)
+            ):
                 # Idle: alle Zusatzabfragen – damit während der Fahrt GETPOSDG maximal priorisiert bleibt.
 
                 # GETERR: 10 s im Idle
@@ -362,12 +388,10 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                         self._last_live_bins_el = now
                         self._fetch_live_bins_el(self.slave_el, self.el, "EL")
 
-                # ACCBINS nur bei Statistik-Fenster oder aktiver Strom-Heatmap im Kompass.
-                # Nur Statistik (ohne Kompass-Strom): Langzeit ausreichend → 120 s.
+                # ACCBINS: Statistikfenster (120 s) oder Kompass mit Strom-Ring (2 s / 10 s).
                 # Nach Bewegung 10s Cooldown (Dead-Man-Vermeidung)
                 if self._acc_bins_poll_enabled() and now >= self._stats_cooldown_until:
-                    # Nur bei Haken „Strom“ im Kompass: schnell (2 s / 10 s). Sonst immer 120 s
-                    # (Langzeitstatistik / Statistikfenster) — unabhängig davon, ob Statistikfenster offen ist.
+                    # Schnelltakt nur mit aktivem Strom-Haken im geöffneten Kompass; Statistikfenster: 120 s
                     if self._acc_bins_strom_live():
                         acc_interval = 2.0 if (self.az.acc_bins_cw is None) else 10.0
                         acc_interval_el = 2.0 if (self.el.acc_bins_cw is None) else 10.0
@@ -540,13 +564,17 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
     def _abort_stats_fetch_and_cooldown(self) -> None:
         """ACCBINS-Statistik abbrechen und 10s Cooldown setzen (Dead-Man-Vermeidung bei Bewegung)."""
+        self._abort_acc_bins_fetch_only()
+        self._stats_cooldown_until = time.time() + 10.0
+
+    def _abort_acc_bins_fetch_only(self) -> None:
+        """Laufende GETACCBINS-Kette abbrechen (ohne Cooldown): Haken aus, Kompass zu."""
         self._acc_bins_inflight_az = False
         self._acc_bins_inflight_el = False
         self._acc_bins_temp_cw = None
         self._acc_bins_temp_ccw = None
         self._acc_bins_temp_cw_el = None
         self._acc_bins_temp_ccw_el = None
-        self._stats_cooldown_until = time.time() + 10.0
 
     def _send_setpos(self, dst: int, d10: int, axis: str, retry_count: int = 0):
         """SETPOSDG senden. Bei fehlendem ACK nach ~250ms automatisch einmal erneut versuchen.
@@ -930,6 +958,9 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                             )
         self._send_next_live_block_el(int(dst), axis_state, idx + 1)
 
+    # GETLIVEBINS: Pause zwischen aufeinanderfolgenden Blöcken (Bus/Firmware entlasten).
+    _LIVE_BINS_INTER_BLOCK_DELAY_S = 0.0075  # 7,5 ms (Zielbereich ca. 5–10 ms)
+
     _CAL_LIVE_BLOCKS = [
         (1, 0),
         (1, 12),
@@ -1114,6 +1145,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             self._live_bins_temp_ccw = None
             self._live_bins_inflight_az = False
             return
+        if idx > 0:
+            time.sleep(self._LIVE_BINS_INTER_BLOCK_DELAY_S)
         direction, start = self._CAL_LIVE_BLOCKS[idx]
         params = f"{direction};{start};12"
         line = build(self.master_id, dst, "GETLIVEBINS", params)
@@ -1177,6 +1210,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             self._live_bins_temp_ccw_el = None
             self._live_bins_inflight_el = False
             return
+        if idx > 0:
+            time.sleep(self._LIVE_BINS_INTER_BLOCK_DELAY_S)
         direction, start = self._CAL_LIVE_BLOCKS[idx]
         params = f"{direction};{start};12"
         line = build(self.master_id, dst, "GETLIVEBINS", params)
@@ -1230,21 +1265,31 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._acc_bins_temp_cw = [0] * 72
         self._acc_bins_temp_ccw = [0] * 72
         self._acc_bins_priority_az = priority
-        self._send_next_acc_block(dst, axis_state, 0)
+        round_ok: list[bool] = [True]
+        self._send_next_acc_block(dst, axis_state, 0, round_ok)
 
-    def _send_next_acc_block(self, dst: int, axis_state: AxisState, idx: int) -> None:
+    def _send_next_acc_block(
+        self, dst: int, axis_state: AxisState, idx: int, round_ok: list[bool]
+    ) -> None:
         if time.time() < self._stats_cooldown_until:
             self._acc_bins_inflight_az = False
             self._acc_bins_temp_cw = None
             self._acc_bins_temp_ccw = None
             return
         if idx >= len(self._CAL_LIVE_BLOCKS):
-            if self._acc_bins_temp_cw and self._acc_bins_temp_ccw:
+            if self._acc_bins_temp_cw and self._acc_bins_temp_ccw and round_ok[0]:
                 axis_state.acc_bins_cw = list(self._acc_bins_temp_cw)
                 axis_state.acc_bins_ccw = list(self._acc_bins_temp_ccw)
+            elif self._acc_bins_temp_cw and self._acc_bins_temp_ccw and not round_ok[0]:
+                self.log.write(
+                    "WARN",
+                    "AZ GETACCBINS: Durchlauf unvollständig (Timeout/Fehler), ACC-Bins unverändert gelassen",
+                )
             self._acc_bins_temp_cw = None
             self._acc_bins_temp_ccw = None
             self._acc_bins_inflight_az = False
+            return
+        if not self._acc_bins_inflight_az:
             return
         direction, start = self._CAL_LIVE_BLOCKS[idx]
         params = f"{direction};{start};12"
@@ -1254,11 +1299,15 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         temp_ccw = self._acc_bins_temp_ccw
 
         def on_done(tel: Optional[Telegram], err: Optional[str]):
+            if not ctrl._acc_bins_inflight_az:
+                return
             if tel:
                 axis_state.last_rx_ts = time.time()
                 axis_state.online = True
             if err:
+                round_ok[0] = False
                 ctrl.log.write("WARN", f"AZ GETACCBINS Block {idx + 1} fehlgeschlagen: {err}")
+            block_ok = False
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
@@ -1269,14 +1318,16 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
                             ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
-                            if not ok_m:
-                                pass
+                            if ok_m:
+                                block_ok = True
                             elif not plausible:
                                 ctrl.log.write(
                                     "WARN",
                                     f"AZ GETACCBINS Block {idx + 1}: verdächtige Nullen/Lücken, Rohwerte übernommen",
                                 )
-            ctrl._send_next_acc_block(dst, axis_state, idx + 1)
+            if not err and not block_ok:
+                round_ok[0] = False
+            ctrl._send_next_acc_block(dst, axis_state, idx + 1, round_ok)
 
         prio = getattr(self, "_acc_bins_priority_az", 3)
         self.hw.send_request(
@@ -1299,21 +1350,31 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._acc_bins_temp_cw_el = [0] * 72
         self._acc_bins_temp_ccw_el = [0] * 72
         self._acc_bins_priority_el = priority
-        self._send_next_acc_block_el(dst, axis_state, 0)
+        round_ok_el: list[bool] = [True]
+        self._send_next_acc_block_el(dst, axis_state, 0, round_ok_el)
 
-    def _send_next_acc_block_el(self, dst: int, axis_state: AxisState, idx: int) -> None:
+    def _send_next_acc_block_el(
+        self, dst: int, axis_state: AxisState, idx: int, round_ok: list[bool]
+    ) -> None:
         if time.time() < self._stats_cooldown_until:
             self._acc_bins_inflight_el = False
             self._acc_bins_temp_cw_el = None
             self._acc_bins_temp_ccw_el = None
             return
         if idx >= len(self._CAL_LIVE_BLOCKS):
-            if self._acc_bins_temp_cw_el and self._acc_bins_temp_ccw_el:
+            if self._acc_bins_temp_cw_el and self._acc_bins_temp_ccw_el and round_ok[0]:
                 axis_state.acc_bins_cw = list(self._acc_bins_temp_cw_el)
                 axis_state.acc_bins_ccw = list(self._acc_bins_temp_ccw_el)
+            elif self._acc_bins_temp_cw_el and self._acc_bins_temp_ccw_el and not round_ok[0]:
+                self.log.write(
+                    "WARN",
+                    "EL GETACCBINS: Durchlauf unvollständig (Timeout/Fehler), ACC-Bins unverändert gelassen",
+                )
             self._acc_bins_temp_cw_el = None
             self._acc_bins_temp_ccw_el = None
             self._acc_bins_inflight_el = False
+            return
+        if not self._acc_bins_inflight_el:
             return
         direction, start = self._CAL_LIVE_BLOCKS[idx]
         params = f"{direction};{start};12"
@@ -1322,11 +1383,15 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         temp_cw, temp_ccw = self._acc_bins_temp_cw_el, self._acc_bins_temp_ccw_el
 
         def on_done(tel: Optional[Telegram], err: Optional[str]):
+            if not ctrl._acc_bins_inflight_el:
+                return
             if tel:
                 axis_state.last_rx_ts = time.time()
                 axis_state.online = True
             if err:
+                round_ok[0] = False
                 ctrl.log.write("WARN", f"EL GETACCBINS Block {idx + 1} fehlgeschlagen: {err}")
+            block_ok = False
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
                 parts = (tel.params or "").strip().split(";")
                 if len(parts) >= 4:
@@ -1337,14 +1402,16 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                         bins = temp_cw if dir_val == 1 else temp_ccw
                         if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
                             ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
-                            if not ok_m:
-                                pass
+                            if ok_m:
+                                block_ok = True
                             elif not plausible:
                                 ctrl.log.write(
                                     "WARN",
                                     f"EL GETACCBINS Block {idx + 1}: verdächtige Nullen/Lücken, Rohwerte übernommen",
                                 )
-            ctrl._send_next_acc_block_el(dst, axis_state, idx + 1)
+            if not err and not block_ok:
+                round_ok[0] = False
+            ctrl._send_next_acc_block_el(dst, axis_state, idx + 1, round_ok)
 
         prio = getattr(self, "_acc_bins_priority_el", 3)
         self.hw.send_request(

@@ -118,7 +118,9 @@ end;
 
 { ── Sprache in Konfiguration setzen ─────────────────────────────────────────
   Nur bei Erstinstallation (keine config.json vorhanden).
-  Bei Upgrade bleibt die bestehende Spracheinstellung des Benutzers erhalten. }
+  Bei Upgrade bleibt die bestehende Spracheinstellung des Benutzers erhalten.
+  Zusätzlich: Kompass-Stromanalyse-Ringe (AZ/EL) standardmäßig aus — vollständige
+  Defaults ergänzt die Anwendung beim Start ohnehin per load_config. }
 procedure SetLanguageInConfig();
 var
   ConfigDir:  String;
@@ -140,7 +142,12 @@ begin
   begin
     Content := '{' + #13#10 +
                '  "ui": {' + #13#10 +
-               '    "language": "' + LangCode + '"' + #13#10 +
+               '    "language": "' + LangCode + '",' + #13#10 +
+               '    "compass_strom_az": false,' + #13#10 +
+               '    "compass_strom_el": false,' + #13#10 +
+               '    "compass_heatmap_az": "off",' + #13#10 +
+               '    "compass_heatmap_el": "off",' + #13#10 +
+               '    "compass_heatmap_az_modes": []' + #13#10 +
                '  }' + #13#10 +
                '}';
     SaveStringToFile(ConfigFile, Content, False);

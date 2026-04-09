@@ -75,6 +75,8 @@ class CompassWidget(QWidget):
         self._dwell_n: int = OM_RADAR_N_DEFAULT
         self._heatmap_offset_deg: float = 0.0
         self._heatmap_scale: Optional[HeatmapScale] = None
+        # EMA-Zustand für automatische Strom-Heatmap-Skala (verhindert Farbflattern bei leicht schwankendem Min/Max)
+        self._heatmap_auto_smooth: List[float] = []
         self._top_center_widget: Optional[QWidget] = None
         self._soll_overlay: Optional[QWidget] = None
         self._overlay_ist: str = ""
@@ -267,6 +269,8 @@ class CompassWidget(QWidget):
         """ACCBINS für 5px Heatmap-Ring. 72 Werte je Richtung."""
         self._bins_cw = list(cw) if cw is not None and len(cw) >= 72 else None
         self._bins_ccw = list(ccw) if ccw is not None and len(ccw) >= 72 else None
+        if self._bins_cw is None and self._bins_ccw is None:
+            self._heatmap_auto_smooth.clear()
         self.update()
 
     def set_heatmap_visible(self, on: bool) -> None:
@@ -354,6 +358,8 @@ class CompassWidget(QWidget):
     def set_heatmap_scale(self, scale: Optional[HeatmapScale]) -> None:
         """Optionale Last-Skala (blau/rot-Schwellen, Normbereich); None = auto."""
         self._heatmap_scale = scale
+        if scale is not None:
+            self._heatmap_auto_smooth.clear()
         self.update()
 
     def _animate_wind_dir(self) -> None:
@@ -513,6 +519,9 @@ class CompassWidget(QWidget):
                         ring_width=ring_w,
                         offset_deg=self._heatmap_offset_deg,
                         scale=self._heatmap_scale,
+                        auto_smooth_state=self._heatmap_auto_smooth
+                        if self._heatmap_scale is None
+                        else None,
                     )
                 elif mode == "om_radar":
                     # OM-Zähler sind in geografischer Peilung (Nord=0°); kein Antennenversatz wie bei Strom/Standzeit (Rotor-Koordinaten).

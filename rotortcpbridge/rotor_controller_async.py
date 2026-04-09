@@ -441,6 +441,7 @@ class RotorControllerAsyncMixin:
                             and (
                                 self._statistics_window_open or self._settings_window_open
                             )
+                            and not self._acc_bins_chain_in_progress()
                         ):
                             if not self._cal_bins_inflight_az and (
                                 axis_state.cal_bins_cw is None
@@ -458,6 +459,7 @@ class RotorControllerAsyncMixin:
                             and (
                                 self._statistics_window_open or self._settings_window_open
                             )
+                            and not self._acc_bins_chain_in_progress()
                         ):
                             dst_el = int(self.slave_el)
                             if not self._cal_bins_inflight_el and (

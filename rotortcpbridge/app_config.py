@@ -165,6 +165,19 @@ def _merge(dst: Dict[str, Any], src: Dict[str, Any]):
             dst[k] = v
 
 
+def _apply_compass_strom_analysis_defaults(ui: Dict[str, Any]) -> None:
+    """Fehlende Schlüssel mit „Stromanalyse aus“ füllen (Erststart / minimale Installer-config).
+
+    Bestehende Nutzerwahl (z. B. Strom an) wird nicht überschrieben.
+    """
+    ui.setdefault("compass_strom_az", False)
+    ui.setdefault("compass_strom_el", False)
+    ui.setdefault("compass_heatmap_az", "off")
+    ui.setdefault("compass_heatmap_el", "off")
+    if not isinstance(ui.get("compass_heatmap_az_modes"), list):
+        ui["compass_heatmap_az_modes"] = []
+
+
 def load_config() -> Dict[str, Any]:
     p = config_path()
     if not p.exists():
@@ -175,6 +188,7 @@ def load_config() -> Dict[str, Any]:
         ui["udp_pst_listen_host"] = "0.0.0.0"
         ui["aswatch_udp_listen_host"] = "0.0.0.0"
         ui["udp_pst_send_host"] = ipv4_subnet_broadcast_default()
+        _apply_compass_strom_analysis_defaults(ui)
         save_config(initial)
         return json.loads(json.dumps(initial))
     with open(p, "r", encoding="utf-8") as f:
@@ -201,6 +215,7 @@ def load_config() -> Dict[str, Any]:
     # Merge defaults (für neue Felder bei Updates)
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
     _merge(merged, cfg)
+    _apply_compass_strom_analysis_defaults(merged.setdefault("ui", {}))
     return merged
 
 

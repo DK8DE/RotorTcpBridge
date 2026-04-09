@@ -90,6 +90,8 @@ def _t_to_heatmap_color(t: float) -> QColor:
 
 # Auto-Skala: Mindestbreite, damit kleine Mess-/Poll-Schwankungen nicht ständig die Farben umsortieren
 _AUTO_HEATMAP_MIN_SPAN = 32
+# EMA auf (v_lo, v_hi) der Auto-Skala — gleiche Rohdaten, aber Min/Max springt leicht → ohne Glättung flackert der Ring
+_AUTO_HEATMAP_SMOOTH_ALPHA = 0.28
 
 
 def _expanded_auto_range_int(v_min: int, v_max: int, min_span: int = _AUTO_HEATMAP_MIN_SPAN) -> tuple[float, float]:
@@ -132,13 +134,15 @@ def paint_bins_heatmap_ring(
     ring_width: float = 5.0,
     offset_deg: float = 0.0,
     scale: Optional[HeatmapScale] = None,
+    auto_smooth_state: Optional[List[float]] = None,
 ) -> None:
     """5px Ring mit ACCBINS-Heatmap um einen Kompass.
     AZ: 62 nutzbare Bins (5–66) auf 360°, EL: 8 nutzbare Bins (5–12) auf 90°.
     Erste und letzte 5 Bins werden ausgeschlossen (nicht aussagekräftig).
     Ohne ``scale``: min/max aus den gelesenen Bin-Werten (blau=min, rot=max).
     Mit ``scale``=(thr_blue, norm_min, norm_max, thr_red): Normbereich grün, darunter blau, darüber rot.
-    offset_deg: Drehung der Heatmap um Antennenversatz (0° = oben/Nord)."""
+    offset_deg: Drehung der Heatmap um Antennenversatz (0° = oben/Nord).
+    auto_smooth_state: bei automatischer Skala optional eine Liste [v_lo, v_hi] — wird mit EMA geglättet (Widget hält Referenz)."""
     if not cw and not ccw:
         return
     outer_r = inner_r + ring_width
@@ -167,6 +171,27 @@ def paint_bins_heatmap_ring(
     v_max = max(vals) if vals else 0
     no_data = not vals or all(v <= 0 for v in vals)
 
+    v_lo_auto: Optional[float] = None
+    v_hi_auto: Optional[float] = None
+    if scale is not None:
+        if auto_smooth_state is not None:
+            auto_smooth_state.clear()
+    elif not no_data and v_max > v_min:
+        v_lo_new, v_hi_new = _expanded_auto_range_int(v_min, v_max)
+        if auto_smooth_state is not None:
+            if len(auto_smooth_state) < 2:
+                auto_smooth_state.clear()
+                auto_smooth_state.extend((v_lo_new, v_hi_new))
+            else:
+                a = _AUTO_HEATMAP_SMOOTH_ALPHA
+                auto_smooth_state[0] += a * (v_lo_new - auto_smooth_state[0])
+                auto_smooth_state[1] += a * (v_hi_new - auto_smooth_state[1])
+            v_lo_auto, v_hi_auto = auto_smooth_state[0], auto_smooth_state[1]
+        else:
+            v_lo_auto, v_hi_auto = v_lo_new, v_hi_new
+    elif auto_smooth_state is not None:
+        auto_smooth_state.clear()
+
     def val_to_color(v: int) -> QColor:
         if no_data:
             return QColor(120, 130, 170)
@@ -174,12 +199,12 @@ def paint_bins_heatmap_ring(
             return _t_to_heatmap_color(_v_to_t_scaled(int(v), scale))
         if v_max <= v_min:
             return QColor(0, 180, 120)
-        # Auto: Min/Max mit Mindestspanne, sonst flackert die ganze Karte bei ruhendem Rotor (nur Rauschen)
-        v_lo, v_hi = _expanded_auto_range_int(v_min, v_max)
-        span = v_hi - v_lo
+        # Auto: geglättete oder sofortige (v_lo, v_hi)
+        assert v_lo_auto is not None and v_hi_auto is not None
+        span = v_hi_auto - v_lo_auto
         if span <= 0:
             return QColor(0, 180, 120)
-        t = max(0.0, min(1.0, (float(v) - v_lo) / span))
+        t = max(0.0, min(1.0, (float(v) - v_lo_auto) / span))
         return _t_to_heatmap_color(t)
 
     painter.setPen(Qt.PenStyle.NoPen)

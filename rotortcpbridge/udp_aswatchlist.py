@@ -614,15 +614,23 @@ class UdpAswatchlistListener:
         except (KeyError, TypeError, ValueError):
             return None
         cat = str(pl.get("category", ""))
-        score = int(
+        score_geom = int(
             round(
                 asnearest_score_with_geometry(
                     own_ll, dest_ll, dist_km_plane, pot, dur, cat, use_category_path=use_cat_path
                 )
             )
         )
-        if score < min_score:
+        # Nur-Geometrie-Score kann bei sehr kurzer Restzeit (0–2 min, hoher AirScout-Bonus)
+        # unter den Schwellen liegen, weil g·Kategorie ≤ 1 den Wert stark drückt — dann
+        # würden „dringende“ Verbindungen fehlen. Zusätzlich: gleicher Schwellenwert auf
+        # den reinen Composite (Potenzial + Zeitbonus, ohne Reflexions-Mitte) prüfen.
+        composite = int(composite_asnearest_score(pot, dur))
+        urgent_short = int(dur) <= 2
+        passes = score_geom >= min_score or (urgent_short and composite >= min_score)
+        if not passes:
             return None
+        score = min(100, max(score_geom, composite))
         if list_max_min > 0 and dur > list_max_min:
             return None
         own = self._own_lat_lon_cfg()

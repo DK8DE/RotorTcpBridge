@@ -6,6 +6,7 @@ import time
 from typing import Callable, Optional
 
 from .angle_utils import shortest_delta_deg, wrap_deg
+from .rotor_parse_utils import parse_setposcc_params
 from .rs485_protocol import BROADCAST_DST, build, Telegram
 from .hardware_client import HardwareClient, HwRequest
 from .rotor_model import AxisState
@@ -40,6 +41,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         enable_az: bool = True,
         enable_el: bool = True,
         setposcc_ignore_src_master_ids: Optional[list[int]] = None,
+        # controller_hw.cont_id: nur SETPOSCC mit dieser Bus-SRC (z. B. 2→1 an Bridge) ins UI
+        setposcc_controller_src_id: int = 0,
     ):
         self.hw = hw
         self.log = log
@@ -48,13 +51,19 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.setposcc_ignore_src_master_ids = self._normalize_master_id_list(
             setposcc_ignore_src_master_ids
         )
+        try:
+            self.setposcc_controller_src_id = max(
+                0, min(254, int(setposcc_controller_src_id))
+            )
+        except Exception:
+            self.setposcc_controller_src_id = 0
         self.slave_az = slave_az
         self.slave_el = slave_el
         self.enable_az = bool(enable_az)
         self.enable_el = bool(enable_el)
 
-        self.az = AxisState()
-        self.el = AxisState()
+        self.az = AxisState(position_wrap_360=True)
+        self.el = AxisState(position_wrap_360=False)
         self._idle_poll_defer_until: float = 0.0
 
         self._last_poll = 0.0
@@ -90,11 +99,15 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._cal_bins_temp_ccw: Optional[list] = None
         self._live_bins_temp_cw: Optional[list] = None
         self._live_bins_temp_ccw: Optional[list] = None
-        # ACC-Bins (GETACCBINS): schnelle aktuelle Last, alle 10s
+        # ACC-Bins (GETACCBINS): schnelle aktuelle Last; Abruf siehe tick_polling / request_immediate_stats
         self._last_acc_bins_az: float = 0.0
         self._acc_bins_inflight_az: bool = False
         self._acc_bins_temp_cw: Optional[list] = None
         self._acc_bins_temp_ccw: Optional[list] = None
+        self._acc_bins_block_mask_az: Optional[list[bool]] = None
+        self._acc_bins_last_tx_ts_az: float = 0.0
+        self._acc_bins_finalize_pending_az: bool = False
+        self._acc_bins_finalize_until_az: float = 0.0
         # EL: gleiche Statistik wie AZ
         self._last_cal_state_el: float = 0.0
         self._cal_bins_inflight_el: bool = False
@@ -109,6 +122,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._acc_bins_inflight_el: bool = False
         self._acc_bins_temp_cw_el: Optional[list] = None
         self._acc_bins_temp_ccw_el: Optional[list] = None
+        self._acc_bins_block_mask_el: Optional[list[bool]] = None
+        self._acc_bins_last_tx_ts_el: float = 0.0
+        self._acc_bins_finalize_pending_el: bool = False
+        self._acc_bins_finalize_until_el: float = 0.0
         # Statistik-Fenster offen: nur dann CAL/LIVE/ACC pollen (Bus entlasten)
         self._statistics_window_open: bool = False
         # Einstellungen offen: CAL/LIVE wie Statistik pollen (Tab Statistik / „aus Kalibrierung“)
@@ -117,8 +134,18 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._compass_window_open: bool = False
         self._compass_strom_heatmap_az: bool = False
         self._compass_strom_heatmap_el: bool = False
-        # Nach Bewegung: ACCBINS sofort abbrechen, erst nach 10s Idle wieder starten (Dead-Man-Vermeidung)
+        # Kurzer Cooldown nach SETPOSDG: laufende GETACCBINS-Kette abbrechen, Bus kurz frei.
         self._stats_cooldown_until: float = 0.0
+        # GETACCBINS: Kompass-Stromring — einmal vollständig, danach nur nach Bewegung (SETPOSDG).
+        self._acc_bins_compass_initial_az: bool = False
+        self._acc_bins_compass_initial_el: bool = False
+        self._acc_bins_compass_arm_after_move_az: bool = False
+        self._acc_bins_compass_arm_after_move_el: bool = False
+        # Statistik/Einstellungen: einmal vollständig, danach nur nach SETPOSDG erneut.
+        self._acc_bins_stats_initial_az: bool = False
+        self._acc_bins_stats_initial_el: bool = False
+        self._acc_bins_stats_arm_after_setpos_az: bool = False
+        self._acc_bins_stats_arm_after_setpos_el: bool = False
         # Kompass-Manual-Eingabe: PST-SET für 10s ignorieren, damit nicht überschrieben wird
         self._compass_manual_az_ts: float = 0.0
         self._compass_manual_el_ts: float = 0.0
@@ -143,7 +170,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         # Fahrt  : nur GETPOSDG + GETERR
         # Idle   : alle weiteren Abfragen mit unterschiedlichem Takt
         self._cfg_poll = {
-            "pos_fast": 100,  # 10 Hz  (Fahrt)
+            "pos_fast": 200,  # 5 Hz  (Fahrt; weniger Buslast, oft stabiler)
             "pos_slow": 10000,  # 10 s   (Idle)
             "err_moving": 5000,  # 5 s    (während Fahrt)
             "err_idle": 10000,  # 10 s   (Idle)
@@ -197,32 +224,31 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
     def set_statistics_window_open(self, open: bool) -> None:
         """Statistik-Fenster offen/geschlossen. Nur wenn offen: CAL/LIVE/ACC pollen."""
         self._statistics_window_open = bool(open)
+        if bool(open):
+            self._acc_bins_stats_initial_az = False
+            self._acc_bins_stats_initial_el = False
+            self._acc_bins_stats_arm_after_setpos_az = False
+            self._acc_bins_stats_arm_after_setpos_el = False
 
     def set_settings_window_open(self, open: bool) -> None:
         """Einstellungen offen/geschlossen. Wenn offen: CAL/LIVE wie beim Statistik-Fenster pollen."""
         self._settings_window_open = bool(open)
+        if bool(open):
+            self._acc_bins_stats_initial_az = False
+            self._acc_bins_stats_initial_el = False
+            self._acc_bins_stats_arm_after_setpos_az = False
+            self._acc_bins_stats_arm_after_setpos_el = False
 
     def set_compass_strom_heatmap_active(self, az: bool, el: bool) -> None:
         """Ob im Kompass die Strom-Heatmap (AZ/EL) eingeschaltet ist — steuert GETACCBINS-Polling."""
+        pa = bool(self._compass_strom_heatmap_az)
+        pe = bool(self._compass_strom_heatmap_el)
         self._compass_strom_heatmap_az = bool(az)
         self._compass_strom_heatmap_el = bool(el)
-
-    def _acc_bins_poll_enabled(self) -> bool:
-        """GETACCBINS wenn Statistik- oder Kompassfenster offen (Langzeit braucht Daten).
-
-        Der Takt (2s/10s vs. 120s) steuert allein `_acc_bins_strom_live()` — nur bei sichtbar
-        aktiver Strommap (Haken) schnell, sonst alle 2 Minuten.
-        """
-        if bool(getattr(self, "_statistics_window_open", False)):
-            return True
-        return bool(getattr(self, "_compass_window_open", False))
-
-    def _acc_bins_strom_live(self) -> bool:
-        """GETACCBINS im 2s/10s-Takt nur mit geöffnetem Kompass und aktivem Strom-Ring (Haken)."""
-        return bool(getattr(self, "_compass_window_open", False)) and (
-            bool(getattr(self, "_compass_strom_heatmap_az", False))
-            or bool(getattr(self, "_compass_strom_heatmap_el", False))
-        )
+        if bool(az) and not pa:
+            self._acc_bins_compass_initial_az = False
+        if bool(el) and not pe:
+            self._acc_bins_compass_initial_el = False
 
     def set_compass_window_open(self, open: bool) -> None:
         """Kompass-Fenster offen/geschlossen."""
@@ -231,6 +257,9 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         # (cfg) bis zur nächsten Heatmap-Änderung — dann lief GETACCBINS trotz abgewählter Strom-Heatmap.
         self._compass_strom_heatmap_az = False
         self._compass_strom_heatmap_el = False
+        if bool(open):
+            self._acc_bins_compass_initial_az = False
+            self._acc_bins_compass_initial_el = False
 
     def set_wind_enabled_from_value(self, value: int | str) -> None:
         """Windmesser-Status setzen (z.B. nach SETWINDENABLE im Befehlsfenster)."""
@@ -472,20 +501,41 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
     def request_immediate_stats(self) -> None:
         """Statistik-Abfrage sofort auslösen (beim Öffnen des Statistik-Fensters). Priorität 0 = vor allem anderen.
-        Wird während Cooldown (10s nach Bewegung) übersprungen.
 
         GETLIVEBINS hier nicht parallel starten: sonst blockiert das Pending die CAL-Bin-ACKs,
         und der Async-Pfad verwirft sie fälschlich. LIVE startet nach GETCALBINS (Kettenende) oder per tick_polling.
         """
-        if time.time() < self._stats_cooldown_until:
-            return
         self._last_cal_state_az = 0.0
         self._last_cal_state_el = 0.0
         now = time.time()
         self._last_live_bins_az = now
         self._last_live_bins_el = now
-        # ACC: Sofort-Burst nur bei Live-Strom-Heatmap; sonst Langzeit (120 s) aus tick_polling
-        if self._acc_bins_strom_live():
+        stats_ui = bool(self._statistics_window_open or self._settings_window_open)
+        comp_az = bool(self._compass_window_open and self._compass_strom_heatmap_az)
+        comp_el = bool(self._compass_window_open and self._compass_strom_heatmap_el)
+        want_acc_az = False
+        want_acc_el = False
+        if self.enable_az:
+            if stats_ui and (
+                (not self._acc_bins_stats_initial_az) or self._acc_bins_stats_arm_after_setpos_az
+            ):
+                want_acc_az = True
+            if comp_az and (
+                (not self._acc_bins_compass_initial_az)
+                or self._acc_bins_compass_arm_after_move_az
+            ):
+                want_acc_az = True
+        if self.enable_el:
+            if stats_ui and (
+                (not self._acc_bins_stats_initial_el) or self._acc_bins_stats_arm_after_setpos_el
+            ):
+                want_acc_el = True
+            if comp_el and (
+                (not self._acc_bins_compass_initial_el)
+                or self._acc_bins_compass_arm_after_move_el
+            ):
+                want_acc_el = True
+        if want_acc_az or want_acc_el:
             self._last_acc_bins_az = 0.0
             self._last_acc_bins_el = 0.0
         if self.hw.is_connected():
@@ -495,21 +545,22 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     self._poll_cal_state(self.slave_az, self.az, priority=prio)
                 if self.enable_el and not self._cal_bins_inflight_el:
                     self._poll_cal_state(self.slave_el, self.el, priority=prio)
-                if self._acc_bins_poll_enabled() and self._acc_bins_strom_live():
-                    if self.enable_az and not self._acc_bins_inflight_az:
+                if time.time() >= float(self._stats_cooldown_until or 0.0):
+                    if want_acc_az and (not self._acc_bins_inflight_az):
                         self._fetch_acc_bins(self.slave_az, self.az, "AZ", priority=prio)
-                    if self.enable_el and not self._acc_bins_inflight_el:
+                    if want_acc_el and (not self._acc_bins_inflight_el):
                         self._fetch_acc_bins_el(self.slave_el, self.el, "EL", priority=prio)
             except Exception:
                 pass
 
     def update_polling(self, polling_ms: dict):
         self._cfg_poll.update(polling_ms or {})
-        # Positionsabfrage: mindestens 10x/s (User-Wunsch). Größerer Wert = langsamer.
+        # Positionsabfrage in ms (Intervall): größer = seltener. Sinnvolle Grenzen für RS485.
         try:
-            self._cfg_poll["pos_fast"] = int(min(int(self._cfg_poll.get("pos_fast", 100)), 100))
+            pf = int(self._cfg_poll.get("pos_fast", 200))
+            self._cfg_poll["pos_fast"] = int(max(50, min(pf, 2000)))
         except Exception:
-            self._cfg_poll["pos_fast"] = 100
+            self._cfg_poll["pos_fast"] = 200
         # Keine harte Obergrenze mehr erzwingen: je nach Setup sollen Warn/Err/Telemetrie
         # bewusst nur alle ~2s abgefragt werden (und während Fahrt teils gar nicht).
         for k in ("warn", "err", "telemetry", "pwm", "ref_idle", "offline_timeout"):
@@ -665,6 +716,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             self._apply_local_state_for_ui_command(int(dst), str(cmd).strip().upper(), str(params))
 
         line = self.build_line(dst, cmd, params)
+        # SETPOSCC (Kompass-Soll): Firmware sendet kein ACK — kein Pending, sonst Timeout und
+        # eingehende ACKs (z. B. ACK_GET…) können vorübergehend fälschlich dem Request zugeordnet werden.
+        if str(cmd).strip().upper() == "SETPOSCC":
+            expect_prefix = None
         self.hw.send_request(
             HwRequest(
                 line=line,
@@ -721,7 +776,12 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         to = float(max(0.35, timeout_s))
 
         def on_done(tel: Optional[Telegram], err: Optional[str]) -> None:
-            if tel and not err:
+            if err:
+                pass
+            elif str(cmd).strip().upper() == "SETPOSCC" and tel is None:
+                # send_ui_command erzwingt kein ACK — sofortiger on_done(None, None) = Erfolg
+                result[0] = ""
+            elif tel and not err:
                 cmd_u = str(tel.cmd or "").strip().upper()
                 if cmd_u.startswith("NAK_"):
                     result[0] = SYNC_UI_NAK_PREFIX + str(tel.params)
@@ -799,21 +859,22 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             # -------------------- Kompass-Soll (Bus / Encoder-Panel, kein Motor-SET) --------------------
             if cmd == "SETPOSCC":
                 # Kurz nach SETPOSDG: erstes SETPOSCC ignorieren (Bus-Reihenfolge / Echo).
-                # Während Fahrt: SETPOSCC trotzdem anwenden — Sollzeiger = Encoder, Motorziel bleibt target_d10.
+                # Während Fahrt: SETPOSCC immer anwenden — Sollzeiger = Encoder (#2:…), Motorziel bleibt target_d10.
+                # (Die Ignore-Zeit sonst: SETPOSDG-Mitschnitte verlängern sie oft → CC würde nie durchkommen.)
                 try:
-                    if time.time() < float(
-                        getattr(axis, "setposcc_ignore_until_ts", 0.0) or 0.0
-                    ):
-                        return
+                    if not bool(getattr(axis, "moving", False)):
+                        if time.time() < float(
+                            getattr(axis, "setposcc_ignore_until_ts", 0.0) or 0.0
+                        ):
+                            return
                 except Exception:
                     pass
                 try:
-                    p = str(params).strip()
-                    if ";" in p:
-                        p = p.split(";")[-1]
-                    p = p.replace(" ", "")
-                    v = float(p.replace(",", "."))
-                    d10 = int(round(v * 10.0))
+                    v, _rid = parse_setposcc_params(str(params or ""))
+                    if v is None:
+                        d10 = None
+                    else:
+                        d10 = int(round(float(v) * 10.0))
                 except Exception:
                     d10 = None
                 if d10 is not None:

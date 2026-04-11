@@ -10,7 +10,7 @@ Ziele:
 
 Unterschiede zur RS485-GUI:
 - Wir nutzen die bereits vorhandene Polling-Logik von RotorController.
-  Die IST-Position wird aus ctrl.az.pos_d10 gelesen und nicht separat gepollt.
+  Die IST-Position folgt ctrl.az (get_smoothed_pos_d10f, SmoothDamp) und wird nicht separat gepollt.
 - Es wird ausschließlich der AZ-Rotor angesprochen (dst = ctrl.slave_az).
 - Last-Ringe (CAL/LIVE) werden im separaten Statistik-Fenster angezeigt.
 """
@@ -38,6 +38,11 @@ from .statistic_compass_widget import (
 
 # Reihenfolge der Ringe von innen nach außen (wie die AZ-Liste im Kompass)
 _AZ_RING_ORDER = {"strom": 0, "om_radar": 1, "dwell": 2}
+
+# „Soll:“ + Eingabe (rechts oben) zusätzlich nach oben (kleineres oy)
+_SOLL_OVERLAY_Y_SHIFT_PX = 60
+# Kompass-Mitte vertikal (px nach oben); Platz für Ringe/Beschriftung, bei Bedarf anpassen
+_COMPASS_CENTER_Y_SHIFT_PX = 0
 
 
 class CompassWidget(QWidget):
@@ -215,7 +220,7 @@ class CompassWidget(QWidget):
             ow = int(sh.width()) if sh.width() > 0 else 140
             oh = max(int(sh.height()) if sh.height() > 0 else 24, 22)
             ox = int(self.width() - margin - ow)
-            oy = int(row_y)
+            oy = max(0, int(row_y) - _SOLL_OVERLAY_Y_SHIFT_PX)
             self._soll_overlay.setGeometry(ox, oy, ow, oh)
             self._soll_overlay.raise_()
 
@@ -395,7 +400,7 @@ class CompassWidget(QWidget):
         """Hilfsgeometrie: (cx, cy, r). Rand oben/unten für Beschriftung + äußere Ringe."""
         rect = self.rect().adjusted(10, 26, -10, -14)
         cx = float(rect.center().x())
-        cy = float(rect.center().y())
+        cy = float(rect.center().y()) - float(_COMPASS_CENTER_Y_SHIFT_PX)
         r = float(min(rect.width(), rect.height())) / 2.0
         return cx, cy, r
 

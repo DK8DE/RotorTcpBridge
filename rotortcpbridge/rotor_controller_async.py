@@ -6,10 +6,17 @@ import time
 
 from .rs485_protocol import BROADCAST_DST, Telegram
 from .rotor_model import AxisState
-from .rotor_parse_utils import parse_float, parse_float_any, parse_int
+from .rotor_controller_polling import _RotorPollingHost
+from .rotor_parse_utils import (
+    parse_float,
+    parse_float_any,
+    parse_getposdg_ist_deg,
+    parse_int,
+    parse_setposcc_params,
+)
 
 
-class RotorControllerAsyncMixin:
+class RotorControllerAsyncMixin(_RotorPollingHost):
     """Dispatch für eingehende ACK/NAK ohne zugeordneten HwRequest."""
 
     def _hw_pending_expect_upper(self) -> str:
@@ -49,7 +56,7 @@ class RotorControllerAsyncMixin:
             return True
 
     # -------------------- Async telegram handler --------------------
-    def _on_async_tel(self, tel: Telegram):
+    def _on_async_tel(self, tel: Telegram) -> None:  # pyright: ignore[reportGeneralTypeIssues]
         # Asynchrone ACK/NAK aus Polling (wenn Requests ohne pending gesendet werden).
         if not self._tel_dst_allowed(tel):
             return
@@ -90,16 +97,37 @@ class RotorControllerAsyncMixin:
                 saz = int(self.slave_az)
                 sel = int(self.slave_el)
                 mid = int(self.master_id)
-                # Encoder kann SETPOSCC an Rotor-Slave ODER an unsere Master-ID senden (Kompass-Soll).
+                # Encoder/Controller (z. B. SRC 2) kann SETPOSCC an Rotor-Slave oder an unsere
+                # Master-ID senden (#2:1:… = an Bridge). Payload kann ``Winkel;Rotor-ID`` sein.
                 axis_dst: int | None = None
-                if dst == saz or dst == sel:
-                    axis_dst = dst
-                elif dst == mid:
-                    if self.enable_az:
+                try:
+                    _, rid = parse_setposcc_params(str(tel.params or ""))
+                except Exception:
+                    rid = None
+                if rid is not None:
+                    if rid == saz and self.enable_az:
                         axis_dst = saz
-                    elif self.enable_el:
+                    elif rid == sel and self.enable_el:
                         axis_dst = sel
+                    else:
+                        return
+                if axis_dst is None:
+                    if dst == saz or dst == sel:
+                        axis_dst = dst
+                    elif dst == mid:
+                        if self.enable_az:
+                            axis_dst = saz
+                        elif self.enable_el:
+                            axis_dst = sel
                 if axis_dst is not None:
+                    try:
+                        csrc = int(
+                            getattr(self, "setposcc_controller_src_id", 0) or 0
+                        )
+                    except Exception:
+                        csrc = 0
+                    if csrc > 0 and int(tel.src) != csrc:
+                        return
                     try:
                         self.note_setposcc_bus_activity()
                     except Exception:
@@ -138,16 +166,11 @@ class RotorControllerAsyncMixin:
                 axis_state.online = True
                 axis_state.last_rx_ts = time.time()
 
-                # Position (GETPOSDG ohne pending)
+                # Position (GETPOSDG ohne pending im Client — mehrere TX möglich, ACKs asynchron)
                 if tel.cmd.startswith("ACK_GETPOSDG") or tel.cmd.startswith("ACK_POSDG"):
-                    # Inflight freigeben (sonst stauen sich Requests)
-                    try:
-                        axis_state.pos_poll_inflight = False
-                    except Exception:
-                        pass
                     axis_state.online = True
                     axis_state.last_rx_ts = time.time()
-                    v = parse_float(tel.params.split(";")[-1])
+                    v = parse_getposdg_ist_deg(tel.params)
                     if v is not None:
                         d10 = int(round(v * 10))
                         prev_pos = int(axis_state.pos_d10)
@@ -232,10 +255,6 @@ class RotorControllerAsyncMixin:
                     axis_state.last_rx_ts = time.time()
                     return
                 if tel.cmd.startswith("NAK_GETPOSDG") or tel.cmd.startswith("NAK_POSDG"):
-                    try:
-                        axis_state.pos_poll_inflight = False
-                    except Exception:
-                        pass
                     axis_state.online = True
                     axis_state.last_rx_ts = time.time()
                     self.log.write("WARN", f"{axis_name} GETPOSDG NAK: {tel.params}")
@@ -554,6 +573,21 @@ class RotorControllerAsyncMixin:
                                         if idx < 72:
                                             bins[idx] = int(v)
                     return
+
+                # ACC-Bins: verspätete ACK_GETACCBINS (falscher Pending-Block / Bus-Reihenfolge) mergen
+                if cmd_u.startswith("ACK_GETACCBINS"):
+                    if axis_name == "AZ" and getattr(self, "_acc_bins_inflight_az", False):
+                        try:
+                            self._async_merge_acc_bins_ack_az(tel, axis_state)
+                        except Exception:
+                            pass
+                        return
+                    if axis_name == "EL" and getattr(self, "_acc_bins_inflight_el", False):
+                        try:
+                            self._async_merge_acc_bins_ack_el(tel, axis_state)
+                        except Exception:
+                            pass
+                        return
         except Exception:
             pass
 

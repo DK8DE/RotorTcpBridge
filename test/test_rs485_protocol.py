@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from rotortcpbridge.rotor_parse_utils import parse_getposdg_ist_deg
 from rotortcpbridge.rs485_protocol import Telegram, build, calc_checksum, parse
 
 
@@ -45,6 +46,18 @@ def test_build_setposcc_roundtrip() -> None:
     assert t.ok is True
 
 
+def test_build_setposcc_with_rotor_id_checksum_last_number() -> None:
+    """CS = SRC+DST+letzte Zahl im Payload (hier Rotor-ID 20)."""
+    line = build(2, 1, "SETPOSCC", "151,30;20")
+    assert line.endswith("$")
+    t = parse(line)
+    assert t is not None
+    assert t.src == 2 and t.dst == 1
+    assert t.params == "151,30;20"
+    assert t.ok is True
+    assert calc_checksum(2, 1, "151,30;20") == pytest.approx(23.0)
+
+
 def test_parse_invalid_line() -> None:
     assert parse("") is None
     assert parse("no hash") is None
@@ -65,3 +78,22 @@ def test_parse_float_cs_format() -> None:
     assert t is not None
     assert t.ok is True
     assert isinstance(t, Telegram)
+
+
+def test_parse_getposdg_ist_deg_colon_pair() -> None:
+    line = build(1, 20, "ACK_GETPOSDG", "177,53:198,53")
+    t = parse(line)
+    assert t is not None
+    assert parse_getposdg_ist_deg(t.params) == pytest.approx(177.53)
+
+
+def test_parse_getposdg_ist_deg_semicolon_pair() -> None:
+    line = build(1, 20, "ACK_GETPOSDG", "177,53;198,53")
+    t = parse(line)
+    assert t is not None
+    assert parse_getposdg_ist_deg(t.params) == pytest.approx(177.53)
+
+
+def test_parse_getposdg_ist_deg_single() -> None:
+    assert parse_getposdg_ist_deg("45,12") == pytest.approx(45.12)
+    assert parse_getposdg_ist_deg("") is None

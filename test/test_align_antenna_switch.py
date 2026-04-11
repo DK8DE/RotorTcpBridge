@@ -22,8 +22,6 @@ def test_align_snaps_soll_to_ist_when_flag_off() -> None:
     c.az.antoff2 = 90.0
     c.az.pos_d10 = 900
     c.az.smooth_pos_d10f = 900.0
-    c.az._smooth_from_ts = 0.0
-    c.az._smooth_to_ts = 0.0
     c.az.target_d10 = 1234
     c.az.compass_target_d10 = 500
     cfg = {"controller_hw": {"antenna_realign_on_switch": False}}
@@ -39,7 +37,6 @@ def test_align_sets_target_when_flag_on() -> None:
     c.az.antoff2 = 90.0
     c.az.pos_d10 = 900
     c.az.smooth_pos_d10f = 900.0
-    c.az._smooth_to_ts = 0.0
     cfg = {
         "controller_hw": {"antenna_realign_on_switch": True},
         "ui": {"antenna_offsets_az": [0.0, 90.0, 0.0]},

@@ -1,12 +1,22 @@
 from __future__ import annotations
+import sys
 import threading
 import queue
 import time
 import socket
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Callable
-from .rs485_protocol import parse, Telegram
-from .logutil import LogBuffer
+
+# Direktausführung dieser Datei (Play-Button): sys.path zeigt nur auf dieses Verzeichnis —
+# Projektroot eintragen, damit `import rotortcpbridge…` wie bei `python run.py` funktioniert.
+if __package__ is None:  # pragma: no cover
+    _repo_root = Path(__file__).resolve().parents[1]
+    if str(_repo_root) not in sys.path:
+        sys.path.insert(0, str(_repo_root))
+
+from rotortcpbridge.rs485_protocol import parse, Telegram
+from rotortcpbridge.logutil import LogBuffer
 
 try:
     import serial

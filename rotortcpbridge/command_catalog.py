@@ -529,8 +529,8 @@ SPECS_DATA: list[dict] = [
         "decimals": 2,
         "step": 0.01,
         "default": 0.0,
-        "help_text": "Kompass-Soll AZ in Grad (Anzeige). Setzt nur den Sollzeiger, keine Positionsfahrt. Encoder-Panel kann wiederholt Winkel senden.",
-        "help_text_en": "Compass AZ target in degrees (display only). Moves the target pointer only, no position move. Encoder panel may send angles repeatedly.",
+        "help_text": "Kompass-Soll in Grad (Anzeige), keine Positionsfahrt. Optional ``Winkel;Rotor-ID`` (z.B. 151,30;20) für AZ/EL-Zuordnung bei Ziel PC-Master.",
+        "help_text_en": "Compass target in degrees (display only), no position move. Optional ``angle;rotor_id`` (e.g. 151,30;20) to pick AZ vs EL when destination is the PC master.",
     },
     {
         "name": "SETID",

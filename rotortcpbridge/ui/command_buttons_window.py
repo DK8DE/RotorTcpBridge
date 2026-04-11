@@ -475,15 +475,19 @@ class CommandButtonsWindow(QDialog):
         try:
 
             def done(tel, err):
-                if err or tel is None:
-                    self.sig_send_result.emit(cmd, "", "", str(err or "keine Antwort"))
-                else:
-                    self.sig_send_result.emit(
-                        cmd,
-                        str(getattr(tel, "cmd", "") or ""),
-                        str(getattr(tel, "params", "") or ""),
-                        "",
-                    )
+                if err:
+                    self.sig_send_result.emit(cmd, "", "", str(err))
+                    return
+                if tel is None:
+                    # SETPOSCC: Fire-and-forget, kein ACK vom Rotor
+                    self.sig_send_result.emit(cmd, "", "", "")
+                    return
+                self.sig_send_result.emit(
+                    cmd,
+                    str(getattr(tel, "cmd", "") or ""),
+                    str(getattr(tel, "params", "") or ""),
+                    "",
+                )
 
             self.ctrl.send_ui_command(
                 dst,
@@ -784,55 +788,58 @@ class CommandButtonsWindow(QDialog):
 
         def done(tel, err):
             self._send_set_inflight.discard(key)
-            if err or tel is None:
-                self.sig_send_result.emit(cmd, "", "", str(err or "keine Antwort"))
-            else:
-                if cmd == "SETWINDENABLE" and hasattr(self.ctrl, "set_wind_enabled_from_value"):
-                    val = getattr(tel, "params", "") or params
-                    self.ctrl.set_wind_enabled_from_value(val)
-                self.sig_send_result.emit(
-                    cmd,
-                    str(getattr(tel, "cmd", "") or ""),
-                    str(getattr(tel, "params", "") or ""),
-                    "",
-                )
-                if cmd == "SETRAMP":
-                    cal_key = (dst, "SETCALIGNDG")
-                    if cal_key in self._send_set_inflight:
-                        return
-                    self._send_set_inflight.add(cal_key)
+            if err:
+                self.sig_send_result.emit(cmd, "", "", str(err))
+                return
+            if tel is None:
+                self.sig_send_result.emit(cmd, "", "", "")
+                return
+            if cmd == "SETWINDENABLE" and hasattr(self.ctrl, "set_wind_enabled_from_value"):
+                val = getattr(tel, "params", "") or params
+                self.ctrl.set_wind_enabled_from_value(val)
+            self.sig_send_result.emit(
+                cmd,
+                str(getattr(tel, "cmd", "") or ""),
+                str(getattr(tel, "params", "") or ""),
+                "",
+            )
+            if cmd == "SETRAMP":
+                cal_key = (dst, "SETCALIGNDG")
+                if cal_key in self._send_set_inflight:
+                    return
+                self._send_set_inflight.add(cal_key)
 
-                    def done_cal(tel2, err2):
-                        self._send_set_inflight.discard(cal_key)
-                        if err2 or tel2 is None:
-                            self.sig_send_result.emit(
-                                "SETCALIGNDG",
-                                "",
-                                "",
-                                str(err2 or "keine Antwort"),
-                            )
-                        else:
-                            self.sig_send_result.emit(
-                                "SETCALIGNDG",
-                                str(getattr(tel2, "cmd", "") or ""),
-                                str(getattr(tel2, "params", "") or ""),
-                                "",
-                            )
-
-                    try:
-                        self.ctrl.send_ui_command(
-                            dst,
+                def done_cal(tel2, err2):
+                    self._send_set_inflight.discard(cal_key)
+                    if err2 or tel2 is None:
+                        self.sig_send_result.emit(
                             "SETCALIGNDG",
-                            params,
-                            expect_prefix="ACK_SETCALIGNDG",
-                            timeout_s=1.0,
-                            priority=0,
-                            on_done=done_cal,
-                            apply_local_state=False,
+                            "",
+                            "",
+                            str(err2 or "keine Antwort"),
                         )
-                    except Exception as e:
-                        self._send_set_inflight.discard(cal_key)
-                        self.sig_send_result.emit("SETCALIGNDG", "", "", str(e))
+                    else:
+                        self.sig_send_result.emit(
+                            "SETCALIGNDG",
+                            str(getattr(tel2, "cmd", "") or ""),
+                            str(getattr(tel2, "params", "") or ""),
+                            "",
+                        )
+
+                try:
+                    self.ctrl.send_ui_command(
+                        dst,
+                        "SETCALIGNDG",
+                        params,
+                        expect_prefix="ACK_SETCALIGNDG",
+                        timeout_s=1.0,
+                        priority=0,
+                        on_done=done_cal,
+                        apply_local_state=False,
+                    )
+                except Exception as e:
+                    self._send_set_inflight.discard(cal_key)
+                    self.sig_send_result.emit("SETCALIGNDG", "", "", str(e))
 
         try:
             self.ctrl.send_ui_command(
@@ -999,12 +1006,17 @@ class CommandButtonsWindow(QDialog):
         cmd = str(e["cmd"])
         params = str(e.get("params", "")).strip()
 
+        cmd_u = str(cmd).strip().upper()
+
         def done(tel, err):
-            ok = (
-                err is None
-                and tel is not None
-                and str(getattr(tel, "cmd", "") or "").startswith("ACK_")
-            )
+            if cmd_u == "SETPOSCC":
+                ok = err is None
+            else:
+                ok = (
+                    err is None
+                    and tel is not None
+                    and str(getattr(tel, "cmd", "") or "").startswith("ACK_")
+                )
             err_s = "" if ok else (str(err or "keine Antwort") if err else "NAK")
             self.sig_restore_step_done.emit(ok, err_s, dst, cmd, params)
 

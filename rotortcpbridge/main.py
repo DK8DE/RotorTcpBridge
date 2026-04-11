@@ -37,6 +37,7 @@ def main():
     hw.start()
 
     rb = cfg["rotor_bus"]
+    chw = cfg.get("controller_hw") or {}
     ctrl = RotorController(
         hw,
         rb["master_id"],
@@ -48,6 +49,7 @@ def main():
         setposcc_ignore_src_master_ids=rb.get(
             "setposcc_ignore_src_master_ids", []
         ),
+        setposcc_controller_src_id=int(chw.get("cont_id", 0) or 0),
     )
     ctrl.update_polling(cfg.get("polling_ms", {}))
 

@@ -7,7 +7,7 @@ import math
 import time
 from typing import Optional
 
-from PySide6.QtCore import QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Slot
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -33,6 +35,7 @@ from ..geo_utils import (
     bearing_deg,
     effective_station_lat_lon,
     grayline_points,
+    maidenhead_to_lat_lon,
 )
 from ..i18n import t, tt
 from .favorite_selection_sync import (
@@ -130,6 +133,20 @@ class MapWindow(QDialog):
         self._btn_fav_delete = QPushButton(t("compass.fav_btn_delete"))
         self._btn_fav_delete.setAutoDefault(False)
         self._btn_fav_delete.setDefault(False)
+        self._lbl_map_loc = QLabel(t("compass.locator_label"))
+        self._ed_map_loc = QLineEdit()
+        self._ed_map_loc.setPlaceholderText(t("compass.locator_placeholder"))
+        self._ed_map_loc.setMaxLength(10)
+        self._ed_map_loc.setToolTip(tt("compass.locator_tooltip"))
+        self._ed_map_loc.setFixedWidth(px_to_dip(self, 100))
+        self._lbl_map_loc.setStyleSheet("font-size: 11pt; font-weight: bold;")
+        self._w_map_loc = QWidget()
+        _h_map_loc = QHBoxLayout(self._w_map_loc)
+        _h_map_loc.setContentsMargins(0, 0, 0, 0)
+        _h_map_loc.setSpacing(px_to_dip(self, 4))
+        _h_map_loc.addWidget(self._lbl_map_loc, 0)
+        _h_map_loc.addWidget(self._ed_map_loc, 0)
+        self._w_map_loc.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._btn_elevation = QPushButton(t("map.btn_elevation"))
         self._btn_elevation.setAutoDefault(False)
         self._btn_elevation.setDefault(False)
@@ -139,6 +156,8 @@ class MapWindow(QDialog):
         toolbar.addWidget(self._ed_fav_name)
         toolbar.addWidget(self._btn_fav_save)
         toolbar.addWidget(self._btn_fav_delete)
+        toolbar.addStretch(1)
+        toolbar.addWidget(self._w_map_loc)
         toolbar.addWidget(self._btn_elevation)
         self._cb_antenna.setToolTip(tt("map.tooltip_antenna"))
         self._cb_fav.setToolTip(tt("map.tooltip_favorites"))
@@ -152,6 +171,7 @@ class MapWindow(QDialog):
         self._btn_fav_save.clicked.connect(self._on_fav_save)
         self._btn_fav_delete.clicked.connect(self._on_fav_delete)
         self._btn_elevation.clicked.connect(self._on_elevation_profile)
+        self._ed_map_loc.returnPressed.connect(self._on_map_locator_entered)
         self._refresh_favorites_dropdown()
 
         map_container = _MapContainer(self)
@@ -869,6 +889,25 @@ class MapWindow(QDialog):
     def _on_map_page_nav(self, lat: float, lon: float, asnearest_dest: str | None = None) -> None:
         """Von MapWebPage: Kartenklick oder ASNEAREST-Tabellenzeile (optional dest_key)."""
         self._on_map_click(lat, lon, asnearest_dest=asnearest_dest)
+
+    @Slot()
+    def _on_map_locator_entered(self) -> None:
+        """Maidenhead-Locator → wie Kartenklick auf die Feldmittel (Kompass-Locator gleiche Logik)."""
+        raw = (self._ed_map_loc.text() or "").strip()
+        if not raw:
+            return
+        ll = maidenhead_to_lat_lon(raw)
+        if ll is None:
+            QMessageBox.warning(
+                self,
+                t("compass.locator_invalid_title"),
+                t("compass.locator_invalid_body"),
+            )
+            self._ed_map_loc.setFocus()
+            self._ed_map_loc.selectAll()
+            return
+        lat_d, lon_d = ll
+        self._on_map_click(float(lat_d), float(lon_d), asnearest_dest=None)
 
     def _on_map_click(self, lat: float, lon: float, asnearest_dest: str | None = None) -> None:
         """Klick auf Karte oder ASNEAREST-Link: Rotor auf Peilung zu diesem Punkt drehen."""

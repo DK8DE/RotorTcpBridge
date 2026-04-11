@@ -24,6 +24,9 @@ from ..ui.led_widget import Led
 from ..ui.ui_utils import px_to_dip
 from .statistic_compass_widget import HeatmapScale, paint_bins_heatmap_ring
 
+# „Soll:“ + Eingabe (rechts oben) zusätzlich nach oben (kleineres oy)
+_SOLL_OVERLAY_Y_SHIFT_PX = 60
+
 
 class ElevationCompassWidget(QWidget):
     """Viertelkreis-Kompass für 0..90° (Elevation)."""
@@ -173,7 +176,7 @@ class ElevationCompassWidget(QWidget):
             ow = int(sh.width()) if sh.width() > 0 else 140
             oh = max(int(sh.height()) if sh.height() > 0 else 24, 22)
             ox = int(self.width() - margin - ow)
-            oy = int(text_top)
+            oy = max(0, int(text_top) - _SOLL_OVERLAY_Y_SHIFT_PX)
             self._soll_overlay.setGeometry(ox, oy, ow, oh)
             self._soll_overlay.raise_()
 

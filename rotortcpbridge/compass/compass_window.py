@@ -8,11 +8,13 @@ from PySide6.QtGui import QAction, QCloseEvent, QHideEvent, QPalette, QShowEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QPushButton,
     QToolButton,
     QVBoxLayout,
@@ -21,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from ..app_icon import get_app_icon
 from ..angle_utils import clamp_el, fmt_deg, om_beam_contributions_per_sector, wrap_deg
-from ..geo_utils import bearing_deg, effective_station_lat_lon, haversine_km
+from ..geo_utils import bearing_deg, effective_station_lat_lon, haversine_km, maidenhead_to_lat_lon
 from ..i18n import t, tt
 from ..ui.favorite_selection_sync import (
     apply_saved_selection_to_favorites_combo,
@@ -109,15 +111,27 @@ class CompassWindow(QDialog):
         self.lbl_az_soll = QLabel(t("compass.soll_label"))
         self.ed_az_soll = QLineEdit()
         self.ed_az_soll.setPlaceholderText("–")
-        self.ed_az_soll.setFixedWidth(70)
         self.ed_az_soll.setMaxLength(7)
         self._style_compass_info_label(self.lbl_az_soll)
+        self.lbl_az_locator = QLabel(t("compass.locator_label"))
+        self.ed_az_locator = QLineEdit()
+        self.ed_az_locator.setPlaceholderText(t("compass.locator_placeholder"))
+        self.ed_az_locator.setMaxLength(10)
+        self.ed_az_locator.setToolTip(tt("compass.locator_tooltip"))
+        self._style_compass_info_label(self.lbl_az_locator)
+        _az_overlay_col_w = px_to_dip(self, 100)
+        self.ed_az_soll.setFixedWidth(_az_overlay_col_w)
+        self.ed_az_locator.setFixedWidth(_az_overlay_col_w)
         self.w_az_soll = QWidget()
-        _h_az_soll = QHBoxLayout(self.w_az_soll)
-        _h_az_soll.setContentsMargins(0, 0, 0, 0)
-        _h_az_soll.setSpacing(4)
-        _h_az_soll.addWidget(self.lbl_az_soll)
-        _h_az_soll.addWidget(self.ed_az_soll)
+        _gr_az_soll = QGridLayout(self.w_az_soll)
+        _gr_az_soll.setContentsMargins(0, 0, 0, 0)
+        _gr_az_soll.setHorizontalSpacing(px_to_dip(self, 4))
+        _gr_az_soll.setVerticalSpacing(px_to_dip(self, 4))
+        _lbl_align = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        _gr_az_soll.addWidget(self.lbl_az_soll, 0, 0, alignment=_lbl_align)
+        _gr_az_soll.addWidget(self.ed_az_soll, 0, 1)
+        _gr_az_soll.addWidget(self.lbl_az_locator, 1, 0, alignment=_lbl_align)
+        _gr_az_soll.addWidget(self.ed_az_locator, 1, 1)
 
         self.az_compass = CompassWidget(self.gb_az)
         self.az_compass.set_top_center_widget(None)
@@ -166,6 +180,7 @@ class CompassWindow(QDialog):
         az_info.addWidget(self.btn_reset_dwell_az)
         az_info.addStretch(1)
         self.ed_az_soll.returnPressed.connect(self._on_az_soll_entered)
+        self.ed_az_locator.returnPressed.connect(self._on_az_locator_entered)
         az_l.addLayout(az_info)
 
         row.addWidget(self.gb_az, 1)
@@ -895,7 +910,7 @@ class CompassWindow(QDialog):
         color = self.az_compass.palette().color(QPalette.ColorRole.WindowText)
         self._last_label_color = color.name()
         style = f"{self._COMPASS_INFO_STYLE} color: {self._last_label_color};"
-        for lbl in (self.lbl_az_soll, self.lbl_el_soll):
+        for lbl in (self.lbl_az_soll, self.lbl_az_locator, self.lbl_el_soll):
             lbl.setStyleSheet(style)
         if hasattr(self.az_compass, "apply_label_text_color"):
             self.az_compass.apply_label_text_color(color)
@@ -914,6 +929,9 @@ class CompassWindow(QDialog):
         if self._btn_open_map is not None:
             self._btn_open_map.setText(t("main.btn_map"))
             self._btn_open_map.setToolTip(tt("compass.open_map_tooltip"))
+        self.lbl_az_locator.setText(t("compass.locator_label"))
+        self.ed_az_locator.setPlaceholderText(t("compass.locator_placeholder"))
+        self.ed_az_locator.setToolTip(tt("compass.locator_tooltip"))
 
     def refresh_visibility(self) -> None:
         az_on = bool(getattr(self.ctrl, "enable_az", True))
@@ -1069,9 +1087,19 @@ class CompassWindow(QDialog):
                 except Exception:
                     pass
 
-        # _target_az hat Vorrang (Eingabefeld/Klick): verhindert Zurückspringen durch PST/anderes
+        # _target_az hat Vorrang (Eingabefeld/Klick): verhindert Zurückspringen durch PST/anderes.
+        # Während Fahrt: SETPOSCC (Encoder) live — sonst bliebe der Sollzeiger auf dem Mausklick
+        # kleben, obwohl der Controller CC sendet.
         if self._target_az is not None:
-            tgt = self._target_az
+            moving_az = bool(getattr(self.ctrl.az, "moving", False))
+            try:
+                cc_d10 = getattr(self.ctrl.az, "compass_target_d10", None)
+            except Exception:
+                cc_d10 = None
+            if moving_az and cc_d10 is not None:
+                tgt = wrap_deg(float(int(cc_d10)) / 10.0)
+            else:
+                tgt = self._target_az
         elif tgt is None:
             try:
                 axis = self.ctrl.az
@@ -1243,9 +1271,17 @@ class CompassWindow(QDialog):
                 except Exception:
                     pass
 
-        # _target_el hat Vorrang (Eingabefeld/Klick): verhindert Zurückspringen
+        # _target_el hat Vorrang (Eingabefeld/Klick); während Fahrt SETPOSCC live wie bei AZ.
         if self._target_el is not None:
-            tgt = self._target_el
+            moving_el = bool(getattr(self.ctrl.el, "moving", False))
+            try:
+                cc_el = getattr(self.ctrl.el, "compass_target_d10", None)
+            except Exception:
+                cc_el = None
+            if moving_el and cc_el is not None:
+                tgt = clamp_el(float(int(cc_el)) / 10.0)
+            else:
+                tgt = self._target_el
         elif tgt is None:
             try:
                 axis = self.ctrl.el
@@ -1385,6 +1421,28 @@ class CompassWindow(QDialog):
         if v is None:
             return
         self.az_compass.pick_target(wrap_deg(v))
+
+    @Slot()
+    def _on_az_locator_entered(self) -> None:
+        """Maidenhead-Locator → Peilung zur Zellenmitte (länger = genauer), dann wie Soll-Eingabe."""
+        raw = (self.ed_az_locator.text() or "").strip()
+        if not raw:
+            return
+        ll = maidenhead_to_lat_lon(raw)
+        if ll is None:
+            QMessageBox.warning(
+                self,
+                t("compass.locator_invalid_title"),
+                t("compass.locator_invalid_body"),
+            )
+            self.ed_az_locator.setFocus()
+            self.ed_az_locator.selectAll()
+            return
+        lat_d, lon_d = ll
+        ui = self.cfg.get("ui", {}) or {}
+        lat0, lon0 = effective_station_lat_lon(ui)
+        bearing = bearing_deg(lat0, lon0, lat_d, lon_d)
+        self.az_compass.pick_target(wrap_deg(bearing))
 
     @Slot()
     def _on_el_soll_entered(self) -> None:

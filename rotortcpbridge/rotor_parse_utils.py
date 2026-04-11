@@ -40,3 +40,45 @@ def parse_float_any(s: str) -> Optional[float]:
         return float(m.group(0).replace(",", "."))
     except Exception:
         return None
+
+
+def parse_setposcc_params(params: str) -> tuple[Optional[float], Optional[int]]:
+    """SETPOSCC-Payload: Vorschauwinkel [, optional ``;Rotor-Bus-ID``].
+
+    - ``151,30`` → ``(151.3, None)`` (altes Format, Achse aus Telegramm-Ziel)
+    - ``151,30;20`` → ``(151.3, 20)`` wenn das letzte ``;``-Feld eine Ganzzahl 1–254 ist
+
+    Checksumme bleibt unverändert (letzte Zahl im gesamten PARAMS-String).
+    """
+    raw = str(params or "").strip()
+    if not raw:
+        return None, None
+    parts = [p.strip() for p in raw.split(";") if p.strip() != ""]
+    if len(parts) >= 2:
+        tail = parts[-1].replace(" ", "")
+        if tail.isdigit():
+            rid = int(tail)
+            if 1 <= rid <= 254:
+                angle_s = ";".join(parts[:-1])
+                return parse_float(angle_s), rid
+    return parse_float(raw), None
+
+
+def parse_getposdg_ist_deg(params: str) -> Optional[float]:
+    """Ist-Position aus ACK_GETPOSDG-Parametern (Grad, Komma als Dezimaltrenner).
+
+    Firmware liefert entweder einen Wert, ``Ist;Soll`` oder ``Ist:Soll``.
+    Für die Anzeige/Interpolation ist immer die **Ist**-Komponente (erster Wert) nötig —
+    nicht das letzte ``;``-Segment (das wäre oft das Soll und würde den Zeiger ruckeln).
+    """
+    try:
+        p = str(params or "").strip()
+    except Exception:
+        return None
+    if not p:
+        return None
+    if ";" in p:
+        return parse_float(p.split(";", 1)[0].strip())
+    if ":" in p:
+        return parse_float(p.split(":", 1)[0].strip())
+    return parse_float(p)

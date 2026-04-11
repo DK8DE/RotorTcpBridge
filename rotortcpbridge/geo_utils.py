@@ -174,8 +174,8 @@ def grayline_points(n_points: int = 360) -> list[tuple[float, float]]:
     return result
 
 
-def bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Berechnet die Peilung von Punkt 1 zu Punkt 2 in Grad (0=Nord, 90=Ost, 180=Süd, 270=West)."""
+def _bearing_deg_spherical(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Großkreis-Anfangs-Peilung auf der Kugel (R≈6371 km), identisch zur früheren ``bearing_deg``-Formel."""
     lat1_r = math.radians(lat1)
     lat2_r = math.radians(lat2)
     dlon = math.radians(lon2 - lon1)
@@ -183,6 +183,124 @@ def bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     y = math.cos(lat1_r) * math.sin(lat2_r) - math.sin(lat1_r) * math.cos(lat2_r) * math.cos(dlon)
     b = math.degrees(math.atan2(x, y))
     return (b + 360.0) % 360.0
+
+
+def _vincenty_inverse_wgs84(
+    lat1_deg: float, lon1_deg: float, lat2_deg: float, lon2_deg: float
+) -> tuple[float, float, float] | None:
+    """Vincenty-Inverse auf WGS-84 (T. Vincenty, Survey Review 1975).
+
+    Liefert ``(s_m, α12_deg, α21_deg)`` mit Anfangs- bzw. End-Peilung, oder ``None`` bei
+    fehlender Konvergenz (fast antipodal) — dann soll die Kugel-Näherung genutzt werden.
+    """
+    a = 6378137.0
+    f = 1.0 / 298.257223563
+    b = (1.0 - f) * a
+    pi = math.pi
+
+    phi1, lam1 = math.radians(lat1_deg), math.radians(lon1_deg)
+    phi2, lam2 = math.radians(lat2_deg), math.radians(lon2_deg)
+
+    if abs(phi1 - phi2) < 1e-15 and abs(lam1 - lam2) < 1e-15:
+        return (0.0, 0.0, 0.0)
+
+    L = lam2 - lam1
+    tan_u1 = (1 - f) * math.tan(phi1)
+    cos_u1 = 1 / math.sqrt(1 + tan_u1 * tan_u1)
+    sin_u1 = tan_u1 * cos_u1
+    tan_u2 = (1 - f) * math.tan(phi2)
+    cos_u2 = 1 / math.sqrt(1 + tan_u2 * tan_u2)
+    sin_u2 = tan_u2 * cos_u2
+
+    antipodal = abs(L) > pi / 2 or abs(phi2 - phi1) > pi / 2
+    lam = L
+    sin_sq_sigma = 0.0
+    sin_sigma = 0.0
+    cos_sigma = -1.0 if antipodal else 1.0
+    sigma = pi if antipodal else 0.0
+    cos2_sigma_m = 1.0
+    cos_sq_alpha = 1.0
+    sin_lam = 0.0
+    cos_lam = 0.0
+
+    iterations = 0
+    lam_prev: float | None = None
+    while True:
+        sin_lam = math.sin(lam)
+        cos_lam = math.cos(lam)
+        sin_sq_sigma = (cos_u2 * sin_lam) ** 2 + (cos_u1 * sin_u2 - sin_u1 * cos_u2 * cos_lam) ** 2
+        if abs(sin_sq_sigma) < 1e-24:
+            break
+        sin_sigma = math.sqrt(sin_sq_sigma)
+        cos_sigma = sin_u1 * sin_u2 + cos_u1 * cos_u2 * cos_lam
+        sigma = math.atan2(sin_sigma, cos_sigma)
+        sin_alpha = cos_u1 * cos_u2 * sin_lam / sin_sigma if sin_sigma > 0 else 0.0
+        cos_sq_alpha = 1.0 - sin_alpha * sin_alpha
+        cos2_sigma_m = (
+            (cos_sigma - 2 * sin_u1 * sin_u2 / cos_sq_alpha) if abs(cos_sq_alpha) > 1e-15 else 0.0
+        )
+        C = (f / 16.0) * cos_sq_alpha * (4 + f * (4 - 3 * cos_sq_alpha))
+        lam_prev = lam
+        lam = L + (1 - C) * f * sin_alpha * (
+            sigma + C * sin_sigma * (cos2_sigma_m + C * cos_sigma * (-1 + 2 * cos2_sigma_m * cos2_sigma_m))
+        )
+        iteration_check = abs(lam) - pi if antipodal else abs(lam)
+        if iteration_check > pi:
+            return None
+        if abs(lam - lam_prev) <= 1e-12:
+            break
+        iterations += 1
+        if iterations >= 1000:
+            return None
+
+    if abs(sin_sq_sigma) < 1e-24:
+        return None
+
+    u_sq = cos_sq_alpha * (a * a - b * b) / (b * b)
+    A = 1 + u_sq / 16384 * (4096 + u_sq * (-768 + u_sq * (320 - 175 * u_sq)))
+    B = u_sq / 1024 * (256 + u_sq * (-128 + u_sq * (74 - 47 * u_sq)))
+    delta_sigma = B * sin_sigma * (
+        cos2_sigma_m
+        + B
+        / 4
+        * (
+            cos_sigma * (-1 + 2 * cos2_sigma_m * cos2_sigma_m)
+            - B
+            / 6
+            * cos2_sigma_m
+            * (-3 + 4 * sin_sigma * sin_sigma)
+            * (-3 + 4 * cos2_sigma_m * cos2_sigma_m)
+        )
+    )
+    s = b * A * (sigma - delta_sigma)
+
+    eps_js = 2.220446049250313e-16  # ~ Number.EPSILON in JS reference
+    if abs(sin_sq_sigma) < eps_js:
+        alpha1 = 0.0
+        alpha2 = math.pi
+    else:
+        alpha1 = math.atan2(cos_u2 * sin_lam, cos_u1 * sin_u2 - sin_u1 * cos_u2 * cos_lam)
+        alpha2 = math.atan2(cos_u1 * sin_lam, -sin_u1 * cos_u2 + cos_u1 * sin_u2 * cos_lam)
+
+    a12 = (math.degrees(alpha1) + 360.0) % 360.0
+    a21 = (math.degrees(alpha2) + 360.0) % 360.0
+    return (s, a12, a21)
+
+
+def bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Peilung von Punkt 1 zu Punkt 2 in Grad (0=Nord, 90=Ost, …).
+
+    Standard: **WGS-84-Geodäte** (Vincenty-Inverse, Anfangs-Azimut). Fast antipodale Punkte:
+    Fallback auf die frühere Kugel-Formel (identisch zur Großkreis-Anfangs-Peilung mit
+    ``_EARTH_RADIUS_KM`` in ``destination_point`` / Beam-Polygonen).
+    """
+    inv = _vincenty_inverse_wgs84(lat1, lon1, lat2, lon2)
+    if inv is not None:
+        _s, a12, _a21 = inv
+        if _s <= 1e-3:
+            return _bearing_deg_spherical(lat1, lon1, lat2, lon2)
+        return a12
+    return _bearing_deg_spherical(lat1, lon1, lat2, lon2)
 
 
 def maidenhead_to_lat_lon(grid: str) -> tuple[float, float] | None:

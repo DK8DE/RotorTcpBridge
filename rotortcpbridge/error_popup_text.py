@@ -28,9 +28,8 @@ def error_popup_text(code: int) -> tuple[str, str]:
 
     doc = ERROR_DETAILS_DOC.get(c)
     legacy = ERROR_DETAILS_LEGACY.get(c)
-    merged = bool(doc and legacy and doc[0] != legacy[0])
-
-    if merged:
+    # Explizit (nicht über bool(...)): sonst narrowt Pyright doc/legacy im Block nicht.
+    if doc is not None and legacy is not None and doc[0] != legacy[0]:
         name = t(f"popup.err.m{c}.name", fallback=doc[0])
         body = t(f"popup.err.m{c}.body", fallback="")
         if not body.strip():

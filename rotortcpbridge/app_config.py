@@ -45,7 +45,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "spid": {"ph": 10, "pv": 10},
     "polling_ms": {
-        "pos_fast": 100,
+        "pos_fast": 200,
         "pos_slow": 300,
         # User-Anforderung: diese Werte sollen laufend (~1s) aktualisiert werden
         "err": 1000,

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from rotortcpbridge.geo_utils import bearing_deg, effective_station_lat_lon, maidenhead_to_lat_lon
+from rotortcpbridge.geo_utils import (
+    _bearing_deg_spherical,
+    bearing_deg,
+    effective_station_lat_lon,
+    maidenhead_to_lat_lon,
+)
 
 
 def test_bearing_north() -> None:
@@ -43,6 +48,16 @@ def test_effective_station_locator_uses_field_center() -> None:
     lat, lon = effective_station_lat_lon(ui)
     assert lat == pytest.approx(exp[0])
     assert lon == pytest.approx(exp[1])
+
+
+def test_bearing_deg_uses_wgs84_vincenty_on_long_path() -> None:
+    """Längere Strecke: WGS-84-Anfangs-Peilung weicht leicht von Kugel ab (Chris-Veness-Beispiel)."""
+    lat1, lon1 = 50.06632, -5.71475
+    lat2, lon2 = 58.64402, -3.07009
+    b_ell = bearing_deg(lat1, lon1, lat2, lon2)
+    b_sph = _bearing_deg_spherical(lat1, lon1, lat2, lon2)
+    assert b_ell == pytest.approx(9.141877, abs=0.0002)
+    assert abs(b_ell - b_sph) > 0.01
 
 
 def test_effective_station_explicit_coords_override_locator() -> None:

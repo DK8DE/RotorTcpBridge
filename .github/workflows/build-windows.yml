@@ -1,0 +1,101 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install -r requirements.txt
+        
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --noconfirm --clean RotorTcpBridge.spec
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: RotorTcpBridge-Windows
+        path: dist/RotorTcpBridge/
+        if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: windows-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install -r requirements.txt
+        
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --noconfirm --clean RotorTcpBridge.spec
+        
+    - name: Create ZIP package
+      run: |
+        cd dist
+        7z a -tzip RotorTcpBridge-${{ github.ref_name }}-Windows.zip RotorTcpBridge\
+        
+    - name: Generate Release Notes
+      run: |
+        echo "# RotorTcpBridge ${{ github.ref_name }}" > RELEASE_NOTES.md
+        echo "" >> RELEASE_NOTES.md
+        echo "## Windows Portable Version" >> RELEASE_NOTES.md
+        echo "" >> RELEASE_NOTES.md
+        echo "### Systemvoraussetzungen" >> RELEASE_NOTES.md
+        echo "- Windows 10/11 (64-bit)" >> RELEASE_NOTES.md
+        echo "- Python nicht erforderlich (standalone EXE)" >> RELEASE_NOTES.md
+        echo "" >> RELEASE_NOTES.md
+        echo "### Enthaltene Dateien" >> RELEASE_NOTES.md
+        echo "- \`RotorTcpBridge.exe\` - Hauptanwendung" >> RELEASE_NOTES.md
+        echo "- Alle benötigten DLLs und Ressourcen" >> RELEASE_NOTES.md
+        echo "- Offline-Karten (Light/Dark)" >> RELEASE_NOTES.md
+        echo "" >> RELEASE_NOTES.md
+        echo "### Installation" >> RELEASE_NOTES.md
+        echo "1. ZIP-Datei entpacken" >> RELEASE_NOTES.md
+        echo "2. \`RotorTcpBridge.exe\` starten" >> RELEASE_NOTES.md
+        echo "" >> RELEASE_NOTES.md
+        echo "### Konfiguration" >> RELEASE_NOTES.md
+        echo "Die Konfiguration wird in \`config.json\` gespeichert." >> RELEASE_NOTES.md
+        
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: "RotorTcpBridge ${{ github.ref_name }}"
+        body_path: RELEASE_NOTES.md
+        files: |
+          dist/RotorTcpBridge-${{ github.ref_name }}-Windows.zip
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

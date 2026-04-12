@@ -82,6 +82,10 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 saz = int(self.slave_az)
                 sel = int(self.slave_el)
                 if dst == saz or dst == sel:
+                    try:
+                        self.note_setposdg_poll_restrict()
+                    except Exception:
+                        pass
                     self._apply_local_state_for_ui_command(
                         dst, "SETPOSDG", tel.params, from_bus_sniff=True
                     )

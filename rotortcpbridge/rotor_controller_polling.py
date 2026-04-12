@@ -179,6 +179,8 @@ class _RotorPollingHost:
     set_az_from_spid: Callable[[int], None]
     set_el_from_spid: Callable[[int], None]
     note_setposcc_bus_activity: Callable[[], None]
+    note_setposdg_poll_restrict: Callable[[], None]
+    _setposdg_poll_grace_until_ts: float
     _acc_bins_chain_in_progress: Callable[[], bool]
     _fetch_cal_bins: Callable[..., None]
     _fetch_live_bins: Callable[..., None]
@@ -330,6 +332,12 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         moving = bool(
             self.az.moving or self.el.moving or self.az.ref_poll_active or self.el.ref_poll_active
         )
+        try:
+            grace_u = float(getattr(self, "_setposdg_poll_grace_until_ts", 0.0) or 0.0)
+        except Exception:
+            grace_u = 0.0
+        # Wie „Fahrt“: nur GETPOSDG + GETERR, solange Achse fährt/referenziert oder kurz nach SETPOSDG-Mitschnitt.
+        poll_restrict = bool(moving or (now < grace_u))
 
         # GETACCBINS: Abschlussprüfung auch ohne hw_on (sonst hängt Inflight bei Disconnect).
         self._tick_acc_bins_finalize_rounds(now)
@@ -349,7 +357,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             ):
                 self._wind_beaufort_inflight = False
 
-            pos_period = pos_fast_s if moving else pos_slow_s
+            pos_period = pos_fast_s if poll_restrict else pos_slow_s
             # In den ersten Sekunden nach Connect einmal schneller pollen, damit Werte "schnappen"
             if now < float(self._startup_burst_until or 0.0):
                 pos_period = min(pos_period, pos_fast_s)
@@ -383,7 +391,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
             # Während Bewegung: NUR Position (schnell) + ERR alle 5 s.
             # Kein WARN, keine Telemetrie, kein Wind, kein PWM – Bus-Priorität für Position.
-            if moving and (not acc_chain):
+            if poll_restrict and (not acc_chain):
                 if now - self._last_err >= err_moving_s:
                     self._last_err = now
                     if self.enable_az:
@@ -395,11 +403,11 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             # Während GETACCBINS-Kette ebenfalls aussetzen (sonst stauen andere Telegramme und
             # überholen per Priorität den nächsten ACC-Block → falsche Timeouts).
             if (
-                not moving
+                not poll_restrict
                 and now >= float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
                 and (not acc_chain)
             ):
-                # Idle: alle Zusatzabfragen – damit während der Fahrt GETPOSDG maximal priorisiert bleibt.
+                # Idle: alle Zusatzabfragen – während Fahrt / SETPOSDG-Grace nur GETPOSDG + GETERR.
 
                 # GETERR: 10 s im Idle
                 if now - self._last_err >= err_idle_s:
@@ -517,7 +525,9 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
             # Wind auch während GETACCBINS: GETANEMO/GETWINDDIR/GETBEAUFORT haben prio 2, kein Pending —
             # blockiert ACC nicht, hält aber Telemetrie für den Kompass (Windpfeil) aktuell.
-            if (not moving) and now >= float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0):
+            if (not poll_restrict) and now >= float(
+                getattr(self, "_idle_poll_defer_until", 0.0) or 0.0
+            ):
                 if self.wind_enabled and (now - self._last_wind >= 2.0):
                     if self.enable_az and (not self._wind_speed_inflight):
                         self._last_wind = now
@@ -673,6 +683,10 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
         Retry wegen möglicher RS485-Kollisionen; Verbindung bleibt bei Timeout erhalten.
         """
+        try:
+            self.note_setposdg_poll_restrict()
+        except Exception:
+            pass
         self._abort_stats_fetch_and_cooldown()
         axu = str(axis).upper()
         if axu == "AZ":

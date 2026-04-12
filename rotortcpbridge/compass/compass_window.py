@@ -74,6 +74,9 @@ class CompassWindow(QDialog):
         # Bei SETPOSDG / SETPOSCC: effektives Bus-Soll ändert sich → Eingabe auch bei Fokus nachziehen
         self._compass_last_bus_target_d10_az: Optional[int] = None
         self._compass_last_bus_target_d10_el: Optional[int] = None
+        # Mausklick + Fahrt: zwischen CC-Paketen letzten Encoder-Soll halten (nicht auf altes Motorziel springen)
+        self._cc_display_latch_az_d10: Optional[int] = None
+        self._cc_display_latch_el_d10: Optional[int] = None
         # Letzte gemeldete Strommap an Controller — nur bei Änderung neu setzen (wie die gezeichneten Ringe)
         self._last_strom_notify_key: tuple[bool, bool] | None = None
 
@@ -385,6 +388,7 @@ class CompassWindow(QDialog):
 
     def sync_az_rotor_target_from_controller(self) -> None:
         """Internes AZ-Soll (Rotor) an ctrl.target_d10 anpassen (nach SETPOSDG)."""
+        self._cc_display_latch_az_d10 = None
         try:
             self._target_az = float(self.ctrl.az.target_d10) / 10.0
         except Exception:
@@ -679,9 +683,12 @@ class CompassWindow(QDialog):
         for m in markers:
             if not isinstance(m, dict):
                 continue
+            lat_v, lon_v = m.get("lat"), m.get("lon")
+            if lat_v is None or lon_v is None:
+                continue
             try:
-                lat = float(m.get("lat"))
-                lon = float(m.get("lon"))
+                lat = float(lat_v)
+                lon = float(lon_v)
             except (TypeError, ValueError):
                 continue
             d_km = haversine_km(lat0, lon0, lat, lon)
@@ -814,6 +821,8 @@ class CompassWindow(QDialog):
         rotor_el = clamp_el(float(data["el"]))
         self._stop_az_ts = None
         self._stop_el_ts = None
+        self._cc_display_latch_az_d10 = None
+        self._cc_display_latch_el_d10 = None
         off_az = self._get_antenna_offset_az()
         az_display = wrap_deg(rotor_az + off_az)
         self._target_az = rotor_az
@@ -1088,17 +1097,28 @@ class CompassWindow(QDialog):
                     pass
 
         # _target_az hat Vorrang (Eingabefeld/Klick): verhindert Zurückspringen durch PST/anderes.
-        # Während Fahrt: SETPOSCC (Encoder) live — sonst bliebe der Sollzeiger auf dem Mausklick
-        # kleben, obwohl der Controller CC sendet.
+        # Während Fahrt: SETPOSCC live; Lücken zwischen CC → zuletzt gesehenen CC halten (Latch),
+        # sonst Motorziel — nie kurz auf altes target_d10 flackern, wenn der Encoder schon geführt hat.
         if self._target_az is not None:
             moving_az = bool(getattr(self.ctrl.az, "moving", False))
             try:
                 cc_d10 = getattr(self.ctrl.az, "compass_target_d10", None)
             except Exception:
                 cc_d10 = None
-            if moving_az and cc_d10 is not None:
-                tgt = wrap_deg(float(int(cc_d10)) / 10.0)
+            if moving_az:
+                if cc_d10 is not None:
+                    self._cc_display_latch_az_d10 = int(cc_d10)
+                    tgt = wrap_deg(float(int(cc_d10)) / 10.0)
+                elif self._cc_display_latch_az_d10 is not None:
+                    tgt = wrap_deg(float(self._cc_display_latch_az_d10) / 10.0)
+                else:
+                    try:
+                        td = int(getattr(self.ctrl.az, "target_d10", 0))
+                    except Exception:
+                        td = 0
+                    tgt = wrap_deg(float(td) / 10.0)
             else:
+                self._cc_display_latch_az_d10 = None
                 tgt = self._target_az
         elif tgt is None:
             try:
@@ -1271,16 +1291,27 @@ class CompassWindow(QDialog):
                 except Exception:
                     pass
 
-        # _target_el hat Vorrang (Eingabefeld/Klick); während Fahrt SETPOSCC live wie bei AZ.
+        # _target_el hat Vorrang (Eingabefeld/Klick); während Fahrt CC + Latch wie bei AZ.
         if self._target_el is not None:
             moving_el = bool(getattr(self.ctrl.el, "moving", False))
             try:
                 cc_el = getattr(self.ctrl.el, "compass_target_d10", None)
             except Exception:
                 cc_el = None
-            if moving_el and cc_el is not None:
-                tgt = clamp_el(float(int(cc_el)) / 10.0)
+            if moving_el:
+                if cc_el is not None:
+                    self._cc_display_latch_el_d10 = int(cc_el)
+                    tgt = clamp_el(float(int(cc_el)) / 10.0)
+                elif self._cc_display_latch_el_d10 is not None:
+                    tgt = clamp_el(float(self._cc_display_latch_el_d10) / 10.0)
+                else:
+                    try:
+                        td = int(getattr(self.ctrl.el, "target_d10", 0))
+                    except Exception:
+                        td = 0
+                    tgt = clamp_el(float(td) / 10.0)
             else:
+                self._cc_display_latch_el_d10 = None
                 tgt = self._target_el
         elif tgt is None:
             try:
@@ -1456,6 +1487,7 @@ class CompassWindow(QDialog):
     def _on_target_picked_az(self, deg: float) -> None:
         """deg = angezeigter Winkel (Antennenrichtung). Rotor-Ziel = deg - Versatz."""
         self._stop_az_ts = None
+        self._cc_display_latch_az_d10 = None
         off_az = self._get_antenna_offset_az()
         rotor_deg = wrap_deg(deg - off_az)
         self._target_az = rotor_deg
@@ -1483,6 +1515,7 @@ class CompassWindow(QDialog):
     def _on_target_picked_el(self, deg: float) -> None:
         """deg = angezeigter Winkel (EL: kein Versatz)."""
         self._stop_el_ts = None
+        self._cc_display_latch_el_d10 = None
         rotor_deg = clamp_el(deg)
         self._target_el = rotor_deg
         self.el_compass.set_target_deg(deg)  # Anzeige bleibt Antennenrichtung
@@ -1508,6 +1541,7 @@ class CompassWindow(QDialog):
     @Slot()
     def _on_stop_az(self) -> None:
         now = time.time()
+        self._cc_display_latch_az_d10 = None
         self._stop_az_ts = now
         try:
             cur = float(self.ctrl.az.get_smoothed_pos_d10f(now)) / 10.0
@@ -1525,6 +1559,7 @@ class CompassWindow(QDialog):
     @Slot()
     def _on_stop_el(self) -> None:
         now = time.time()
+        self._cc_display_latch_el_d10 = None
         self._stop_el_ts = now
         try:
             cur = float(self.ctrl.el.get_smoothed_pos_d10f(now)) / 10.0

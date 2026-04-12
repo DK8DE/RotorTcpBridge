@@ -22,6 +22,10 @@ _SETPOSCC_SUPPRESS_S = 0.6
 # SETPOSCC vom Bus: Idle-Polling (inkl. GETPOSDG) aussetzen — nach jedem CC mindestens diese Zeit.
 _CC_IDLE_DEFER_S = 1.0
 
+# Nach SETPOSDG (Bridge oder Mitschnitt fremder Master): kurz nur Positions-/Fehler-Polling,
+# damit kein GETANEMO/GETWARN/… den Bus mit dem Rotor kreuzt.
+_SETPOSDG_POLL_GRACE_S = 0.45
+
 
 class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
     """Fachlogik: übersetzt SPID-Kommandos in RS485-Befehle + Polling + Status.
@@ -65,6 +69,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.az = AxisState(position_wrap_360=True)
         self.el = AxisState(position_wrap_360=False)
         self._idle_poll_defer_until: float = 0.0
+        self._setposdg_poll_grace_until_ts: float = 0.0
 
         self._last_poll = 0.0
         self._last_warn = 0.0
@@ -590,6 +595,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """SETPOSCC auf dem Bus (Mitschnitt): Idle-Polling bis Zeitstempel pausieren (je CC neu verlängert)."""
         self._idle_poll_defer_until = time.time() + _CC_IDLE_DEFER_S
 
+    def note_setposdg_poll_restrict(self) -> None:
+        """SETPOSDG an Rotor-Slave (gesendet oder mitgeschnitten): Zusatz-Polling wie bei Fahrt begrenzen."""
+        self._setposdg_poll_grace_until_ts = time.time() + _SETPOSDG_POLL_GRACE_S
+
     def _az_antenna_offset_deg(self, idx_0_to_2: int, cfg: Optional[dict] = None) -> float:
         """Versatz der Antenne idx (0..2) aus Achsen-State, sonst cfg-Fallback wie Kompass."""
         try:
@@ -714,6 +723,17 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         # wir den lokalen State SOFORT.
         if apply_local_state:
             self._apply_local_state_for_ui_command(int(dst), str(cmd).strip().upper(), str(params))
+
+        cmd_u0 = str(cmd).strip().upper()
+        if cmd_u0 == "SETPOSDG":
+            try:
+                d = int(dst)
+                if (self.enable_az and d == int(self.slave_az)) or (
+                    self.enable_el and d == int(self.slave_el)
+                ):
+                    self.note_setposdg_poll_restrict()
+            except Exception:
+                pass
 
         line = self.build_line(dst, cmd, params)
         # SETPOSCC (Kompass-Soll): Firmware sendet kein ACK — kein Pending, sonst Timeout und

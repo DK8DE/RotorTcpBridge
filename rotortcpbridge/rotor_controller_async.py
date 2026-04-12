@@ -51,6 +51,9 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
             # Broadcast: gewählte Antenne (alle Teilnehmer)
             if cmd_u == "SETASELECT" and d == int(BROADCAST_DST):
                 return True
+            # Broadcast-Fehler #SRC:255:ERR:code:CS$ (Firmware meldet ohne GETERR)
+            if cmd_u == "ERR" and d == int(BROADCAST_DST) and (s == saz or s == sel):
+                return True
             return False
         except Exception:
             return True
@@ -155,6 +158,31 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
             except Exception:
                 pass
             return
+        # ERR asynchron (z. B. Broadcast #20:255:ERR:code:…$) — gleiche Achslogik wie ACK_ERR
+        if cmd_u == "ERR":
+            try:
+                code = parse_int(str(tel.params or "").strip())
+            except Exception:
+                code = None
+            if code is None:
+                return
+            try:
+                if int(tel.src) == int(self.slave_az):
+                    self.az.error_code = int(code)
+                    self.az.moving = False
+                    self.az.online = True
+                    self.az.last_rx_ts = time.time()
+                    self.log.write("ERROR", f"ERR vom Slave {tel.src}: {code}")
+                    return
+                if int(tel.src) == int(self.slave_el):
+                    self.el.error_code = int(code)
+                    self.el.moving = False
+                    self.el.online = True
+                    self.el.last_rx_ts = time.time()
+                    self.log.write("ERROR", f"ERR vom Slave {tel.src}: {code}")
+                    return
+            except Exception:
+                return
         try:
             axis_state: AxisState | None = None
             axis_name = None
@@ -594,15 +622,3 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         return
         except Exception:
             pass
-
-        if tel.cmd == "ERR":
-            code = parse_int(tel.params.strip())
-            if code is None:
-                return
-            if tel.src == self.slave_az:
-                self.az.error_code = int(code)
-                self.az.moving = False
-            elif tel.src == self.slave_el:
-                self.el.error_code = int(code)
-                self.el.moving = False
-            self.log.write("ERROR", f"ERR vom Slave {tel.src}: {code}")

@@ -73,7 +73,6 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
         self._last_poll = 0.0
         self._last_warn = 0.0
-        self._last_err = 0.0
         self._last_tel = 0.0
         self._last_wind = 0.0
         self._last_pwm = 0.0
@@ -172,13 +171,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._startup_burst_until: float = 0.0
         self._last_wind_enable_poll: float = 0.0
         # Polling-Intervalle (ms):
-        # Fahrt  : nur GETPOSDG + GETERR
+        # Fahrt  : nur GETPOSDG (Fehler kommen per Broadcast ERR / ACK_ERR, kein GETERR-Poll)
         # Idle   : alle weiteren Abfragen mit unterschiedlichem Takt
         self._cfg_poll = {
             "pos_fast": 200,  # 5 Hz  (Fahrt; weniger Buslast, oft stabiler)
             "pos_slow": 10000,  # 10 s   (Idle)
-            "err_moving": 5000,  # 5 s    (während Fahrt)
-            "err_idle": 10000,  # 10 s   (Idle)
             "warn": 10000,  # 10 s   (nur Idle)
             "pwm": 10000,  # 10 s   (nur Idle)
             "minpwm": 10000,  # 10 s   (nur Idle, ändert sich kaum)
@@ -289,34 +286,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 pass
 
     def request_immediate_error_poll(self) -> None:
-        """GETERR sofort für alle aktivierten Achsen (z. B. nach App-Start, damit Fehler sichtbar werden)."""
-        if not self.hw.is_connected():
-            return
-        try:
-            if self.enable_az:
-                line = build(self.master_id, self.slave_az, "GETERR", "0")
-                self.hw.send_request(
-                    HwRequest(
-                        line=line,
-                        expect_prefix=None,
-                        timeout_s=0.8,
-                        on_done=None,
-                        priority=5,
-                    )
-                )
-            if self.enable_el:
-                line = build(self.master_id, self.slave_el, "GETERR", "0")
-                self.hw.send_request(
-                    HwRequest(
-                        line=line,
-                        expect_prefix=None,
-                        timeout_s=0.8,
-                        on_done=None,
-                        priority=5,
-                    )
-                )
-        except Exception:
-            pass
+        """Früher: GETERR nach Start. Fehler kommen nur noch per Firmware-Broadcast ERR; No-Op."""
+        return
 
     def request_immediate_pos(self) -> None:
         """Positionsabfrage sofort mit höchster Priorität (beim Öffnen des Kompassfensters)."""

@@ -971,11 +971,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(2200, self._startup_error_poll_and_show)
 
     def _startup_error_poll_and_show(self) -> None:
-        """Nach Start GETERR anstoßen und nach kurzer Wartezeit Fehler-Popup wie im normalen Takt."""
-        try:
-            self.ctrl.request_immediate_error_poll()
-        except Exception:
-            pass
+        """Nach kurzer Wartezeit Fehler-Popup (Fehlercode kommt per Broadcast ERR, kein GETERR)."""
 
         def _show() -> None:
             try:

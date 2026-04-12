@@ -109,7 +109,6 @@ class _RotorPollingHost:
     _startup_burst_until: float
     _last_poll: float
     _last_warn: float
-    _last_err: float
     _last_tel: float
     _last_wind: float
     _last_wind_dir: float
@@ -254,7 +253,6 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             self._startup_burst_until = float(now) + 3.0
             self._last_poll = 0.0
             self._last_warn = 0.0
-            self._last_err = 0.0
             self._last_tel = 0.0
             self._last_wind = 0.0
             self._last_wind_dir = 0.0
@@ -287,12 +285,11 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             self.az.angle3 = None
 
             # Sofortige Erstabfrage (damit UI direkt gefüllt wird):
-            # Position + ERR + PWM + MINPWM + REF + Warn + Temp
+            # Position + PWM + MINPWM + REF + Warn + Temp (Fehler: Broadcast ERR, kein GETERR)
             # GETWINDENABLE wird vom Idle-Polling-Block übernommen (Inflight-Guard verhindert Doppelabfrage)
             try:
                 if self.enable_az:
                     self._poll_pos(self.slave_az, self.az, "AZ", now, expected_period_s=pos_fast_s)
-                    self._poll_err(self.slave_az, self.az, "AZ")
                     self._poll_pwm(self.slave_az, self.az, "AZ")
                     self._poll_minpwm(self.slave_az, self.az, "AZ")
                     self._poll_ref(self.slave_az, self.az, "AZ")
@@ -301,7 +298,6 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     self._poll_idle_wind(self.slave_az, self.az, "AZ")
                 if self.enable_el:
                     self._poll_pos(self.slave_el, self.el, "EL", now, expected_period_s=pos_fast_s)
-                    self._poll_err(self.slave_el, self.el, "EL")
                     self._poll_pwm(self.slave_el, self.el, "EL")
                     self._poll_minpwm(self.slave_el, self.el, "EL")
                     self._poll_ref(self.slave_el, self.el, "EL")
@@ -314,8 +310,6 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._hw_prev_connected = hw_on
 
         pos_slow_s = self._cfg_poll["pos_slow"] / 1000.0
-        err_moving_s = self._cfg_poll["err_moving"] / 1000.0
-        err_idle_s = self._cfg_poll["err_idle"] / 1000.0
         warn_s = self._cfg_poll["warn"] / 1000.0
         pwm_s = self._cfg_poll["pwm"] / 1000.0
         minpwm_s = self._cfg_poll["minpwm"] / 1000.0
@@ -326,8 +320,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         offline_timeout_s = self._cfg_poll["offline_timeout"] / 1000.0
 
         # Dynamisches Polling:
-        # - Fahrt  : nur GETPOSDG (pos_fast, Standard 5 Hz) + GETERR (5 s) → Bus frei für Position
-        # - Idle   : GETPOSDG (10 s) + ERR/WARN/PWM/TEMP/MINPWM (10 s)
+        # - Fahrt  : nur GETPOSDG (pos_fast, Standard 5 Hz) → Bus frei für Position
+        # - Idle   : GETPOSDG (10 s) + WARN/PWM/TEMP/MINPWM (10 s)
         #            + GETREF/GETWINDENABLE (5–10 s) + Wind (2 s)
         moving = bool(
             self.az.moving or self.el.moving or self.az.ref_poll_active or self.el.ref_poll_active
@@ -336,7 +330,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             grace_u = float(getattr(self, "_setposdg_poll_grace_until_ts", 0.0) or 0.0)
         except Exception:
             grace_u = 0.0
-        # Wie „Fahrt“: nur GETPOSDG + GETERR, solange Achse fährt/referenziert oder kurz nach SETPOSDG-Mitschnitt.
+        # Wie „Fahrt“: nur GETPOSDG, solange Achse fährt/referenziert oder kurz nach SETPOSDG-Mitschnitt.
         poll_restrict = bool(moving or (now < grace_u))
 
         # GETACCBINS: Abschlussprüfung auch ohne hw_on (sonst hängt Inflight bei Disconnect).
@@ -389,16 +383,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 if sent_any:
                     self._last_poll = now
 
-            # Während Bewegung: NUR Position (schnell) + ERR alle 5 s.
-            # Kein WARN, keine Telemetrie, kein Wind, kein PWM – Bus-Priorität für Position.
-            if poll_restrict and (not acc_chain):
-                if now - self._last_err >= err_moving_s:
-                    self._last_err = now
-                    if self.enable_az:
-                        self._poll_err(self.slave_az, self.az, "AZ")
-                    if self.enable_el:
-                        self._poll_err(self.slave_el, self.el, "EL")
-
+            # Während Bewegung: NUR Position (schnell). Kein WARN, keine Telemetrie, kein Wind, kein PWM.
             # Idle-Zusatzabfragen bei SETPOSCC-Strom kurz aussetzen (Bus frei für Encoder/GETPOSDG).
             # Während GETACCBINS-Kette ebenfalls aussetzen (sonst stauen andere Telegramme und
             # überholen per Priorität den nächsten ACC-Block → falsche Timeouts).
@@ -407,15 +392,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 and now >= float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
                 and (not acc_chain)
             ):
-                # Idle: alle Zusatzabfragen – während Fahrt / SETPOSDG-Grace nur GETPOSDG + GETERR.
-
-                # GETERR: 10 s im Idle
-                if now - self._last_err >= err_idle_s:
-                    self._last_err = now
-                    if self.enable_az:
-                        self._poll_err(self.slave_az, self.az, "AZ")
-                    if self.enable_el:
-                        self._poll_err(self.slave_el, self.el, "EL")
+                # Idle: alle Zusatzabfragen – während Fahrt / SETPOSDG-Grace nur GETPOSDG.
 
                 # GETPWM: 2 s
                 if now - self._last_pwm >= pwm_s:
@@ -752,12 +729,6 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5)
         )
 
-    def _poll_err(self, dst: int, axis_state: AxisState, axis: str):
-        line = build(self.master_id, dst, "GETERR", "0")
-        self.hw.send_request(
-            HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5)
-        )
-
     def _poll_ref(self, dst: int, axis_state: AxisState, axis: str):
         # WICHTIG: GETREF darf die restlichen Polls (Pos/Err/Warn/Telemetrie) nicht blockieren.
         # Daher ohne pending senden; Antwort wird in _on_async_tel verarbeitet.
@@ -767,7 +738,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         )
 
     def _poll_telemetry(self, dst: int, axis_state: AxisState, axis: str):
-        # Telemetrie ist niedrige Priorität; außerdem ohne pending (siehe _poll_warn/_poll_err),
+        # Telemetrie ist niedrige Priorität; außerdem ohne pending (siehe _poll_warn),
         # Verarbeitung erfolgt in _on_async_tel.
         self.hw.send_request(
             HwRequest(

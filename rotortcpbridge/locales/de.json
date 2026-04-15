@@ -338,6 +338,7 @@
   "cmd.label_home_return": "Nach Homing auf 0",
   "cmd.label_homing_pwm": "Homing Geschwindigkeit",
   "cmd.label_homing_seek_pwm": "Homing Such-PWM",
+  "cmd.label_homing_backoff_angle": "Homing Rückzug Winkel",
   "cmd.label_min_pwm": "Minimalgeschwindigkeit",
   "cmd.label_max_angle": "Rotorwinkel",
   "cmd.label_current_warn": "Stromwarnung",

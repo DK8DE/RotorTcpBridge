@@ -32,7 +32,7 @@ from .settings_window import SettingsWindow
 from .weather_window import WeatherWindow
 from .map_window import MapWindow
 from .about_window import AboutWindow
-from .command_buttons_window import CommandButtonsWindow
+from .rotor_configuration import CommandButtonsWindow
 from .warnings_errors_window import WarningsErrorsWindow
 from .ui_utils import px_to_dip
 from .theme import apply_theme_mode
@@ -551,7 +551,7 @@ class MainWindow(QMainWindow):
             from ..compass.compass_window import CompassWindow
             from .statistics_window import StatisticsWindow
             from .weather_window import WeatherWindow
-            from .command_buttons_window import CommandButtonsWindow
+            from .rotor_configuration import CommandButtonsWindow
             from .log_window import LogWindow
             from .warnings_errors_window import WarningsErrorsWindow
 

@@ -65,6 +65,7 @@ _BLOCK2_DEFS = [
     ("cmd.label_home_return", "SETHOMERETURN", "GETHOMRETURN"),
     ("cmd.label_homing_pwm", "SETHOMEPWM", "GETHOMEPWM"),
     ("cmd.label_homing_seek_pwm", "SETHOMESEEKPPWM", "GETHOMESEEKPPWM"),
+    ("cmd.label_homing_backoff_angle", "SETHOMEBACKOFF", "GETHOMEBACKOFF"),
     ("cmd.label_min_pwm", "SETMINPWM", "GETMINPWM"),
     ("cmd.label_max_angle", "SETMAXDG", "GETMAXDG"),
     ("cmd.label_current_warn", "SETIWARN", "GETIWARN"),
@@ -95,6 +96,8 @@ _PARAM_SPEC = {
     "SETHOMERETURN": (0, 1, "0/1", False, False),
     "SETHOMEPWM": (0, 100, "%", False, False),
     "SETHOMESEEKPPWM": (0, 100, "%", False, False),
+    # Homing Rückzug Winkel (Grad). Empfehlung laut Help: 10..60.
+    "SETHOMEBACKOFF": (0, 360, "°", False, False),
     "SETMINPWM": (15, 100, "%", False, False),
     "SETMAXDG": (0, 360, "°", False, False),
     "SETIWARN": (100, 10000, "mA", True, False),
@@ -138,6 +141,10 @@ class CommandButtonsWindow(QDialog):
         self._auto_query_timer = QTimer(self)
         self._auto_query_timer.setSingleShot(True)
         self._auto_query_timer.timeout.connect(self._run_auto_query)
+
+        # Robustheit: wenn ein GET beim Öffnen/Refresh fehlschlägt, einmal nachholen
+        # (Timing/Bus-Last kann beim ersten Schuss ungünstig sein).
+        self._param_get_retry_left: dict[tuple[int, str], int] = {}
 
         all_cmd_specs = command_specs()
         self._all_spec_by_name = {c.name: c for c in all_cmd_specs}
@@ -277,30 +284,7 @@ class CommandButtonsWindow(QDialog):
             self._param_rows[get_cmd] = (ed, btn)
         gb2_layout.addLayout(gl2)
 
-        # Strom-Kalibrierung
-        cal_sep = QLabel(t("cmd.cal_label") + ":")
-        cal_sep.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.btn_cal_start = QPushButton(t("cmd.btn_start_cal"))
-        self.btn_cal_start.setAutoDefault(False)
-        self.btn_cal_start.setDefault(False)
-        _spec_setcal = self._all_spec_by_name.get("SETCAL")
-        if _spec_setcal:
-            self.btn_cal_start.setToolTip(format_cmd_tooltip(_spec_setcal))
-        self.btn_cal_reset = QPushButton(t("cmd.btn_reset_cal"))
-        self.btn_cal_reset.setAutoDefault(False)
-        self.btn_cal_reset.setDefault(False)
-        _spec_clrstat = self._all_spec_by_name.get("CLRSTAT")
-        if _spec_clrstat:
-            self.btn_cal_reset.setToolTip(format_cmd_tooltip(_spec_clrstat))
-        cal_row = QHBoxLayout()
-        cal_row.setContentsMargins(0, 0, 0, 0)
-        cal_row.addWidget(cal_sep, 1)
-        cal_row.addWidget(self.btn_cal_start)
-        cal_row.addWidget(self.btn_cal_reset)
-        gb2_layout.addLayout(cal_row)
-
-        self.btn_cal_start.clicked.connect(self._on_cal_start_clicked)
-        self.btn_cal_reset.clicked.connect(self._on_cal_reset_clicked)
+        # (CAL Buttons entfernt – nicht mehr gewünscht)
 
         blocks_h.addWidget(gb2, 1)
 
@@ -622,10 +606,42 @@ class CommandButtonsWindow(QDialog):
                 continue
             spec = self._all_spec_by_name.get(get_cmd)
             params = get_params_for_get(spec) if spec else "0"
+            key = (int(dst), str(get_cmd))
+            # Pro Refresh genau 1 Retry erlauben (wird beim nächsten Refresh wieder gesetzt)
+            self._param_get_retry_left[key] = 1
 
             def done(tel, err, _get_cmd=get_cmd, _ed=ed):
                 if err or tel is None:
                     self.sig_get_result.emit(_get_cmd, "", str(err or "keine Antwort"))
+                    # Retry, falls das Feld noch leer ist (sonst behalten wir den alten Wert)
+                    try:
+                        left = int(self._param_get_retry_left.get((int(dst), str(_get_cmd)), 0))
+                    except Exception:
+                        left = 0
+                    if left > 0 and str(_ed.text() or "").strip() == "":
+                        self._param_get_retry_left[(int(dst), str(_get_cmd))] = left - 1
+
+                        def _retry_once():
+                            # Falls Window schon geschlossen ist, nichts mehr senden
+                            try:
+                                if not self.isVisible():
+                                    return
+                            except Exception:
+                                return
+                            try:
+                                self.ctrl.send_ui_command(
+                                    int(dst),
+                                    str(_get_cmd),
+                                    str(params),
+                                    expect_prefix=f"ACK_{_get_cmd}",
+                                    timeout_s=1.0,
+                                    priority=1,
+                                    on_done=done,
+                                )
+                            except Exception:
+                                pass
+
+                        QTimer.singleShot(220, _retry_once)
                 else:
                     val = str(getattr(tel, "params", "") or "").strip()
                     self.sig_get_result.emit(_get_cmd, val, "")
@@ -682,8 +698,10 @@ class CommandButtonsWindow(QDialog):
         if err:
             if cmd in self._param_rows:
                 ed, _ = self._param_rows[cmd]
-                ed.setText("")
-                ed.setPlaceholderText("–")
+                # Robust: alten Wert NICHT löschen, sonst "verschwindet" er bei Timing/Timeout.
+                # Nur wenn wirklich leer, Placeholder anzeigen.
+                if str(ed.text() or "").strip() == "":
+                    ed.setPlaceholderText("–")
             if self._cmd_matches_result(cmd):
                 self._block_auto_send = True
                 try:
@@ -752,24 +770,6 @@ class CommandButtonsWindow(QDialog):
             except Exception:
                 pass
         return dsts or [0]
-
-    def _on_cal_start_clicked(self) -> None:
-        """SETCAL an alle aktiven Achsen senden."""
-        for dst in self._cal_active_dsts():
-            try:
-                self.ctrl.send_ui_command(dst, "SETCAL", "0", expect_prefix=None, priority=0)
-            except Exception:
-                pass
-        self.lbl_hint.setText(t("cmd.hint_cal_start"))
-
-    def _on_cal_reset_clicked(self) -> None:
-        """CLRSTAT an alle aktiven Achsen senden."""
-        for dst in self._cal_active_dsts():
-            try:
-                self.ctrl.send_ui_command(dst, "CLRSTAT", "0", expect_prefix=None, priority=0)
-            except Exception:
-                pass
-        self.lbl_hint.setText(t("cmd.hint_cal_reset"))
 
     def _send_set(self, cmd: str, params: str, ed: QLineEdit) -> None:
         if not params:

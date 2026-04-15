@@ -201,6 +201,19 @@ ruff format rotortcpbridge test
 .\build.ps1 -SkipInstaller   # nur PyInstaller, kein Installer
 ```
 
+### GitHub Build (Windows EXE / ZIP)
+
+Es gibt einen **GitHub Actions**-Buildprozess, der automatisch eine **portable Windows-EXE** baut:
+
+- **Workflow**: `/.github/workflows/build-windows.yml`
+- **Trigger**:
+  - Push/PR auf `main`/`master` → Build + **Artifact Upload**
+  - Tag `v*` (z. B. `v1.3.0`) → zusätzlich **Release** mit **ZIP** (`RotorTcpBridge-<tag>-Windows.zip`)
+- **Build-Schritt**: `pyinstaller --noconfirm --clean RotorTcpBridge.spec` (Python 3.11)
+- **Download**:
+  - Bei Branch/PR: Artifact **`RotorTcpBridge-Windows`** aus dem Actions-Run
+  - Bei Tag `v*`: ZIP im GitHub Release
+
 Details und Versionen ggf. im Skript bzw. in der Inno-Setup-Datei nachlesen.
 
 ---

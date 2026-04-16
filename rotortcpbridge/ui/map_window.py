@@ -35,6 +35,7 @@ from ..geo_utils import (
     bearing_deg,
     effective_station_lat_lon,
     grayline_points,
+    lat_lon_to_maidenhead,
     maidenhead_to_lat_lon,
 )
 from ..i18n import t, tt
@@ -265,6 +266,8 @@ class MapWindow(QDialog):
         self._target_lon: Optional[float] = (
             float(_saved_ui["map_target_lon"]) if "map_target_lon" in _saved_ui else None
         )
+        if self._target_lat is not None and self._target_lon is not None:
+            self._set_map_locator_field_from_lat_lon(self._target_lat, self._target_lon)
         # Rotor-Azimut, der durch den letzten Kartenklick gesetzt wurde
         # (zum Erkennen von Fremd-Bewegungen)
         self._map_click_rotor_az: Optional[float] = None
@@ -890,6 +893,15 @@ class MapWindow(QDialog):
         """Von MapWebPage: Kartenklick oder ASNEAREST-Tabellenzeile (optional dest_key)."""
         self._on_map_click(lat, lon, asnearest_dest=asnearest_dest)
 
+    def _set_map_locator_field_from_lat_lon(self, lat: float, lon: float) -> None:
+        """Maidenhead (8 Zeichen) ins Locator-Feld — passend zur Karten-Zielposition."""
+        try:
+            grid = lat_lon_to_maidenhead(float(lat), float(lon), 8)
+            if grid:
+                self._ed_map_loc.setText(grid)
+        except Exception:
+            pass
+
     @Slot()
     def _on_map_locator_entered(self) -> None:
         """Maidenhead-Locator → wie Kartenklick auf die Feldmittel (Kompass-Locator gleiche Logik)."""
@@ -921,6 +933,7 @@ class MapWindow(QDialog):
                 pass
         self._target_lat = lat
         self._target_lon = lon
+        self._set_map_locator_field_from_lat_lon(lat, lon)
 
         # Zielpunkt persistent speichern (bleibt nach Fensterschluss erhalten)
         self.cfg.setdefault("ui", {})["map_target_lat"] = lat
@@ -958,6 +971,10 @@ class MapWindow(QDialog):
         self._target_lat = None
         self._target_lon = None
         self._map_click_rotor_az = None
+        try:
+            self._ed_map_loc.setText("")
+        except Exception:
+            pass
         ui = self.cfg.setdefault("ui", {})
         ui.pop("map_target_lat", None)
         ui.pop("map_target_lon", None)
@@ -1117,6 +1134,7 @@ class MapWindow(QDialog):
             return
         self._map_page_ready = True
         if self._target_lat is not None and self._target_lon is not None:
+            self._set_map_locator_field_from_lat_lon(self._target_lat, self._target_lon)
             js = (
                 f"if (typeof window.setClickMarker === 'function') "
                 f"window.setClickMarker({self._target_lat}, {self._target_lon});"

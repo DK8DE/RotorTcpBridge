@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
-from PySide6.QtCore import Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QFontDatabase, QShowEvent
 from PySide6.QtWidgets import (
     QComboBox,
@@ -123,6 +123,22 @@ _PARAM_EDIT_LEFT_MARGIN = 5
 _PARAM_LABEL_MIN_WIDTH = 170
 
 
+class _GuiCallEvent(QEvent):
+    """Führt eine Callback-Funktion im Thread des Empfängers aus (z. B. nach postEvent vom Reader)."""
+
+    _registered_type: Optional[QEvent.Type] = None
+
+    @classmethod
+    def _type(cls) -> QEvent.Type:
+        if cls._registered_type is None:
+            cls._registered_type = QEvent.Type(QEvent.registerEventType())
+        return cls._registered_type
+
+    def __init__(self, fn: Callable[[], None]) -> None:
+        super().__init__(self._type())
+        self.fn = fn
+
+
 class CommandButtonsWindow(QDialog):
     """Dialog mit Rotor-Parametern (Lesen/Schreiben) sowie Backup/Restore."""
 
@@ -140,7 +156,7 @@ class CommandButtonsWindow(QDialog):
         self.setWindowTitle(t("cmd.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setFixedSize(730, 610)
+        self.setFixedSize(730, 608)
 
         self._backup_state: Optional[dict] = None
         self._restore_state: Optional[dict] = None
@@ -153,9 +169,10 @@ class CommandButtonsWindow(QDialog):
         self._auto_query_timer.setSingleShot(True)
         self._auto_query_timer.timeout.connect(self._run_auto_query)
 
-        # Robustheit: wenn ein GET beim Öffnen/Refresh fehlschlägt, einmal nachholen
-        # (Timing/Bus-Last kann beim ersten Schuss ungünstig sein).
-        self._param_get_retry_left: dict[tuple[int, str], int] = {}
+        # GET-Blöcke: Runde 1 alle Parameter, Runde 2 nur noch fehlgeschlagene (s. _read_all_params).
+        self._param_get_batch_id: int = 0
+        self._param_get_round1_pending: int = 0
+        self._param_get_round1_failed: list[tuple[int, str, str]] = []
 
         all_cmd_specs = command_specs()
         self._all_spec_by_name = {c.name: c for c in all_cmd_specs}
@@ -312,6 +329,19 @@ class CommandButtonsWindow(QDialog):
         self.sig_send_result.connect(self._apply_send_result)
         self.sig_backup_step_done.connect(self._on_backup_step_done)
         self.sig_restore_step_done.connect(self._on_restore_step_done)
+
+    def event(self, e: QEvent) -> bool:
+        if e.type() == _GuiCallEvent._type() and isinstance(e, _GuiCallEvent):
+            try:
+                e.fn()
+            except Exception:
+                pass
+            return True
+        return super().event(e)
+
+    def _invoke_on_gui(self, fn: Callable[[], None]) -> None:
+        """Ruft fn im GUI-Thread aus (on_done von send_ui_command läuft im Reader-Thread)."""
+        QCoreApplication.postEvent(self, _GuiCallEvent(fn))
 
     def _make_dst_combo(self) -> QComboBox:
         cb = QComboBox()
@@ -608,55 +638,96 @@ class CommandButtonsWindow(QDialog):
             self.cb_dst.addItem(f"ID {v}", v)
         self.cb_dst.blockSignals(False)
 
+    def _on_param_round1_item_done(
+        self, bid: int, success: bool, dst: int, get_cmd: str, params: str
+    ) -> None:
+        """Läuft im GUI-Thread: zählt Runde 1 zu Ende, startet ggf. Runde 2 nur für Fehlversuche."""
+        if bid != self._param_get_batch_id:
+            return
+        if not success:
+            self._param_get_round1_failed.append((dst, get_cmd, params))
+        self._param_get_round1_pending -= 1
+        if self._param_get_round1_pending > 0:
+            return
+        self._run_param_get_round2(bid)
+
+    def _run_param_get_round2(self, bid: int) -> None:
+        """Zweite GET-Runde nur für Parameter, die in Runde 1 kein ACK geliefert haben."""
+        if bid != self._param_get_batch_id:
+            return
+        failed = list(self._param_get_round1_failed)
+        self._param_get_round1_failed.clear()
+        if not failed:
+            return
+        block = _BLOCK1() + _BLOCK2()
+        order = {gc: i for i, (_, _, gc) in enumerate(block)}
+        failed.sort(key=lambda t: order.get(t[1], 999))
+        for dst, get_cmd, params in failed:
+            if bid != self._param_get_batch_id:
+                return
+
+            def done(tel, err, gc=get_cmd, b=bid):
+                if b != self._param_get_batch_id:
+                    return
+                if err or tel is None:
+                    self.sig_get_result.emit(gc, "", str(err or "keine Antwort"))
+                else:
+                    val = str(getattr(tel, "params", "") or "").strip()
+                    self.sig_get_result.emit(gc, val, "")
+
+            try:
+                self.ctrl.send_ui_command(
+                    int(dst),
+                    get_cmd,
+                    str(params),
+                    expect_prefix=f"ACK_{get_cmd}",
+                    timeout_s=1.0,
+                    priority=1,
+                    on_done=done,
+                )
+            except Exception:
+                ed, _ = self._param_rows.get(get_cmd, (None, None))
+                if ed is not None:
+                    ed.setPlaceholderText(t("cmd.err_placeholder"))
+
     def _read_all_params(self) -> None:
-        """GET-Befehle senden, Ergebnisse in Eingabefelder schreiben."""
+        """GET-Befehle senden: zuerst alle, danach nur noch einmal die ohne erfolgreiche Antwort."""
         dst = self._current_dst()
+        self._param_get_batch_id += 1
+        bid = self._param_get_batch_id
+        items: list[tuple[str, QLineEdit, str]] = []
         for label, set_cmd, get_cmd in _BLOCK1() + _BLOCK2():
             ed, btn = self._param_rows.get(get_cmd, (None, None))
             if ed is None:
                 continue
             spec = self._all_spec_by_name.get(get_cmd)
             params = get_params_for_get(spec) if spec else "0"
-            key = (int(dst), str(get_cmd))
-            # Pro Refresh genau 1 Retry erlauben (wird beim nächsten Refresh wieder gesetzt)
-            self._param_get_retry_left[key] = 1
+            items.append((get_cmd, ed, params))
 
-            def done(tel, err, _get_cmd=get_cmd, _ed=ed):
-                if err or tel is None:
-                    self.sig_get_result.emit(_get_cmd, "", str(err or "keine Antwort"))
-                    # Retry, falls das Feld noch leer ist (sonst behalten wir den alten Wert)
-                    try:
-                        left = int(self._param_get_retry_left.get((int(dst), str(_get_cmd)), 0))
-                    except Exception:
-                        left = 0
-                    if left > 0 and str(_ed.text() or "").strip() == "":
-                        self._param_get_retry_left[(int(dst), str(_get_cmd))] = left - 1
+        self._param_get_round1_failed.clear()
+        self._param_get_round1_pending = len(items)
+        if self._param_get_round1_pending == 0:
+            return
 
-                        def _retry_once():
-                            # Falls Window schon geschlossen ist, nichts mehr senden
-                            try:
-                                if not self.isVisible():
-                                    return
-                            except Exception:
-                                return
-                            try:
-                                self.ctrl.send_ui_command(
-                                    int(dst),
-                                    str(_get_cmd),
-                                    str(params),
-                                    expect_prefix=f"ACK_{_get_cmd}",
-                                    timeout_s=1.0,
-                                    priority=1,
-                                    on_done=done,
-                                )
-                            except Exception:
-                                pass
+        dst_i = int(dst)
 
-                        QTimer.singleShot(220, _retry_once)
-                else:
+        def make_done(get_cmd: str, params: str):
+            def done(tel, err, gc=get_cmd, pr=params):
+                if bid != self._param_get_batch_id:
+                    return
+                ok = not err and tel is not None
+                if ok:
                     val = str(getattr(tel, "params", "") or "").strip()
-                    self.sig_get_result.emit(_get_cmd, val, "")
+                    self.sig_get_result.emit(gc, val, "")
+                else:
+                    self.sig_get_result.emit(gc, "", str(err or "keine Antwort"))
+                self._invoke_on_gui(
+                    lambda: self._on_param_round1_item_done(bid, ok, dst_i, gc, pr)
+                )
 
+            return done
+
+        for get_cmd, ed, params in items:
             try:
                 self.ctrl.send_ui_command(
                     dst,
@@ -665,10 +736,15 @@ class CommandButtonsWindow(QDialog):
                     expect_prefix=f"ACK_{get_cmd}",
                     timeout_s=0.8,
                     priority=0,
-                    on_done=done,
+                    on_done=make_done(get_cmd, params),
                 )
             except Exception:
                 ed.setPlaceholderText(t("cmd.err_placeholder"))
+                self._invoke_on_gui(
+                    lambda gc=get_cmd, pr=params: self._on_param_round1_item_done(
+                        bid, False, dst_i, gc, pr
+                    )
+                )
 
     def _display_value_for_get(self, get_cmd: str, params: str) -> str:
         """Konvertiert Hardware-Werte für Anzeige (mV→mA bei Strom, ms→s bei Timeout)."""

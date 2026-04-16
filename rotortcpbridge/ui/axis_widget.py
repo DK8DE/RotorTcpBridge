@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from .led_widget import Led
 from .ui_utils import px_to_dip
+from ..angle_utils import wrap_deg
 from ..i18n import t
 
 
@@ -536,9 +537,16 @@ def fill_axis_panel(fields: dict, axis_state) -> None:
     """Aktualisiert die Anzeige eines Axis-Panels mit axis_state."""
     now = float(_time_mod.time())
     p = float(axis_state.get_smoothed_pos_d10f(now))
-    fields["pos"].setText(f"{p / 10.0:.1f}")
+    pos_deg = p / 10.0
+    wrap_az = bool(getattr(axis_state, "position_wrap_360", False))
+    if wrap_az:
+        pos_deg = wrap_deg(pos_deg)
+    fields["pos"].setText(f"{pos_deg:.1f}")
     if bool(getattr(axis_state, "referenced", False)):
-        fields["target"].setText(f"{axis_state.target_d10 / 10:.1f}")
+        tgt_deg = axis_state.target_d10 / 10.0
+        if wrap_az:
+            tgt_deg = wrap_deg(tgt_deg)
+        fields["target"].setText(f"{tgt_deg:.1f}")
     else:
         fields["target"].setText("–")
 

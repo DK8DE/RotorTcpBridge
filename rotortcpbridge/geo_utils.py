@@ -366,6 +366,83 @@ def maidenhead_to_lat_lon(grid: str) -> tuple[float, float] | None:
         return None
 
 
+def lat_lon_to_maidenhead(lat: float, lon: float, n_chars: int = 8) -> str:
+    """Geografische Koordinaten (Grad WGS84) → Maidenhead-Locator.
+
+    Auflösung wie bei ``maidenhead_to_lat_lon`` (2/4/6/8/10 Zeichen).
+    Standard 8 Zeichen (z. B. ``JO31jg12``) für Kartenklicks; 6 = übliches ``JO31jg``.
+    """
+    try:
+        n = int(n_chars)
+    except (TypeError, ValueError):
+        n = 8
+    if n not in (2, 4, 6, 8, 10):
+        n = 8
+    try:
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except (TypeError, ValueError):
+        return ""
+    lon_f = max(-180.0, min(179.999999999, lon_f))
+    lat_f = max(-90.0, min(89.999999999, lat_f))
+
+    lon180 = lon_f + 180.0
+    lat90 = lat_f + 90.0
+
+    a = int(lon180 // 20.0)
+    b = int(lat90 // 10.0)
+    if not 0 <= a <= 17 or not 0 <= b <= 17:
+        return ""
+    s = chr(ord("A") + a) + chr(ord("A") + b)
+    if n <= 2:
+        return s
+
+    lon_rem = lon180 - a * 20.0
+    lat_rem = lat90 - b * 10.0
+    d2 = int(lon_rem // 2.0)
+    d3 = int(lat_rem // 1.0)
+    d2 = max(0, min(9, d2))
+    d3 = max(0, min(9, d3))
+    s += str(d2) + str(d3)
+    if n <= 4:
+        return s
+
+    lon_rem = lon_rem - d2 * 2.0
+    lat_rem = lat_rem - d3 * 1.0
+    step_lon = 2.0 / 24.0
+    step_lat = 1.0 / 24.0
+    c4 = int(lon_rem // step_lon)
+    c5 = int(lat_rem // step_lat)
+    c4 = max(0, min(23, c4))
+    c5 = max(0, min(23, c5))
+    s += chr(ord("A") + c4) + chr(ord("A") + c5)
+    if n <= 6:
+        return s
+
+    lon_rem = lon_rem - c4 * step_lon
+    lat_rem = lat_rem - c5 * step_lat
+    step_lon = 2.0 / 240.0
+    step_lat = 1.0 / 240.0
+    d6 = int(lon_rem // step_lon)
+    d7 = int(lat_rem // step_lat)
+    d6 = max(0, min(9, d6))
+    d7 = max(0, min(9, d7))
+    s += str(d6) + str(d7)
+    if n <= 8:
+        return s
+
+    lon_rem = lon_rem - d6 * step_lon
+    lat_rem = lat_rem - d7 * step_lat
+    step_lon = 2.0 / 5760.0
+    step_lat = 1.0 / 5760.0
+    c8 = int(lon_rem // step_lon)
+    c9 = int(lat_rem // step_lat)
+    c8 = max(0, min(23, c8))
+    c9 = max(0, min(23, c9))
+    s += chr(ord("A") + c8) + chr(ord("A") + c9)
+    return s
+
+
 def destination_point(
     lat: float, lon: float, bearing_deg_val: float, dist_km: float
 ) -> tuple[float, float]:

@@ -105,6 +105,17 @@ _PARAM_SPEC = {
 }
 
 _MV_PER_A = 130.0  # 1300 mV = 10 A
+
+# SET-Befehle, bei denen nur ganzzahlige Prozentwerte erlaubt sind (keine Kommastellen).
+_INTEGER_PERCENT_SET_CMDS = frozenset(
+    {
+        "SETHOMEPWM",
+        "SETHOMESEEKPPWM",
+        "SETMINPWM",
+    }
+)
+
+
 _PARAM_EDIT_WIDTH = 90
 _PARAM_BTN_WIDTH = 55
 _PARAM_UNIT_WIDTH = 28
@@ -679,6 +690,13 @@ class CommandButtonsWindow(QDialog):
                 return str(ms // 1000)
             except (ValueError, TypeError):
                 pass
+        # Prozent-PWM: nur ganze Zahlen anzeigen (Firmware kann z. B. "45,5" liefern)
+        if set_cmd in _INTEGER_PERCENT_SET_CMDS:
+            try:
+                x = float(str(params).strip().replace(",", "."))
+                return str(int(round(x)))
+            except (ValueError, TypeError):
+                pass
         return params.strip()
 
     def _cmd_matches_result(self, cmd: str) -> bool:
@@ -733,9 +751,15 @@ class CommandButtonsWindow(QDialog):
             return (raw, None)
         min_v, max_v, unit, is_current_mA, is_timeout_s = spec
         try:
-            val = int(float(str(raw).strip().replace(",", ".")))
+            xf = float(str(raw).strip().replace(",", "."))
         except (ValueError, TypeError):
             return (None, f"Ungültige Zahl: {raw}")
+        if cmd in _INTEGER_PERCENT_SET_CMDS:
+            if abs(xf - round(xf)) > 1e-6:
+                return (None, "Nur Ganzzahlen erlaubt (ohne Nachkommastellen).")
+            val = int(round(xf))
+        else:
+            val = int(xf)
         if is_current_mA:
             if val < min_v or val > max_v:
                 return (None, f"Strom {val} mA außerhalb {min_v}–{max_v} mA")

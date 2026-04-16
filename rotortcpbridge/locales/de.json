@@ -170,7 +170,7 @@
   "settings.controller_antenna_realign": "Antenne beim Wechseln nachdrehen",
   "settings.controller_antenna_realign_tooltip": "Ein: nach Wechsel SETPOSDG, gleiche Luftpeilung. Aus: nur Anzeige (Versatz). Beim Speichern auch SETCONCHA am Controller.",
   "settings.controller_beep_freq": "Piep-Frequenz (Hz)",
-  "settings.controller_beep_freq_tooltip": "100–4000 Hz (SETCONFRQ / GETCONFRQ).",
+  "settings.controller_beep_freq_tooltip": "500–4000 Hz (SETCONFRQ / GETCONFRQ).",
   "settings.controller_beep_volume": "Piep-Lautstärke",
   "settings.controller_beep_volume_tooltip": "0–50 (SETLSL / GETLSL).",
   "settings.controller_display_brightness": "LED-Ring-Helligkeit",

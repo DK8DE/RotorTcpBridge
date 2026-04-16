@@ -170,7 +170,7 @@
   "settings.controller_antenna_realign": "Realign antenna after switch",
   "settings.controller_antenna_realign_tooltip": "On: after switch SETPOSDG, same bearing. Off: display offset only. On save also SETCONCHA on the controller hardware.",
   "settings.controller_beep_freq": "Beep frequency (Hz)",
-  "settings.controller_beep_freq_tooltip": "100–4000 Hz (SETCONFRQ / GETCONFRQ).",
+  "settings.controller_beep_freq_tooltip": "500–4000 Hz (SETCONFRQ / GETCONFRQ).",
   "settings.controller_beep_volume": "Beep volume",
   "settings.controller_beep_volume_tooltip": "0–50 (SETLSL / GETLSL).",
   "settings.controller_display_brightness": "LED ring brightness",

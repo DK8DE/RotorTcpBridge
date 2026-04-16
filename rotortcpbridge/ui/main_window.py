@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         self._aswatch_markers_last: list = []
         self._aswatch_aircraft_last: list = []
         self._asnearest_summary_last: list = []
+        self._actions_locked_while_moving: bool | None = None
 
         self._antenna_bridge = AntennaSelectionBridge(self)
 
@@ -389,6 +390,8 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _open_settings(self):
+        if not bool(getattr(self._act_settings, "isEnabled", lambda: True)()):
+            return
         self._settings_win.show()
         self._settings_win.raise_()
         self._settings_win.activateWindow()
@@ -862,6 +865,8 @@ class MainWindow(QMainWindow):
             pass
 
     def _open_commands(self):
+        if not bool(getattr(self._act_commands, "isEnabled", lambda: True)()):
+            return
         try:
             if hasattr(self._commands_win, "_refresh_dst_dropdown"):
                 self._commands_win._refresh_dst_dropdown()
@@ -872,12 +877,34 @@ class MainWindow(QMainWindow):
             pass
 
     def _open_statistics(self):
+        if not bool(getattr(self._act_statistics, "isEnabled", lambda: True)()):
+            return
         try:
             self._statistics_win.show()
             self._statistics_win.raise_()
             self._statistics_win.activateWindow()
         except Exception:
             pass
+
+    def _update_actions_locked_by_moving(self) -> None:
+        """Sperrt bestimmte Menüaktionen, solange AZ oder EL fährt."""
+        try:
+            moving = bool(getattr(self.ctrl.az, "moving", False)) or bool(
+                getattr(self.ctrl.el, "moving", False)
+            )
+        except Exception:
+            moving = False
+        if self._actions_locked_while_moving == moving:
+            return
+        self._actions_locked_while_moving = moving
+        enabled = not moving
+        for act_name in ("_act_settings", "_act_commands", "_act_statistics"):
+            try:
+                act = getattr(self, act_name, None)
+                if act is not None:
+                    act.setEnabled(enabled)
+            except Exception:
+                pass
 
     def _update_groupbox_titles(self):
         slave_az = self.cfg.get("rotor_bus", {}).get("slave_az", "?")
@@ -1200,6 +1227,7 @@ class MainWindow(QMainWindow):
             self._warning_popup.maybe_show(self, "EL", self.ctrl.el)
 
         self._notify_pst_position()
+        self._update_actions_locked_by_moving()
         self._update_title_bar()
 
         if self._log_win.isVisible():

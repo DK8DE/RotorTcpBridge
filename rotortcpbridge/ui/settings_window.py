@@ -758,10 +758,10 @@ class SettingsWindow(QDialog):
         self.cb_cont_encoder_delta.currentIndexChanged.connect(self._mark_delta_dirty)
         fl_ctrl.addRow(t("settings.controller_encoder_delta"), self.cb_cont_encoder_delta)
         self.sp_cont_beep_freq = QSpinBox()
-        self.sp_cont_beep_freq.setRange(100, 4000)
+        self.sp_cont_beep_freq.setRange(500, 4000)
         try:
             self.sp_cont_beep_freq.setValue(
-                max(100, min(4000, int(_chw.get("speaker_freq_hz", 1000))))
+                max(500, min(4000, int(_chw.get("speaker_freq_hz", 1000))))
             )
         except (TypeError, ValueError):
             self.sp_cont_beep_freq.setValue(1000)

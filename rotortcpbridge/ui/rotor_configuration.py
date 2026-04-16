@@ -169,7 +169,8 @@ class CommandButtonsWindow(QDialog):
         self._auto_query_timer.setSingleShot(True)
         self._auto_query_timer.timeout.connect(self._run_auto_query)
 
-        # GET-Blöcke: Runde 1 alle Parameter, Runde 2 nur noch fehlgeschlagene (s. _read_all_params).
+        # GET-Blöcke: Runde 1 alle Parameter, danach nur noch fehlgeschlagene bis max. Runde.
+        self._PARAM_GET_MAX_ROUNDS = 4
         self._param_get_batch_id: int = 0
         self._param_get_round1_pending: int = 0
         self._param_get_round1_failed: list[tuple[int, str, str]] = []
@@ -641,7 +642,7 @@ class CommandButtonsWindow(QDialog):
     def _on_param_round1_item_done(
         self, bid: int, success: bool, dst: int, get_cmd: str, params: str
     ) -> None:
-        """Läuft im GUI-Thread: zählt Runde 1 zu Ende, startet ggf. Runde 2 nur für Fehlversuche."""
+        """Läuft im GUI-Thread: zählt Runde 1 zu Ende, startet ggf. Nachrunden nur für Fehlversuche."""
         if bid != self._param_get_batch_id:
             return
         if not success:
@@ -649,31 +650,53 @@ class CommandButtonsWindow(QDialog):
         self._param_get_round1_pending -= 1
         if self._param_get_round1_pending > 0:
             return
-        self._run_param_get_round2(bid)
-
-    def _run_param_get_round2(self, bid: int) -> None:
-        """Zweite GET-Runde nur für Parameter, die in Runde 1 kein ACK geliefert haben."""
-        if bid != self._param_get_batch_id:
-            return
         failed = list(self._param_get_round1_failed)
         self._param_get_round1_failed.clear()
+        self._run_param_get_retry_round(bid, 2, failed)
+
+    def _run_param_get_retry_round(
+        self, bid: int, round_no: int, failed_items: list[tuple[int, str, str]]
+    ) -> None:
+        """Nachrunde (2..N): nur fehlgeschlagene GETs erneut senden."""
+        if bid != self._param_get_batch_id:
+            return
+        failed = list(failed_items or [])
         if not failed:
+            return
+        if round_no > int(self._PARAM_GET_MAX_ROUNDS):
             return
         block = _BLOCK1() + _BLOCK2()
         order = {gc: i for i, (_, _, gc) in enumerate(block)}
         failed.sort(key=lambda t: order.get(t[1], 999))
+        pending = len(failed)
+        next_failed: list[tuple[int, str, str]] = []
+
+        def on_item_done(success: bool, dst: int, get_cmd: str, params: str) -> None:
+            nonlocal pending
+            if bid != self._param_get_batch_id:
+                return
+            if not success:
+                next_failed.append((dst, get_cmd, params))
+            pending -= 1
+            if pending > 0:
+                return
+            if next_failed and (round_no + 1) <= int(self._PARAM_GET_MAX_ROUNDS):
+                self._run_param_get_retry_round(bid, round_no + 1, next_failed)
+
         for dst, get_cmd, params in failed:
             if bid != self._param_get_batch_id:
                 return
 
-            def done(tel, err, gc=get_cmd, b=bid):
+            def done(tel, err, gc=get_cmd, b=bid, di=int(dst), pr=str(params)):
                 if b != self._param_get_batch_id:
                     return
+                ok = not err and tel is not None
                 if err or tel is None:
                     self.sig_get_result.emit(gc, "", str(err or "keine Antwort"))
                 else:
                     val = str(getattr(tel, "params", "") or "").strip()
                     self.sig_get_result.emit(gc, val, "")
+                self._invoke_on_gui(lambda: on_item_done(ok, di, gc, pr))
 
             try:
                 self.ctrl.send_ui_command(
@@ -689,9 +712,10 @@ class CommandButtonsWindow(QDialog):
                 ed, _ = self._param_rows.get(get_cmd, (None, None))
                 if ed is not None:
                     ed.setPlaceholderText(t("cmd.err_placeholder"))
+                self._invoke_on_gui(lambda di=int(dst), gc=get_cmd, pr=str(params): on_item_done(False, di, gc, pr))
 
     def _read_all_params(self) -> None:
-        """GET-Befehle senden: zuerst alle, danach nur noch einmal die ohne erfolgreiche Antwort."""
+        """GET-Befehle senden: zuerst alle, danach bis Runde 4 nur die ohne erfolgreiche Antwort."""
         dst = self._current_dst()
         self._param_get_batch_id += 1
         bid = self._param_get_batch_id

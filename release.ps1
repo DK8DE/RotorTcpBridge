@@ -78,13 +78,13 @@ try {
             Write-Host "Tag existiert lokal bereits und zeigt auf HEAD; nur Push noetig." -ForegroundColor Yellow
         }
         else {
-            throw "Tag $tag existiert lokal auf einem anderen Commit. Entfernen mit: git tag -d $tag`nOder Version in version.py erhöhen."
+            throw "Tag $tag existiert lokal auf einem anderen Commit. Entfernen mit: git tag -d $tag`nOder Version in version.py erhoehen."
         }
     }
 
     $onRemote = git ls-remote --tags $Remote $tag 2>$null
     if ($onRemote) {
-        throw "Tag $tag existiert bereits auf $Remote. Für ein neues Release: version.py anheben oder Remote-Tag löschen (git push $Remote --delete $tag)."
+        throw "Tag $tag existiert bereits auf $Remote. Fuer ein neues Release: version.py erhoehen oder Remote-Tag loeschen (git push $Remote --delete $tag)."
     }
 
     if ($DryRun) {

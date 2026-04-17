@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import sys
 import threading
+from functools import partial
 
 from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
     QMainWindow,
     QMessageBox,
     QWidget,
@@ -12,16 +16,23 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QGroupBox,
     QLabel,
+    QLineEdit,
     QPushButton,
     QFormLayout,
 )
-from PySide6.QtGui import QAction
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction, QFont
+from PySide6.QtCore import QEvent, Qt, QTimer
 
 from .antenna_sync import AntennaSelectionBridge
 
 from ..app_icon import get_app_icon
 from ..i18n import t
+from ..shortcut_actions import (
+    bump_antenna_target_deg,
+    bump_el_target_deg,
+    set_antenna_azimuth_deg,
+)
+from ..rig_bridge.cat_commands import normalize_com_port
 from ..net_utils import check_internet
 from ..version import APP_VERSION
 from ..compass.compass_window import CompassWindow
@@ -34,6 +45,7 @@ from .map_window import MapWindow
 from .about_window import AboutWindow
 from .rotor_configuration import CommandButtonsWindow
 from .warnings_errors_window import WarningsErrorsWindow
+from .rig_freq_utils import format_rig_freq_mhz, parse_rig_freq_mhz_text
 from .ui_utils import px_to_dip
 from .theme import apply_theme_mode
 from .popup_handlers import ErrorPopupHandler, WarningPopupHandler
@@ -41,6 +53,63 @@ from .axis_widget import _make_axis_panel, fill_axis_panel, retranslate_axis_pan
 
 
 class MainWindow(QMainWindow):
+    @staticmethod
+    def _hamlib_listener_ports_sorted(ham_cfg: dict) -> list[int]:
+        ports: list[int] = []
+        for it in ham_cfg.get("listeners") or []:
+            if isinstance(it, dict) and it.get("port") not in (None, ""):
+                try:
+                    ports.append(int(it["port"]))
+                except (TypeError, ValueError):
+                    pass
+        return sorted(set(ports))
+
+    @staticmethod
+    def _hamlib_listener_names_by_port(ham_cfg: dict) -> dict[int, str]:
+        """Port → freier Anzeigename aus der Konfiguration (Rig-Bridge → Hamlib listeners)."""
+        out: dict[int, str] = {}
+        for it in ham_cfg.get("listeners") or []:
+            if not isinstance(it, dict) or it.get("port") in (None, ""):
+                continue
+            try:
+                p = int(it["port"])
+            except (TypeError, ValueError):
+                continue
+            out[p] = str(it.get("name", "") or "").strip()
+        return out
+
+    def _srv_led_wrap(self, led: Led) -> QWidget:
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.setContentsMargins(0, 2, 0, 0)
+        l.addWidget(led)
+        return w
+
+    def _ensure_rig_hamlib_extra_rows(self, n_extra: int) -> None:
+        """Zusätzliche Hamlib-Zeilen (ab dem 2. konfigurierten Port)."""
+        lay = getattr(self, "_lay_hamlib_stack", None)
+        if lay is None:
+            return
+        while len(self._rig_hamlib_extra_rows) < n_extra:
+            proto_led = Led(self._srv_led_d, self)
+            lbl_hp = QLabel("")
+            lbl_hp.setWordWrap(False)
+            lbl_c = QLabel(t("main.rig_bridge_client"))
+            cli_led = Led(self._srv_led_d, self)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(px_to_dip(self, 6))
+            row.addWidget(self._srv_led_wrap(proto_led))
+            row.addWidget(lbl_hp, 1)
+            row.addWidget(lbl_c, 0)
+            row.addWidget(self._srv_led_wrap(cli_led), 0)
+            w = QWidget()
+            w.setLayout(row)
+            lay.addWidget(w)
+            self._rig_hamlib_extra_rows.append((w, proto_led, lbl_hp, lbl_c, cli_led))
+        for i, (w, *_rest) in enumerate(self._rig_hamlib_extra_rows):
+            w.setVisible(i < n_extra)
+
     def __init__(
         self,
         cfg: dict,
@@ -53,6 +122,7 @@ class MainWindow(QMainWindow):
         udp_pst=None,
         udp_aswatch=None,
         aswatch_bridge=None,
+        rig_bridge_manager=None,
     ):
         super().__init__()
         self.cfg = cfg
@@ -64,6 +134,7 @@ class MainWindow(QMainWindow):
         self._udp_ucxlog = udp_ucxlog
         self._udp_pst = udp_pst
         self._udp_aswatch = udp_aswatch
+        self._rig_bridge_manager = rig_bridge_manager
         if aswatch_bridge is not None:
             try:
                 aswatch_bridge.users.connect(
@@ -89,6 +160,15 @@ class MainWindow(QMainWindow):
         self._aswatch_blink_phase = 0
         self._aswatch_blink_active = False
         self._aswatch_blink_sequence = (True, False, True, False, True, False, True, False, True)
+        self._rig_serial_blink_phase = 0
+        self._rig_serial_blink_active = False
+        self._rig_flrig_blink_phase = 0
+        self._rig_flrig_blink_active = False
+        self._rig_hamlib_blink_phase: dict[int, int] = {}
+        self._rig_hamlib_blink_active: dict[int, bool] = {}
+        self._rig_blink_sequence = (True, False, True, False, True, False, True, False, True)
+        self._last_rig_srv_vis: tuple | None = None
+        self._rig_hamlib_extra_rows: list[tuple[QWidget, Led, QLabel, QLabel, Led]] = []
         self._aswatch_markers_last: list = []
         self._aswatch_aircraft_last: list = []
         self._asnearest_summary_last: list = []
@@ -163,25 +243,70 @@ class MainWindow(QMainWindow):
         top.addWidget(self.btn_open_map, 1)
         top.addWidget(self.btn_ref, 1)
 
+        self._rig_freq_row = QWidget()
+        self._rig_freq_row.setVisible(False)
+        hl_rf = QHBoxLayout(self._rig_freq_row)
+        try:
+            hl_rf.setContentsMargins(
+                px_to_dip(self, 8), px_to_dip(self, 4), px_to_dip(self, 8), px_to_dip(self, 4)
+            )
+        except Exception:
+            pass
+        hl_rf.setSpacing(px_to_dip(self, 6))
+        self._ed_rig_freq = QLineEdit()
+        self._ed_rig_freq.setPlaceholderText(t("main.rig_freq_placeholder"))
+        _rf_font = QFont(self._ed_rig_freq.font())
+        _rf_font.setPointSizeF(max(8.0, _rf_font.pointSizeF() * 2.0) * (2.0 / 3.0))
+        self._ed_rig_freq.setFont(_rf_font)
+        self._ed_rig_freq.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_rig_freq_unit = QLabel(t("main.rig_freq_suffix"))
+        self._lbl_rig_freq_unit.setFont(_rf_font)
+        hl_rf.addWidget(self._ed_rig_freq, 1)
+        hl_rf.addWidget(self._lbl_rig_freq_unit, 0)
+        main.addWidget(self._rig_freq_row)
+
+        self.gb_antenna = QGroupBox(t("main.group_antenna_select"))
+        _lay_ant = QVBoxLayout(self.gb_antenna)
+        try:
+            _lay_ant.setContentsMargins(
+                px_to_dip(self, 8), px_to_dip(self, 4), px_to_dip(self, 8), px_to_dip(self, 4)
+            )
+        except Exception:
+            pass
+        self._cb_main_antenna = QComboBox()
+        self._cb_main_antenna.setMinimumWidth(px_to_dip(self, 160))
+        self._cb_main_antenna.addItems(self._get_antenna_dropdown_labels())
+        _ant_idx = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
+        self._cb_main_antenna.setCurrentIndex(_ant_idx)
+        self._cb_main_antenna.currentIndexChanged.connect(self._on_main_antenna_changed)
+        _lay_ant.addWidget(self._cb_main_antenna)
+        self._last_main_antenna_labels: tuple[str, ...] | None = None
+        main.addWidget(self.gb_antenna)
+
+        self._rig_freq_poll_timer = QTimer(self)
+        self._rig_freq_poll_timer.setInterval(1000)
+        self._rig_freq_poll_timer.timeout.connect(self._on_rig_freq_poll_timer)
+        self._ed_rig_freq.editingFinished.connect(self._on_rig_freq_editing_finished)
+        _app = QApplication.instance()
+        if _app is not None:
+            _app.installEventFilter(self)
+
         self.gb_srv = QGroupBox(t("main.group_server"))
         main.addWidget(self.gb_srv)
         srv_form = QFormLayout(self.gb_srv)
         self._srv_form = srv_form
 
         led_d = px_to_dip(self, 12)
+        self._srv_led_d = led_d
         self.led_pst = Led(led_d, self)
         self.led_pst_conn = Led(led_d, self)
         self.led_ucxlog = Led(led_d, self)
         self.led_pst_udp = Led(led_d, self)
         self.led_aswatch = Led(led_d, self)
+        self.led_rig_serial = Led(led_d, self)
+        self.led_rig_flrig = Led(led_d, self)
+        self.led_rig_hamlib = Led(led_d, self)
         self.led_hw = Led(led_d, self)
-
-        def _led_wrap(led) -> QWidget:
-            w = QWidget()
-            l = QVBoxLayout(w)
-            l.setContentsMargins(0, 2, 0, 0)
-            l.addWidget(led)
-            return w
 
         self.lbl_pst = QLabel("")
         self.lbl_pst.setAlignment(
@@ -197,7 +322,7 @@ class MainWindow(QMainWindow):
         hw_row = QHBoxLayout()
         hw_row.setContentsMargins(0, 0, 0, 0)
         hw_row.setSpacing(px_to_dip(self, 6))
-        hw_row.addWidget(_led_wrap(self.led_hw))
+        hw_row.addWidget(self._srv_led_wrap(self.led_hw))
         hw_row.addWidget(self.lbl_hw, 1)
         hw_row_w = QWidget()
         hw_row_w.setLayout(hw_row)
@@ -207,7 +332,7 @@ class MainWindow(QMainWindow):
         pst_row = QHBoxLayout()
         pst_row.setContentsMargins(0, 0, 0, 0)
         pst_row.setSpacing(px_to_dip(self, 6))
-        pst_row.addWidget(_led_wrap(self.led_pst))
+        pst_row.addWidget(self._srv_led_wrap(self.led_pst))
         pst_row.addWidget(self.lbl_pst, 1)
         pst_row_w = QWidget()
         pst_row_w.setLayout(pst_row)
@@ -217,7 +342,7 @@ class MainWindow(QMainWindow):
         pst_conn_row = QHBoxLayout()
         pst_conn_row.setContentsMargins(0, 0, 0, 0)
         pst_conn_row.setSpacing(px_to_dip(self, 6))
-        pst_conn_row.addWidget(_led_wrap(self.led_pst_conn))
+        pst_conn_row.addWidget(self._srv_led_wrap(self.led_pst_conn))
         self._lbl_srv_pst_conn = QLabel(t("main.srv_pst_conn_text"))
         pst_conn_row.addWidget(self._lbl_srv_pst_conn)
         pst_conn_row.addStretch(1)
@@ -229,7 +354,7 @@ class MainWindow(QMainWindow):
         ucxlog_row = QHBoxLayout()
         ucxlog_row.setContentsMargins(0, 0, 0, 0)
         ucxlog_row.setSpacing(px_to_dip(self, 6))
-        ucxlog_row.addWidget(_led_wrap(self.led_ucxlog))
+        ucxlog_row.addWidget(self._srv_led_wrap(self.led_ucxlog))
         self._lbl_srv_ucxlog_suffix = QLabel("")
         ucxlog_row.addWidget(self._lbl_srv_ucxlog_suffix)
         ucxlog_row.addStretch(1)
@@ -249,7 +374,7 @@ class MainWindow(QMainWindow):
         pst_udp_row = QHBoxLayout()
         pst_udp_row.setContentsMargins(0, 0, 0, 0)
         pst_udp_row.setSpacing(px_to_dip(self, 6))
-        pst_udp_row.addWidget(_led_wrap(self.led_pst_udp))
+        pst_udp_row.addWidget(self._srv_led_wrap(self.led_pst_udp))
         self._lbl_srv_pst_udp_suffix = QLabel("")
         pst_udp_row.addWidget(self._lbl_srv_pst_udp_suffix)
         pst_udp_row.addStretch(1)
@@ -267,7 +392,7 @@ class MainWindow(QMainWindow):
         aswatch_row = QHBoxLayout()
         aswatch_row.setContentsMargins(0, 0, 0, 0)
         aswatch_row.setSpacing(px_to_dip(self, 6))
-        aswatch_row.addWidget(_led_wrap(self.led_aswatch))
+        aswatch_row.addWidget(self._srv_led_wrap(self.led_aswatch))
         self._lbl_srv_aswatch_suffix = QLabel("")
         self._lbl_srv_aswatch_suffix.setWordWrap(False)
         aswatch_row.addWidget(self._lbl_srv_aswatch_suffix)
@@ -284,6 +409,55 @@ class MainWindow(QMainWindow):
             )
         except Exception:
             pass
+
+        rig_serial_row = QHBoxLayout()
+        rig_serial_row.setContentsMargins(0, 0, 0, 0)
+        rig_serial_row.setSpacing(px_to_dip(self, 6))
+        rig_serial_row.addWidget(self._srv_led_wrap(self.led_rig_serial))
+        self.lbl_rig_serial = QLabel("")
+        self.lbl_rig_serial.setWordWrap(False)
+        rig_serial_row.addWidget(self.lbl_rig_serial, 1)
+        rig_serial_row_w = QWidget()
+        rig_serial_row_w.setLayout(rig_serial_row)
+        srv_form.addRow(t("main.srv_rig_com_label"), rig_serial_row_w)
+        self._srv_row_rig_serial_w = rig_serial_row_w
+
+        rig_flrig_row = QHBoxLayout()
+        rig_flrig_row.setContentsMargins(0, 0, 0, 0)
+        rig_flrig_row.setSpacing(px_to_dip(self, 6))
+        rig_flrig_row.addWidget(self._srv_led_wrap(self.led_rig_flrig))
+        self.lbl_rig_flrig = QLabel("")
+        self.lbl_rig_flrig.setWordWrap(False)
+        rig_flrig_row.addWidget(self.lbl_rig_flrig, 1)
+        self._lbl_rig_flrig_client = QLabel(t("main.rig_bridge_client"))
+        self._led_rig_flrig_conn = Led(self._srv_led_d, self)
+        rig_flrig_row.addWidget(self._lbl_rig_flrig_client, 0)
+        rig_flrig_row.addWidget(self._srv_led_wrap(self._led_rig_flrig_conn), 0)
+        rig_flrig_row_w = QWidget()
+        rig_flrig_row_w.setLayout(rig_flrig_row)
+        srv_form.addRow(t("main.srv_rig_flrig_label"), rig_flrig_row_w)
+        self._srv_row_rig_flrig_w = rig_flrig_row_w
+
+        self._rig_hamlib_outer = QWidget()
+        self._lay_hamlib_stack = QVBoxLayout(self._rig_hamlib_outer)
+        self._lay_hamlib_stack.setContentsMargins(0, 0, 0, 0)
+        self._lay_hamlib_stack.setSpacing(px_to_dip(self, 2))
+        rig_hamlib_row = QHBoxLayout()
+        rig_hamlib_row.setContentsMargins(0, 0, 0, 0)
+        rig_hamlib_row.setSpacing(px_to_dip(self, 6))
+        rig_hamlib_row.addWidget(self._srv_led_wrap(self.led_rig_hamlib))
+        self.lbl_rig_hamlib = QLabel("")
+        self.lbl_rig_hamlib.setWordWrap(False)
+        rig_hamlib_row.addWidget(self.lbl_rig_hamlib, 1)
+        self._lbl_rig_hamlib_client = QLabel(t("main.rig_bridge_client"))
+        self._led_rig_hamlib_conn = Led(self._srv_led_d, self)
+        rig_hamlib_row.addWidget(self._lbl_rig_hamlib_client, 0)
+        rig_hamlib_row.addWidget(self._srv_led_wrap(self._led_rig_hamlib_conn), 0)
+        rig_hamlib_row_w = QWidget()
+        rig_hamlib_row_w.setLayout(rig_hamlib_row)
+        self._lay_hamlib_stack.addWidget(rig_hamlib_row_w)
+        srv_form.addRow(t("main.srv_rig_hamlib_label"), self._rig_hamlib_outer)
+        self._srv_row_rig_hamlib_w = self._rig_hamlib_outer
 
         try:
             srv_form.setVerticalSpacing(px_to_dip(self, 4))
@@ -330,6 +504,7 @@ class MainWindow(QMainWindow):
             parent=None,
             antenna_bridge=self._antenna_bridge,
             open_map_cb=self._open_map,
+            rig_bridge_manager=self._rig_bridge_manager,
         )
         self._attach_compass_aswatch_provider()
         self._map_win = MapWindow(
@@ -340,9 +515,11 @@ class MainWindow(QMainWindow):
             antenna_bridge=self._antenna_bridge,
             on_asnearest_select_cb=self._on_map_asnearest_select,
             on_map_page_ready_cb=self._on_map_page_ready,
+            rig_bridge_manager=self._rig_bridge_manager,
         )
         # Broadcast zuerst: Sync-Slots dürfen den TX nicht verhindern; Fire-and-Forget ist separat
         self._antenna_bridge.selection_changed.connect(self._on_antenna_broadcast_aselect)
+        self._antenna_bridge.selection_changed.connect(self._sync_main_antenna_combo_from_bridge)
         self._antenna_bridge.selection_changed.connect(self._compass_win.sync_az_rotor_target_from_controller)
         self._antenna_bridge.selection_changed.connect(self._compass_win.sync_antenna_from_external)
         self._antenna_bridge.selection_changed.connect(self._map_win.sync_antenna_from_external)
@@ -358,6 +535,7 @@ class MainWindow(QMainWindow):
             self.save_cfg_cb,
             self.logbuf,
             after_apply_cb=self._after_settings_applied,
+            rig_bridge_manager=self._rig_bridge_manager,
             rebuild_ui_cb=self._rebuild_all_windows,
             map_window=self._map_win,
             parent=None,
@@ -384,6 +562,86 @@ class MainWindow(QMainWindow):
         self._update_axis_visibility()
         self._update_srv_rows_visibility()
         self._apply_fixed_mainwindow_size()
+
+        self._global_hotkey_controller = None
+        if sys.platform == "win32":
+            from ..global_hotkeys_win import GlobalHotkeyController
+
+            self._global_hotkey_controller = GlobalHotkeyController(
+                lambda: int(self.winId()),
+                lambda a: QTimer.singleShot(0, partial(self._apply_global_shortcut_action, a)),
+            )
+
+    def _refresh_global_hotkeys(self) -> None:
+        hc = getattr(self, "_global_hotkey_controller", None)
+        if hc is None:
+            return
+        try:
+            hc.apply_config(self.cfg)
+        except Exception:
+            pass
+
+    def _apply_global_shortcut_action(self, action: str) -> None:
+        try:
+            gs = (self.cfg.get("ui") or {}).get("global_shortcuts") or {}
+            if not bool(gs.get("enabled", True)):
+                return
+            if action == "rot_w":
+                set_antenna_azimuth_deg(
+                    self.cfg, self.ctrl, float(gs.get("antenna_deg_w", 0.0))
+                )
+            elif action == "rot_d":
+                set_antenna_azimuth_deg(
+                    self.cfg, self.ctrl, float(gs.get("antenna_deg_d", 90.0))
+                )
+            elif action == "rot_s":
+                set_antenna_azimuth_deg(
+                    self.cfg, self.ctrl, float(gs.get("antenna_deg_s", 180.0))
+                )
+            elif action == "rot_a":
+                set_antenna_azimuth_deg(
+                    self.cfg, self.ctrl, float(gs.get("antenna_deg_a", 270.0))
+                )
+            elif action == "open_compass":
+                self._open_compass()
+            elif action == "open_map":
+                self._open_map()
+            elif action == "open_elevation":
+                self._open_elevation_from_shortcut()
+            elif action == "target_plus":
+                bump_antenna_target_deg(
+                    self.cfg, self.ctrl, float(gs.get("target_step_deg", 5.0))
+                )
+            elif action == "target_minus":
+                bump_antenna_target_deg(
+                    self.cfg, self.ctrl, -float(gs.get("target_step_deg", 5.0))
+                )
+            elif action == "el_target_plus":
+                bump_el_target_deg(
+                    self.ctrl, float(gs.get("el_target_step_deg", 5.0))
+                )
+            elif action == "el_target_minus":
+                bump_el_target_deg(
+                    self.ctrl, -float(gs.get("el_target_step_deg", 5.0))
+                )
+        except Exception:
+            pass
+
+    def _open_elevation_from_shortcut(self) -> None:
+        try:
+            mw = getattr(self, "_map_win", None)
+            if mw is not None and hasattr(mw, "_on_elevation_profile"):
+                mw._on_elevation_profile()
+        except Exception:
+            pass
+
+    def nativeEvent(self, eventType, message):
+        hc = getattr(self, "_global_hotkey_controller", None)
+        if hc is not None:
+            r = hc.process_native_event(eventType, message)
+            if r is not None:
+                return r
+        return super().nativeEvent(eventType, message)
 
     def _open_about(self):
         dlg = AboutWindow(parent=self)
@@ -472,9 +730,18 @@ class MainWindow(QMainWindow):
             self.gb_control.setTitle(t("main.group_control"))
         except Exception:
             pass
+        try:
+            if hasattr(self, "gb_antenna"):
+                self.gb_antenna.setTitle(t("main.group_antenna_select"))
+        except Exception:
+            pass
         # Server-GroupBox: Überschriften + Beschriftungen der Formularzeilen
         try:
             self.gb_srv.setTitle(t("main.group_server"))
+            if hasattr(self, "_lbl_rig_freq_unit"):
+                self._lbl_rig_freq_unit.setText(t("main.rig_freq_suffix"))
+            if hasattr(self, "_ed_rig_freq"):
+                self._ed_rig_freq.setPlaceholderText(t("main.rig_freq_placeholder"))
             sf = self._srv_form
             lab = sf.labelForField(self._srv_row_hw_w)
             if isinstance(lab, QLabel):
@@ -494,6 +761,21 @@ class MainWindow(QMainWindow):
             lab = sf.labelForField(self._srv_row_aswatch_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_aswatch_label"))
+            lab = sf.labelForField(self._srv_row_rig_serial_w)
+            if isinstance(lab, QLabel):
+                lab.setText(t("main.srv_rig_com_label"))
+            lab = sf.labelForField(self._srv_row_rig_flrig_w)
+            if isinstance(lab, QLabel):
+                lab.setText(t("main.srv_rig_flrig_label"))
+            lab = sf.labelForField(self._srv_row_rig_hamlib_w)
+            if isinstance(lab, QLabel):
+                lab.setText(t("main.srv_rig_hamlib_label"))
+            if hasattr(self, "_lbl_rig_flrig_client"):
+                self._lbl_rig_flrig_client.setText(t("main.rig_bridge_client"))
+            if hasattr(self, "_lbl_rig_hamlib_client"):
+                self._lbl_rig_hamlib_client.setText(t("main.rig_bridge_client"))
+            for _w, _pl, _lbl, lbl_c, _cli in getattr(self, "_rig_hamlib_extra_rows", []):
+                lbl_c.setText(t("main.rig_bridge_client"))
             self._lbl_srv_pst_conn.setText(t("main.srv_pst_conn_text"))
             ui = self.cfg.get("ui", {})
             self._lbl_srv_ucxlog_suffix.setText(
@@ -566,6 +848,7 @@ class MainWindow(QMainWindow):
                 parent=None,
                 antenna_bridge=self._antenna_bridge,
                 open_map_cb=self._open_map,
+                rig_bridge_manager=self._rig_bridge_manager,
             )
             self._attach_compass_aswatch_provider()
             self._map_win = MapWindow(
@@ -576,6 +859,7 @@ class MainWindow(QMainWindow):
                 antenna_bridge=self._antenna_bridge,
                 on_asnearest_select_cb=self._on_map_asnearest_select,
                 on_map_page_ready_cb=self._on_map_page_ready,
+                rig_bridge_manager=self._rig_bridge_manager,
             )
             try:
                 self._antenna_bridge.selection_changed.disconnect()
@@ -618,6 +902,7 @@ class MainWindow(QMainWindow):
                 self.save_cfg_cb,
                 self.logbuf,
                 after_apply_cb=self._after_settings_applied,
+                rig_bridge_manager=self._rig_bridge_manager,
                 rebuild_ui_cb=self._rebuild_all_windows,
                 map_window=self._map_win,
                 parent=None,
@@ -680,6 +965,7 @@ class MainWindow(QMainWindow):
                 self._compass_win._apply_label_colors_from_palette()
         if hasattr(self, "_compass_win") and hasattr(self._compass_win, "sync_heatmap_controls_from_cfg"):
             self._compass_win.sync_heatmap_controls_from_cfg()
+        self._refresh_global_hotkeys()
 
     def _on_internet_check_timer(self) -> None:
         """Internet-Prüfung im Hintergrund, UI-Update auf Hauptthread.
@@ -820,8 +1106,90 @@ class MainWindow(QMainWindow):
             mw = getattr(self, "_map_win", None)
             if mw is not None:
                 mw.sync_antenna_from_external(idx)
+            cb = getattr(self, "_cb_main_antenna", None)
+            if cb is not None:
+                cb.blockSignals(True)
+                cb.setCurrentIndex(idx)
+                cb.blockSignals(False)
         except Exception:
             pass
+
+    def _get_antenna_dropdown_labels(self) -> list[str]:
+        """Wie Kompass: Namen mit AZ-Versatz in Klammern."""
+        names = list(
+            self.cfg.get("ui", {}).get("antenna_names", ["Antenne 1", "Antenne 2", "Antenne 3"])
+        )
+        while len(names) < 3:
+            names.append(f"Antenne {len(names) + 1}")
+        offsets: list[float] = []
+        for slot in (1, 2, 3):
+            v = getattr(self.ctrl.az, f"antoff{slot}", None)
+            if v is not None:
+                offsets.append(float(v))
+            else:
+                offs = self.cfg.get("ui", {}).get("antenna_offsets_az", [0.0, 0.0, 0.0])
+                try:
+                    offsets.append(float(offs[slot - 1]))
+                except (IndexError, TypeError, ValueError):
+                    offsets.append(0.0)
+        return [f"{names[i]} ({offsets[i]:.1f}°)" for i in range(3)]
+
+    def _sync_main_antenna_combo_from_bridge(self, idx: int) -> None:
+        """Kompass/Karte/anderes Fenster hat Antenne gewechselt → Hauptfenster-Dropdown."""
+        cb = getattr(self, "_cb_main_antenna", None)
+        if cb is None:
+            return
+        idx = max(0, min(2, int(idx)))
+        if cb.currentIndex() == idx:
+            return
+        cb.blockSignals(True)
+        cb.setCurrentIndex(idx)
+        cb.blockSignals(False)
+
+    def _on_main_antenna_changed(self) -> None:
+        """Antennenwahl wie im Kompass: Config, Bus-Broadcast, Bridge."""
+        cb = getattr(self, "_cb_main_antenna", None)
+        if cb is None:
+            return
+        old = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
+        idx = max(0, min(2, cb.currentIndex()))
+        ui = self.cfg.setdefault("ui", {})
+        if old != idx and hasattr(self.ctrl, "align_az_bearing_after_antenna_switch"):
+            try:
+                self.ctrl.align_az_bearing_after_antenna_switch(old, idx, self.cfg)
+            except Exception:
+                pass
+            try:
+                if hasattr(self._compass_win, "sync_az_rotor_target_from_controller"):
+                    self._compass_win.sync_az_rotor_target_from_controller()
+            except Exception:
+                pass
+        ui["compass_antenna"] = idx
+        try:
+            if self.save_cfg_cb:
+                self.save_cfg_cb(self.cfg)
+        except Exception:
+            pass
+        try:
+            self._antenna_bridge.selection_changed.emit(idx)
+        except Exception:
+            pass
+
+    def _refresh_main_antenna_dropdown_labels_if_needed(self) -> None:
+        """Versatz-/Namen aus HW oder Config — gleiche Zeilen wie Kompass."""
+        cb = getattr(self, "_cb_main_antenna", None)
+        if cb is None or not cb.isVisible():
+            return
+        labels = tuple(self._get_antenna_dropdown_labels())
+        if getattr(self, "_last_main_antenna_labels", None) == labels:
+            return
+        self._last_main_antenna_labels = labels
+        idx = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
+        cb.blockSignals(True)
+        cb.clear()
+        cb.addItems(list(labels))
+        cb.setCurrentIndex(idx)
+        cb.blockSignals(False)
 
     @staticmethod
     def _bring_tool_window_to_front(w: QWidget) -> None:
@@ -917,6 +1285,8 @@ class MainWindow(QMainWindow):
         el_on = bool(getattr(self.ctrl, "enable_el", True))
         self.gb_az.setVisible(az_on)
         self.gb_el.setVisible(el_on)
+        if hasattr(self, "gb_antenna"):
+            self.gb_antenna.setVisible(az_on)
         try:
             if hasattr(self, "_compass_win") and hasattr(self._compass_win, "refresh_visibility"):
                 self._compass_win.refresh_visibility()
@@ -930,12 +1300,19 @@ class MainWindow(QMainWindow):
         ucxlog_on = bool(ui.get("udp_ucxlog_enabled", True))
         pst_udp_on = bool(ui.get("udp_pst_enabled", True))
         aswatch_on = bool(ui.get("aswatch_udp_enabled", True))
+        rb = self.cfg.get("rig_bridge") or {}
+        rig_mod = bool(rb.get("enabled", False))
+        rig_flrig = rig_mod and bool((rb.get("flrig") or {}).get("enabled", False))
+        rig_ham = rig_mod and bool((rb.get("hamlib") or {}).get("enabled", False))
         try:
             self._srv_form.setRowVisible(self._srv_row_pst_w, pst_on)
             self._srv_form.setRowVisible(self._srv_row_pst_conn_w, pst_on)
             self._srv_form.setRowVisible(self._srv_row_ucxlog_w, ucxlog_on)
             self._srv_form.setRowVisible(self._srv_row_pst_udp_w, pst_udp_on)
             self._srv_form.setRowVisible(self._srv_row_aswatch_w, aswatch_on)
+            self._srv_form.setRowVisible(self._srv_row_rig_serial_w, rig_mod)
+            self._srv_form.setRowVisible(self._srv_row_rig_flrig_w, rig_flrig)
+            self._srv_form.setRowVisible(self._srv_row_rig_hamlib_w, rig_ham)
         except Exception:
             pass
 
@@ -969,9 +1346,45 @@ class MainWindow(QMainWindow):
             pass
         return wind_on
 
+    def _on_rig_freq_poll_timer(self) -> None:
+        rbm = getattr(self, "_rig_bridge_manager", None)
+        if rbm is None:
+            return
+        try:
+            rb_cfg = self.cfg.get("rig_bridge") or {}
+            if not bool(rb_cfg.get("enabled", False)):
+                return
+            st = rbm.status_model()
+            if not st.radio_connected or st.connecting:
+                return
+            rbm.enqueue_read_frequency()
+        except Exception:
+            pass
+
+    def _on_rig_freq_editing_finished(self) -> None:
+        rbm = getattr(self, "_rig_bridge_manager", None)
+        if rbm is None:
+            return
+        try:
+            rb_cfg = self.cfg.get("rig_bridge") or {}
+            if not bool(rb_cfg.get("enabled", False)):
+                return
+            st = rbm.status_model()
+            if not st.radio_connected:
+                return
+            hz = parse_rig_freq_mhz_text(self._ed_rig_freq.text())
+            if hz is None:
+                return
+            cur = int(st.frequency_hz or 0)
+            if cur > 0 and abs(hz - cur) < 2:
+                return
+            rbm.enqueue_set_frequency_hz(hz)
+        except Exception:
+            pass
+
     def _apply_fixed_mainwindow_size(self):
         # Feste Fensterbreite (DIP) — schmales Hauptfenster; Achsen-Layout nutzt Stretch in den Wert-Spalten
-        width = px_to_dip(self, 345)
+        width = px_to_dip(self, 325)
         try:
             lay = self.centralWidget().layout()
             if lay:
@@ -990,6 +1403,7 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._refresh_global_hotkeys()
         self._update_axis_visibility()
         self._apply_fixed_mainwindow_size()
         if not self._startup_error_check_scheduled:
@@ -1016,7 +1430,32 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(450, _show)
 
+    def eventFilter(self, watched, event):  # noqa: N802
+        """Klick außerhalb des Frequenzfelds: Fokus entfernen (QLabels nehmen oft keinen Fokus)."""
+        try:
+            if event.type() == QEvent.Type.MouseButtonPress:
+                ed = getattr(self, "_ed_rig_freq", None)
+                if ed is not None and ed.hasFocus() and ed.isVisible():
+                    if isinstance(watched, QWidget):
+                        if watched is not ed and not ed.isAncestorOf(watched):
+                            ed.clearFocus()
+        except Exception:
+            pass
+        return False
+
     def closeEvent(self, event):
+        try:
+            hc = getattr(self, "_global_hotkey_controller", None)
+            if hc is not None:
+                hc.unregister_all()
+        except Exception:
+            pass
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self)
+        except Exception:
+            pass
         try:
             for w in (
                 getattr(self, "_log_win", None),
@@ -1151,6 +1590,231 @@ class MainWindow(QMainWindow):
         else:
             self.led_aswatch.set_state(False)
 
+        rbm = getattr(self, "_rig_bridge_manager", None)
+        rb_cfg = self.cfg.get("rig_bridge") or {}
+        rig_mod = bool(rb_cfg.get("enabled", False))
+        s_act = f_act = False
+        h_ports: set[int] = set()
+        if rbm is not None and rig_mod:
+            s_act, f_act, h_ports = rbm.take_rig_activity_flags()
+            try:
+                st = rbm.status_model()
+                com_p = st.com_port or str(rb_cfg.get("com_port", "") or "").strip() or "—"
+                if st.connecting:
+                    self.led_rig_serial.set_blinking_green(True)
+                    self._rig_serial_blink_active = False
+                    self.lbl_rig_serial.setText(f"{t('main.rig_com_connecting')}  {com_p}")
+                else:
+                    self.led_rig_serial.set_blinking_green(False)
+                    if s_act:
+                        self._rig_serial_blink_phase = 0
+                        self._rig_serial_blink_active = True
+                    seq = self._rig_blink_sequence
+                    if self._rig_serial_blink_active:
+                        if self._rig_serial_blink_phase < len(seq):
+                            self.led_rig_serial.set_state(seq[self._rig_serial_blink_phase])
+                            self._rig_serial_blink_phase += 1
+                        else:
+                            self._rig_serial_blink_active = False
+                    if not self._rig_serial_blink_active:
+                        self.led_rig_serial.set_state(st.radio_connected)
+                    if st.radio_connected:
+                        self.lbl_rig_serial.setText(t("main.rig_com_ok", com=com_p))
+                    else:
+                        self.lbl_rig_serial.setText(t("main.rig_com_off", com=com_p))
+
+                vis_freq = bool(
+                    rig_mod and st.radio_connected and not st.connecting
+                )
+                frw = getattr(self, "_rig_freq_row", None)
+                if frw is not None:
+                    prev_vis = frw.isVisible()
+                    frw.setVisible(vis_freq)
+                    if vis_freq and not prev_vis:
+                        self._rig_freq_poll_timer.start()
+                        self._on_rig_freq_poll_timer()
+                    if not vis_freq and prev_vis:
+                        self._rig_freq_poll_timer.stop()
+                    if vis_freq != prev_vis:
+                        self._apply_fixed_mainwindow_size()
+                    if vis_freq:
+                        hz_disp = int(st.frequency_hz or 0)
+                        ed = self._ed_rig_freq
+                        if not ed.hasFocus():
+                            txt = (
+                                format_rig_freq_mhz(hz_disp) if hz_disp > 0 else ""
+                            )
+                            if ed.text() != txt:
+                                ed.blockSignals(True)
+                                ed.setText(txt)
+                                ed.blockSignals(False)
+
+                fl_en = bool((rb_cfg.get("flrig") or {}).get("enabled", False))
+                if fl_en:
+                    fl_on = bool(st.protocol_active.get("flrig", False))
+                    n_fl = int(st.protocol_clients.get("flrig", 0) or 0)
+                    fh = str((rb_cfg.get("flrig") or {}).get("host", "127.0.0.1") or "127.0.0.1")
+                    fp = int((rb_cfg.get("flrig") or {}).get("port", 12345) or 12345)
+                    if f_act:
+                        self._rig_flrig_blink_phase = 0
+                        self._rig_flrig_blink_active = True
+                    seqf = self._rig_blink_sequence
+                    if self._rig_flrig_blink_active:
+                        if self._rig_flrig_blink_phase < len(seqf):
+                            self.led_rig_flrig.set_state(seqf[self._rig_flrig_blink_phase])
+                            self._rig_flrig_blink_phase += 1
+                        else:
+                            self._rig_flrig_blink_active = False
+                    if not self._rig_flrig_blink_active:
+                        self.led_rig_flrig.set_state(fl_on)
+                    self.lbl_rig_flrig.setText(
+                        t("main.rig_flrig_host_port", host=fh, port=fp)
+                        if fl_on
+                        else t("main.rig_proto_stopped")
+                    )
+                    self._led_rig_flrig_conn.set_state(fl_on and n_fl > 0)
+                else:
+                    self.led_rig_flrig.set_state(False)
+                    self.lbl_rig_flrig.setText("")
+                    self._led_rig_flrig_conn.set_state(False)
+
+                hm_en = bool((rb_cfg.get("hamlib") or {}).get("enabled", False))
+                hm_cfg = rb_cfg.get("hamlib") or {}
+                ports = MainWindow._hamlib_listener_ports_sorted(hm_cfg)
+                hm_names = MainWindow._hamlib_listener_names_by_port(hm_cfg)
+                multi_ham = len(ports) > 1
+                n_extra = (len(ports) - 1) if multi_ham else 0
+                self._ensure_rig_hamlib_extra_rows(n_extra)
+                hm_counts: dict[int, int] = {}
+                if rbm is not None:
+                    try:
+                        hm_counts = rbm.hamlib_listener_client_counts()
+                    except Exception:
+                        hm_counts = {}
+                if hm_en:
+                    hm_on = bool(st.protocol_active.get("hamlib", False))
+                    n_hm = int(st.protocol_clients.get("hamlib", 0) or 0)
+                    hh = str(hm_cfg.get("host", "127.0.0.1") or "127.0.0.1")
+                    seqh = self._rig_blink_sequence
+                    _blink_keys = set(ports) if multi_ham else ({ports[0]} if len(ports) == 1 else {-1})
+                    for k in list(self._rig_hamlib_blink_phase):
+                        if k not in _blink_keys:
+                            self._rig_hamlib_blink_phase.pop(k, None)
+                            self._rig_hamlib_blink_active.pop(k, None)
+                    ham_pairs: list[tuple[Led, int]] = []
+                    if multi_ham:
+                        ham_pairs.append((self.led_rig_hamlib, ports[0]))
+                        for i in range(1, len(ports)):
+                            ham_pairs.append((self._rig_hamlib_extra_rows[i - 1][1], ports[i]))
+                    else:
+                        _pk = ports[0] if len(ports) == 1 else -1
+                        ham_pairs.append((self.led_rig_hamlib, _pk))
+                    for led, pkey in ham_pairs:
+                        trig = (pkey != -1 and pkey in h_ports) or (
+                            pkey == -1 and bool(h_ports)
+                        )
+                        if trig:
+                            self._rig_hamlib_blink_active[pkey] = True
+                            self._rig_hamlib_blink_phase[pkey] = 0
+                        if self._rig_hamlib_blink_active.get(pkey):
+                            ph = self._rig_hamlib_blink_phase.get(pkey, 0)
+                            if ph < len(seqh):
+                                led.set_state(seqh[ph])
+                                self._rig_hamlib_blink_phase[pkey] = ph + 1
+                            else:
+                                self._rig_hamlib_blink_active[pkey] = False
+                        if not self._rig_hamlib_blink_active.get(pkey):
+                            led.set_state(hm_on)
+                    if multi_ham:
+                        for i, p in enumerate(ports):
+                            n_c = int(hm_counts.get(p, 0))
+                            txt = (
+                                t("main.rig_flrig_host_port", host=hh, port=p)
+                                if hm_on
+                                else t("main.rig_proto_stopped")
+                            )
+                            cli_on = hm_on and n_c > 0
+                            tip = hm_names.get(p, "")
+                            if i == 0:
+                                self.lbl_rig_hamlib.setText(txt)
+                                self.lbl_rig_hamlib.setToolTip(tip)
+                                self._led_rig_hamlib_conn.set_state(cli_on)
+                                row0 = self.lbl_rig_hamlib.parentWidget()
+                                if row0 is not None:
+                                    row0.setToolTip(tip)
+                            else:
+                                wrow, _pl, lbl, _lc, cli_led = self._rig_hamlib_extra_rows[i - 1]
+                                lbl.setText(txt)
+                                lbl.setToolTip(tip)
+                                cli_led.set_state(cli_on)
+                                wrow.setToolTip(tip)
+                    else:
+                        if ports:
+                            ham_detail = " · ".join(f"{hh}:{p}" for p in ports)
+                        else:
+                            ham_detail = f"{hh}:—"
+                        self.lbl_rig_hamlib.setText(
+                            t("main.rig_hamlib_detail_hosts", detail=ham_detail)
+                            if hm_on
+                            else t("main.rig_proto_stopped")
+                        )
+                        self._led_rig_hamlib_conn.set_state(hm_on and n_hm > 0)
+                        tip1 = hm_names.get(ports[0], "") if len(ports) == 1 else ""
+                        self.lbl_rig_hamlib.setToolTip(tip1)
+                        row0 = self.lbl_rig_hamlib.parentWidget()
+                        if row0 is not None:
+                            row0.setToolTip(tip1 if len(ports) == 1 else "")
+                else:
+                    self._rig_hamlib_blink_phase.clear()
+                    self._rig_hamlib_blink_active.clear()
+                    self.led_rig_hamlib.set_state(False)
+                    self.lbl_rig_hamlib.setText("")
+                    self.lbl_rig_hamlib.setToolTip("")
+                    self._led_rig_hamlib_conn.set_state(False)
+                    row0 = self.lbl_rig_hamlib.parentWidget()
+                    if row0 is not None:
+                        row0.setToolTip("")
+                    for wrow, led, lbl, _lc, cli_led in self._rig_hamlib_extra_rows:
+                        led.set_state(False)
+                        lbl.setText("")
+                        lbl.setToolTip("")
+                        cli_led.set_state(False)
+                        wrow.setToolTip("")
+            except Exception as e:
+                self._log_exception("_tick rig-bridge LEDs", e)
+        else:
+            if rbm is not None:
+                try:
+                    _, _, _ = rbm.take_rig_activity_flags()
+                except Exception:
+                    pass
+            self.led_rig_serial.set_blinking_green(False)
+            self.led_rig_serial.set_state(False)
+            self.led_rig_flrig.set_state(False)
+            self._led_rig_flrig_conn.set_state(False)
+            self._rig_hamlib_blink_phase.clear()
+            self._rig_hamlib_blink_active.clear()
+            self.led_rig_hamlib.set_state(False)
+            self.lbl_rig_serial.setText("")
+            self.lbl_rig_flrig.setText("")
+            self.lbl_rig_hamlib.setText("")
+            self.lbl_rig_hamlib.setToolTip("")
+            self._led_rig_hamlib_conn.set_state(False)
+            row0 = self.lbl_rig_hamlib.parentWidget()
+            if row0 is not None:
+                row0.setToolTip("")
+            for wrow, led, lbl, _lc, cli_led in getattr(self, "_rig_hamlib_extra_rows", []):
+                led.set_state(False)
+                lbl.setText("")
+                lbl.setToolTip("")
+                cli_led.set_state(False)
+                wrow.setToolTip("")
+            frw = getattr(self, "_rig_freq_row", None)
+            if frw is not None and frw.isVisible():
+                frw.setVisible(False)
+                self._rig_freq_poll_timer.stop()
+                self._apply_fixed_mainwindow_size()
+
         try:
             now = float(_time.time())
             if hw_on:
@@ -1169,21 +1833,21 @@ class MainWindow(QMainWindow):
         )
         hl = self.cfg["hardware_link"]
         mode = hl.get("mode", "tcp")
+        ip = str(hl.get("tcp_ip", "") or "")
+        port = str(hl.get("tcp_port", "") or "")
         if mode == "tcp":
-            ip = hl.get("tcp_ip", "")
-            port = hl.get("tcp_port", "")
-            detail = f"TCP {ip}:{port}"
+            detail = f"{ip}:{port}"
+            com_disp = ""
         else:
-            com = hl.get("com_port", "")
-            baud = hl.get("baudrate", 115200)
-            detail = f"COM {com} @ {baud}"
+            com_disp = normalize_com_port(str(hl.get("com_port", "") or "")).upper()
+            detail = com_disp
         if hw_on and pst_on:
             if mode == "tcp":
-                self.lbl_hw.setText(f"{t('main.hw_connected_via_tcp')}  {ip}:{port}")
+                self.lbl_hw.setText(f"{ip}:{port}")
             else:
-                self.lbl_hw.setText(f"{t('main.hw_connected_via_com')}  {com} @ {baud}")
+                self.lbl_hw.setText(com_disp)
         elif hw_on:
-            self.lbl_hw.setText(f"{t('main.hw_connected')}  {detail}")
+            self.lbl_hw.setText(detail)
         else:
             self.lbl_hw.setText(f"{t('main.hw_disconnected')}  {detail}")
 
@@ -1206,6 +1870,7 @@ class MainWindow(QMainWindow):
             pass
 
         self._update_axis_visibility()
+        self._refresh_main_antenna_dropdown_labels_if_needed()
         wind_on = self._update_wind_visibility()
         axis_vis = (bool(self.gb_az.isVisible()), bool(self.gb_el.isVisible()))
         size_changed = False
@@ -1214,6 +1879,16 @@ class MainWindow(QMainWindow):
             size_changed = True
         if self._last_wind_vis != wind_on:
             self._last_wind_vis = wind_on
+            size_changed = True
+        _rb = self.cfg.get("rig_bridge") or {}
+        _rig_en = bool(_rb.get("enabled", False))
+        rig_srv_vis = (
+            _rig_en,
+            _rig_en and bool((_rb.get("flrig") or {}).get("enabled", False)),
+            _rig_en and bool((_rb.get("hamlib") or {}).get("enabled", False)),
+        )
+        if getattr(self, "_last_rig_srv_vis", None) != rig_srv_vis:
+            self._last_rig_srv_vis = rig_srv_vis
             size_changed = True
         if size_changed:
             self._apply_fixed_mainwindow_size()

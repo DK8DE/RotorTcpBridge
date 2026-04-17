@@ -20,6 +20,7 @@ from .pst_server import PstDualServer
 from .udp_ucxlog import UdpUcxLogListener
 from .udp_aswatchlist import UdpAswatchlistListener
 from .udp_pst_rotator import UdpPstRotator
+from .rig_bridge.manager import RigBridgeManager
 from .ui.main_window import MainWindow
 
 
@@ -32,6 +33,13 @@ def main():
         save_config(cfg)
     load_lang(cfg.get("ui", {}).get("language", "de"))
     log = LogBuffer()
+    rig_bridge_manager = RigBridgeManager(cfg.get("rig_bridge", {}), log.write)
+    try:
+        rb_cfg = cfg.get("rig_bridge", {})
+        if bool(rb_cfg.get("enabled", False)) and bool(rb_cfg.get("auto_connect", False)):
+            rig_bridge_manager.connect_radio_and_autostart_protocols()
+    except Exception as exc:
+        log.write("WARN", f"Rig-Bridge Autostart fehlgeschlagen: {exc}")
 
     hw = HardwareClient(cfg["hardware_link"], log)
     hw.start()
@@ -127,11 +135,16 @@ def main():
         udp_pst=udp_pst,
         udp_aswatch=udp_aswatch,
         aswatch_bridge=aswatch_bridge,
+        rig_bridge_manager=rig_bridge_manager,
     )
     w.resize(1100, 650)
     w.show()
 
     rc = app.exec()
+    try:
+        rig_bridge_manager.stop_all()
+    except Exception:
+        pass
     udp_ucxlog.stop()
     udp_aswatch.stop()
     udp_pst.stop()

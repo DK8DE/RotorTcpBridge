@@ -12,19 +12,20 @@ from html import escape as html_escape
 from typing import Dict, List, Optional, Tuple
 from urllib.request import Request, urlopen
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
-    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QSizePolicy,
     QVBoxLayout,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from ..i18n import format_tooltip, t, tt
+from .rig_freq_utils import format_rig_freq_mhz, parse_rig_freq_mhz_text
 
 
 def _html_greek_nu(text: str) -> str:
@@ -539,6 +540,26 @@ class _FetchThread(QThread):
             self.error_occurred.emit(str(exc))
 
 
+def initial_elevation_freq_mhz(cfg: Optional[Dict], rig_bridge_manager=None) -> float:
+    """MHz für die Höhenprofil-Anzeige: Live-CAT wenn Rig online, sonst ``ui.rf_freq_mhz``."""
+    ui = (cfg or {}).get("ui") or {}
+    saved = float(ui.get("rf_freq_mhz", 145.0))
+    if rig_bridge_manager is None:
+        return saved
+    rb_cfg = (cfg or {}).get("rig_bridge") or {}
+    if not bool(rb_cfg.get("enabled", False)):
+        return saved
+    try:
+        st = rig_bridge_manager.status_model()
+        if st.radio_connected and not st.connecting:
+            hz = int(st.frequency_hz or 0)
+            if hz > 0:
+                return hz / 1e6
+    except Exception:
+        pass
+    return saved
+
+
 # ── Höhenprofil-Dialog ────────────────────────────────────────────────────
 
 
@@ -559,6 +580,7 @@ class ElevationProfileWindow(QDialog):
         save_cfg_cb=None,
         dark: bool = False,
         parent=None,
+        rig_bridge_manager=None,
     ) -> None:
         super().__init__(parent)
         self._home_lat = home_lat
@@ -571,6 +593,7 @@ class ElevationProfileWindow(QDialog):
         self._freq_mhz = freq_mhz
         self._cfg = cfg
         self._save_cfg_cb = save_cfg_cb
+        self._rig_bridge_manager = rig_bridge_manager
         self._dark = dark
         self._dist_km = _haversine_km(home_lat, home_lon, target_lat, target_lon)
         self._thread: Optional[_FetchThread] = None
@@ -601,16 +624,24 @@ class ElevationProfileWindow(QDialog):
         # ── Zeile: Frequenz | Status | Beugungszusammenfassung ───────────
         row = QHBoxLayout()
         row.addWidget(QLabel(t("elevation.freq_label")))
-        self._sp_freq = QDoubleSpinBox()
-        self._sp_freq.setRange(0.1, 3000.0)
-        self._sp_freq.setDecimals(3)
-        self._sp_freq.setSingleStep(1.0)
-        self._sp_freq.setValue(freq_mhz)
-        self._sp_freq.setSuffix(" MHz")
-        self._sp_freq.setFixedWidth(130)
-        self._sp_freq.setToolTip(tt("elevation.freq_tooltip"))
-        self._sp_freq.valueChanged.connect(self._on_freq_changed)
-        row.addWidget(self._sp_freq)
+        hz_init = int(round(float(freq_mhz) * 1e6))
+        self._ed_freq = QLineEdit()
+        self._ed_freq.setPlaceholderText(t("main.rig_freq_placeholder"))
+        self._ed_freq.setText(format_rig_freq_mhz(hz_init) if hz_init > 0 else "")
+        self._ed_freq.setFixedWidth(140)
+        self._ed_freq.setToolTip(tt("elevation.freq_tooltip"))
+        self._ed_freq.textChanged.connect(self._on_elevation_freq_text_changed)
+        self._ed_freq.editingFinished.connect(self._on_elevation_freq_editing_finished)
+        row.addWidget(self._ed_freq, 0)
+        self._lbl_freq_unit = QLabel(t("main.rig_freq_suffix"))
+        row.addWidget(self._lbl_freq_unit, 0)
+        self._rig_freq_poll_timer = QTimer(self)
+        self._rig_freq_poll_timer.setInterval(1000)
+        self._rig_freq_poll_timer.timeout.connect(self._rig_freq_poll_tick)
+        if self._rig_bridge_manager is not None:
+            rb_cfg = (self._cfg or {}).get("rig_bridge") or {}
+            if bool(rb_cfg.get("enabled", False)):
+                self._rig_freq_poll_timer.start()
         row.addSpacing(8)
         self._chk_live = QCheckBox(t("elevation.chk_live"))
         self._chk_live.setToolTip(tt("elevation.chk_live_tooltip"))
@@ -742,15 +773,118 @@ class ElevationProfileWindow(QDialog):
 
     # ── Frequenzänderung ──────────────────────────────────────────────────
 
-    def _on_freq_changed(self, value: float) -> None:
-        self._freq_mhz = value
-        # Frequenz persistent speichern
+    def _rig_cat_live(self) -> bool:
+        """Rig-Bridge aktiv und Funkgerät verbunden — Frequenz kommt live, nicht in die Config schreiben."""
+        if self._rig_bridge_manager is None or self._cfg is None:
+            return False
+        rb_cfg = self._cfg.get("rig_bridge") or {}
+        if not bool(rb_cfg.get("enabled", False)):
+            return False
+        try:
+            st = self._rig_bridge_manager.status_model()
+            return bool(st.radio_connected and not st.connecting)
+        except Exception:
+            return False
+
+    def _persist_elevation_freq_to_cfg(self, value: float) -> None:
+        if self._rig_cat_live():
+            return
         if self._cfg is not None:
             self._cfg.setdefault("ui", {})["rf_freq_mhz"] = value
             if self._save_cfg_cb:
                 self._save_cfg_cb(self._cfg)
+
+    def _parse_elevation_freq_mhz(self) -> Optional[float]:
+        p = parse_rig_freq_mhz_text(self._ed_freq.text())
+        if p is None:
+            return None
+        return p / 1e6
+
+    def _rig_freq_poll_tick(self) -> None:
+        """Wie Hauptfenster: CAT lesen und Anzeige aktualisieren, wenn Funkgerät live."""
+        rbm = self._rig_bridge_manager
+        if rbm is None or self._cfg is None:
+            return
+        try:
+            rb_cfg = self._cfg.get("rig_bridge") or {}
+            if not bool(rb_cfg.get("enabled", False)):
+                return
+            st = rbm.status_model()
+            if not st.radio_connected or st.connecting:
+                return
+            rbm.enqueue_read_frequency()
+            hz = int(st.frequency_hz or 0)
+            if hz <= 0:
+                return
+            mhz = hz / 1e6
+            ed = self._ed_freq
+            if not ed.hasFocus():
+                txt = format_rig_freq_mhz(hz)
+                if ed.text() != txt:
+                    ed.blockSignals(True)
+                    ed.setText(txt)
+                    ed.blockSignals(False)
+            if abs(self._freq_mhz - mhz) > 1e-12:
+                self._freq_mhz = mhz
+                if self._last_elev is not None:
+                    self._rebuild_chart()
+        except Exception:
+            pass
+
+    def _on_elevation_freq_text_changed(self, _text: str) -> None:
+        """Offline: gültige Eingabe sofort für Profil nutzen (ohne Live-CAT)."""
+        if self._rig_cat_live():
+            return
+        mhz = self._parse_elevation_freq_mhz()
+        if mhz is None:
+            return
+        self._freq_mhz = mhz
         if self._last_elev is not None:
             self._rebuild_chart()
+
+    def _on_elevation_freq_editing_finished(self) -> None:
+        if self._rig_cat_live():
+            self._apply_rig_set_frequency_from_field()
+            return
+        mhz = self._parse_elevation_freq_mhz()
+        if mhz is None:
+            return
+        self._freq_mhz = mhz
+        self._persist_elevation_freq_to_cfg(mhz)
+        if self._last_elev is not None:
+            self._rebuild_chart()
+
+    def _apply_rig_set_frequency_from_field(self) -> None:
+        """Live: eingegebene Frequenz an die Rig-Bridge senden (analog Hauptfenster)."""
+        rbm = self._rig_bridge_manager
+        if rbm is None or self._cfg is None:
+            return
+        try:
+            rb_cfg = self._cfg.get("rig_bridge") or {}
+            if not bool(rb_cfg.get("enabled", False)):
+                return
+            st = rbm.status_model()
+            if not st.radio_connected or st.connecting:
+                return
+            hz = parse_rig_freq_mhz_text(self._ed_freq.text())
+            if hz is None:
+                return
+            cur = int(st.frequency_hz or 0)
+            if cur > 0 and abs(hz - cur) < 2:
+                return
+            rbm.enqueue_set_frequency_hz(hz)
+            self._freq_mhz = hz / 1e6
+            if self._last_elev is not None:
+                self._rebuild_chart()
+        except Exception:
+            pass
+
+    def closeEvent(self, event) -> None:
+        try:
+            self._rig_freq_poll_timer.stop()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     # ── Datenabruf ────────────────────────────────────────────────────────
 

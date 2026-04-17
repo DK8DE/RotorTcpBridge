@@ -44,8 +44,9 @@ from .favorite_selection_sync import (
     clear_selection_if_favorite_removed,
     persist_favorite_selection,
 )
-from .elevation_window import ElevationProfileWindow
+from .elevation_window import ElevationProfileWindow, initial_elevation_freq_mhz
 from .map_html import build_map_html
+from .rig_freq_utils import format_rig_freq_mhz
 from .map_tiles import (
     ROTORTILES_SCHEME,
     _DEBUG_TILES,
@@ -93,12 +94,14 @@ class MapWindow(QDialog):
         antenna_bridge=None,
         on_asnearest_select_cb=None,
         on_map_page_ready_cb=None,
+        rig_bridge_manager=None,
     ):
         super().__init__(parent)
         self.cfg = cfg
         self.ctrl = controller
         self.save_cfg_cb = save_cfg_cb
         self._antenna_bridge = antenna_bridge
+        self._rig_bridge_manager = rig_bridge_manager
         self._on_asnearest_select_cb = on_asnearest_select_cb
         self._on_map_page_ready_cb = on_map_page_ready_cb
         self.setWindowTitle(t("map.title"))
@@ -423,6 +426,30 @@ class MapWindow(QDialog):
             "asnearest_tooltip_path": t("map.asnearest_tooltip_path"),
             "asnearest_tooltip_catpath": t("map.asnearest_tooltip_catpath"),
             "aswatch_use_cluster": bool(ui.get("map_aswatch_cluster_enabled", True)),
+            **self._rig_frequency_map_fields(),
+        }
+
+    def _rig_frequency_map_fields(self) -> dict:
+        """Label + Anzeigetext für die Karten-Infozeile „Frequenz“ (nur wenn Rig online)."""
+        rb_cfg = self.cfg.get("rig_bridge") or {}
+        rig_mod = bool(rb_cfg.get("enabled", False))
+        rbm = getattr(self, "_rig_bridge_manager", None)
+        show = False
+        text = "—"
+        if rig_mod and rbm is not None:
+            try:
+                st = rbm.status_model()
+                show = bool(st.radio_connected and not st.connecting)
+                if show:
+                    hz = int(st.frequency_hz or 0)
+                    text = f"{format_rig_freq_mhz(hz)} MHz" if hz > 0 else "—"
+            except Exception:
+                show = False
+                text = "—"
+        return {
+            "rig_freq_show": show,
+            "info_frequenz": t("map.info_frequenz"),
+            "rig_freq_text": text,
         }
 
     def _compute_beams(self, rotor_az_deg: float, antenna_idx: int) -> list[dict]:
@@ -1000,7 +1027,7 @@ class MapWindow(QDialog):
         home_lat, home_lon = effective_station_lat_lon(ui)
         dark = bool(ui.get("force_dark_mode", True))
         antenna_height = float(ui.get("antenna_height_m", 0.0))
-        freq_mhz = float(ui.get("rf_freq_mhz", 145.0))
+        freq_mhz = initial_elevation_freq_mhz(self.cfg, self._rig_bridge_manager)
 
         # Kein Ziel gesetzt → Heimposition als Ziel (Entfernung = 0)
         target_lat = self._target_lat if self._target_lat is not None else home_lat
@@ -1020,6 +1047,7 @@ class MapWindow(QDialog):
             save_cfg_cb=self.save_cfg_cb,
             dark=dark,
             parent=None,
+            rig_bridge_manager=self._rig_bridge_manager,
         )
         if self._internet_online is not None:
             self._elevation_win.apply_internet_status(self._internet_online)
@@ -1069,6 +1097,9 @@ class MapWindow(QDialog):
                 "info_standort": params["info_standort"],
                 "info_offnung": params["info_offnung"],
                 "info_reichweite": params["info_reichweite"],
+                "rig_freq_show": params.get("rig_freq_show", False),
+                "info_frequenz": params.get("info_frequenz", "Frequenz"),
+                "rig_freq_text": params.get("rig_freq_text", "—"),
                 "horizon_dist_km": params.get("horizon_dist_km", 0.0),
                 "popup_antenna": params.get("popup_antenna", "Antennenstandort"),
                 "popup_target": params.get("popup_target", "Ziel"),

@@ -55,6 +55,33 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "pwm": {"set_on_connect": False, "value_pct": 100.0},
     "behavior": {"auto_reference_on_connect": False},
+    "rig_bridge": {
+        "enabled": False,
+        "selected_rig": "Generic CAT",
+        "rig_brand": "Generisch",
+        "rig_model": "CAT (generisch)",
+        "hamlib_rig_id": 0,
+        "com_port": "COM1",
+        "baudrate": 9600,
+        "databits": 8,
+        "stopbits": 1,
+        "parity": "N",
+        "timeout_s": 0.2,
+        "polling_interval_ms": 30,
+        "auto_connect": False,
+        "auto_reconnect": True,
+        "log_serial_traffic": True,
+        "cat_post_write_drain_ms": 50,
+        "setfreq_gap_ms": 10,
+        "flrig": {"enabled": False, "host": "127.0.0.1", "port": 12345, "autostart": False},
+        "hamlib": {
+            "enabled": False,
+            "host": "127.0.0.1",
+            "listeners": [{"port": 4532, "name": ""}],
+            "autostart": False,
+            "debug_traffic": False,
+        },
+    },
     "ui": {
         # Frei belegbare Schnell-Buttons (werden in der GUI im Fenster "Befehle" verwaltet)
         # Format: Liste mit 15 Einträgen.
@@ -153,6 +180,29 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "map_aswatch_only_asnearest_list": False,
         # Karte: Leaflet MarkerCluster für ASWATCH-User (aus = einzelne Marker)
         "map_aswatch_cluster_enabled": True,
+        # Globale Tastenkürzel (Windows RegisterHotKey; siehe Einstellungen → Shortcuts)
+        "global_shortcuts": {
+            "enabled": True,
+            "modifier_1": "shift",
+            "modifier_2": "alt",
+            "antenna_deg_w": 0.0,
+            "antenna_deg_d": 90.0,
+            "antenna_deg_s": 180.0,
+            "antenna_deg_a": 270.0,
+            "key_win_alt_w": "W",
+            "key_win_alt_d": "D",
+            "key_win_alt_s": "S",
+            "key_win_alt_a": "A",
+            "key_win_alt_compass": "K",
+            "key_win_alt_map": "M",
+            "key_win_alt_elevation": "H",
+            "key_ctrl_alt_plus": "E",
+            "key_ctrl_alt_minus": "Q",
+            "target_step_deg": 5.0,
+            "el_target_step_deg": 5.0,
+            "key_el_target_plus": "R",
+            "key_el_target_minus": "F",
+        },
     },
 }
 

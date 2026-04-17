@@ -58,6 +58,9 @@ from ..i18n import format_tooltip_html, load_lang, t, tt
 from ..geo_utils import maidenhead_to_lat_lon
 from ..net_utils import ipv4_subnet_broadcast_default
 from ..rotor_controller import SYNC_UI_NAK_PREFIX
+from ..rig_bridge.manager import RigBridgeManager
+from .settings_rig_bridge_tab import RigBridgeTab
+from .settings_shortcuts_tab import ShortcutsTab
 from .led_widget import Led
 from .ui_utils import px_to_dip
 
@@ -102,6 +105,7 @@ class SettingsWindow(QDialog):
         save_cfg_cb,
         logbuf,
         after_apply_cb,
+        rig_bridge_manager: RigBridgeManager | None = None,
         rebuild_ui_cb=None,
         map_window=None,
         parent=None,
@@ -114,6 +118,7 @@ class SettingsWindow(QDialog):
         self.save_cfg_cb = save_cfg_cb
         self.logbuf = logbuf
         self.after_apply_cb = after_apply_cb
+        self.rig_bridge_manager = rig_bridge_manager
         self.rebuild_ui_cb = rebuild_ui_cb
         self._map_window = map_window
         self._antenna_giveup_done = False
@@ -125,7 +130,7 @@ class SettingsWindow(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
         # Breite fix; Höhe frei skalierbar (niedrige Mindesthöhe). Start-Höhe beim Öffnen: _settings_open_height_dip.
-        self._settings_base_width_dip = 600
+        self._settings_base_width_dip = 700
         self._settings_min_height_dip = 320
         self._settings_open_height_dip = 710
         self.setFixedWidth(px_to_dip(self, self._settings_base_width_dip))
@@ -1143,6 +1148,12 @@ class SettingsWindow(QDialog):
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Preferred,
         )
+        self._rig_bridge_tab = RigBridgeTab(
+            self.cfg,
+            self.rig_bridge_manager if self.rig_bridge_manager is not None else RigBridgeManager(self.cfg.get("rig_bridge", {}), self.logbuf.write),
+            self.save_cfg_cb,
+            self,
+        )
         self._settings_stack.addWidget(_scroll_page(pg_ui))
         self._settings_stack.addWidget(_scroll_page(pg_links))
         self._settings_stack.addWidget(_scroll_page(pg_external_programs))
@@ -1150,9 +1161,14 @@ class SettingsWindow(QDialog):
         self._settings_stack.addWidget(_scroll_page(pg_compass))
         self._settings_stack.addWidget(_scroll_page(pg_stats))
         self._settings_stack.addWidget(_scroll_page(pg_controller))
+        self._settings_stack.addWidget(_scroll_page(self._rig_bridge_tab))
+        self._shortcuts_tab = ShortcutsTab(self.cfg, self)
+        self._settings_stack.addWidget(_scroll_page(self._shortcuts_tab))
         self._tab_antenna_index = 3
         self._tab_statistics_index = 5
         self._tab_controller_index = 6
+        self._tab_rig_bridge_index = 7
+        self._tab_shortcuts_index = 8
         self._calvalid_timer = QTimer(self)
         self._calvalid_timer.setInterval(5000)
         self._calvalid_timer.timeout.connect(self._poll_getcalvalid_once)
@@ -1177,6 +1193,8 @@ class SettingsWindow(QDialog):
             t("settings.tab_compass"),
             t("settings.tab_statistics"),
             t("settings.tab_controller"),
+            "Rig-Bridge",
+            t("settings.tab_shortcuts"),
         ):
             self._settings_nav.addItem(_lbl)
         self._settings_nav.currentRowChanged.connect(self._on_settings_nav_changed)
@@ -1207,6 +1225,7 @@ class SettingsWindow(QDialog):
         self.chk_enable_el.installEventFilter(self)
         self.chk_enable_az.stateChanged.connect(self._update_antenna_visibility)
         self.chk_enable_el.stateChanged.connect(self._update_antenna_visibility)
+        self.chk_enable_el.stateChanged.connect(self._shortcuts_tab.refresh_el_visibility)
         self._update_antenna_visibility()
 
         # Versatz- und Öffnungswinkel-Änderungen sofort in Config schreiben (Kompass liest daraus)
@@ -1283,6 +1302,7 @@ class SettingsWindow(QDialog):
             self.ctrl.request_immediate_stats()
         self._antenna_giveup_done = False
         self._update_antenna_visibility()
+        self._shortcuts_tab.refresh_el_visibility()
         self._update_antenna_offset_enabled()
         self._update_status_on_open()
         self._request_antenna_offsets_if_needed()
@@ -1840,7 +1860,7 @@ class SettingsWindow(QDialog):
 
         def on_done(ok: bool):
             result[0] = ok
-            QMetaObject.invokeMethod(event_loop, "quit", Qt.ConnectionType.QueuedConnection)
+            QMetaObject.invokeMethod(event_loop, b"quit", Qt.ConnectionType.QueuedConnection)
 
         safety_timer = QTimer(self)
         safety_timer.setSingleShot(True)
@@ -1859,7 +1879,7 @@ class SettingsWindow(QDialog):
 
         def on_done(ok: bool):
             result[0] = ok
-            QMetaObject.invokeMethod(event_loop, "quit", Qt.ConnectionType.QueuedConnection)
+            QMetaObject.invokeMethod(event_loop, b"quit", Qt.ConnectionType.QueuedConnection)
 
         safety_timer = QTimer(self)
         safety_timer.setSingleShot(True)
@@ -1902,6 +1922,8 @@ class SettingsWindow(QDialog):
             QTimer.singleShot(0, self._load_controller_antenna_names_from_bus)
         if row == getattr(self, "_tab_controller_index", -1):
             QTimer.singleShot(0, self._load_controller_from_bus)
+        if row == getattr(self, "_tab_shortcuts_index", -1):
+            self._shortcuts_tab.refresh_el_visibility()
 
     def _apply_settings_nav_style(self) -> None:
         """Sidebar wie große Kacheln; Farben aus der System-/App-Palette (Highlight, Base, …)."""
@@ -2279,6 +2301,17 @@ class SettingsWindow(QDialog):
         uih["compass_om_radar_sectors"] = int(self.sp_compass_om_sectors.value())
         uih["compass_dwell_sectors"] = int(self.sp_compass_dwell_sectors.value())
         uih["compass_dwell_full_minutes"] = float(self.sp_compass_dwell_minutes.value())
+        try:
+            self.cfg["rig_bridge"] = self._rig_bridge_tab.to_config()
+            if self.rig_bridge_manager is not None:
+                self.rig_bridge_manager.update_config(self.cfg["rig_bridge"])
+        except Exception as exc:
+            self.logbuf.write("WARN", f"Rig-Bridge Konfigurationsübernahme fehlgeschlagen: {exc}")
+
+        try:
+            self._shortcuts_tab.apply_to_cfg(self.cfg)
+        except Exception as exc:
+            self.logbuf.write("WARN", f"Shortcuts-Konfiguration: {exc}")
 
         chw = self.cfg.setdefault("controller_hw", {})
         chw["enabled"] = bool(self.chk_hw_controller_enabled.isChecked())

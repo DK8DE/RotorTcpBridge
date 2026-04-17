@@ -6,6 +6,7 @@ from typing import Callable, Optional
 from PySide6.QtCore import QEvent, QTimer, Qt, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QHideEvent, QPalette, QShowEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QGridLayout,
@@ -25,6 +26,7 @@ from ..app_icon import get_app_icon
 from ..angle_utils import clamp_el, fmt_deg, om_beam_contributions_per_sector, wrap_deg
 from ..geo_utils import bearing_deg, effective_station_lat_lon, haversine_km, maidenhead_to_lat_lon
 from ..i18n import t, tt
+from ..ui.rig_freq_utils import format_rig_freq_mhz, parse_rig_freq_mhz_text
 from ..ui.favorite_selection_sync import (
     apply_saved_selection_to_favorites_combo,
     clear_selection_if_favorite_removed,
@@ -47,12 +49,14 @@ class CompassWindow(QDialog):
         parent=None,
         antenna_bridge=None,
         open_map_cb: Optional[Callable[[], None]] = None,
+        rig_bridge_manager=None,
     ):
         super().__init__(parent)
         self.cfg = cfg
         self.ctrl = controller
         self.save_cfg_cb = save_cfg_cb
         self._antenna_bridge = antenna_bridge
+        self._rig_bridge_manager = rig_bridge_manager
         self.setWindowTitle(t("compass.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
@@ -97,7 +101,33 @@ class CompassWindow(QDialog):
         self.cb_antenna.setMinimumWidth(160)
         self.cb_antenna.setCurrentIndex(antenna_idx)
         self.cb_antenna.currentIndexChanged.connect(self._on_antenna_changed)
+        self._w_rig_freq_row: QWidget | None = None
+        self._ed_rig_freq: QLineEdit | None = None
+        self._lbl_rig_freq_suffix: QLabel | None = None
+        self._rig_freq_poll_timer: QTimer | None = None
+        if rig_bridge_manager is not None:
+            self._w_rig_freq_row = QWidget()
+            hl_rf = QHBoxLayout(self._w_rig_freq_row)
+            hl_rf.setContentsMargins(0, 0, 0, 0)
+            hl_rf.setSpacing(px_to_dip(self, 4))
+            self._ed_rig_freq = QLineEdit()
+            self._ed_rig_freq.setPlaceholderText(t("main.rig_freq_placeholder"))
+            self._ed_rig_freq.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._ed_rig_freq.setFixedWidth(px_to_dip(self, 104))
+            self._lbl_rig_freq_suffix = QLabel(t("main.rig_freq_suffix"))
+            hl_rf.addWidget(self._ed_rig_freq)
+            hl_rf.addWidget(self._lbl_rig_freq_suffix)
+            self._w_rig_freq_row.setVisible(False)
+            self._ed_rig_freq.editingFinished.connect(self._on_compass_rig_freq_editing_finished)
+            self._rig_freq_poll_timer = QTimer(self)
+            self._rig_freq_poll_timer.setInterval(1000)
+            self._rig_freq_poll_timer.timeout.connect(self._on_rig_freq_poll)
+            _app = QApplication.instance()
+            if _app is not None:
+                _app.installEventFilter(self)
         az_antenna_row = QHBoxLayout()
+        if self._w_rig_freq_row is not None:
+            az_antenna_row.addWidget(self._w_rig_freq_row, 0)
         az_antenna_row.addStretch(1)
         az_antenna_row.addWidget(self.cb_antenna)
         self._btn_open_map: Optional[QPushButton] = None
@@ -365,12 +395,28 @@ class CompassWindow(QDialog):
     def hideEvent(self, event: QHideEvent) -> None:
         """Minimieren: wie schließen für Bus-Polling (closeEvent fehlt bei Minimize)."""
         self._antenna_request_timer.stop()
+        try:
+            if self._rig_freq_poll_timer is not None:
+                self._rig_freq_poll_timer.stop()
+        except Exception:
+            pass
         if hasattr(self.ctrl, "set_compass_window_open"):
             self.ctrl.set_compass_window_open(False)
         super().hideEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._antenna_request_timer.stop()
+        try:
+            if self._rig_freq_poll_timer is not None:
+                self._rig_freq_poll_timer.stop()
+        except Exception:
+            pass
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self)
+        except Exception:
+            pass
         if hasattr(self.ctrl, "on_antenna_offsets_changed"):
             self.ctrl.on_antenna_offsets_changed = None
         if hasattr(self.ctrl, "set_compass_window_open"):
@@ -941,6 +987,10 @@ class CompassWindow(QDialog):
         self.lbl_az_locator.setText(t("compass.locator_label"))
         self.ed_az_locator.setPlaceholderText(t("compass.locator_placeholder"))
         self.ed_az_locator.setToolTip(tt("compass.locator_tooltip"))
+        if self._lbl_rig_freq_suffix is not None:
+            self._lbl_rig_freq_suffix.setText(t("main.rig_freq_suffix"))
+        if self._ed_rig_freq is not None:
+            self._ed_rig_freq.setPlaceholderText(t("main.rig_freq_placeholder"))
 
     def refresh_visibility(self) -> None:
         az_on = bool(getattr(self.ctrl, "enable_az", True))
@@ -975,6 +1025,89 @@ class CompassWindow(QDialog):
         except Exception:
             pass
 
+    def eventFilter(self, watched, event):  # noqa: N802
+        try:
+            if event.type() == QEvent.Type.MouseButtonPress:
+                ed = self._ed_rig_freq
+                if ed is not None and ed.hasFocus() and ed.isVisible():
+                    if isinstance(watched, QWidget):
+                        if watched is not ed and not ed.isAncestorOf(watched):
+                            ed.clearFocus()
+        except Exception:
+            pass
+        return False
+
+    def _on_rig_freq_poll(self) -> None:
+        rbm = self._rig_bridge_manager
+        if rbm is None or not self.isVisible():
+            return
+        try:
+            rb_cfg = self.cfg.get("rig_bridge") or {}
+            if not bool(rb_cfg.get("enabled", False)):
+                return
+            st = rbm.status_model()
+            if not st.radio_connected or st.connecting:
+                return
+            rbm.enqueue_read_frequency()
+        except Exception:
+            pass
+
+    def _on_compass_rig_freq_editing_finished(self) -> None:
+        rbm = self._rig_bridge_manager
+        ed = self._ed_rig_freq
+        if rbm is None or ed is None:
+            return
+        try:
+            rb_cfg = self.cfg.get("rig_bridge") or {}
+            if not bool(rb_cfg.get("enabled", False)):
+                return
+            st = rbm.status_model()
+            if not st.radio_connected:
+                return
+            hz = parse_rig_freq_mhz_text(ed.text())
+            if hz is None:
+                return
+            cur = int(st.frequency_hz or 0)
+            if cur > 0 and abs(hz - cur) < 2:
+                return
+            rbm.enqueue_set_frequency_hz(hz)
+        except Exception:
+            pass
+
+    def _update_rig_frequency_ui(self) -> None:
+        row = self._w_rig_freq_row
+        rbm = self._rig_bridge_manager
+        ed = self._ed_rig_freq
+        if row is None or rbm is None or ed is None:
+            return
+        rb_cfg = self.cfg.get("rig_bridge") or {}
+        if not bool(rb_cfg.get("enabled", False)):
+            if row.isVisible():
+                row.setVisible(False)
+                if self._rig_freq_poll_timer is not None:
+                    self._rig_freq_poll_timer.stop()
+            return
+        try:
+            st = rbm.status_model()
+        except Exception:
+            return
+        vis = bool(st.radio_connected and not st.connecting)
+        prev = row.isVisible()
+        row.setVisible(vis)
+        if vis and not prev and self._rig_freq_poll_timer is not None:
+            self._rig_freq_poll_timer.start()
+            self._on_rig_freq_poll()
+        if not vis and prev and self._rig_freq_poll_timer is not None:
+            self._rig_freq_poll_timer.stop()
+        if vis:
+            hz_disp = int(st.frequency_hz or 0)
+            if not ed.hasFocus():
+                txt = format_rig_freq_mhz(hz_disp) if hz_disp > 0 else ""
+                if ed.text() != txt:
+                    ed.blockSignals(True)
+                    ed.setText(txt)
+                    ed.blockSignals(False)
+
     @Slot()
     def _tick(self) -> None:
         self.refresh_visibility()
@@ -999,6 +1132,7 @@ class CompassWindow(QDialog):
                 self._notify_ctrl_strom_heatmap_flags()
             except Exception:
                 pass
+        self._update_rig_frequency_ui()
 
     def _get_antenna_offset_az(self) -> float:
         """Versatz der gewählten Antenne für AZ (0–360°). Rotor-Werte vor Config-Fallback."""

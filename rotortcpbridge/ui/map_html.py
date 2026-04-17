@@ -53,6 +53,12 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     popup_target = params.get("popup_target", "Ziel")
     info_offnung = params.get("info_offnung", "Öffnungswinkel")
     info_reichweite = params.get("info_reichweite", "Reichweite")
+    rig_freq_show = bool(params.get("rig_freq_show", False))
+    info_frequenz = params.get("info_frequenz", "Frequenz")
+    rig_freq_text = params.get("rig_freq_text", "—")
+    rig_freq_block = ""
+    if rig_freq_show:
+        rig_freq_block = f"<div><strong>{info_frequenz}:</strong> {rig_freq_text}</div>"
     asnearest_title = params.get("asnearest_title", "Nächste Verbindungen")
     aswatch_users_online = params.get("aswatch_users_online", "User online: {count}")
     asnearest_col_call = params.get("asnearest_col_call", "Rufzeichen")
@@ -268,6 +274,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       <div><strong>{info_standort}:</strong> {loc_str}</div>
       <div><strong>{info_offnung}:</strong> {opening:.1f}°</div>
       <div><strong>{info_reichweite}:</strong> {range_km:.1f} km</div>
+      {rig_freq_block}
     </div>
     <div id="asnearestBlock" style="display:none;">
       <div id="asnearestTitle" style="font-weight:600;margin-bottom:4px;"></div>
@@ -846,9 +853,15 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         horizonCircle = L.circle([data.lat, data.lon], {{ radius: hKm * 1000, color: horizonColor, weight: 2, dashArray: '8, 8', fill: false, fillOpacity: 0, interactive: false }}).addTo(map);
       }}
       const infoMain = document.getElementById('infoMain');
-      if (infoMain) infoMain.innerHTML = '<div><strong>' + (data.info_standort || 'Standort') + ':</strong> ' + data.location_str + '</div>' +
-        '<div><strong>' + (data.info_offnung || 'Öffnungswinkel') + ':</strong> ' + data.opening.toFixed(1) + '°</div>' +
-        '<div><strong>' + (data.info_reichweite || 'Reichweite') + ':</strong> ' + data.range_km.toFixed(1) + ' km</div>';
+      if (infoMain) {{
+        let html = '<div><strong>' + (data.info_standort || 'Standort') + ':</strong> ' + data.location_str + '</div>' +
+          '<div><strong>' + (data.info_offnung || 'Öffnungswinkel') + ':</strong> ' + data.opening.toFixed(1) + '°</div>' +
+          '<div><strong>' + (data.info_reichweite || 'Reichweite') + ':</strong> ' + data.range_km.toFixed(1) + ' km</div>';
+        if (data.rig_freq_show) {{
+          html += '<div><strong>' + (data.info_frequenz || 'Frequenz') + ':</strong> ' + (data.rig_freq_text || '—') + '</div>';
+        }}
+        infoMain.innerHTML = html;
+      }}
     }};
 
     const OFFLINE_TILE_URL_LIGHT = {json.dumps(tile_url_light)};

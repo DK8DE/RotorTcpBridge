@@ -10,7 +10,7 @@
     Git-Remote-Name (Standard: origin).
 
 .PARAMETER DryRun
-    Zeigt nur Version, Tag und die geplanten Befehle — führt kein git tag / git push aus.
+    Zeigt nur Version, Tag und die geplanten Befehle; kein git tag / git push.
 
 .PARAMETER Force
     Bei schmutzigem Arbeitsverzeichnis keine Rückfrage (für Skripte/CI).
@@ -46,7 +46,7 @@ if ($appVersion -eq "") {
     throw "APP_VERSION ist leer."
 }
 
-# Workflow: tags 'v*' und refs/tags/v — konsistent mit build-windows.yml (Tag ohne v in Inno, mit v im Git-Tag)
+# Workflow: tags 'v*' / refs/tags/v (build-windows.yml): Inno-Version ohne fuehrendes v, Git-Tag mit v
 $tag = "v$appVersion"
 
 Push-Location $ProjectRoot
@@ -57,11 +57,11 @@ try {
 
     $dirty = (git status --porcelain 2>$null)
     if ($dirty -and -not $Force -and -not $DryRun) {
-        Write-Warning "Arbeitsverzeichnis ist nicht leer (uncommittete Änderungen). Der Tag zeigt nur auf den letzten Commit — nicht auf ungespeicherte Dateien."
+        Write-Warning "Arbeitsverzeichnis ist nicht leer (uncommittete Aenderungen). Der Tag zeigt nur auf den letzten Commit, nicht auf ungespeicherte Dateien."
         $null = Read-Host "Enter zum Fortfahren oder Strg+C zum Abbrechen"
     }
     elseif ($dirty -and $DryRun) {
-        Write-Warning "Arbeitsverzeichnis ist nicht leer — vor echtem Release committen, sonst fehlen Änderungen im Tag."
+        Write-Warning "Arbeitsverzeichnis ist nicht leer: vor echtem Release committen, sonst fehlen Aenderungen im Tag."
     }
 
     $head = (git rev-parse --short HEAD 2>$null)
@@ -73,28 +73,27 @@ try {
 
     $existingLocal = git tag -l $tag 2>$null
     if ($existingLocal) {
-        $tip = git rev-parse "$tag^{}" 2>$null
+        $tip = git rev-parse ($tag + '^' + '{}') 2>$null
         if ($tip -eq (git rev-parse HEAD 2>$null)) {
-            Write-Host "Tag existiert lokal bereits und zeigt auf HEAD — nur Push nötig." -ForegroundColor Yellow
+            Write-Host "Tag existiert lokal bereits und zeigt auf HEAD; nur Push noetig." -ForegroundColor Yellow
         }
         else {
             throw "Tag $tag existiert lokal auf einem anderen Commit. Entfernen mit: git tag -d $tag`nOder Version in version.py erhöhen."
         }
     }
 
-    $remoteRef = "refs/tags/$tag"
     $onRemote = git ls-remote --tags $Remote $tag 2>$null
     if ($onRemote) {
         throw "Tag $tag existiert bereits auf $Remote. Für ein neues Release: version.py anheben oder Remote-Tag löschen (git push $Remote --delete $tag)."
     }
 
     if ($DryRun) {
-        Write-Host "[DryRun] Geplante Befehle:" -ForegroundColor Magenta
+        Write-Host '[DryRun] Geplante Befehle:' -ForegroundColor Magenta
         if (-not $existingLocal) {
             Write-Host "  git tag $tag" -ForegroundColor Magenta
         }
         Write-Host "  git push $Remote $tag" -ForegroundColor Magenta
-        Write-Host "`nKeine Änderungen ausgeführt." -ForegroundColor Magenta
+        Write-Host "`nKeine Aenderungen ausgefuehrt." -ForegroundColor Magenta
         return
     }
 
@@ -109,7 +108,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "git push fehlgeschlagen (Exit $LASTEXITCODE)." }
 
     Write-Host "`nFertig. GitHub Actions sollte jetzt den Release-Workflow starten (ZIP + Inno Setup)." -ForegroundColor Green
-    Write-Host "Auf GitHub: Repository öffnen → Tab „Actions“, danach „Releases“ prüfen." -ForegroundColor Green
+    Write-Host "Auf GitHub: Repository oeffnen, Tab Actions, danach Releases pruefen." -ForegroundColor Green
 }
 finally {
     Pop-Location

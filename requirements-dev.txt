@@ -1,6 +1,8 @@
-# Entwicklung / Tests (optional): pip install -r requirements-dev.txt
+# Entwicklung / Tests / Build (optional): pip install -r requirements-dev.txt
 -r requirements.txt
 pytest>=8.0
 ruff>=0.8
+# PyInstaller (build.ps1 nutzt .venv\Scripts\pyinstaller.exe)
+pyinstaller>=6.10,<8
 # tools/optimize_map_assets.py (PNG für Karte/Installer verkleinern)
 Pillow>=10.0

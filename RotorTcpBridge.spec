@@ -54,6 +54,7 @@ a = Analysis(
         ('rotortcpbridge\\Antenne.png',              'rotortcpbridge'),
         ('rotortcpbridge\\Antenne_T.png',            'rotortcpbridge'),
         ('rotortcpbridge\\User.PNG',                 'rotortcpbridge'),
+        ('rotortcpbridge\\User_ACC.png',             'rotortcpbridge'),
         # Sprachdateien
         ('rotortcpbridge\\locales\\de.json',         'rotortcpbridge\\locales'),
         ('rotortcpbridge\\locales\\en.json',         'rotortcpbridge\\locales'),
@@ -66,7 +67,14 @@ a = Analysis(
         ('rotortcpbridge\\static\\MarkerCluster.css', 'rotortcpbridge\\static'),
         ('rotortcpbridge\\static\\MarkerCluster.Default.css', 'rotortcpbridge\\static'),
     ],
-    hiddenimports=[],
+    hiddenimports=[
+        # Qt WebEngine (Karte / Elevation) — teils nicht über run.py erreichbar
+        'PySide6.QtWebEngineWidgets',
+        'PySide6.QtWebEngineCore',
+        # pyserial: dynamischer Import in ports.py / hardware_client
+        'serial',
+        'serial.tools.list_ports',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

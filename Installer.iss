@@ -6,11 +6,15 @@
 #endif
 #define MyAppPublisher "Joerg Koerner DK8DE"
 #define MyAppURL "https://github.com/dk8de/RotorTcpBridge"
-#define MySourceDir "D:\\Rotor\\RotorTcpBridge\\dist\\RotorTcpBridge"
-#define MyProjDir "D:\\Rotor\\RotorTcpBridge"
+; Projektroot: standardmäßig Ordner der Installer.iss (GitHub Actions, lokaler Build).
+; Optional überschreiben: ISCC /DMyProjDir=C:\pfad\zum\repo Installer.iss
+#ifndef MyProjDir
+  #define MyProjDir SourcePath
+#endif
+#define MySourceDir MyProjDir + "/dist/RotorTcpBridge"
 #define MyExeName "RotorTcpBridge.exe"
-#define MyAppIcon "D:\\Rotor\\RotorTcpBridge\\dist\\RotorTcpBridge\\_internal\\rotortcpbridge\\rotor.ico"
-#define MyInternalDir MySourceDir + "\\_internal\\rotortcpbridge"
+#define MyAppIcon MySourceDir + "/_internal/rotortcpbridge/rotor.ico"
+#define MyInternalDir MySourceDir + "/_internal/rotortcpbridge"
 ; AppId NIEMALS ändern – wird für Upgrade/Deinstallation benötigt
 #define MyAppId "A219D4FA-6E44-4A8E-A4D8-7DF7799632F8"
 
@@ -31,21 +35,21 @@ VersionInfoDescription={#MyAppName} Setup
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputDir=D:\Rotor\RotorTcpBridge\dist\installer
+OutputDir={#MyProjDir}\dist\installer
 OutputBaseFilename=RotorTcpBridge-Setup-{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 ; Linkes Bild nur Willkommen + Fertig: hohes Format (Seitenverhältnis ~164:314), kein Quadrat — sonst streckt Inno und wirkt verzerrt.
 ; Siehe https://jrsoftware.org/ishelp/topic_setup_wizardimagefile.htm (z. B. ≥240×459).
-WizardImageFile=Installer.png
+WizardImageFile={#MyProjDir}\Installer.png
 ; Oben rechts auf den übrigen Seiten (Lizenz, Ordner, …): quadratisch — https://jrsoftware.org/ishelp/topic_setup_wizardsmallimagefile.htm
-WizardSmallImageFile=InstallerSmall.png
+WizardSmallImageFile={#MyProjDir}\InstallerSmall.png
 PrivilegesRequired=admin
 SetupIconFile={#MyAppIcon}
 UninstallDisplayIcon={app}\{#MyExeName}
 ArchitecturesInstallIn64BitMode=x64compatible
-LicenseFile=D:\Rotor\RotorTcpBridge\LICENSE.txt
+LicenseFile={#MyProjDir}\LICENSE.txt
 ; Ältere Version wird per Code-Abschnitt automatisch deinstalliert (siehe unten).
 ; InstallMode=upgrade würde Dateien überschreiben, aber nicht löschen.
 CloseApplications=yes

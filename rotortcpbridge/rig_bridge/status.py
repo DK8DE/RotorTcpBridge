@@ -15,6 +15,8 @@ class RigBridgeStatusModel:
     connecting: bool = False
     radio_connected: bool = False
     selected_rig: str = ""
+    rig_brand: str = ""
+    rig_model: str = ""
     com_port: str = ""
     frequency_hz: int = 0
     mode: str = "USB"

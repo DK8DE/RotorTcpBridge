@@ -886,6 +886,13 @@ class ElevationProfileWindow(QDialog):
             pass
         super().closeEvent(event)
 
+    def keyPressEvent(self, event) -> None:
+        # ESC soll dieses Fenster nicht schließen (wie Kompassfenster).
+        if event.key() == Qt.Key.Key_Escape:
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
     # ── Datenabruf ────────────────────────────────────────────────────────
 
     def _fetch(self) -> None:

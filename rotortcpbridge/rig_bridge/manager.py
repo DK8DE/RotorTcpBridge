@@ -338,6 +338,8 @@ class RigBridgeManager:
             connecting=bool(self._radio.connecting),
             radio_connected=bool(st.get("connected", False)),
             selected_rig=str(st.get("selected_rig", "")),
+            rig_brand=str(getattr(self._cfg, "rig_brand", "") or ""),
+            rig_model=str(getattr(self._cfg, "rig_model", "") or ""),
             com_port=str(st.get("com_port", "")),
             frequency_hz=int(st.get("frequency_hz", 0)),
             mode=str(st.get("mode", "USB")),

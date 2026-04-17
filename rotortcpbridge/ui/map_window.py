@@ -1209,6 +1209,13 @@ class MapWindow(QDialog):
             self._elevation_win = None
         super().closeEvent(event)
 
+    def keyPressEvent(self, event) -> None:
+        # ESC soll dieses Fenster nicht schließen (wie Kompassfenster).
+        if event.key() == Qt.Key.Key_Escape:
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
     def showEvent(self, event):
         super().showEvent(event)
         self._refresh_antenna_dropdown()

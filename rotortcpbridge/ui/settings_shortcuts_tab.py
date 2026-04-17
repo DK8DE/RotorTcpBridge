@@ -40,14 +40,47 @@ def _modifier_combo(parent: QWidget, current: str) -> QComboBox:
     return cb
 
 
-def _letter_combo(parent: QWidget, current: str) -> QComboBox:
-    cb = QComboBox(parent)
+# Zusätzliche Tasten (VK siehe global_hotkeys_win.vk_from_key_spec)
+_SPECIAL_HOTKEY_ENTRIES: tuple[tuple[str, str], ...] = (
+    ("settings.shortcuts_key_left", "LEFT"),
+    ("settings.shortcuts_key_up", "UP"),
+    ("settings.shortcuts_key_right", "RIGHT"),
+    ("settings.shortcuts_key_down", "DOWN"),
+    ("settings.shortcuts_key_page_up", "PRIOR"),
+    ("settings.shortcuts_key_page_down", "NEXT"),
+    ("settings.shortcuts_key_plus", "OEM_PLUS"),
+    ("settings.shortcuts_key_minus", "OEM_MINUS"),
+)
+
+
+def _fill_hotkey_combo(cb: QComboBox) -> None:
     for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
         cb.addItem(c, c)
-    u = (current or "A").strip().upper()[:1]
-    if u not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-        u = "A"
-    cb.setCurrentIndex(ord(u) - ord("A"))
+    for tr_key, data in _SPECIAL_HOTKEY_ENTRIES:
+        cb.addItem(t(tr_key), data)
+
+
+def _select_hotkey_combo(cb: QComboBox, saved: str, default: str) -> None:
+    s = str(saved if saved is not None else default).strip().upper()
+    if len(s) == 1 and s not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        s = str(default).strip().upper()
+    for i in range(cb.count()):
+        if str(cb.itemData(i) or "") == s:
+            cb.setCurrentIndex(i)
+            return
+    d = str(default).strip().upper()
+    if len(d) == 1 and d in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        for i in range(cb.count()):
+            if cb.itemData(i) == d:
+                cb.setCurrentIndex(i)
+                return
+    cb.setCurrentIndex(0)
+
+
+def _hotkey_key_combo(parent: QWidget, initial: str) -> QComboBox:
+    cb = QComboBox(parent)
+    _fill_hotkey_combo(cb)
+    _select_hotkey_combo(cb, initial, initial)
     return cb
 
 
@@ -70,8 +103,8 @@ class ShortcutsTab(QWidget):
 
         g_mod = QGroupBox(t("settings.shortcuts_modifiers_group"))
         fm = QFormLayout(g_mod)
-        self.cb_mod1 = _modifier_combo(self, "shift")
-        self.cb_mod2 = _modifier_combo(self, "alt")
+        self.cb_mod1 = _modifier_combo(self, "control")
+        self.cb_mod2 = _modifier_combo(self, "shift")
         self.cb_mod1.setToolTip(tt("settings.shortcuts_modifier_tooltip"))
         self.cb_mod2.setToolTip(tt("settings.shortcuts_modifier_tooltip"))
         fm.addRow(t("settings.shortcuts_modifier_slot1"), self.cb_mod1)
@@ -83,10 +116,10 @@ class ShortcutsTab(QWidget):
 
         g_rot = QGroupBox(t("settings.shortcuts_group_rotor"))
         fl = QFormLayout(g_rot)
-        self.cb_w = _letter_combo(self, "W")
-        self.cb_d = _letter_combo(self, "D")
-        self.cb_s = _letter_combo(self, "S")
-        self.cb_a = _letter_combo(self, "A")
+        self.cb_w = _hotkey_key_combo(self, "UP")
+        self.cb_d = _hotkey_key_combo(self, "RIGHT")
+        self.cb_s = _hotkey_key_combo(self, "DOWN")
+        self.cb_a = _hotkey_key_combo(self, "LEFT")
         self.sp_deg_w = QDoubleSpinBox()
         self.sp_deg_d = QDoubleSpinBox()
         self.sp_deg_s = QDoubleSpinBox()
@@ -104,9 +137,9 @@ class ShortcutsTab(QWidget):
 
         g_win = QGroupBox(t("settings.shortcuts_group_windows"))
         f2 = QFormLayout(g_win)
-        self.cb_k = _letter_combo(self, "K")
-        self.cb_m = _letter_combo(self, "M")
-        self.cb_h = _letter_combo(self, "H")
+        self.cb_k = _hotkey_key_combo(self, "K")
+        self.cb_m = _hotkey_key_combo(self, "M")
+        self.cb_h = _hotkey_key_combo(self, "H")
         f2.addRow(t("settings.shortcuts_open_compass"), self.cb_k)
         f2.addRow(t("settings.shortcuts_open_map"), self.cb_m)
         f2.addRow(t("settings.shortcuts_open_elevation"), self.cb_h)
@@ -120,8 +153,8 @@ class ShortcutsTab(QWidget):
         self.sp_step.setSingleStep(1.0)
         self.sp_step.setSuffix("°")
         f3.addRow(t("settings.shortcuts_target_step_deg"), self.sp_step)
-        self.cb_e = _letter_combo(self, "E")
-        self.cb_q = _letter_combo(self, "Q")
+        self.cb_e = _hotkey_key_combo(self, "NEXT")
+        self.cb_q = _hotkey_key_combo(self, "PRIOR")
         f3.addRow(t("settings.shortcuts_target_plus"), self.cb_e)
         f3.addRow(t("settings.shortcuts_target_minus"), self.cb_q)
         root.addWidget(g_step)
@@ -133,8 +166,8 @@ class ShortcutsTab(QWidget):
         self.sp_el_step.setDecimals(1)
         self.sp_el_step.setSingleStep(1.0)
         self.sp_el_step.setSuffix("°")
-        self.cb_el_plus = _letter_combo(self, "R")
-        self.cb_el_minus = _letter_combo(self, "F")
+        self.cb_el_plus = _hotkey_key_combo(self, "R")
+        self.cb_el_minus = _hotkey_key_combo(self, "F")
         f_el.addRow(t("settings.shortcuts_el_target_step_deg"), self.sp_el_step)
         f_el.addRow(t("settings.shortcuts_el_target_plus"), self.cb_el_plus)
         f_el.addRow(t("settings.shortcuts_el_target_minus"), self.cb_el_minus)
@@ -143,6 +176,24 @@ class ShortcutsTab(QWidget):
         root.addStretch(1)
         self._load_from_cfg()
         self.refresh_el_visibility()
+
+    def retranslate_hotkey_combo_texts(self) -> None:
+        """Nach Sprachwechsel: Beschriftungen der Sondertasten in allen Combos aktualisieren."""
+        for cb in (
+            self.cb_w,
+            self.cb_d,
+            self.cb_s,
+            self.cb_a,
+            self.cb_k,
+            self.cb_m,
+            self.cb_h,
+            self.cb_e,
+            self.cb_q,
+            self.cb_el_plus,
+            self.cb_el_minus,
+        ):
+            for i, (tr_key, _data) in enumerate(_SPECIAL_HOTKEY_ENTRIES):
+                cb.setItemText(26 + i, t(tr_key))
 
     @staticmethod
     def _row_key_deg(cb: QComboBox, sp: QDoubleSpinBox) -> QWidget:
@@ -172,8 +223,8 @@ class ShortcutsTab(QWidget):
         gs = (self._cfg.get("ui") or {}).get("global_shortcuts") or {}
         self.chk_enabled.setChecked(bool(gs.get("enabled", True)))
         for cb, key, default in (
-            (self.cb_mod1, "modifier_1", "shift"),
-            (self.cb_mod2, "modifier_2", "alt"),
+            (self.cb_mod1, "modifier_1", "control"),
+            (self.cb_mod2, "modifier_2", "shift"),
         ):
             cur = str(gs.get(key, default) or default).strip().lower()
             if cur not in ("none", "alt", "control", "shift", "win"):
@@ -186,31 +237,25 @@ class ShortcutsTab(QWidget):
         self.sp_deg_d.setValue(float(gs.get("antenna_deg_d", 90.0)))
         self.sp_deg_s.setValue(float(gs.get("antenna_deg_s", 180.0)))
         self.sp_deg_a.setValue(float(gs.get("antenna_deg_a", 270.0)))
-        for cb, key in (
-            (self.cb_w, "key_win_alt_w"),
-            (self.cb_d, "key_win_alt_d"),
-            (self.cb_s, "key_win_alt_s"),
-            (self.cb_a, "key_win_alt_a"),
-            (self.cb_k, "key_win_alt_compass"),
-            (self.cb_m, "key_win_alt_map"),
-            (self.cb_h, "key_win_alt_elevation"),
-            (self.cb_e, "key_ctrl_alt_plus"),
-            (self.cb_q, "key_ctrl_alt_minus"),
+        for cb, key, default in (
+            (self.cb_w, "key_win_alt_w", "UP"),
+            (self.cb_d, "key_win_alt_d", "RIGHT"),
+            (self.cb_s, "key_win_alt_s", "DOWN"),
+            (self.cb_a, "key_win_alt_a", "LEFT"),
+            (self.cb_k, "key_win_alt_compass", "K"),
+            (self.cb_m, "key_win_alt_map", "M"),
+            (self.cb_h, "key_win_alt_elevation", "H"),
+            (self.cb_e, "key_ctrl_alt_plus", "NEXT"),
+            (self.cb_q, "key_ctrl_alt_minus", "PRIOR"),
         ):
-            u = str(gs.get(key, "A")).strip().upper()[:1]
-            if u not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-                u = "A"
-            cb.setCurrentIndex(ord(u) - ord("A"))
-        self.sp_step.setValue(float(gs.get("target_step_deg", 5.0)))
+            _select_hotkey_combo(cb, str(gs.get(key, default)), default)
+        self.sp_step.setValue(float(gs.get("target_step_deg", 3.0)))
         self.sp_el_step.setValue(float(gs.get("el_target_step_deg", 5.0)))
         for cb, key, default in (
             (self.cb_el_plus, "key_el_target_plus", "R"),
             (self.cb_el_minus, "key_el_target_minus", "F"),
         ):
-            u = str(gs.get(key, default)).strip().upper()[:1]
-            if u not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-                u = default
-            cb.setCurrentIndex(ord(u) - ord("A"))
+            _select_hotkey_combo(cb, str(gs.get(key, default)), default)
 
     def apply_to_cfg(self, cfg: dict) -> None:
         gs = cfg.setdefault("ui", {}).setdefault("global_shortcuts", {})

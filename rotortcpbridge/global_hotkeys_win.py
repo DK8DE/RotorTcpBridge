@@ -43,19 +43,31 @@ def modifiers_mask_from_config(gs: dict) -> int:
             return s
         return default
 
-    m1 = _one("modifier_1", "shift")
-    m2 = _one("modifier_2", "alt")
+    m1 = _one("modifier_1", "control")
+    m2 = _one("modifier_2", "shift")
     out = int(_MOD_NAME_TO_FLAG.get(m1, 0)) | int(_MOD_NAME_TO_FLAG.get(m2, 0))
     if out == 0:
-        out = MOD_SHIFT | MOD_ALT
+        out = MOD_CONTROL | MOD_SHIFT
     return out | MOD_NOREPEAT
 
 
-def vk_from_letter(ch: str) -> int:
-    u = (ch or "A").strip().upper()[:1]
-    if not u or not ("A" <= u <= "Z"):
-        return ord("A")
-    return ord(u)
+def vk_from_key_spec(spec: str) -> int:
+    """Buchstabe A–Z oder Token (LEFT, PRIOR, OEM_PLUS, …) → Virtual-Key für RegisterHotKey."""
+    s = (spec or "A").strip().upper()
+    if len(s) == 1 and "A" <= s <= "Z":
+        return ord(s)
+    # Pfeile, Bild↑/↓, +/− (Haupttastatur OEM)
+    vk_map: Dict[str, int] = {
+        "LEFT": 0x25,
+        "UP": 0x26,
+        "RIGHT": 0x27,
+        "DOWN": 0x28,
+        "PRIOR": 0x21,  # Page Up
+        "NEXT": 0x22,  # Page Down
+        "OEM_PLUS": 0xBB,
+        "OEM_MINUS": 0xBD,
+    }
+    return int(vk_map.get(s, ord("A")))
 
 
 def _voidptr_to_int(message: Any) -> int:
@@ -143,18 +155,18 @@ class GlobalHotkeyController:
         mods_all = modifiers_mask_from_config(gs)
         specs: List[Tuple[str, int, int]] = []
         # Reihenfolge: feste IDs pro Aktion — gleiche Modifikatoren für alle
-        def add(action: str, letter: str) -> None:
-            specs.append((action, mods_all, vk_from_letter(letter)))
+        def add(action: str, key_spec: str) -> None:
+            specs.append((action, mods_all, vk_from_key_spec(key_spec)))
 
-        add("rot_w", str(gs.get("key_win_alt_w", "W")))
-        add("rot_d", str(gs.get("key_win_alt_d", "D")))
-        add("rot_s", str(gs.get("key_win_alt_s", "S")))
-        add("rot_a", str(gs.get("key_win_alt_a", "A")))
+        add("rot_w", str(gs.get("key_win_alt_w", "UP")))
+        add("rot_d", str(gs.get("key_win_alt_d", "RIGHT")))
+        add("rot_s", str(gs.get("key_win_alt_s", "DOWN")))
+        add("rot_a", str(gs.get("key_win_alt_a", "LEFT")))
         add("open_compass", str(gs.get("key_win_alt_compass", "K")))
         add("open_map", str(gs.get("key_win_alt_map", "M")))
         add("open_elevation", str(gs.get("key_win_alt_elevation", "H")))
-        add("target_plus", str(gs.get("key_ctrl_alt_plus", "E")))
-        add("target_minus", str(gs.get("key_ctrl_alt_minus", "Q")))
+        add("target_plus", str(gs.get("key_ctrl_alt_plus", "NEXT")))
+        add("target_minus", str(gs.get("key_ctrl_alt_minus", "PRIOR")))
         rb = cfg.get("rotor_bus") or {}
         if bool(rb.get("enable_el", False)):
             add("el_target_plus", str(gs.get("key_el_target_plus", "R")))

@@ -226,6 +226,20 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             d10, sample_ts=time.time(), expected_period_s=exp
                         )
 
+                        # Erstes gültiges Ist nach Start: lokales Motor-Soll = Ist, sonst bleibt
+                        # target_d10 (Default 0) und UI/Kompass zeigen Soll 0° obwohl der Rotor steht.
+                        # Vor dem ref_poll_active-Return, damit es auch beim ersten Sample während Homing greift.
+                        if not had_prev_sample and getattr(
+                            axis_state, "compass_target_d10", None
+                        ) is None:
+                            try:
+                                d10_i = int(d10)
+                                axis_state.target_d10 = d10_i
+                                axis_state.last_set_sent_target_d10 = d10_i
+                                axis_state.last_set_sent_ts = time.time()
+                            except Exception:
+                                pass
+
                         # Während aktiver Referenzfahrt darf "moving" NICHT auf False fallen,
                         # auch wenn temporär keine sauberen Positions-Samples ankommen.
                         # Sonst blinkt die Anzeige "Fährt" zwischen ja/nein.

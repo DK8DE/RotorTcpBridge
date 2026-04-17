@@ -78,6 +78,17 @@ class MainWindow(QMainWindow):
             out[p] = str(it.get("name", "") or "").strip()
         return out
 
+    @staticmethod
+    def _rig_radio_identity_text(st) -> str:
+        """Marke und Modell für die Anzeige unter der Frequenz (Rig-Bridge-Config)."""
+        b = (getattr(st, "rig_brand", None) or "").strip()
+        m = (getattr(st, "rig_model", None) or "").strip()
+        n = (getattr(st, "selected_rig", None) or "").strip()
+        parts = [x for x in (b, m) if x]
+        if parts:
+            return " · ".join(parts)
+        return n
+
     def _srv_led_wrap(self, led: Led) -> QWidget:
         w = QWidget()
         l = QVBoxLayout(w)
@@ -243,15 +254,17 @@ class MainWindow(QMainWindow):
         top.addWidget(self.btn_open_map, 1)
         top.addWidget(self.btn_ref, 1)
 
-        self._rig_freq_row = QWidget()
+        self._rig_freq_row = QGroupBox(t("main.group_radio"))
         self._rig_freq_row.setVisible(False)
-        hl_rf = QHBoxLayout(self._rig_freq_row)
+        vl_rf = QVBoxLayout(self._rig_freq_row)
         try:
-            hl_rf.setContentsMargins(
+            vl_rf.setContentsMargins(
                 px_to_dip(self, 8), px_to_dip(self, 4), px_to_dip(self, 8), px_to_dip(self, 4)
             )
         except Exception:
             pass
+        vl_rf.setSpacing(px_to_dip(self, 4))
+        hl_rf = QHBoxLayout()
         hl_rf.setSpacing(px_to_dip(self, 6))
         self._ed_rig_freq = QLineEdit()
         self._ed_rig_freq.setPlaceholderText(t("main.rig_freq_placeholder"))
@@ -263,6 +276,16 @@ class MainWindow(QMainWindow):
         self._lbl_rig_freq_unit.setFont(_rf_font)
         hl_rf.addWidget(self._ed_rig_freq, 1)
         hl_rf.addWidget(self._lbl_rig_freq_unit, 0)
+        vl_rf.addLayout(hl_rf)
+        self._lbl_rig_identity = QLabel("")
+        _id_font = QFont(self._lbl_rig_identity.font())
+        _id_font.setPointSizeF(max(7.0, _id_font.pointSizeF() * 0.82))
+        self._lbl_rig_identity.setFont(_id_font)
+        self._lbl_rig_identity.setAlignment(
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+        )
+        self._lbl_rig_identity.setWordWrap(True)
+        vl_rf.addWidget(self._lbl_rig_identity)
         main.addWidget(self._rig_freq_row)
 
         self.gb_antenna = QGroupBox(t("main.group_antenna_select"))
@@ -610,11 +633,11 @@ class MainWindow(QMainWindow):
                 self._open_elevation_from_shortcut()
             elif action == "target_plus":
                 bump_antenna_target_deg(
-                    self.cfg, self.ctrl, float(gs.get("target_step_deg", 5.0))
+                    self.cfg, self.ctrl, float(gs.get("target_step_deg", 3.0))
                 )
             elif action == "target_minus":
                 bump_antenna_target_deg(
-                    self.cfg, self.ctrl, -float(gs.get("target_step_deg", 5.0))
+                    self.cfg, self.ctrl, -float(gs.get("target_step_deg", 3.0))
                 )
             elif action == "el_target_plus":
                 bump_el_target_deg(
@@ -735,6 +758,11 @@ class MainWindow(QMainWindow):
                 self.gb_antenna.setTitle(t("main.group_antenna_select"))
         except Exception:
             pass
+        try:
+            if hasattr(self, "_rig_freq_row"):
+                self._rig_freq_row.setTitle(t("main.group_radio"))
+        except Exception:
+            pass
         # Server-GroupBox: Überschriften + Beschriftungen der Formularzeilen
         try:
             self.gb_srv.setTitle(t("main.group_server"))
@@ -812,6 +840,12 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, "_compass_win") and hasattr(self._compass_win, "retranslate_ui"):
                 self._compass_win.retranslate_ui()
+        except Exception:
+            pass
+        try:
+            sw = getattr(self, "_settings_win", None)
+            if sw is not None and hasattr(sw, "_shortcuts_tab"):
+                sw._shortcuts_tab.retranslate_hotkey_combo_texts()
         except Exception:
             pass
 
@@ -1384,7 +1418,7 @@ class MainWindow(QMainWindow):
 
     def _apply_fixed_mainwindow_size(self):
         # Feste Fensterbreite (DIP) — schmales Hauptfenster; Achsen-Layout nutzt Stretch in den Wert-Spalten
-        width = px_to_dip(self, 325)
+        width = px_to_dip(self, 365)
         try:
             lay = self.centralWidget().layout()
             if lay:
@@ -1635,6 +1669,8 @@ class MainWindow(QMainWindow):
                         self._on_rig_freq_poll_timer()
                     if not vis_freq and prev_vis:
                         self._rig_freq_poll_timer.stop()
+                        if hasattr(self, "_lbl_rig_identity"):
+                            self._lbl_rig_identity.setText("")
                     if vis_freq != prev_vis:
                         self._apply_fixed_mainwindow_size()
                     if vis_freq:
@@ -1648,6 +1684,10 @@ class MainWindow(QMainWindow):
                                 ed.blockSignals(True)
                                 ed.setText(txt)
                                 ed.blockSignals(False)
+                        if hasattr(self, "_lbl_rig_identity"):
+                            self._lbl_rig_identity.setText(
+                                MainWindow._rig_radio_identity_text(st)
+                            )
 
                 fl_en = bool((rb_cfg.get("flrig") or {}).get("enabled", False))
                 if fl_en:
@@ -1813,6 +1853,8 @@ class MainWindow(QMainWindow):
             if frw is not None and frw.isVisible():
                 frw.setVisible(False)
                 self._rig_freq_poll_timer.stop()
+                if hasattr(self, "_lbl_rig_identity"):
+                    self._lbl_rig_identity.setText("")
                 self._apply_fixed_mainwindow_size()
 
         try:

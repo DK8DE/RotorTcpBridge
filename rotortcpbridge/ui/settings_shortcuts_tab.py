@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 
+from PySide6.QtGui import QStandardItemModel
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -153,8 +154,8 @@ class ShortcutsTab(QWidget):
         self.sp_step.setSingleStep(1.0)
         self.sp_step.setSuffix("°")
         f3.addRow(t("settings.shortcuts_target_step_deg"), self.sp_step)
-        self.cb_e = _hotkey_key_combo(self, "NEXT")
-        self.cb_q = _hotkey_key_combo(self, "PRIOR")
+        self.cb_e = _hotkey_key_combo(self, "PRIOR")
+        self.cb_q = _hotkey_key_combo(self, "NEXT")
         f3.addRow(t("settings.shortcuts_target_plus"), self.cb_e)
         f3.addRow(t("settings.shortcuts_target_minus"), self.cb_q)
         root.addWidget(g_step)
@@ -176,6 +177,73 @@ class ShortcutsTab(QWidget):
         root.addStretch(1)
         self._load_from_cfg()
         self.refresh_el_visibility()
+        for _cb in self._hotkey_combos_all():
+            _cb.currentIndexChanged.connect(self._on_hotkey_combo_changed)
+        self._refresh_hotkey_duplicate_ui()
+
+    def _hotkey_combos_all(self) -> tuple[QComboBox, ...]:
+        """Alle Tasten-Dropdowns (gleiche Modifier-Ebene); Reihenfolge für Duplikat-Auflösung."""
+        return (
+            self.cb_w,
+            self.cb_d,
+            self.cb_s,
+            self.cb_a,
+            self.cb_k,
+            self.cb_m,
+            self.cb_h,
+            self.cb_e,
+            self.cb_q,
+            self.cb_el_plus,
+            self.cb_el_minus,
+        )
+
+    def _hotkey_token(self, cb: QComboBox) -> str:
+        return str(cb.currentData() or "").strip().upper()
+
+    def _resolve_hotkey_duplicates(self) -> None:
+        """Nacheinander: erste Zuordnung gewinnt, spätere Felder auf erste freie Taste setzen."""
+        used: set[str] = set()
+        for cb in self._hotkey_combos_all():
+            d = self._hotkey_token(cb)
+            if d and d in used:
+                for i in range(cb.count()):
+                    nd = str(cb.itemData(i) or "").strip().upper()
+                    if nd and nd not in used:
+                        cb.setCurrentIndex(i)
+                        d = nd
+                        break
+            if d:
+                used.add(d)
+
+    def _apply_hotkey_item_enable_state(self) -> None:
+        """Bereits vergebene Tasten in den anderen Dropdowns deaktivieren."""
+        combos = self._hotkey_combos_all()
+        for cb in combos:
+            model = cb.model()
+            if not isinstance(model, QStandardItemModel):
+                continue
+            my = self._hotkey_token(cb)
+            others = {self._hotkey_token(c) for c in combos if c is not cb}
+            for row in range(cb.count()):
+                d = str(cb.itemData(row) or "").strip().upper()
+                item = model.item(row)
+                if item is None:
+                    continue
+                item.setEnabled((d not in others) or d == my)
+
+    def _refresh_hotkey_duplicate_ui(self) -> None:
+        combos = self._hotkey_combos_all()
+        for c in combos:
+            c.blockSignals(True)
+        try:
+            self._resolve_hotkey_duplicates()
+            self._apply_hotkey_item_enable_state()
+        finally:
+            for c in combos:
+                c.blockSignals(False)
+
+    def _on_hotkey_combo_changed(self, _index: int) -> None:
+        self._refresh_hotkey_duplicate_ui()
 
     def retranslate_hotkey_combo_texts(self) -> None:
         """Nach Sprachwechsel: Beschriftungen der Sondertasten in allen Combos aktualisieren."""
@@ -194,6 +262,7 @@ class ShortcutsTab(QWidget):
         ):
             for i, (tr_key, _data) in enumerate(_SPECIAL_HOTKEY_ENTRIES):
                 cb.setItemText(26 + i, t(tr_key))
+        self._refresh_hotkey_duplicate_ui()
 
     @staticmethod
     def _row_key_deg(cb: QComboBox, sp: QDoubleSpinBox) -> QWidget:
@@ -245,8 +314,8 @@ class ShortcutsTab(QWidget):
             (self.cb_k, "key_win_alt_compass", "K"),
             (self.cb_m, "key_win_alt_map", "M"),
             (self.cb_h, "key_win_alt_elevation", "H"),
-            (self.cb_e, "key_ctrl_alt_plus", "NEXT"),
-            (self.cb_q, "key_ctrl_alt_minus", "PRIOR"),
+            (self.cb_e, "key_ctrl_alt_plus", "PRIOR"),
+            (self.cb_q, "key_ctrl_alt_minus", "NEXT"),
         ):
             _select_hotkey_combo(cb, str(gs.get(key, default)), default)
         self.sp_step.setValue(float(gs.get("target_step_deg", 3.0)))

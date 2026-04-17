@@ -165,8 +165,8 @@ class GlobalHotkeyController:
         add("open_compass", str(gs.get("key_win_alt_compass", "K")))
         add("open_map", str(gs.get("key_win_alt_map", "M")))
         add("open_elevation", str(gs.get("key_win_alt_elevation", "H")))
-        add("target_plus", str(gs.get("key_ctrl_alt_plus", "NEXT")))
-        add("target_minus", str(gs.get("key_ctrl_alt_minus", "PRIOR")))
+        add("target_plus", str(gs.get("key_ctrl_alt_plus", "PRIOR")))
+        add("target_minus", str(gs.get("key_ctrl_alt_minus", "NEXT")))
         rb = cfg.get("rotor_bus") or {}
         if bool(rb.get("enable_el", False)):
             add("el_target_plus", str(gs.get("key_el_target_plus", "R")))

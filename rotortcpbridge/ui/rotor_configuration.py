@@ -66,6 +66,7 @@ _BLOCK2_DEFS = [
     ("cmd.label_homing_pwm", "SETHOMEPWM", "GETHOMEPWM"),
     ("cmd.label_homing_seek_pwm", "SETHOMESEEKPPWM", "GETHOMESEEKPPWM"),
     ("cmd.label_homing_backoff_angle", "SETHOMEBACKOFF", "GETHOMEBACKOFF"),
+    ("cmd.label_home_bl_scale", "SETHOMEBLSCALE", "GETHOMEBLSCALE"),
     ("cmd.label_min_pwm", "SETMINPWM", "GETMINPWM"),
     ("cmd.label_max_angle", "SETMAXDG", "GETMAXDG"),
     ("cmd.label_current_warn", "SETIWARN", "GETIWARN"),
@@ -98,6 +99,7 @@ _PARAM_SPEC = {
     "SETHOMESEEKPPWM": (0, 100, "%", False, False),
     # Homing Rückzug Winkel (Grad). Empfehlung laut Help: 10..60.
     "SETHOMEBACKOFF": (0, 360, "°", False, False),
+    "SETHOMEBLSCALE": (0, 1, "0…1", False, False),
     "SETMINPWM": (15, 100, "%", False, False),
     "SETMAXDG": (0, 360, "°", False, False),
     "SETIWARN": (100, 10000, "mA", True, False),
@@ -114,6 +116,9 @@ _INTEGER_PERCENT_SET_CMDS = frozenset(
         "SETMINPWM",
     }
 )
+
+# SET mit Dezimalwert 0..1 (kein int()-Truncate wie bei Homing-Winkeln).
+_FLOAT_01_SET_CMDS = frozenset({"SETHOMEBLSCALE"})
 
 
 _PARAM_EDIT_WIDTH = 90
@@ -797,6 +802,13 @@ class CommandButtonsWindow(QDialog):
                 return str(int(round(x)))
             except (ValueError, TypeError):
                 pass
+        if set_cmd in _FLOAT_01_SET_CMDS:
+            try:
+                x = float(str(params).strip().replace(",", "."))
+                s = f"{x:.6f}".rstrip("0").rstrip(".")
+                return s if s else "0"
+            except (ValueError, TypeError):
+                pass
         return params.strip()
 
     def _cmd_matches_result(self, cmd: str) -> bool:
@@ -854,6 +866,15 @@ class CommandButtonsWindow(QDialog):
             xf = float(str(raw).strip().replace(",", "."))
         except (ValueError, TypeError):
             return (None, f"Ungültige Zahl: {raw}")
+        if cmd in _FLOAT_01_SET_CMDS:
+            lo = float(min_v) if min_v is not None else 0.0
+            hi = float(max_v) if max_v is not None else 1.0
+            if xf < lo - 1e-9 or xf > hi + 1e-9:
+                return (None, f"Wert außerhalb {lo}–{hi}")
+            txt = f"{xf:.6f}".rstrip("0").rstrip(".")
+            if not txt or txt == "-0":
+                txt = "0"
+            return (txt, None)
         if cmd in _INTEGER_PERCENT_SET_CMDS:
             if abs(xf - round(xf)) > 1e-6:
                 return (None, "Nur Ganzzahlen erlaubt (ohne Nachkommastellen).")

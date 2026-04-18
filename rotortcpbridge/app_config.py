@@ -43,6 +43,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # SETPOSCC vom Bus: Master-IDs ignorieren (z. B. [2] wenn Stör-Telegramme den Soll verfälschen)
         "setposcc_ignore_src_master_ids": [],
     },
+    # Hardware-Controller (RS485): Tab „Controller“ — Standard aktiv, Bus-ID 2
+    "controller_hw": {
+        "enabled": True,
+        "cont_id": 2,
+    },
     "spid": {"ph": 10, "pv": 10},
     "polling_ms": {
         "pos_fast": 200,
@@ -83,11 +88,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         },
     },
     "ui": {
-        # Frei belegbare Schnell-Buttons (werden in der GUI im Fenster "Befehle" verwaltet)
-        # Format: Liste mit 15 Einträgen.
-        # - None: Button ist leer
-        # - Dict: {"dst": <int>, "cmd": <str>, "params": <str>}
-        "quick_buttons": [None] * 15,
         # Anzeige der Windrichtung im Kompass:
         # - "from": woher der Wind kommt (meteorologisch)
         # - "to": wohin der Wind weht
@@ -138,11 +138,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "map_offline": False,
         # Amateurfunk-Locator: True = Maidenhead-Grid als Overlay einblenden
         "map_locator_overlay": False,
-        # UDP UcxLog: Lauscht auf udp_ucxlog_listen_host:udp_ucxlog_port (Standard 0.0.0.0:12040).
+        # UDP UcxLog: Lauscht auf udp_ucxlog_listen_host:udp_ucxlog_port (Standard aus, 127.0.0.1:12040).
         # XML von UcxLog (<Rotor><Azimut>…</Azimut></Rotor>).
-        "udp_ucxlog_enabled": True,
+        "udp_ucxlog_enabled": False,
         "udp_ucxlog_port": 12040,
-        "udp_ucxlog_listen_host": "0.0.0.0",
+        "udp_ucxlog_listen_host": "127.0.0.1",
         # UDP PST-Rotator-Emulation: Emuliert das UDP-Protokoll von PstRotatorAz.
         # Hört auf udp_pst_port, sendet Positionsmeldungen an udp_pst_port + 1.
         # Ziel für AZ:/TGA:-Antworten. Leer = automatisch Subnetz-Broadcast (x.y.z.255);
@@ -153,10 +153,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # Neuinstallation: in load_config beim ersten Speichern als Subnetz-Broadcast (x.y.z.255) gesetzt.
         # Leer = zur Laufzeit automatisch ipv4_subnet_broadcast_default()
         "udp_pst_send_host": "",
-        # AirScout/KST: ASWATCHLIST/ASSETPATH auf aswatch_udp_listen_host:aswatch_udp_port
-        "aswatch_udp_enabled": True,
+        # AirScout/KST: ASWATCHLIST/ASSETPATH auf aswatch_udp_listen_host:aswatch_udp_port (Standard aus, 127.0.0.1)
+        "aswatch_udp_enabled": False,
         "aswatch_udp_port": 9872,
-        "aswatch_udp_listen_host": "0.0.0.0",
+        "aswatch_udp_listen_host": "127.0.0.1",
         # ASNEAREST (Flugzeuge): wenn False, keine Verarbeitung/Anzeige (Karte ohne Flugzeuge/Linien)
         "aswatch_aircraft_enabled": True,
         # ASNEAREST (Flugzeuge): Rohdaten nach %APPDATA%/RotorTcpBridge/asnearest.jsonl
@@ -202,6 +202,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "el_target_step_deg": 5.0,
             "key_el_target_plus": "R",
             "key_el_target_minus": "F",
+            "key_antenna_1": "1",
+            "key_antenna_2": "2",
+            "key_antenna_3": "3",
         },
     },
 }
@@ -233,10 +236,10 @@ def load_config() -> Dict[str, Any]:
     if not p.exists():
         initial = json.loads(json.dumps(DEFAULT_CONFIG))
         ui = initial.setdefault("ui", {})
-        # Erste Installation: alle UDP-Listen-IPs 0.0.0.0 (DEFAULT), PST-Ziel = Subnetz-Broadcast (…255)
-        ui["udp_ucxlog_listen_host"] = "0.0.0.0"
+        # Erste Installation: UcxLog/AirScout lauschen nur lokal; PST weiter auf allen Interfaces; PST-Ziel = Subnetz-Broadcast
+        ui["udp_ucxlog_listen_host"] = "127.0.0.1"
         ui["udp_pst_listen_host"] = "0.0.0.0"
-        ui["aswatch_udp_listen_host"] = "0.0.0.0"
+        ui["aswatch_udp_listen_host"] = "127.0.0.1"
         ui["udp_pst_send_host"] = ipv4_subnet_broadcast_default()
         _apply_compass_strom_analysis_defaults(ui)
         save_config(initial)
@@ -265,7 +268,10 @@ def load_config() -> Dict[str, Any]:
     # Merge defaults (für neue Felder bei Updates)
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
     _merge(merged, cfg)
-    _apply_compass_strom_analysis_defaults(merged.setdefault("ui", {}))
+    ui = merged.setdefault("ui", {})
+    _apply_compass_strom_analysis_defaults(ui)
+    # Entfernt: Schnell-Buttons (GUI gibt es nicht mehr); alte Keys aus früheren Versionen verwerfen.
+    ui.pop("quick_buttons", None)
     return merged
 
 

@@ -128,7 +128,19 @@ class RigBridgeManager:
             self._rig_hamlib_activity_ports.add(int(port))
 
     def _on_serial_link_lost(self) -> None:
-        """Unerwarteter COM-Verlust (USB) — Auto-Reconnect wieder erlauben."""
+        """Unerwarteter COM-Verlust (USB): TCP-Brücken stoppen, Auto-Reconnect erlauben.
+
+        Ohne Stopp bleiben Flrig/Hamlib-Server offen; nach Wiederverbindung meldet ``start()``
+        ggf. still (gleicher Host/Port), während Clients noch alten Zustand erwarten.
+        """
+        try:
+            self.stop_protocol("flrig")
+        except Exception:
+            pass
+        try:
+            self.stop_protocol("hamlib")
+        except Exception:
+            pass
         with self._lock:
             self._allow_auto_reconnect = True
 

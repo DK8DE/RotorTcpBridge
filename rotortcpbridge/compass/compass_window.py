@@ -495,7 +495,7 @@ class CompassWindow(QDialog):
             ui["compass_heatmap_az_modes"] = []
 
     def _aswatch_enabled(self) -> bool:
-        return bool(self.cfg.get("ui", {}).get("aswatch_udp_enabled", True))
+        return bool(self.cfg.get("ui", {}).get("aswatch_udp_enabled", False))
 
     def _heatmap_az_actions(self) -> list[QAction]:
         return [self._act_heatmap_strom, self._act_heatmap_om, self._act_heatmap_dwell]

@@ -258,9 +258,9 @@ class SettingsWindow(QDialog):
 
         self.chk_udp_ucxlog = QCheckBox(t("settings.chk_udp_ucxlog"))
         self.chk_udp_ucxlog.setToolTip(tt("settings.chk_udp_ucxlog_tooltip"))
-        self.chk_udp_ucxlog.setChecked(bool(_ui0.get("udp_ucxlog_enabled", True)))
+        self.chk_udp_ucxlog.setChecked(bool(_ui0.get("udp_ucxlog_enabled", False)))
         self.ed_udp_ucxlog_listen = QLineEdit()
-        self.ed_udp_ucxlog_listen.setText(str(_ui0.get("udp_ucxlog_listen_host", "0.0.0.0")))
+        self.ed_udp_ucxlog_listen.setText(str(_ui0.get("udp_ucxlog_listen_host", "127.0.0.1")))
         self.ed_udp_ucxlog_listen.setFixedWidth(_udp_ip_field_w)
         self.ed_udp_ucxlog_listen.setToolTip(tt("settings.ucxlog_udp_listen_tooltip"))
         self.sp_udp_ucxlog_port = QSpinBox()
@@ -271,9 +271,9 @@ class SettingsWindow(QDialog):
 
         self.chk_aswatch_udp = QCheckBox(t("settings.chk_aswatch_udp"))
         self.chk_aswatch_udp.setToolTip(tt("settings.chk_aswatch_udp_tooltip"))
-        self.chk_aswatch_udp.setChecked(bool(_ui0.get("aswatch_udp_enabled", True)))
+        self.chk_aswatch_udp.setChecked(bool(_ui0.get("aswatch_udp_enabled", False)))
         self.ed_aswatch_udp_listen = QLineEdit()
-        self.ed_aswatch_udp_listen.setText(str(_ui0.get("aswatch_udp_listen_host", "0.0.0.0")))
+        self.ed_aswatch_udp_listen.setText(str(_ui0.get("aswatch_udp_listen_host", "127.0.0.1")))
         self.ed_aswatch_udp_listen.setFixedWidth(_udp_ip_field_w)
         self.ed_aswatch_udp_listen.setToolTip(tt("settings.aswatch_udp_listen_tooltip"))
         self.sp_aswatch_udp_port = QSpinBox()
@@ -695,9 +695,9 @@ class SettingsWindow(QDialog):
         self.sp_controller_id = QSpinBox()
         self.sp_controller_id.setRange(0, 245)
         try:
-            self.sp_controller_id.setValue(int(_chw.get("cont_id", 0)))
+            self.sp_controller_id.setValue(int(_chw.get("cont_id", 2)))
         except (TypeError, ValueError):
-            self.sp_controller_id.setValue(0)
+            self.sp_controller_id.setValue(2)
         self.sp_controller_id.setToolTip(tt("settings.controller_id_tooltip"))
         _row_cont_id = QWidget()
         _lay_cont_id = QHBoxLayout(_row_cont_id)
@@ -1924,6 +1924,9 @@ class SettingsWindow(QDialog):
             QTimer.singleShot(0, self._load_controller_from_bus)
         if row == getattr(self, "_tab_shortcuts_index", -1):
             self._shortcuts_tab.refresh_el_visibility()
+            self.maybe_refresh_antenna_names_for_shortcuts_tab()
+            QTimer.singleShot(0, self._shortcuts_tab.refresh_antenna_shortcut_row_labels)
+            QTimer.singleShot(400, self._shortcuts_tab.refresh_antenna_shortcut_row_labels)
 
     def _apply_settings_nav_style(self) -> None:
         """Sidebar wie große Kacheln; Farben aus der System-/App-Palette (Highlight, Base, …)."""
@@ -2572,9 +2575,9 @@ class SettingsWindow(QDialog):
         try:
             ch = self.cfg.get("controller_hw") or {}
             try:
-                self.sp_controller_id.setValue(max(0, min(245, int(ch.get("cont_id", 0)))))
+                self.sp_controller_id.setValue(max(0, min(245, int(ch.get("cont_id", 2)))))
             except (TypeError, ValueError):
-                self.sp_controller_id.setValue(0)
+                self.sp_controller_id.setValue(2)
             _ui_n = self.cfg.get("ui") or {}
             _names = list(_ui_n.get("antenna_names", []))
             while len(_names) < 3:
@@ -2684,6 +2687,12 @@ class SettingsWindow(QDialog):
             if self._controller_load_queued:
                 QTimer.singleShot(0, self._load_controller_from_bus)
 
+    def maybe_refresh_antenna_names_for_shortcuts_tab(self) -> None:
+        """Controller-Antennennamen lesen, falls noch kein erfolgreicher GETCONANTNAME-Lauf."""
+        if bool(getattr(self, "_antenna_names_bus_read_ok", False)):
+            return
+        QTimer.singleShot(0, self._load_controller_antenna_names_from_bus)
+
     def _load_controller_antenna_names_from_bus(self) -> None:
         """Nur GETCONANTNAME1–3 → Felder unter Tab „Antennen“ (+ LED)."""
         if getattr(self, "_controller_load_busy", False):
@@ -2728,31 +2737,39 @@ class SettingsWindow(QDialog):
         self._snapshot_controller = tuple(s)
 
     def _load_controller_antenna_names_from_bus_impl(self) -> None:
-        if not self._controller_hw_enabled():
-            self._set_antenna_names_led_ok(False)
-            return
-        if not hasattr(self.ctrl, "sync_ui_command_response"):
-            self._set_antenna_names_led_ok(False)
-            return
-        if not self.hw.is_connected():
-            self._set_antenna_names_led_ok(False)
-            return
-        if not self._controller_bus_read_enabled():
-            self._set_antenna_names_led_ok(False)
-            return
-        dst = self._controller_bus_dst()
-        self._set_antenna_names_wait_visible(True)
-        QApplication.processEvents()
-        self._controller_suppress_dirty = True
         try:
-            name_acks = self._read_controller_conant_names_into_ui(dst)
-            self._set_antenna_names_led_ok(len(name_acks) == 3 and all(name_acks))
-            self._merge_snapshot_controller_antenna_names()
-            for i in range(3):
-                self._controller_name_dirty[i] = False
+            if not self._controller_hw_enabled():
+                self._set_antenna_names_led_ok(False)
+                return
+            if not hasattr(self.ctrl, "sync_ui_command_response"):
+                self._set_antenna_names_led_ok(False)
+                return
+            if not self.hw.is_connected():
+                self._set_antenna_names_led_ok(False)
+                return
+            if not self._controller_bus_read_enabled():
+                self._set_antenna_names_led_ok(False)
+                return
+            dst = self._controller_bus_dst()
+            self._set_antenna_names_wait_visible(True)
+            QApplication.processEvents()
+            self._controller_suppress_dirty = True
+            try:
+                name_acks = self._read_controller_conant_names_into_ui(dst)
+                self._set_antenna_names_led_ok(len(name_acks) == 3 and all(name_acks))
+                self._merge_snapshot_controller_antenna_names()
+                for i in range(3):
+                    self._controller_name_dirty[i] = False
+            finally:
+                self._controller_suppress_dirty = False
+                self._set_antenna_names_wait_visible(False)
         finally:
-            self._controller_suppress_dirty = False
-            self._set_antenna_names_wait_visible(False)
+            try:
+                st = getattr(self, "_shortcuts_tab", None)
+                if st is not None:
+                    st.refresh_antenna_shortcut_row_labels()
+            except Exception:
+                pass
 
     def _load_controller_from_bus_impl(self) -> None:
         if not self._controller_hw_enabled():

@@ -57,7 +57,7 @@ def main():
         setposcc_ignore_src_master_ids=rb.get(
             "setposcc_ignore_src_master_ids", []
         ),
-        setposcc_controller_src_id=int(chw.get("cont_id", 0) or 0),
+        setposcc_controller_src_id=int(chw.get("cont_id", 2) or 0),
     )
     ctrl.update_polling(cfg.get("polling_ms", {}))
 
@@ -77,9 +77,9 @@ def main():
     udp_ucxlog = UdpUcxLogListener(ctrl, log, cfg=cfg)
     ui_cfg = cfg.get("ui", {})
     udp_ucxlog.start(
-        enabled=bool(ui_cfg.get("udp_ucxlog_enabled", True)),
+        enabled=bool(ui_cfg.get("udp_ucxlog_enabled", False)),
         port=int(ui_cfg.get("udp_ucxlog_port", 12040)),
-        listen_host=str(ui_cfg.get("udp_ucxlog_listen_host", "0.0.0.0")),
+        listen_host=str(ui_cfg.get("udp_ucxlog_listen_host", "127.0.0.1")),
     )
 
     # UDP PST-Rotator-Emulation (wenn aktiviert)
@@ -119,9 +119,9 @@ def main():
         emit_summary_fn=aswatch_bridge.asnearest_summary.emit,
     )
     udp_aswatch.start(
-        enabled=bool(ui_cfg.get("aswatch_udp_enabled", True)),
+        enabled=bool(ui_cfg.get("aswatch_udp_enabled", False)),
         port=int(ui_cfg.get("aswatch_udp_port", 9872)),
-        listen_host=str(ui_cfg.get("aswatch_udp_listen_host", "0.0.0.0")),
+        listen_host=str(ui_cfg.get("aswatch_udp_listen_host", "127.0.0.1")),
     )
 
     w = MainWindow(

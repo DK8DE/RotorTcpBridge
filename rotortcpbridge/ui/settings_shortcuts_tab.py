@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtGui import QStandardItemModel
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QShowEvent, QStandardItemModel
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -59,18 +60,23 @@ def _fill_hotkey_combo(cb: QComboBox) -> None:
         cb.addItem(c, c)
     for tr_key, data in _SPECIAL_HOTKEY_ENTRIES:
         cb.addItem(t(tr_key), data)
+    for d in "0123456789":
+        cb.addItem(d, d)
+
+
+_HOTKEY_SINGLE_CHAR = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
 
 def _select_hotkey_combo(cb: QComboBox, saved: str, default: str) -> None:
     s = str(saved if saved is not None else default).strip().upper()
-    if len(s) == 1 and s not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+    if len(s) == 1 and s not in _HOTKEY_SINGLE_CHAR:
         s = str(default).strip().upper()
     for i in range(cb.count()):
         if str(cb.itemData(i) or "") == s:
             cb.setCurrentIndex(i)
             return
     d = str(default).strip().upper()
-    if len(d) == 1 and d in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+    if len(d) == 1 and d in _HOTKEY_SINGLE_CHAR:
         for i in range(cb.count()):
             if cb.itemData(i) == d:
                 cb.setCurrentIndex(i)
@@ -146,6 +152,24 @@ class ShortcutsTab(QWidget):
         f2.addRow(t("settings.shortcuts_open_elevation"), self.cb_h)
         root.addWidget(g_win)
 
+        g_ant = QGroupBox(t("settings.shortcuts_group_antenna"))
+        f_ant = QFormLayout(g_ant)
+        self.cb_ant1 = _hotkey_key_combo(self, "1")
+        self.cb_ant2 = _hotkey_key_combo(self, "2")
+        self.cb_ant3 = _hotkey_key_combo(self, "3")
+        self._lbl_ant_shortcut_1 = QLabel()
+        self._lbl_ant_shortcut_2 = QLabel()
+        self._lbl_ant_shortcut_3 = QLabel()
+        self._lbl_ant_shortcut = (
+            self._lbl_ant_shortcut_1,
+            self._lbl_ant_shortcut_2,
+            self._lbl_ant_shortcut_3,
+        )
+        f_ant.addRow(self._lbl_ant_shortcut_1, self.cb_ant1)
+        f_ant.addRow(self._lbl_ant_shortcut_2, self.cb_ant2)
+        f_ant.addRow(self._lbl_ant_shortcut_3, self.cb_ant3)
+        root.addWidget(g_ant)
+
         g_step = QGroupBox(t("settings.shortcuts_group_target_step"))
         f3 = QFormLayout(g_step)
         self.sp_step = QDoubleSpinBox()
@@ -177,9 +201,60 @@ class ShortcutsTab(QWidget):
         root.addStretch(1)
         self._load_from_cfg()
         self.refresh_el_visibility()
+        self.refresh_antenna_shortcut_row_labels()
         for _cb in self._hotkey_combos_all():
             _cb.currentIndexChanged.connect(self._on_hotkey_combo_changed)
         self._refresh_hotkey_duplicate_ui()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        sw = self._settings_window()
+        if sw is not None and hasattr(sw, "maybe_refresh_antenna_names_for_shortcuts_tab"):
+            sw.maybe_refresh_antenna_names_for_shortcuts_tab()
+        QTimer.singleShot(0, self.refresh_antenna_shortcut_row_labels)
+        QTimer.singleShot(400, self.refresh_antenna_shortcut_row_labels)
+
+    def _settings_window(self):
+        w = self.parent()
+        while w is not None:
+            if hasattr(w, "_antenna_name_edits_az") and hasattr(
+                w, "maybe_refresh_antenna_names_for_shortcuts_tab"
+            ):
+                return w
+            w = w.parent()
+        return None
+
+    def _antenna_display_names_three(self) -> list[str]:
+        sw = self._settings_window()
+        out: list[str] = []
+        for i in range(3):
+            name = ""
+            if sw is not None:
+                try:
+                    eds = getattr(sw, "_antenna_name_edits_az", None)
+                    if eds and i < len(eds):
+                        name = eds[i].text().strip()
+                except Exception:
+                    name = ""
+            if not name:
+                ui = self._cfg.get("ui") or {}
+                names = list(ui.get("antenna_names") or [])
+                if i < len(names):
+                    name = str(names[i]).strip()
+            if not name:
+                name = t(f"settings.antenna_{i + 1}")
+            out.append(name)
+        return out
+
+    def refresh_antenna_shortcut_row_labels(self) -> None:
+        """Zeilenbeschriftung: gewählte Taste + Antennenname (Controller/Config)."""
+        names = self._antenna_display_names_three()
+        for i, (lbl, cb) in enumerate(
+            zip(self._lbl_ant_shortcut, (self.cb_ant1, self.cb_ant2, self.cb_ant3))
+        ):
+            key = self._hotkey_token(cb)
+            nm = names[i] if i < len(names) else t(f"settings.antenna_{i + 1}")
+            lbl.setText(f"{key} — {nm}")
 
     def _hotkey_combos_all(self) -> tuple[QComboBox, ...]:
         """Alle Tasten-Dropdowns (gleiche Modifier-Ebene); Reihenfolge für Duplikat-Auflösung."""
@@ -191,6 +266,9 @@ class ShortcutsTab(QWidget):
             self.cb_k,
             self.cb_m,
             self.cb_h,
+            self.cb_ant1,
+            self.cb_ant2,
+            self.cb_ant3,
             self.cb_e,
             self.cb_q,
             self.cb_el_plus,
@@ -244,6 +322,7 @@ class ShortcutsTab(QWidget):
 
     def _on_hotkey_combo_changed(self, _index: int) -> None:
         self._refresh_hotkey_duplicate_ui()
+        self.refresh_antenna_shortcut_row_labels()
 
     def retranslate_hotkey_combo_texts(self) -> None:
         """Nach Sprachwechsel: Beschriftungen der Sondertasten in allen Combos aktualisieren."""
@@ -257,12 +336,16 @@ class ShortcutsTab(QWidget):
             self.cb_h,
             self.cb_e,
             self.cb_q,
+            self.cb_ant1,
+            self.cb_ant2,
+            self.cb_ant3,
             self.cb_el_plus,
             self.cb_el_minus,
         ):
             for i, (tr_key, _data) in enumerate(_SPECIAL_HOTKEY_ENTRIES):
                 cb.setItemText(26 + i, t(tr_key))
         self._refresh_hotkey_duplicate_ui()
+        self.refresh_antenna_shortcut_row_labels()
 
     @staticmethod
     def _row_key_deg(cb: QComboBox, sp: QDoubleSpinBox) -> QWidget:
@@ -325,6 +408,12 @@ class ShortcutsTab(QWidget):
             (self.cb_el_minus, "key_el_target_minus", "F"),
         ):
             _select_hotkey_combo(cb, str(gs.get(key, default)), default)
+        for cb, key, default in (
+            (self.cb_ant1, "key_antenna_1", "1"),
+            (self.cb_ant2, "key_antenna_2", "2"),
+            (self.cb_ant3, "key_antenna_3", "3"),
+        ):
+            _select_hotkey_combo(cb, str(gs.get(key, default)), default)
 
     def apply_to_cfg(self, cfg: dict) -> None:
         gs = cfg.setdefault("ui", {}).setdefault("global_shortcuts", {})
@@ -348,3 +437,6 @@ class ShortcutsTab(QWidget):
         gs["el_target_step_deg"] = float(self.sp_el_step.value())
         gs["key_el_target_plus"] = self.cb_el_plus.currentData()
         gs["key_el_target_minus"] = self.cb_el_minus.currentData()
+        gs["key_antenna_1"] = self.cb_ant1.currentData()
+        gs["key_antenna_2"] = self.cb_ant2.currentData()
+        gs["key_antenna_3"] = self.cb_ant3.currentData()

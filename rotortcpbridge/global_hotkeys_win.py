@@ -52,9 +52,11 @@ def modifiers_mask_from_config(gs: dict) -> int:
 
 
 def vk_from_key_spec(spec: str) -> int:
-    """Buchstabe A–Z oder Token (LEFT, PRIOR, OEM_PLUS, …) → Virtual-Key für RegisterHotKey."""
+    """Buchstabe A–Z, Ziffer 0–9 oder Token (LEFT, PRIOR, OEM_PLUS, …) → Virtual-Key für RegisterHotKey."""
     s = (spec or "A").strip().upper()
     if len(s) == 1 and "A" <= s <= "Z":
+        return ord(s)
+    if len(s) == 1 and "0" <= s <= "9":
         return ord(s)
     # Pfeile, Bild↑/↓, +/− (Haupttastatur OEM)
     vk_map: Dict[str, int] = {
@@ -171,6 +173,9 @@ class GlobalHotkeyController:
         if bool(rb.get("enable_el", False)):
             add("el_target_plus", str(gs.get("key_el_target_plus", "R")))
             add("el_target_minus", str(gs.get("key_el_target_minus", "F")))
+        add("select_antenna_1", str(gs.get("key_antenna_1", "1")))
+        add("select_antenna_2", str(gs.get("key_antenna_2", "2")))
+        add("select_antenna_3", str(gs.get("key_antenna_3", "3")))
 
         seen: set[Tuple[int, int]] = set()
         n = 0

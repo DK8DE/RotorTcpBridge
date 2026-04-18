@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..i18n import format_tooltip, t
-from ..ports import list_serial_ports
+from ..ports import list_serial_port_entries
 from ..rig_bridge.cat_commands import normalize_com_port
 from ..rig_bridge.manager import RigBridgeManager
 
@@ -35,6 +35,24 @@ _RIG_DEF_CAT_DRAIN_MS = 50
 _RIG_DEF_SETFREQ_GAP_MS = 10
 from .led_widget import Led
 from .ui_utils import px_to_dip
+
+# Hamlib NET rigctl: Kurz-Tooltips (Tab ist deutschsprachig)
+_HAMLIB_HOST_TOOLTIP = (
+    "Hier kann die lokale IP eingetragen werden, auf der der Service laufen soll, oder 127.0.0.1."
+)
+_HAMLIB_PORT_TOOLTIP = (
+    "Hier den Port eintragen, über den sich die Anwendung verbinden soll. Standard ist 4532. "
+    "Jede neue Verbindung braucht einen eigenen Port."
+)
+_HAMLIB_NAME_TOOLTIP = "Dient nur der Orientierung, welche Software hier angebunden ist."
+
+# Flrig (ein Host/Port): Tooltips analog Hamlib NET
+_FLRIG_HOST_TOOLTIP = (
+    "Hier kann die lokale IP eingetragen werden, auf der Flrig läuft, oder 127.0.0.1."
+)
+_FLRIG_PORT_TOOLTIP = (
+    "Hier den Port eintragen, über den sich die Anwendung mit Flrig verbinden soll. Standard ist 12345."
+)
 
 # Gängige UART-Baudraten (wie typische COM-Dialoge)
 _BAUD_RATES = (
@@ -143,7 +161,9 @@ class RigBridgeTab(QWidget):
             )
         )
         self.btn_test.setMinimumWidth(170)
+        self.btn_test.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         hl_general.addWidget(self.btn_test)
+        hl_general.addStretch(1)
         fl_general.addRow(self.chk_enabled)
         fl_general.addRow("Funkgeräte-Marke", self.cb_rig_brand)
         fl_general.addRow("Funkgeräte-Modell", self.cb_rig_model)
@@ -188,11 +208,14 @@ class RigBridgeTab(QWidget):
         grid_serial = QGridLayout()
         outer_serial.addLayout(grid_serial)
         self.cb_com = QComboBox()
+        self.cb_com.setEditable(False)
+        self.cb_com.view().setMouseTracking(True)
         self.cb_com.setToolTip(
             format_tooltip(
                 "Serieller COM-Port des Funkgeräts (CAT).\n"
                 "Nach USB-Stecker ziehen/neu einstecken oder anderem Port: Liste mit „↻“ aktualisieren.\n"
-                "Reine Ziffern werden unter Windows zu COMn aufgelöst."
+                "Reine Ziffern werden unter Windows zu COMn aufgelöst.\n"
+                "In der aufgeklappten Liste: Maus über einen Eintrag halten für die Treiber-/Gerätebeschreibung."
             )
         )
         self.btn_refresh_com = QPushButton("\u21bb")
@@ -304,16 +327,18 @@ class RigBridgeTab(QWidget):
             chk = QCheckBox(f"{title} aktiv")
             host = QLineEdit()
             host.setFixedWidth(px_to_dip(self, 100))
+            host.setToolTip(format_tooltip(_FLRIG_HOST_TOOLTIP))
             port = QLineEdit()
             port.setValidator(QIntValidator(1, 65535, self))
             port.setFixedWidth(px_to_dip(self, 56))
+            port.setToolTip(format_tooltip(_FLRIG_PORT_TOOLTIP))
             chk_auto = QCheckBox("Start beim Programmstart")
             led = Led(12, self)
             self._lbl_flrig_bind_clients = QLabel("")
             self._lbl_flrig_bind_clients.setWordWrap(True)
             cli_led = Led(12, self)
-            btn_start = QPushButton("Start")
-            btn_stop = QPushButton("Stop")
+            btn_start = QPushButton("Flrig Service Starten")
+            btn_stop = QPushButton("Flrig Service stoppen")
             row_host_port = QWidget()
             hl_host_port = QHBoxLayout(row_host_port)
             hl_host_port.setContentsMargins(0, 0, 0, 0)
@@ -353,6 +378,7 @@ class RigBridgeTab(QWidget):
         self._protocol_enabled["hamlib"] = QCheckBox("Hamlib NET rigctl aktiv")
         self._hamlib_host = QLineEdit()
         self._hamlib_host.setFixedWidth(px_to_dip(self, 100))
+        self._hamlib_host.setToolTip(format_tooltip(_HAMLIB_HOST_TOOLTIP))
         row_hamlib_host = QWidget()
         hl_hh = QHBoxLayout(row_hamlib_host)
         hl_hh.setContentsMargins(0, 0, 0, 0)
@@ -364,21 +390,16 @@ class RigBridgeTab(QWidget):
         self._hamlib_rows_layout.setContentsMargins(0, 0, 0, 0)
         self._hamlib_rows_layout.setSpacing(6)
         self._hamlib_rows: list[tuple[QLineEdit, QLineEdit, QLabel, QLabel, Led, QWidget]] = []
-        self.btn_hamlib_add_row = QPushButton("Zeile hinzufügen")
+        self.btn_hamlib_add_row = QPushButton("Eine weitere Verbindung anlegen")
+        self.btn_hamlib_add_row.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.btn_hamlib_add_row.clicked.connect(lambda: self._hamlib_add_row("", ""))
         self._protocol_autostart["hamlib"] = QCheckBox("Start beim Programmstart")
         self.chk_hamlib_debug = QCheckBox("Hamlib-Diagnose (Zeitabstände + lange Antworten)")
-        self.chk_hamlib_debug.setToolTip(
-            format_tooltip(
-                "Zusätzlich zu „Rig-Befehle loggen“: Zeitabstände (+ms) zwischen TCP-Befehlen "
-                "und Dauer jedes COM-SETFREQ."
-            )
-        )
         self._protocol_leds["hamlib"] = Led(12, self)
         self._lbl_hamlib_bind_clients = QLabel("")
         self._lbl_hamlib_bind_clients.setWordWrap(False)
-        self._protocol_start["hamlib"] = QPushButton("Start")
-        self._protocol_stop["hamlib"] = QPushButton("Stop")
+        self._protocol_start["hamlib"] = QPushButton("Hamlib NET Service Starten")
+        self._protocol_stop["hamlib"] = QPushButton("Hamlib NET Service stoppen")
         row_hamlib_status = QWidget()
         hl_hs = QHBoxLayout(row_hamlib_status)
         hl_hs.setContentsMargins(0, 0, 0, 0)
@@ -387,6 +408,7 @@ class RigBridgeTab(QWidget):
         hl_hs.addWidget(self._protocol_leds["hamlib"], 0, Qt.AlignmentFlag.AlignLeft)
         hl_hs.addSpacing(10)
         hl_hs.addWidget(self._lbl_hamlib_bind_clients, 1)
+        hl_hs.addStretch(1)
         hl_hs.addWidget(self._protocol_start["hamlib"], 0)
         hl_hs.addWidget(self._protocol_stop["hamlib"], 0)
         fl_hamlib.addRow(self._protocol_enabled["hamlib"])
@@ -398,18 +420,15 @@ class RigBridgeTab(QWidget):
         lbl_hamlib_ports.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         fl_hamlib.addRow(lbl_hamlib_ports)
         fl_hamlib.addRow(self._hamlib_rows_box)
-        fl_hamlib.addRow(self.btn_hamlib_add_row)
-        fl_hamlib.addRow(row_hamlib_status)
+        row_hamlib_add = QWidget()
+        hl_hamlib_add = QHBoxLayout(row_hamlib_add)
+        hl_hamlib_add.setContentsMargins(0, 0, 0, 0)
+        hl_hamlib_add.addWidget(self.btn_hamlib_add_row)
+        hl_hamlib_add.addStretch(1)
+        fl_hamlib.addRow(row_hamlib_add)
         fl_hamlib.addRow(self._protocol_autostart["hamlib"])
         fl_hamlib.addRow(self.chk_hamlib_debug)
-        gb_hamlib.setToolTip(
-            format_tooltip(
-                "WSJT-X: Netzwerk-Rig / Hamlib NET rigctl.\n"
-                "• Ein Host für alle Ports (z. B. 127.0.0.1)\n"
-                "• Pro Programm einen eigenen Port eintragen; Name nur zur Orientierung.\n"
-                "• Funkgerät verbinden, dann „Start“."
-            )
-        )
+        fl_hamlib.addRow(row_hamlib_status)
         vl_protocols.addWidget(gb_hamlib)
 
         gb_diag = QGroupBox("Diagnose / Logging")
@@ -487,10 +506,12 @@ class RigBridgeTab(QWidget):
         ed_port.setPlaceholderText("Port")
         ed_port.setFixedWidth(px_to_dip(self, 56))
         ed_port.setText(port_text)
+        ed_port.setToolTip(format_tooltip(_HAMLIB_PORT_TOOLTIP))
         ed_name = QLineEdit()
         ed_name.setPlaceholderText("z. B. WSJT-X (freiwillig)")
         ed_name.setFixedWidth(px_to_dip(self, 150))
         ed_name.setText(name_text)
+        ed_name.setToolTip(format_tooltip(_HAMLIB_NAME_TOOLTIP))
         led_d = px_to_dip(self, 12)
         lbl_hp = QLabel("")
         lbl_hp.setWordWrap(False)
@@ -637,7 +658,7 @@ class RigBridgeTab(QWidget):
             "rig_brand": rig_brand,
             "rig_model": rig_model,
             "hamlib_rig_id": rig_id,
-            "com_port": normalize_com_port(self.cb_com.currentText().strip()),
+            "com_port": self._com_port_from_combo(),
             "baudrate": int(self.cb_baud.currentData()) if self.cb_baud.currentData() is not None else 9600,
             "databits": 8,
             "stopbits": 1,
@@ -678,7 +699,7 @@ class RigBridgeTab(QWidget):
         try:
             st = self.manager.status_model()
             if st.radio_connected:
-                new_port = normalize_com_port(self.cb_com.currentText().strip()).upper()
+                new_port = normalize_com_port(self._com_port_from_combo()).upper()
                 active = normalize_com_port(str(st.com_port or "")).upper()
                 if new_port != active:
                     self.manager.disconnect_radio()
@@ -686,33 +707,56 @@ class RigBridgeTab(QWidget):
             pass
         self.apply_to_manager()
 
+    def _com_port_from_combo(self) -> str:
+        """Öffnen immer über den Gerätenamen (UserRole), nicht über den Anzeige-Text mit Beschreibung."""
+        d = self.cb_com.currentData()
+        if d is not None and str(d).strip():
+            return normalize_com_port(str(d).strip())
+        return normalize_com_port(self.cb_com.currentText().strip())
+
     def _refresh_com_ports(self, preferred_port: str | None = None) -> None:
         """Portliste neu füllen. ``preferred_port``: gespeicherter COM aus der Konfiguration
         (wird normalisiert und per exakter Auswahl gesetzt; fehlt der Port im System, als Eintrag ergänzen).
         Ohne Argument: vorher gewählter Eintrag bleibt erhalten, sofern noch vorhanden."""
-        current = self.cb_com.currentText().strip()
+        prev_data = self.cb_com.currentData()
+        prev = (
+            str(prev_data).strip()
+            if prev_data is not None and str(prev_data).strip()
+            else self.cb_com.currentText().strip()
+        )
         self.cb_com.blockSignals(True)
         self.cb_com.clear()
-        ports = list_serial_ports()
-        for p in ports:
-            self.cb_com.addItem(p)
-        want_raw = preferred_port if preferred_port is not None else current
+        for device, tip in list_serial_port_entries():
+            self.cb_com.addItem(device, userData=device)
+            if tip:
+                i = self.cb_com.count() - 1
+                self.cb_com.setItemData(i, tip, Qt.ItemDataRole.ToolTipRole)
+        want_raw = preferred_port if preferred_port is not None else prev
         want = normalize_com_port(want_raw) if (want_raw or "").strip() else ""
         if want:
-            want_u = want.upper()
-            idx = -1
-            for i in range(self.cb_com.count()):
-                if self.cb_com.itemText(i).strip().upper() == want_u:
-                    idx = i
-                    break
+            want_n = want.upper()
+            idx = self.cb_com.findData(want, Qt.ItemDataRole.UserRole, Qt.MatchFlag.MatchExactly)
+            if idx < 0:
+                for i in range(self.cb_com.count()):
+                    d = self.cb_com.itemData(i, Qt.ItemDataRole.UserRole)
+                    if d is not None and str(d).strip().upper() == want_n:
+                        idx = i
+                        break
             if idx >= 0:
                 self.cb_com.setCurrentIndex(idx)
             else:
-                self.cb_com.addItem(want)
-                self.cb_com.setCurrentIndex(self.cb_com.count() - 1)
+                self.cb_com.addItem(want, userData=want)
+                i = self.cb_com.count() - 1
+                self.cb_com.setItemData(
+                    i,
+                    "In der Konfiguration gespeichert, aktuell nicht in der Windows-Portliste.",
+                    Qt.ItemDataRole.ToolTipRole,
+                )
+                self.cb_com.setCurrentIndex(i)
         elif self.cb_com.count() > 0:
             self.cb_com.setCurrentIndex(0)
         self.cb_com.blockSignals(False)
+
 
     def _select_model_by_rig_id(self, rig_id: int) -> None:
         """Modellauswahl anhand gespeicherter Hamlib-ID wiederherstellen."""

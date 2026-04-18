@@ -107,14 +107,23 @@ class RadioConnectionManager:
                 break
 
     def _drop_com_link(self, exc: BaseException | None = None) -> None:
-        """COM-Session abwerfen (Kabel raus, I/O-Fehler). Idempotent; Zustand wie nach „Trennen“."""
-        ser_obj = None
+        """COM-Session abwerfen (Kabel raus, I/O-Fehler). Idempotent; Zustand wie nach „Trennen“.
+
+        Schließen nur unter ``_io_lock``, damit kein paralleler Worker-``read``/``write`` auf dem
+        gleichen Handle läuft (Windows: sonst oft ClearCommError / PermissionError).
+        """
         with self._lock:
             if self._ser is None:
                 return
             self._running = False
-            ser_obj = self._ser
-            self._ser = None
+        ser_obj = None
+        with self._io_lock:
+            with self._lock:
+                if self._ser is None:
+                    ser_obj = None
+                else:
+                    ser_obj = self._ser
+                    self._ser = None
         if ser_obj is not None:
             try:
                 ser_obj.close()
@@ -293,8 +302,11 @@ class RadioConnectionManager:
         """Verbindung sauber schließen."""
         with self._lock:
             self._running = False
-            ser = self._ser
-            self._ser = None
+        ser = None
+        with self._io_lock:
+            with self._lock:
+                ser = self._ser
+                self._ser = None
         if ser is not None:
             try:
                 ser.close()
@@ -592,6 +604,7 @@ class RadioConnectionManager:
         ser.flush()
         # FA…; endet mit Semikolon (Kenwood/Elecraft u. ä.); nicht CI-V \xFD.
         rx_read = self._read_cat_quick(ser, is_icom=False, max_wait_s=1.0)
+        rx_read = rx_read.lstrip(b"\x00")
         self._log_serial_io("RX", rx_read, note)
         parsed = parse_fa_style_frequency_hz(rx_read)
         if parsed is not None:

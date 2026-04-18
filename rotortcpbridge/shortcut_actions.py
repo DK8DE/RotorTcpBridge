@@ -31,11 +31,13 @@ def set_antenna_azimuth_deg(cfg: dict, ctrl: "RotorController", antenna_deg: flo
 
 
 def effective_antenna_target_deg(cfg: dict, ctrl: "RotorController") -> float:
-    """Aktuelles AZ-Soll als Antennenpeilung (°), aus Motor-/SETPOSCC-Soll + Versatz."""
-    az = ctrl.az
+    """Aktuelles AZ-Soll als Antennenpeilung (°) aus dem Motor-SETPOSDG-Soll + Versatz.
+
+    Nur ``target_d10`` (kein ``compass_target_d10`` / SETPOSCC): sonst würden schnelle
+    Hotkey-Schritte relativ zum Encoder-Schnipsel rechnen und die Kette bricht.
+    """
     try:
-        cc = getattr(az, "compass_target_d10", None)
-        td10 = int(cc) if cc is not None else int(getattr(az, "target_d10", 0))
+        td10 = int(getattr(ctrl.az, "target_d10", 0))
     except Exception:
         td10 = 0
     rotor_tgt = td10 / 10.0
@@ -51,13 +53,11 @@ def bump_antenna_target_deg(cfg: dict, ctrl: "RotorController", delta_deg: float
 
 
 def effective_el_target_deg(ctrl: "RotorController") -> float:
-    """Aktuelles EL-Soll in Grad (0…90°), aus Motor-/Kompass-Soll."""
+    """Aktuelles EL-Soll in Grad (0…90°) aus ``target_d10`` (Motor-Soll), analog AZ."""
     if not getattr(ctrl, "enable_el", False):
         return 0.0
-    el = ctrl.el
     try:
-        cc = getattr(el, "compass_target_d10", None)
-        td10 = int(cc) if cc is not None else int(getattr(el, "target_d10", 0))
+        td10 = int(getattr(ctrl.el, "target_d10", 0))
     except Exception:
         td10 = 0
     return clamp_el(td10 / 10.0)

@@ -817,7 +817,7 @@ class UdpAswatchlistListener:
         self.stop()
         self._enabled = bool(enabled)
         self._port = max(1, min(65535, int(port)))
-        bind_host = normalize_udp_bind_host(listen_host, "0.0.0.0")
+        bind_host = normalize_udp_bind_host(listen_host, "127.0.0.1")
         if not self._enabled:
             return
         try:

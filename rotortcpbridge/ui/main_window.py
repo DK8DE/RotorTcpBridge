@@ -25,6 +25,7 @@ from PySide6.QtCore import QEvent, Qt, QTimer
 
 from .antenna_sync import AntennaSelectionBridge
 
+from ..angle_utils import shortest_delta_deg
 from ..app_icon import get_app_icon
 from ..i18n import t
 from ..shortcut_actions import (
@@ -169,6 +170,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self._hw_off_since: float | None = None
+        # RS485: fehlendes SETPOSDG — Ist bleibt hinter Soll; bei Stillstand >1 s nachziehen
+        self._stale_tgt_az_since: float | None = None
+        self._stale_tgt_el_since: float | None = None
         self._last_title: str = ""
         self._ucxlog_blink_phase = 0
         self._ucxlog_blink_active = False
@@ -397,7 +401,7 @@ class MainWindow(QMainWindow):
         try:
             self._lbl_srv_ucxlog_suffix.setText(
                 self._udp_bind_status_text(
-                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "0.0.0.0", 12040
+                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "127.0.0.1", 12040
                 )
             )
         except Exception:
@@ -436,7 +440,7 @@ class MainWindow(QMainWindow):
         try:
             self._lbl_srv_aswatch_suffix.setText(
                 self._udp_bind_status_text(
-                    "aswatch_udp_listen_host", "aswatch_udp_port", "0.0.0.0", 9872
+                    "aswatch_udp_listen_host", "aswatch_udp_port", "127.0.0.1", 9872
                 )
             )
         except Exception:
@@ -682,8 +686,27 @@ class MainWindow(QMainWindow):
                 bump_el_target_deg(
                     self.ctrl, -float(gs.get("el_target_step_deg", 5.0))
                 )
+            elif action == "select_antenna_1":
+                self._select_antenna_by_shortcut(0)
+            elif action == "select_antenna_2":
+                self._select_antenna_by_shortcut(1)
+            elif action == "select_antenna_3":
+                self._select_antenna_by_shortcut(2)
         except Exception:
             pass
+
+    def _select_antenna_by_shortcut(self, idx: int) -> None:
+        """Antenne 1–3 wie Hauptfenster-Dropdown (Config, SETASELECT-Broadcast, Bridge)."""
+        cb = getattr(self, "_cb_main_antenna", None)
+        if cb is None:
+            return
+        idx = max(0, min(2, int(idx)))
+        if cb.currentIndex() == idx:
+            return
+        cb.blockSignals(True)
+        cb.setCurrentIndex(idx)
+        cb.blockSignals(False)
+        self._on_main_antenna_changed()
 
     def _open_elevation_from_shortcut(self) -> None:
         try:
@@ -837,7 +860,7 @@ class MainWindow(QMainWindow):
             ui = self.cfg.get("ui", {})
             self._lbl_srv_ucxlog_suffix.setText(
                 self._udp_bind_status_text(
-                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "0.0.0.0", 12040
+                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "127.0.0.1", 12040
                 )
             )
             self._lbl_srv_pst_udp_suffix.setText(
@@ -845,7 +868,7 @@ class MainWindow(QMainWindow):
             )
             self._lbl_srv_aswatch_suffix.setText(
                 self._udp_bind_status_text(
-                    "aswatch_udp_listen_host", "aswatch_udp_port", "0.0.0.0", 9872
+                    "aswatch_udp_listen_host", "aswatch_udp_port", "127.0.0.1", 9872
                 )
             )
         except Exception:
@@ -875,6 +898,7 @@ class MainWindow(QMainWindow):
             sw = getattr(self, "_settings_win", None)
             if sw is not None and hasattr(sw, "_shortcuts_tab"):
                 sw._shortcuts_tab.retranslate_hotkey_combo_texts()
+                sw._shortcuts_tab.refresh_antenna_shortcut_row_labels()
         except Exception:
             pass
 
@@ -998,9 +1022,9 @@ class MainWindow(QMainWindow):
         if self._udp_ucxlog is not None:
             ui = self.cfg.get("ui", {})
             self._udp_ucxlog.start(
-                enabled=bool(ui.get("udp_ucxlog_enabled", True)),
+                enabled=bool(ui.get("udp_ucxlog_enabled", False)),
                 port=int(ui.get("udp_ucxlog_port", 12040)),
-                listen_host=str(ui.get("udp_ucxlog_listen_host", "0.0.0.0")),
+                listen_host=str(ui.get("udp_ucxlog_listen_host", "127.0.0.1")),
             )
         if self._udp_pst is not None:
             ui = self.cfg.get("ui", {})
@@ -1016,9 +1040,9 @@ class MainWindow(QMainWindow):
         if self._udp_aswatch is not None:
             ui = self.cfg.get("ui", {})
             self._udp_aswatch.start(
-                enabled=bool(ui.get("aswatch_udp_enabled", True)),
+                enabled=bool(ui.get("aswatch_udp_enabled", False)),
                 port=int(ui.get("aswatch_udp_port", 9872)),
-                listen_host=str(ui.get("aswatch_udp_listen_host", "0.0.0.0")),
+                listen_host=str(ui.get("aswatch_udp_listen_host", "127.0.0.1")),
             )
         # Hauptfenster-Texte (Server, AZ/EL, Menü, …) nach load_lang / Einstellungen synchronisieren
         self._retranslate_ui()
@@ -1360,9 +1384,9 @@ class MainWindow(QMainWindow):
         """Server-GroupBox-Zeilen je nach aktivierten Diensten ein-/ausblenden."""
         ui = self.cfg.get("ui", {})
         pst_on = bool(self.cfg.get("pst_server", {}).get("enabled", False))
-        ucxlog_on = bool(ui.get("udp_ucxlog_enabled", True))
+        ucxlog_on = bool(ui.get("udp_ucxlog_enabled", False))
         pst_udp_on = bool(ui.get("udp_pst_enabled", True))
-        aswatch_on = bool(ui.get("aswatch_udp_enabled", True))
+        aswatch_on = bool(ui.get("aswatch_udp_enabled", False))
         rb = self.cfg.get("rig_bridge") or {}
         rig_mod = bool(rb.get("enabled", False))
         rig_flrig = rig_mod and bool((rb.get("flrig") or {}).get("enabled", False))
@@ -1567,6 +1591,88 @@ class MainWindow(QMainWindow):
             self.logbuf.write("WARN", f"{context}: {type(exc).__name__}: {exc}")
         except Exception:
             pass
+
+    def _maybe_resend_setposdg_if_stale_at_rest(self, hw_on: bool) -> None:
+        """Wenn Soll und Ist dauerhaft auseinanderlaufen (z. B. verlorenes SETPOSDG) und
+        der Rotor meldet Stillstand (Fährt = aus): nach ≥1 s dasselbe Soll erneut senden.
+
+        Nur bei Hardware-Verbindung; kein Nutzertastendruck nötig.
+        """
+        import time as _time
+
+        if not hw_on:
+            self._stale_tgt_az_since = None
+            self._stale_tgt_el_since = None
+            return
+
+        now = float(_time.time())
+        min_diff_deg = 0.3
+        hold_s = 1.0
+
+        def _axis_mismatch_deg(az_el: str) -> float:
+            ax = self.ctrl.az if az_el == "az" else self.ctrl.el
+            try:
+                pd = int(getattr(ax, "pos_d10", 0))
+                td = int(getattr(ax, "target_d10", 0))
+            except Exception:
+                return 0.0
+            p_deg = pd / 10.0
+            t_deg = td / 10.0
+            if bool(getattr(ax, "position_wrap_360", False)):
+                return abs(float(shortest_delta_deg(p_deg, t_deg)))
+            return abs(p_deg - t_deg)
+
+        def _run_one(
+            axis: str,
+            since_attr: str,
+            *,
+            enable: bool,
+            referenced: bool,
+            moving: bool,
+        ) -> None:
+            since = getattr(self, since_attr)
+            if not enable or not referenced or moving:
+                setattr(self, since_attr, None)
+                return
+            diff = _axis_mismatch_deg(axis)
+            if diff <= min_diff_deg:
+                setattr(self, since_attr, None)
+                return
+            if since is None:
+                setattr(self, since_attr, now)
+                return
+            if (now - float(since)) < hold_s:
+                return
+            try:
+                ax = self.ctrl.az if axis == "az" else self.ctrl.el
+                td = int(getattr(ax, "target_d10", 0))
+                deg = td / 10.0
+                if axis == "az":
+                    self.ctrl.set_az_deg(deg, force=True)
+                else:
+                    self.ctrl.set_el_deg(deg, force=True)
+                self.logbuf.write(
+                    "INFO",
+                    f"{axis.upper()}: Soll/Ist ≈{diff:.1f}° bei Stillstand ≥{hold_s:.0f}s — SETPOSDG wiederholt",
+                )
+            except Exception as e:
+                self._log_exception("_maybe_resend_setposdg_if_stale_at_rest", e)
+            setattr(self, since_attr, None)
+
+        _run_one(
+            "az",
+            "_stale_tgt_az_since",
+            enable=bool(getattr(self.ctrl, "enable_az", True)),
+            referenced=bool(getattr(self.ctrl.az, "referenced", False)),
+            moving=bool(getattr(self.ctrl.az, "moving", False)),
+        )
+        _run_one(
+            "el",
+            "_stale_tgt_el_since",
+            enable=bool(getattr(self.ctrl, "enable_el", False)),
+            referenced=bool(getattr(self.ctrl.el, "referenced", False)),
+            moving=bool(getattr(self.ctrl.el, "moving", False)),
+        )
 
     def _notify_pst_position(self) -> None:
         """Sendet AZ-Position via PST-UDP wenn sie sich geändert hat."""
@@ -1948,7 +2054,7 @@ class MainWindow(QMainWindow):
             ui = self.cfg.get("ui", {})
             self._lbl_srv_ucxlog_suffix.setText(
                 self._udp_bind_status_text(
-                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "0.0.0.0", 12040
+                    "udp_ucxlog_listen_host", "udp_ucxlog_port", "127.0.0.1", 12040
                 )
             )
             self._lbl_srv_pst_udp_suffix.setText(
@@ -1956,7 +2062,7 @@ class MainWindow(QMainWindow):
             )
             self._lbl_srv_aswatch_suffix.setText(
                 self._udp_bind_status_text(
-                    "aswatch_udp_listen_host", "aswatch_udp_port", "0.0.0.0", 9872
+                    "aswatch_udp_listen_host", "aswatch_udp_port", "127.0.0.1", 9872
                 )
             )
         except Exception:
@@ -1994,6 +2100,7 @@ class MainWindow(QMainWindow):
             self._error_popup.maybe_show(self, "EL", getattr(self.ctrl.el, "error_code", 0))
             self._warning_popup.maybe_show(self, "EL", self.ctrl.el)
 
+        self._maybe_resend_setposdg_if_stale_at_rest(hw_on)
         self._notify_pst_position()
         self._update_actions_locked_by_moving()
         self._update_title_bar()

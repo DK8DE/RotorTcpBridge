@@ -229,14 +229,27 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         # Erstes gültiges Ist nach Start: lokales Motor-Soll = Ist, sonst bleibt
                         # target_d10 (Default 0) und UI/Kompass zeigen Soll 0° obwohl der Rotor steht.
                         # Vor dem ref_poll_active-Return, damit es auch beim ersten Sample während Homing greift.
+                        # Kein Überschreiben, wenn schon ein abweichendes Soll gesetzt wurde (z. B. Hotkey vor
+                        # erstem GETPOSDG) — sonst springt die relative Tasten-Kette auf die Ist-Position zurück.
                         if not had_prev_sample and getattr(
                             axis_state, "compass_target_d10", None
                         ) is None:
                             try:
                                 d10_i = int(d10)
-                                axis_state.target_d10 = d10_i
-                                axis_state.last_set_sent_target_d10 = d10_i
-                                axis_state.last_set_sent_ts = time.time()
+                                lst = getattr(
+                                    axis_state, "last_set_sent_target_d10", None
+                                )
+                                skip_sync = False
+                                if lst is not None:
+                                    try:
+                                        if abs(int(lst) - d10_i) > 3:
+                                            skip_sync = True
+                                    except Exception:
+                                        pass
+                                if not skip_sync:
+                                    axis_state.target_d10 = d10_i
+                                    axis_state.last_set_sent_target_d10 = d10_i
+                                    axis_state.last_set_sent_ts = time.time()
                             except Exception:
                                 pass
 

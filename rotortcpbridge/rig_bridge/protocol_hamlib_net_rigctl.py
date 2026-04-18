@@ -138,7 +138,7 @@ class HamlibNetRigctlServer:
     def __init__(
         self,
         get_state: Callable[[], dict],
-        enqueue_write: Callable[[str], None],
+        enqueue_write: Callable[..., None],
         on_clients_changed: Callable[[int], None],
         log_write: Callable[[str, str], None],
         on_state_patch: Callable[[dict[str, Any]], None] | None = None,
@@ -146,6 +146,7 @@ class HamlibNetRigctlServer:
         log_serial_traffic: bool = True,
         log_label: str = "",
         on_tcp_activity: Callable[[], None] | None = None,
+        refresh_frequency_for_read: Callable[[], bool] | None = None,
     ):
         self._get_state = get_state
         self._enqueue_write = enqueue_write
@@ -153,6 +154,7 @@ class HamlibNetRigctlServer:
         self._log_write = log_write
         self._on_state_patch = on_state_patch
         self._on_tcp_activity = on_tcp_activity or (lambda: None)
+        self._refresh_frequency_for_read = refresh_frequency_for_read
         self._debug_traffic = bool(debug_traffic)
         self._log_serial_traffic = bool(log_serial_traffic)
         self._log_label = str(log_label or "").strip()
@@ -353,9 +355,14 @@ class HamlibNetRigctlServer:
             return "RPRT 0"
 
         # --- get/set freq (optional VFO-Suffix wie ``f VFOA``, ``F VFOA 14074000``) ---
-        # ``f``: WSJT-X/Hamlib-Client fragt die Anzeigefrequenz ab — nur aus dem RAM-State
-        # (kein serielles ``FA;`` pro Abfrage). Seriell wird nur bei ``F …`` (SETFREQ) geschrieben.
+        # ``f``: Anzeigefrequenz — nach Möglichkeit zuerst CAT-READ (VFO am TRX), sonst RAM-State.
         if cmd in ("f", "\\get_freq") or _strip_cmd_vfo_prefix(cmd, "f"):
+            if self._refresh_frequency_for_read is not None:
+                try:
+                    self._refresh_frequency_for_read()
+                except Exception:
+                    pass
+                st = self._get_state()
             return self._freq_hz_line(st)
         if cmd.startswith("F ") or (parts0 and parts0[0].lower() == "\\set_freq"):
             hz = _parse_set_freq_hz(cmd)
@@ -364,7 +371,7 @@ class HamlibNetRigctlServer:
             # Sofort gleiche Ziel-Frequenz für ``f``-Abfragen (Hamlib/UI), COM folgt asynchron.
             if self._on_state_patch is not None:
                 self._on_state_patch({"frequency_hz": hz})
-            self._enqueue_write(f"SETFREQ {hz}")
+            self._enqueue_write(f"SETFREQ {hz}", "Hamlib NET rigctld → TRX")
             return "RPRT 0"
 
         # --- get_mode: zwei Zeilen (Modus, dann Passband) ---
@@ -380,7 +387,7 @@ class HamlibNetRigctlServer:
                 mode_tok = _parse_set_mode_token(cmd.replace("\\set_mode ", "M ", 1))
             if not mode_tok:
                 return "RPRT -8"
-            self._enqueue_write(f"SETMODE {mode_tok}")
+            self._enqueue_write(f"SETMODE {mode_tok}", "Hamlib NET rigctld → TRX")
             if self._on_state_patch is not None:
                 self._on_state_patch({"mode": mode_tok})
             return "RPRT 0"
@@ -396,7 +403,7 @@ class HamlibNetRigctlServer:
             ptt = _parse_set_ptt_int(raw)
             if ptt is None:
                 return "RPRT -8"
-            self._enqueue_write(f"SETPTT {ptt}")
+            self._enqueue_write(f"SETPTT {ptt}", "Hamlib NET rigctld → TRX")
             if self._on_state_patch is not None:
                 self._on_state_patch({"ptt": bool(ptt)})
             return "RPRT 0"

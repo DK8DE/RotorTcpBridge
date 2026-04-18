@@ -39,6 +39,10 @@ def _serial_fatal_types() -> tuple[type, ...]:
 class _WriteCommand:
     command: str
     callback: Optional[Callable[[str], None]] = None
+    #: Wenn gesetzt: nach Bearbeitung (Erfolg oder Fehler) setzen — z. B. für synchrones READFREQ.
+    done: Optional[threading.Event] = None
+    #: Kurztext fürs Diagnose-Log (z. B. Flrig rig.set_frequency vs. rig.get_vfo).
+    log_ctx: str = ""
 
 
 class RadioConnectionManager:
@@ -69,6 +73,12 @@ class RadioConnectionManager:
         self._log_serial = True
         self._cat_post_write_drain_s = 0.08
         self._setfreq_gap_s = 0.0
+        #: Nach SETFREQ kein FA-Lesen: vermeidet „Echo“/Ziffernrücksprung, wenn der TRX noch nachzieht.
+        self._readfreq_suppress_until_mono = 0.0
+        self._post_setfreq_read_suppress_s = 0.11
+        #: Mehrere FLRig/Hamlib-Clients pollen ``get_vfo``/``f`` — COM entlasten, State bleibt zuletzt gesetzt.
+        self._readfreq_min_interval_s = 0.048
+        self._last_readfreq_cat_mono = 0.0
 
     @staticmethod
     def _is_fatal_link_error(exc: BaseException) -> bool:
@@ -111,6 +121,8 @@ class RadioConnectionManager:
             except Exception:
                 pass
         self._drain_write_queue()
+        self._readfreq_suppress_until_mono = 0.0
+        self._last_readfreq_cat_mono = 0.0
         self._state.update(connected=False)
         if exc is not None:
             self._state.set_error(str(exc))
@@ -261,6 +273,8 @@ class RadioConnectionManager:
                 timeout=float(self._cfg.timeout_s),
             )
             self._running = True
+            self._readfreq_suppress_until_mono = 0.0
+            self._last_readfreq_cat_mono = 0.0
             self._worker = threading.Thread(target=self._write_loop, daemon=True)
             self._poller = threading.Thread(target=self._poll_loop, daemon=True)
             self._worker.start()
@@ -288,13 +302,40 @@ class RadioConnectionManager:
                 pass
         self._drain_write_queue()
         self._join_worker_threads()
+        self._readfreq_suppress_until_mono = 0.0
+        self._last_readfreq_cat_mono = 0.0
         self._state.update(connected=False)
         self._state.set_error("")
         self._log_write("INFO", "Rig-Bridge: COM getrennt")
 
-    def write_command(self, cmd: str, callback: Optional[Callable[[str], None]] = None) -> None:
+    def write_command(
+        self,
+        cmd: str,
+        callback: Optional[Callable[[str], None]] = None,
+        *,
+        log_ctx: str = "",
+    ) -> None:
         """Schreibzugriff serialisiert über Queue."""
-        self._write_q.put(_WriteCommand(command=str(cmd), callback=callback))
+        self._write_q.put(
+            _WriteCommand(command=str(cmd), callback=callback, log_ctx=(log_ctx or "").strip())
+        )
+
+    def read_frequency_sync(self, timeout_s: float = 0.75, *, log_ctx: str = "") -> bool:
+        """``READFREQ`` über den COM-Worker; blockiert bis Bearbeitung oder Timeout.
+
+        Genutzt von Flrig/Hamlib bei Abfragen der Anzeigefrequenz, damit VFO-Drehs am Gerät
+        sichtbar werden (nicht nur der zuletzt per Software gesetzte Wert).
+        """
+        if not self.is_serial_connected():
+            return False
+        with self._lock:
+            running = bool(self._running)
+        if not running:
+            return False
+        done = threading.Event()
+        ctx = (log_ctx or "").strip()
+        self._write_q.put(_WriteCommand(command="READFREQ", done=done, log_ctx=ctx))
+        return done.wait(float(timeout_s))
 
     def _write_loop(self) -> None:
         while self._running:
@@ -302,15 +343,17 @@ class RadioConnectionManager:
                 item = self._write_q.get(timeout=0.2)
             except queue.Empty:
                 continue
+            done_ev = item.done
             try:
                 if self._log_serial:
+                    ctx = f" {item.log_ctx}" if item.log_ctx else ""
                     self._log_write(
                         "INFO",
-                        f"Rig-Bridge: COM Worker dequeue {item.command!r}",
+                        f"Rig-Bridge: COM Worker dequeue {item.command!r}{ctx}",
                     )
                 t0 = time.monotonic()
                 with self._io_lock:
-                    response = self._send_and_read_unlocked(item.command)
+                    response = self._send_and_read_unlocked(item)
                 if self._debug_traffic and self._is_setfreq_cmd(item.command):
                     dt_ms = (time.monotonic() - t0) * 1000.0
                     self._log_write(
@@ -319,6 +362,10 @@ class RadioConnectionManager:
                     )
                 if self._is_setfreq_cmd(item.command) and self._setfreq_gap_s > 0:
                     time.sleep(self._setfreq_gap_s)
+                if self._is_setfreq_cmd(item.command):
+                    self._readfreq_suppress_until_mono = (
+                        time.monotonic() + float(self._post_setfreq_read_suppress_s)
+                    )
                 if item.callback is not None:
                     item.callback(response)
                 self._state.mark_success()
@@ -332,6 +379,12 @@ class RadioConnectionManager:
                     break
                 self._state.set_error(str(exc))
                 self._log_write("WARN", f"Rig-Bridge TX Fehler: {exc}")
+            finally:
+                if done_ev is not None:
+                    try:
+                        done_ev.set()
+                    except Exception:
+                        pass
 
     def _poll_loop(self) -> None:
         """Leichtgewichtig: kein CAT-Frequenz-Poll — aber regelmäßiger COM-„Lebenszeichen“-Check.
@@ -395,7 +448,7 @@ class RadioConnectionManager:
         if self._debug_traffic or self._log_serial:
             self._log_write("INFO", f"Rig-Bridge: SETPTT erledigt: {desc}")
 
-    def _write_setfreq_cat_unlocked(self, hz: int) -> None:
+    def _write_setfreq_cat_unlocked(self, hz: int, log_ctx: str = "") -> None:
         """SETFREQ: nur CAT-Set (schnell); kein ``FA;``-Poll — sonst stufenweise Hamlib-Nutzung extrem langsam.
 
         Der Anzeige-State kommt bereits optimistisch vom Hamlib-Server; hier geht es nur noch ums Gerät.
@@ -411,12 +464,18 @@ class RadioConnectionManager:
             ser.reset_input_buffer()
         except Exception:
             pass
-        self._log_serial_io("TX", payload, f"(SETFREQ {hz} Hz)")
+        note = f"(SETFREQ {hz} Hz)"
+        if log_ctx:
+            note = f"{note} [{log_ctx}]"
+        self._log_serial_io("TX", payload, note)
         ser.write(payload)
         ser.flush()
         if not is_icom:
+            rx_note = "(SETFREQ)"
+            if log_ctx:
+                rx_note = f"{rx_note} [{log_ctx}]"
             self._read_cat_response_logged(
-                ser, is_icom=False, note="(SETFREQ)", quick_drain=True
+                ser, is_icom=False, note=rx_note, quick_drain=True
             )
         self._state.update(frequency_hz=int(hz))
 
@@ -449,19 +508,20 @@ class RadioConnectionManager:
         if self._debug_traffic or self._log_serial:
             self._log_write("INFO", f"Rig-Bridge: SETMODE erledigt: {desc}")
 
-    def _send_and_read_unlocked(self, cmd: str) -> str:
+    def _send_and_read_unlocked(self, item: _WriteCommand) -> str:
         """Nur mit ``self._io_lock`` aufrufen."""
         ser = self._ser
         if ser is None:
             raise RigConnectionError("Keine aktive Funkgeräteverbindung")
-        c = str(cmd).strip()
+        c = str(item.command).strip()
         up = c.upper()
+        ctx = (item.log_ctx or "").strip()
         if up.startswith("SETFREQ "):
             try:
                 hz = self._setfreq_hz_from_command(c)
             except (IndexError, ValueError) as exc:
                 raise RigConnectionError("SETFREQ: ungueltiger Wert") from exc
-            self._write_setfreq_cat_unlocked(hz)
+            self._write_setfreq_cat_unlocked(hz, ctx)
             return ""
         if up.startswith("SETMODE "):
             tail = c.split(None, 1)[1].strip() if " " in c else ""
@@ -482,9 +542,9 @@ class RadioConnectionManager:
             self._write_ptt_cat_unlocked(on)
             return ""
         if up == "READFREQ":
-            return self._read_vfo_frequency_unlocked()
+            return self._read_vfo_frequency_unlocked(ctx)
 
-        payload = (str(cmd).strip() + "\n").encode("ascii", errors="ignore")
+        payload = (str(c).strip() + "\n").encode("ascii", errors="ignore")
         self._log_serial_io("TX", payload, "(Rohbefehl)")
         ser.write(payload)
         raw = ser.readline()
@@ -494,30 +554,55 @@ class RadioConnectionManager:
         except Exception:
             return ""
 
-    def _read_vfo_frequency_unlocked(self) -> str:
+    def _read_vfo_frequency_unlocked(self, log_ctx: str = "") -> str:
         """``FA;`` senden und ``frequency_hz`` aus der Antwort parsen (VFO am Gerät)."""
         ser = self._ser
         if ser is None:
             raise RigConnectionError("Keine aktive Funkgeräte-Verbindung")
+        now = time.monotonic()
+        if now < self._readfreq_suppress_until_mono:
+            if self._debug_traffic:
+                self._log_write(
+                    "INFO",
+                    "Rig-Bridge: READFREQ übersprungen (kurz nach SETFREQ; kein Echo auf TRX)",
+                )
+            return ""
+        gap = float(self._readfreq_min_interval_s)
+        if gap > 0 and (now - self._last_readfreq_cat_mono) < gap:
+            if self._debug_traffic:
+                self._log_write(
+                    "INFO",
+                    "Rig-Bridge: READFREQ übersprungen (Entprellung bei mehreren CAT-Abfragen)",
+                )
+            return ""
+        self._last_readfreq_cat_mono = now
         cfg = self._cfg
         read_payload, _desc = build_read_vfo_frequency_query(cfg.rig_brand)
         if not read_payload:
-            return ""
-        is_icom = "icom" in (cfg.rig_brand or "").lower()
-        if is_icom:
             return ""
         try:
             ser.reset_input_buffer()
         except Exception:
             pass
-        self._log_serial_io("TX", read_payload, "(READFREQ)")
+        note = "(READFREQ)"
+        if log_ctx:
+            note = f"{note} [{log_ctx}]"
+        self._log_serial_io("TX", read_payload, note)
         ser.write(read_payload)
         ser.flush()
+        # FA…; endet mit Semikolon (Kenwood/Elecraft u. ä.); nicht CI-V \xFD.
         rx_read = self._read_cat_quick(ser, is_icom=False, max_wait_s=1.0)
-        self._log_serial_io("RX", rx_read, "(READFREQ)")
+        self._log_serial_io("RX", rx_read, note)
         parsed = parse_fa_style_frequency_hz(rx_read)
         if parsed is not None:
             self._state.update(frequency_hz=int(parsed))
+            if self._log_serial:
+                tail = f" [{log_ctx}]" if log_ctx else ""
+                self._log_write(
+                    "INFO",
+                    f"Rig-Bridge: VFO-Frequenz aus TRX (CAT) übernommen: "
+                    f"{parsed / 1e6:.6f} MHz ({parsed} Hz){tail}",
+                )
         return ""
 
     def _frequency_test_set_then_read(

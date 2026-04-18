@@ -105,19 +105,28 @@ class MainWindow(QMainWindow):
             proto_led = Led(self._srv_led_d, self)
             lbl_hp = QLabel("")
             lbl_hp.setWordWrap(False)
-            lbl_c = QLabel(t("main.rig_bridge_client"))
+            lbl_hp.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            w_r = QWidget(self)
+            hl_r = QHBoxLayout(w_r)
+            hl_r.setContentsMargins(0, 0, 0, 0)
+            hl_r.setSpacing(px_to_dip(self, 6))
+            hl_r.addStretch(1)
+            lbl_n = QLabel("")
+            lbl_n.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            lbl_n.setMinimumWidth(px_to_dip(self, 72))
             cli_led = Led(self._srv_led_d, self)
+            hl_r.addWidget(lbl_n, 0)
+            hl_r.addWidget(self._srv_led_wrap(cli_led), 0)
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(px_to_dip(self, 6))
             row.addWidget(self._srv_led_wrap(proto_led))
             row.addWidget(lbl_hp, 1)
-            row.addWidget(lbl_c, 0)
-            row.addWidget(self._srv_led_wrap(cli_led), 0)
+            row.addWidget(w_r, 0)
             w = QWidget()
             w.setLayout(row)
             lay.addWidget(w)
-            self._rig_hamlib_extra_rows.append((w, proto_led, lbl_hp, lbl_c, cli_led))
+            self._rig_hamlib_extra_rows.append((w, proto_led, lbl_hp, lbl_n, cli_led))
         for i, (w, *_rest) in enumerate(self._rig_hamlib_extra_rows):
             w.setVisible(i < n_extra)
 
@@ -451,11 +460,24 @@ class MainWindow(QMainWindow):
         rig_flrig_row.addWidget(self._srv_led_wrap(self.led_rig_flrig))
         self.lbl_rig_flrig = QLabel("")
         self.lbl_rig_flrig.setWordWrap(False)
+        self.lbl_rig_flrig.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         rig_flrig_row.addWidget(self.lbl_rig_flrig, 1)
-        self._lbl_rig_flrig_client = QLabel(t("main.rig_bridge_client"))
+        self._w_rig_flrig_right = QWidget(self)
+        hl_flr = QHBoxLayout(self._w_rig_flrig_right)
+        hl_flr.setContentsMargins(0, 0, 0, 0)
+        hl_flr.setSpacing(px_to_dip(self, 6))
+        hl_flr.addStretch(1)
+        self._lbl_rig_flrig_n = QLabel("")
+        self._lbl_rig_flrig_n.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._lbl_rig_flrig_n.setMinimumWidth(px_to_dip(self, 72))
         self._led_rig_flrig_conn = Led(self._srv_led_d, self)
-        rig_flrig_row.addWidget(self._lbl_rig_flrig_client, 0)
-        rig_flrig_row.addWidget(self._srv_led_wrap(self._led_rig_flrig_conn), 0)
+        hl_flr.addWidget(self._lbl_rig_flrig_n, 0)
+        hl_flr.addWidget(self._srv_led_wrap(self._led_rig_flrig_conn), 0)
+        rig_flrig_row.addWidget(self._w_rig_flrig_right, 0)
         rig_flrig_row_w = QWidget()
         rig_flrig_row_w.setLayout(rig_flrig_row)
         srv_form.addRow(t("main.srv_rig_flrig_label"), rig_flrig_row_w)
@@ -471,11 +493,24 @@ class MainWindow(QMainWindow):
         rig_hamlib_row.addWidget(self._srv_led_wrap(self.led_rig_hamlib))
         self.lbl_rig_hamlib = QLabel("")
         self.lbl_rig_hamlib.setWordWrap(False)
+        self.lbl_rig_hamlib.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         rig_hamlib_row.addWidget(self.lbl_rig_hamlib, 1)
-        self._lbl_rig_hamlib_client = QLabel(t("main.rig_bridge_client"))
+        self._w_rig_hamlib_right = QWidget(self)
+        hl_hmr = QHBoxLayout(self._w_rig_hamlib_right)
+        hl_hmr.setContentsMargins(0, 0, 0, 0)
+        hl_hmr.setSpacing(px_to_dip(self, 6))
+        hl_hmr.addStretch(1)
+        self._lbl_rig_hamlib_n = QLabel("")
+        self._lbl_rig_hamlib_n.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._lbl_rig_hamlib_n.setMinimumWidth(px_to_dip(self, 72))
         self._led_rig_hamlib_conn = Led(self._srv_led_d, self)
-        rig_hamlib_row.addWidget(self._lbl_rig_hamlib_client, 0)
-        rig_hamlib_row.addWidget(self._srv_led_wrap(self._led_rig_hamlib_conn), 0)
+        hl_hmr.addWidget(self._lbl_rig_hamlib_n, 0)
+        hl_hmr.addWidget(self._srv_led_wrap(self._led_rig_hamlib_conn), 0)
+        rig_hamlib_row.addWidget(self._w_rig_hamlib_right, 0)
         rig_hamlib_row_w = QWidget()
         rig_hamlib_row_w.setLayout(rig_hamlib_row)
         self._lay_hamlib_stack.addWidget(rig_hamlib_row_w)
@@ -798,12 +833,6 @@ class MainWindow(QMainWindow):
             lab = sf.labelForField(self._srv_row_rig_hamlib_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_rig_hamlib_label"))
-            if hasattr(self, "_lbl_rig_flrig_client"):
-                self._lbl_rig_flrig_client.setText(t("main.rig_bridge_client"))
-            if hasattr(self, "_lbl_rig_hamlib_client"):
-                self._lbl_rig_hamlib_client.setText(t("main.rig_bridge_client"))
-            for _w, _pl, _lbl, lbl_c, _cli in getattr(self, "_rig_hamlib_extra_rows", []):
-                lbl_c.setText(t("main.rig_bridge_client"))
             self._lbl_srv_pst_conn.setText(t("main.srv_pst_conn_text"))
             ui = self.cfg.get("ui", {})
             self._lbl_srv_ucxlog_suffix.setText(
@@ -1627,7 +1656,8 @@ class MainWindow(QMainWindow):
         rbm = getattr(self, "_rig_bridge_manager", None)
         rb_cfg = self.cfg.get("rig_bridge") or {}
         rig_mod = bool(rb_cfg.get("enabled", False))
-        s_act = f_act = False
+        s_act = False
+        f_act = False
         h_ports: set[int] = set()
         if rbm is not None and rig_mod:
             s_act, f_act, h_ports = rbm.take_rig_activity_flags()
@@ -1712,10 +1742,16 @@ class MainWindow(QMainWindow):
                         if fl_on
                         else t("main.rig_proto_stopped")
                     )
+                    self._lbl_rig_flrig_n.setText(
+                        t("main.rig_n_clients", n=n_fl) if fl_on else ""
+                    )
                     self._led_rig_flrig_conn.set_state(fl_on and n_fl > 0)
                 else:
+                    self._rig_flrig_blink_phase = 0
+                    self._rig_flrig_blink_active = False
                     self.led_rig_flrig.set_state(False)
                     self.lbl_rig_flrig.setText("")
+                    self._lbl_rig_flrig_n.setText("")
                     self._led_rig_flrig_conn.set_state(False)
 
                 hm_en = bool((rb_cfg.get("hamlib") or {}).get("enabled", False))
@@ -1768,23 +1804,26 @@ class MainWindow(QMainWindow):
                     if multi_ham:
                         for i, p in enumerate(ports):
                             n_c = int(hm_counts.get(p, 0))
-                            txt = (
+                            txt_hp = (
                                 t("main.rig_flrig_host_port", host=hh, port=p)
                                 if hm_on
                                 else t("main.rig_proto_stopped")
                             )
+                            txt_n = t("main.rig_n_clients", n=n_c) if hm_on else ""
                             cli_on = hm_on and n_c > 0
                             tip = hm_names.get(p, "")
                             if i == 0:
-                                self.lbl_rig_hamlib.setText(txt)
+                                self.lbl_rig_hamlib.setText(txt_hp)
+                                self._lbl_rig_hamlib_n.setText(txt_n)
                                 self.lbl_rig_hamlib.setToolTip(tip)
                                 self._led_rig_hamlib_conn.set_state(cli_on)
                                 row0 = self.lbl_rig_hamlib.parentWidget()
                                 if row0 is not None:
                                     row0.setToolTip(tip)
                             else:
-                                wrow, _pl, lbl, _lc, cli_led = self._rig_hamlib_extra_rows[i - 1]
-                                lbl.setText(txt)
+                                wrow, _pl, lbl, lbl_n, cli_led = self._rig_hamlib_extra_rows[i - 1]
+                                lbl.setText(txt_hp)
+                                lbl_n.setText(txt_n)
                                 lbl.setToolTip(tip)
                                 cli_led.set_state(cli_on)
                                 wrow.setToolTip(tip)
@@ -1798,6 +1837,9 @@ class MainWindow(QMainWindow):
                             if hm_on
                             else t("main.rig_proto_stopped")
                         )
+                        self._lbl_rig_hamlib_n.setText(
+                            t("main.rig_n_clients", n=n_hm) if hm_on else ""
+                        )
                         self._led_rig_hamlib_conn.set_state(hm_on and n_hm > 0)
                         tip1 = hm_names.get(ports[0], "") if len(ports) == 1 else ""
                         self.lbl_rig_hamlib.setToolTip(tip1)
@@ -1809,14 +1851,16 @@ class MainWindow(QMainWindow):
                     self._rig_hamlib_blink_active.clear()
                     self.led_rig_hamlib.set_state(False)
                     self.lbl_rig_hamlib.setText("")
+                    self._lbl_rig_hamlib_n.setText("")
                     self.lbl_rig_hamlib.setToolTip("")
                     self._led_rig_hamlib_conn.set_state(False)
                     row0 = self.lbl_rig_hamlib.parentWidget()
                     if row0 is not None:
                         row0.setToolTip("")
-                    for wrow, led, lbl, _lc, cli_led in self._rig_hamlib_extra_rows:
+                    for wrow, led, lbl, lbl_n, cli_led in self._rig_hamlib_extra_rows:
                         led.set_state(False)
                         lbl.setText("")
+                        lbl_n.setText("")
                         lbl.setToolTip("")
                         cli_led.set_state(False)
                         wrow.setToolTip("")
@@ -1830,6 +1874,8 @@ class MainWindow(QMainWindow):
                     pass
             self.led_rig_serial.set_blinking_green(False)
             self.led_rig_serial.set_state(False)
+            self._rig_flrig_blink_phase = 0
+            self._rig_flrig_blink_active = False
             self.led_rig_flrig.set_state(False)
             self._led_rig_flrig_conn.set_state(False)
             self._rig_hamlib_blink_phase.clear()
@@ -1837,15 +1883,20 @@ class MainWindow(QMainWindow):
             self.led_rig_hamlib.set_state(False)
             self.lbl_rig_serial.setText("")
             self.lbl_rig_flrig.setText("")
+            if hasattr(self, "_lbl_rig_flrig_n"):
+                self._lbl_rig_flrig_n.setText("")
             self.lbl_rig_hamlib.setText("")
+            if hasattr(self, "_lbl_rig_hamlib_n"):
+                self._lbl_rig_hamlib_n.setText("")
             self.lbl_rig_hamlib.setToolTip("")
             self._led_rig_hamlib_conn.set_state(False)
             row0 = self.lbl_rig_hamlib.parentWidget()
             if row0 is not None:
                 row0.setToolTip("")
-            for wrow, led, lbl, _lc, cli_led in getattr(self, "_rig_hamlib_extra_rows", []):
+            for wrow, led, lbl, lbl_n, cli_led in getattr(self, "_rig_hamlib_extra_rows", []):
                 led.set_state(False)
                 lbl.setText("")
+                lbl_n.setText("")
                 lbl.setToolTip("")
                 cli_led.set_state(False)
                 wrow.setToolTip("")

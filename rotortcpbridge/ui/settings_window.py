@@ -130,7 +130,7 @@ class SettingsWindow(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
         # Breite fix; Höhe frei skalierbar (niedrige Mindesthöhe). Start-Höhe beim Öffnen: _settings_open_height_dip.
-        self._settings_base_width_dip = 700
+        self._settings_base_width_dip = 730
         self._settings_min_height_dip = 320
         self._settings_open_height_dip = 710
         self.setFixedWidth(px_to_dip(self, self._settings_base_width_dip))

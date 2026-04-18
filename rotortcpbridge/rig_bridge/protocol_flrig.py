@@ -1,7 +1,7 @@
 """Flrig-Bridge: XML-RPC über HTTP (WSJT-X / Hamlib-FLRig) + optionaler Textmodus.
 
 WSJT-X spricht mit dem Funkgerät-Typ „FLRig“ über Hamlibs flrig-Backend: POST /RPC2,
-XML-RPC (main.get_version, rig.get_vfoA, …). Der frühere reine Zeilenmodus
+XML-RPC (main.get_version, rig.get_vfoA als String-Hz wie FLRig, …). Der frühere reine Zeilenmodus
 („GET FREQ“) bleibt für einfache Skripte erhalten, sofern die erste Anfrage
 nicht wie HTTP aussieht.
 """
@@ -12,10 +12,14 @@ import re
 import socket
 import threading
 import xml.sax.saxutils as xml_esc
-from typing import Any, Callable, Set
+from typing import Any, Callable, Protocol, Set
 from xml.etree import ElementTree as ET
 
 from .utils import bind_tcp_listen_socket
+
+
+class _EnqueueWrite(Protocol):
+    def __call__(self, command: str, log_ctx: str = ...) -> None: ...
 
 _MAX_XMLRPC_BODY = 4 * 1024 * 1024
 
@@ -130,23 +134,50 @@ def _parse_method_name(body: bytes) -> str | None:
     return None
 
 
+def _xml_local_tag(el) -> str:
+    if el is None:
+        return ""
+    return (el.tag or "").split("}")[-1].lower()
+
+
 def _param_scalar_values(body: bytes) -> list[str | int | float]:
-    """Erste XML-RPC-Parameter als Skalare (string/double/i4/int/boolean)."""
+    """Erste XML-RPC-Parameter als Skalare (string/double/i4/int/boolean).
+
+    Hamlib/XML-RPC++ setzt oft einen Default-``xmlns`` auf ``methodCall`` — dann liefert
+    ``find('params')`` ohne Namespace nichts; ``rig.set_frequency`` fiel noch durch den
+    Regex-Fallback zurück, ``rig.set_mode`` blieb leer → kein ``SETMODE`` ans Funkgerät.
+    """
     out: list[str | int | float] = []
     try:
         text = body.decode("utf-8", errors="replace")
         root = ET.fromstring(_sanitize_xmlrpc_body_text(text))
     except Exception:
         return out
-    params = root.find("params")
-    if params is None:
+    params_el = None
+    for el in root.iter():
+        if _xml_local_tag(el) == "params":
+            params_el = el
+            break
+    if params_el is None:
         return out
-    for p in params.findall("param"):
-        val = p.find("value")
-        if val is None or len(val) == 0:
+    for p in params_el:
+        if _xml_local_tag(p) != "param":
+            continue
+        val = None
+        for ch in p:
+            if _xml_local_tag(ch) == "value":
+                val = ch
+                break
+        if val is None:
+            continue
+        if len(val) == 0:
+            # z. B. Indy / Apache XML-RPC: <value>FM</value> ohne <string>-Hülle
+            only = (val.text or "").strip()
+            if only:
+                out.append(only)
             continue
         child = val[0]
-        tag = child.tag.split("}")[-1].lower()
+        tag = _xml_local_tag(child)
         tx = (child.text or "").strip()
         if tag in ("string",):
             out.append(tx)
@@ -165,6 +196,44 @@ def _param_scalar_values(body: bytes) -> list[str | int | float]:
         else:
             out.append(tx)
     return out
+
+
+def _body_mode_name_from_set_mode_xml(body: bytes) -> str:
+    """Modus aus ``params`` per Regex, falls ElementTree-Struktur abweicht (rig.set_mode*).
+
+    Erfasst u. a. ``<string>FM</string>`` und schlicht ``<value>FM</value>`` (ohne String-Tag).
+    """
+    if not body:
+        return ""
+    try:
+        t = body.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    low = t.lower()
+    i = low.find("<params")
+    if i < 0:
+        return ""
+    j = low.find("</params>", i)
+    section = t[i:j] if j >= i else t[i:]
+    last = ""
+    for m in re.finditer(r"<string>\s*([^<]{1,40})\s*</string>", section, re.I):
+        cand = (m.group(1) or "").strip()
+        if not cand or cand.startswith("http"):
+            continue
+        if re.match(r"^[A-Za-z][A-Za-z0-9_\-]{0,31}$", cand):
+            last = cand
+    if last:
+        return last
+    # Direkt skalar in <value>…</value> (kein weiteres XML-Tag im Inneren)
+    for m in re.finditer(
+        r"<value>\s*([A-Za-z][A-Za-z0-9_\-]{0,31})\s*</value>",
+        section,
+        re.I,
+    ):
+        cand = (m.group(1) or "").strip()
+        if cand and not cand.lower().startswith("http"):
+            last = cand
+    return last
 
 
 def _body_first_frequency_hz(body: bytes) -> int | None:
@@ -195,12 +264,13 @@ class FlrigBridgeServer:
     def __init__(
         self,
         get_state: Callable[[], dict],
-        enqueue_write: Callable[[str], None],
+        enqueue_write: _EnqueueWrite,
         on_clients_changed: Callable[[int], None],
         log_write: Callable[[str, str], None],
         log_client_traffic: bool = True,
         on_state_patch: Callable[[dict[str, Any]], None] | None = None,
         on_tcp_activity: Callable[[], None] | None = None,
+        refresh_frequency_before_read: Callable[[], bool] | None = None,
     ):
         self._get_state = get_state
         self._enqueue_write = enqueue_write
@@ -209,6 +279,7 @@ class FlrigBridgeServer:
         self._log_write = log_write
         self._log_client_traffic = bool(log_client_traffic)
         self._on_tcp_activity = on_tcp_activity or (lambda: None)
+        self._refresh_frequency_before_read = refresh_frequency_before_read
         self._sock = None
         self._running = False
         self._clients: Set[socket.socket] = set()
@@ -371,8 +442,23 @@ class FlrigBridgeServer:
     ) -> str:
         if not self._running:
             return _method_fault_unknown(method)
-        st = self._get_state()
         m = method.strip()
+        # VFO am Gerät: vor jeder Abfrage frisch per CAT lesen (sonst nur RAM/letzter SET).
+        # FLRig-Hilfe: rig.get_vfo ist s:n (String Hz) — <double> wird von manchen Clients
+        # (z. B. UcxLog / Indy) nicht als Frequenz erkannt.
+        _freq_read_methods = (
+            "rig.get_vfoA",
+            "rig.get_vfoB",
+            "rig.get_vfo",
+            "main.get_frequency",
+            "main.get_freq",
+        )
+        if m in _freq_read_methods and self._refresh_frequency_before_read is not None:
+            try:
+                self._refresh_frequency_before_read()
+            except Exception:
+                pass
+        st = self._get_state()
 
         def sval(inner: str) -> str:
             return _method_response_value(inner)
@@ -391,8 +477,8 @@ class FlrigBridgeServer:
             return sval("<string>100</string>")
         if m in ("rig.get_modeA", "rig.get_modeB", "rig.get_mode"):
             return sval(f"<string>{_xml_escape(mode)}</string>")
-        if m in ("rig.get_vfoA", "rig.get_vfoB", "rig.get_vfo"):
-            return sval(f"<double>{float(hz)}</double>")
+        if m in ("rig.get_vfoA", "rig.get_vfoB", "rig.get_vfo", "main.get_frequency", "main.get_freq"):
+            return sval(f"<string>{hz}</string>")
         if m == "rig.get_AB":
             return sval(f"<string>{_xml_escape(vfo if vfo in ('A', 'B') else 'A')}</string>")
         if m == "rig.get_modes":
@@ -449,7 +535,10 @@ class FlrigBridgeServer:
                 hz_i = int(fhz)
                 # Sofort gleiche Anzeigefrequenz für rig.get_vfo* (wie Hamlib NET / F …).
                 self._patch_state({"frequency_hz": hz_i})
-                self._enqueue_write(f"SETFREQ {hz_i}")
+                self._enqueue_write(
+                    f"SETFREQ {hz_i}",
+                    f"Software z.B. UcxLog (Flrig {m}) → TRX",
+                )
             return _method_response_void()
 
         if m in ("rig.set_mode", "rig.set_modeA", "rig.set_modeB", "rig.set_verify_mode", "rig.set_verify_modeA", "rig.set_verify_modeB"):
@@ -460,9 +549,11 @@ class FlrigBridgeServer:
                     break
             if not name and params:
                 name = str(params[-1]).strip()
+            if not name:
+                name = _body_mode_name_from_set_mode_xml(body)
             if name:
                 self._patch_state({"mode": name})
-                self._enqueue_write(f"SETMODE {name}")
+                self._enqueue_write(f"SETMODE {name}", f"Software (Flrig {m}) → TRX")
             return _method_response_void()
 
         if m in ("rig.set_ptt", "rig.set_ptt_fast", "rig.set_verify_ptt"):
@@ -478,7 +569,7 @@ class FlrigBridgeServer:
                     v = int(p.strip())
                     break
             self._patch_state({"ptt": bool(v)})
-            self._enqueue_write(f"SETPTT {v}")
+            self._enqueue_write(f"SETPTT {v}", f"Software (Flrig {m}) → TRX")
             return _method_response_void()
 
         if m in ("rig.set_AB", "rig.set_verify_AB"):
@@ -545,8 +636,13 @@ class FlrigBridgeServer:
             pass
         if self._log_client_traffic:
             self._log_write("INFO", f"Flrig TCP RX: {cmd!r}")
-        st = self._get_state()
         up = cmd.upper()
+        if up == "GET FREQ" and self._refresh_frequency_before_read is not None:
+            try:
+                self._refresh_frequency_before_read()
+            except Exception:
+                pass
+        st = self._get_state()
         if up == "GET FREQ":
             out = str(int(st.get("frequency_hz", 0)))
         elif up.startswith("SET FREQ "):
@@ -555,7 +651,10 @@ class FlrigBridgeServer:
                 self._patch_state({"frequency_hz": hz_i})
             except ValueError:
                 pass
-            self._enqueue_write(f"SETFREQ {cmd[9:].strip()}")
+            self._enqueue_write(
+                f"SETFREQ {cmd[9:].strip()}",
+                "Software (Flrig Textmodus SET FREQ) → TRX",
+            )
             out = "OK"
         elif up == "GET MODE":
             out = str(st.get("mode", "USB"))
@@ -563,7 +662,7 @@ class FlrigBridgeServer:
             name = cmd[9:].strip()
             if name:
                 self._patch_state({"mode": name})
-                self._enqueue_write(f"SETMODE {name}")
+                self._enqueue_write(f"SETMODE {name}", "Software (Flrig Textmodus SET MODE) → TRX")
             out = "OK"
         elif up == "GET PTT":
             out = "1" if st.get("ptt", False) else "0"
@@ -573,7 +672,7 @@ class FlrigBridgeServer:
             except ValueError:
                 v = 0
             self._patch_state({"ptt": bool(v)})
-            self._enqueue_write(f"SETPTT {v}")
+            self._enqueue_write(f"SETPTT {v}", "Software (Flrig Textmodus SET PTT) → TRX")
             out = "OK"
         elif up == "GET VFO":
             out = str(st.get("vfo", "A"))

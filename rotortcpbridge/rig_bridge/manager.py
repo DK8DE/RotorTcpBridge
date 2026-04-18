@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from datetime import datetime
 from typing import Any, Callable
 
@@ -45,19 +46,36 @@ class RigBridgeManager:
         )
         self._radio.update_config(self._cfg)
         self._reconnect_thread.start()
+        #: FLRig: HTTP-Clients schließen oft nach jeder XML-RPC-Anfrage — für die UI wird die
+        #: Anzahl kurz gehalten (>0), damit LED und Zähler nicht zwischen 0/1 flackern.
+        self._flrig_last_nonempty_ts: float = 0.0
+        self._FLRIG_CLIENT_UI_HOLD_S = 2.5
+        #: Kurzzeitig weniger offene Sockets als zuvor (z. B. 2→1 bei zwei Pollern) — Anzeige
+        #: erst senken, wenn die niedrigere Zahl stabil bleibt (gegen 1↔2-Springen).
+        self._flrig_peak_display: int = 0
+        self._flrig_below_peak_since: float | None = None
+        self._FLRIG_CLIENT_DOWN_HOLD_S = 1.4
 
         self._flrig = FlrigBridgeServer(
             get_state=self._state.snapshot,
             enqueue_write=self._enqueue_radio_write,
-            on_clients_changed=lambda n: self._state.set_protocol_clients("flrig", n),
+            on_clients_changed=self._on_flrig_clients_changed,
             log_write=self._log_and_diag,
             log_client_traffic=bool(self._cfg.log_serial_traffic),
             on_state_patch=self._hamlib_state_patch,
             on_tcp_activity=self._pulse_rig_flrig_activity,
+            refresh_frequency_before_read=self.refresh_rig_frequency_from_cat,
         )
         #: Port → laufender rigctld-Server (mehrere Clients pro Port möglich)
         self._hamlib_servers: dict[int, HamlibNetRigctlServer] = {}
         self._hamlib_client_counts: dict[int, int] = {}
+
+    def _on_flrig_clients_changed(self, n: int) -> None:
+        n = max(0, int(n))
+        with self._lock:
+            if n > 0:
+                self._flrig_last_nonempty_ts = time.monotonic()
+        self._state.set_protocol_clients("flrig", n)
 
     def _log_and_diag(self, level: str, msg: str) -> None:
         """Diagnosefenster und ``rotortcpbridge.log``: gleicher Inhalt nur bei ``log_serial_traffic``.
@@ -161,21 +179,48 @@ class RigBridgeManager:
     def get_config_dict(self) -> dict:
         return self._cfg.to_dict()
 
-    def _enqueue_radio_write(self, command: str) -> None:
-        self._radio.write_command(command)
+    def _enqueue_radio_write(self, command: str, log_ctx: str = "") -> None:
+        self._radio.write_command(command, log_ctx=log_ctx)
 
     def enqueue_read_frequency(self) -> None:
         """VFO-Frequenz per CAT (``FA;``) vom Funkgerät lesen und in den State schreiben."""
         if not self._radio.is_serial_connected():
             return
-        self._radio.write_command("READFREQ")
+        # Flrig (rig.get_vfo*) und Hamlib (``f``) lesen die Frequenz bereits pro Client — zusätzlicher
+        # UI-Poll würde die COM-Schlange stauen (Doppel-READFREQ), verzögert Abstimmung und kann
+        # sporadische ``.?;``/Parser-Stolperer am Yaesu-CAT begünstigen.
+        n_fl = int(self._state.protocol_clients.get("flrig", 0) or 0)
+        n_hm = int(self._state.protocol_clients.get("hamlib", 0) or 0)
+        if n_fl > 0 or n_hm > 0:
+            return
+        self._radio.write_command(
+            "READFREQ",
+            log_ctx="Hauptfenster-Poll → TRX lesen",
+        )
+
+    def refresh_rig_frequency_from_cat(self, timeout_s: float = 0.65) -> bool:
+        """Synchron ``READFREQ`` — für Flrig ``rig.get_vfo*`` / Hamlib ``f`` (frische VFO vom TRX)."""
+        try:
+            if not self._radio.is_serial_connected():
+                return False
+            return bool(
+                self._radio.read_frequency_sync(
+                    float(timeout_s),
+                    log_ctx="FLRig/Hamlib-Abfrage → TRX lesen (z. B. rig.get_vfo)",
+                )
+            )
+        except Exception:
+            return False
 
     def enqueue_set_frequency_hz(self, hz: int) -> None:
         """Funkgerät auf ``hz`` abstimmen (serieller CAT-``SETFREQ``-Pfad wie Hamlib/Flrig)."""
         v = int(hz)
         if v <= 0:
             return
-        self._radio.write_command(f"SETFREQ {v}")
+        self._radio.write_command(
+            f"SETFREQ {v}",
+            log_ctx="Rotor-UI (Kompass/Höhe/Frequenzfeld) → TRX",
+        )
 
     def _hamlib_state_patch(self, patch: dict[str, Any]) -> None:
         """Vom Hamlib-Server (z. B. ``V VFOA``) kommende State-Änderungen."""
@@ -273,6 +318,7 @@ class RigBridgeManager:
             log_serial_traffic=bool(self._cfg.log_serial_traffic),
             log_label=log_label,
             on_tcp_activity=lambda pp=port: self._pulse_rig_hamlib_activity(pp),
+            refresh_frequency_for_read=self.refresh_rig_frequency_from_cat,
         )
 
     def start_protocol(self, name: str) -> tuple[bool, str]:
@@ -310,6 +356,10 @@ class RigBridgeManager:
         try:
             if name == "flrig":
                 self._flrig.stop()
+                with self._lock:
+                    self._flrig_last_nonempty_ts = 0.0
+                    self._flrig_peak_display = 0
+                    self._flrig_below_peak_since = None
             elif name == "hamlib":
                 self._stop_hamlib_servers()
         finally:
@@ -333,6 +383,34 @@ class RigBridgeManager:
 
     def status_model(self) -> RigBridgeStatusModel:
         st = self._state.snapshot()
+        raw_pc = dict(st.get("protocol_clients", {}))
+        raw_fl = int(raw_pc.get("flrig", 0) or 0)
+        fl_active = bool(st.get("protocol_active", {}).get("flrig", False))
+        now = time.monotonic()
+        hold_empty = float(self._FLRIG_CLIENT_UI_HOLD_S)
+        hold_down = float(self._FLRIG_CLIENT_DOWN_HOLD_S)
+        with self._lock:
+            if not fl_active:
+                self._flrig_peak_display = 0
+                self._flrig_below_peak_since = None
+            else:
+                if raw_fl > self._flrig_peak_display:
+                    self._flrig_peak_display = raw_fl
+                    self._flrig_below_peak_since = None
+                elif raw_fl < self._flrig_peak_display:
+                    if self._flrig_below_peak_since is None:
+                        self._flrig_below_peak_since = now
+                    elif (now - self._flrig_below_peak_since) >= hold_down:
+                        self._flrig_peak_display = raw_fl
+                        self._flrig_below_peak_since = None
+                else:
+                    self._flrig_below_peak_since = None
+            peak_disp = int(self._flrig_peak_display)
+            last_ts = float(self._flrig_last_nonempty_ts)
+        disp_fl = peak_disp
+        if fl_active and raw_fl == 0 and last_ts > 0.0 and (now - last_ts) < hold_empty:
+            disp_fl = max(disp_fl, 1)
+        raw_pc["flrig"] = int(disp_fl)
         return RigBridgeStatusModel(
             module_enabled=bool(self._cfg.enabled),
             connecting=bool(self._radio.connecting),
@@ -348,5 +426,5 @@ class RigBridgeManager:
             last_error=str(st.get("last_error", "")),
             last_contact_ts=float(st.get("last_success_ts", 0.0)),
             protocol_active=dict(st.get("protocol_active", {})),
-            protocol_clients=dict(st.get("protocol_clients", {})),
+            protocol_clients=raw_pc,
         )

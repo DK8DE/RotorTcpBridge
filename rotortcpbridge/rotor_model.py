@@ -236,8 +236,11 @@ class AxisState:
     # Geschwindigkeit der Anzeige (0,1°/s) für SmoothDamp.
     _smooth_vel_f: float = 0.0
 
-    # GETPOSDG: Senden wird nicht mehr per Inflight begrenzt (siehe _poll_pos). Erwarteter
-    # Pollingabstand bleibt für Anzeige-Metadaten; pos_poll_inflight/sent_ts nur Kompatibilität.
+    # GETPOSDG: Coalescing in _poll_pos verhindert, dass sich GETPOSDG während
+    # SETPOSDG-Bursts in der TX-Queue stauen (sonst friert der Ist-Zeiger ein
+    # und alle aufgestauten ACKs kommen erst nach Burst-Ende als Batch). Flag
+    # wird beim Enqueuen gesetzt und in _on_async_tel bei ACK_GETPOSDG wieder
+    # freigegeben; Watchdog über pos_poll_sent_ts (0,9 s) verhindert Hänger.
     pos_poll_inflight: bool = False
     pos_poll_sent_ts: float = 0.0
     pos_poll_expected_period_s: float = 0.2

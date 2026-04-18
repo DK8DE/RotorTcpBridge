@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from .angle_utils import shortest_delta_deg
 from .rs485_protocol import BROADCAST_DST, Telegram
 from .rotor_model import AxisState
 from .rotor_controller_polling import _RotorPollingHost
@@ -14,6 +15,11 @@ from .rotor_parse_utils import (
     parse_int,
     parse_setposcc_params,
 )
+
+# GETPOSDG wird ohne Inflight oft hintereinander gesendet; veraltete ACKs würden sonst die Ist-Position
+# „teleportieren“ (z. B. kurz 0°) und Soll/UI durcheinanderbringen.
+_GETPOSDG_MAX_ONE_SHOT_DELTA_DEG_AZ = 75.0
+_GETPOSDG_MAX_ONE_SHOT_DELTA_D10_EL = 750  # 75° linear, EL-Bereich 0..90°
 
 
 class RotorControllerAsyncMixin(_RotorPollingHost):
@@ -202,6 +208,11 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 if tel.cmd.startswith("ACK_GETPOSDG") or tel.cmd.startswith("ACK_POSDG"):
                     axis_state.online = True
                     axis_state.last_rx_ts = time.time()
+                    # Coalescing-Flag freigeben: nächster Tick darf wieder GETPOSDG enqueuen.
+                    try:
+                        axis_state.pos_poll_inflight = False
+                    except Exception:
+                        pass
                     v = parse_getposdg_ist_deg(tel.params)
                     if v is not None:
                         d10 = int(round(v * 10))
@@ -215,6 +226,54 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             )
                         except Exception:
                             had_prev_sample = False
+
+                        if had_prev_sample and bool(
+                            getattr(axis_state, "referenced", False)
+                        ):
+                            try:
+                                refp = bool(
+                                    getattr(axis_state, "ref_poll_active", False)
+                                )
+                            except Exception:
+                                refp = False
+                            if not refp:
+                                if axis_name == "AZ" and bool(
+                                    getattr(axis_state, "position_wrap_360", True)
+                                ):
+                                    delta_deg = abs(
+                                        float(
+                                            shortest_delta_deg(
+                                                float(prev_pos) / 10.0,
+                                                float(d10) / 10.0,
+                                            )
+                                        )
+                                    )
+                                    if (
+                                        delta_deg
+                                        > _GETPOSDG_MAX_ONE_SHOT_DELTA_DEG_AZ
+                                    ):
+                                        try:
+                                            self.log.write(
+                                                "WARN",
+                                                f"{axis_name}: GETPOSDG-Ist verworfen (|Δ|={delta_deg:.1f}°), vermutlich veraltetes ACK — params={tel.params!r}",
+                                            )
+                                        except Exception:
+                                            pass
+                                        return
+                                elif axis_name == "EL":
+                                    djump = abs(int(d10) - int(prev_pos))
+                                    if (
+                                        djump
+                                        > _GETPOSDG_MAX_ONE_SHOT_DELTA_D10_EL
+                                    ):
+                                        try:
+                                            self.log.write(
+                                                "WARN",
+                                                f"{axis_name}: GETPOSDG-Ist verworfen (|Δ|={djump / 10.0:.1f}°), params={tel.params!r}",
+                                            )
+                                        except Exception:
+                                            pass
+                                        return
 
                         try:
                             exp = float(

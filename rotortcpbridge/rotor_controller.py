@@ -23,8 +23,9 @@ _SETPOSCC_SUPPRESS_S = 0.6
 _CC_IDLE_DEFER_S = 1.0
 
 # Nach SETPOSDG (Bridge oder Mitschnitt fremder Master): kurz nur Positions-/Fehler-Polling,
-# damit kein GETANEMO/GETWARN/… den Bus mit dem Rotor kreuzt.
-_SETPOSDG_POLL_GRACE_S = 0.45
+# damit kein GETANEMO/GETWARN/… den Bus mit dem Rotor kreuzt. Deckt auch schnelle Hotkey-Bursts
+# (mehrere SETPOSDG hintereinander) ab; Idle-Zusatzabfragen werden solange wie bei Fahrt pausiert.
+_SETPOSDG_POLL_GRACE_S = 1.5
 
 
 class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
@@ -567,8 +568,21 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._idle_poll_defer_until = time.time() + _CC_IDLE_DEFER_S
 
     def note_setposdg_poll_restrict(self) -> None:
-        """SETPOSDG an Rotor-Slave (gesendet oder mitgeschnitten): Zusatz-Polling wie bei Fahrt begrenzen."""
-        self._setposdg_poll_grace_until_ts = time.time() + _SETPOSDG_POLL_GRACE_S
+        """SETPOSDG an Rotor-Slave (gesendet oder mitgeschnitten): Zusatz-Polling wie bei Fahrt begrenzen.
+
+        Setzt zusätzlich ``_idle_poll_defer_until`` auf dasselbe Fenster, damit während schneller
+        Hotkey-Bursts (mehrere SETPOSDG kurz hintereinander) **keine** Idle-Zusatzabfragen
+        (``GETWARN``, ``GETTEMPA/M``, ``GETWIND*``, ``GETPWM``, ``GETREF``, ``GETACCBINS`` …)
+        zwischen die SETPOSDG/ACK rutschen und den Bus mit dem Rotor kreuzen. Ohne diesen Schutz
+        verschwanden z. B. Windanzeigen im Kompass oder der Rotor verlor sein Ziel.
+        """
+        now = time.time()
+        self._setposdg_poll_grace_until_ts = now + _SETPOSDG_POLL_GRACE_S
+        try:
+            prev = float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
+        except Exception:
+            prev = 0.0
+        self._idle_poll_defer_until = max(prev, now + _SETPOSDG_POLL_GRACE_S)
 
     def _az_antenna_offset_deg(self, idx_0_to_2: int, cfg: Optional[dict] = None) -> float:
         """Versatz der Antenne idx (0..2) aus Achsen-State, sonst cfg-Fallback wie Kompass."""

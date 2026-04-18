@@ -25,7 +25,6 @@ from PySide6.QtCore import QEvent, Qt, QTimer
 
 from .antenna_sync import AntennaSelectionBridge
 
-from ..angle_utils import shortest_delta_deg
 from ..app_icon import get_app_icon
 from ..i18n import t
 from ..shortcut_actions import (
@@ -51,6 +50,7 @@ from .ui_utils import px_to_dip
 from .theme import apply_theme_mode
 from .popup_handlers import ErrorPopupHandler, WarningPopupHandler
 from .axis_widget import _make_axis_panel, fill_axis_panel, retranslate_axis_panel
+
 
 
 class MainWindow(QMainWindow):
@@ -170,9 +170,6 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self._hw_off_since: float | None = None
-        # RS485: fehlendes SETPOSDG — Ist bleibt hinter Soll; bei Stillstand >1 s nachziehen
-        self._stale_tgt_az_since: float | None = None
-        self._stale_tgt_el_since: float | None = None
         self._last_title: str = ""
         self._ucxlog_blink_phase = 0
         self._ucxlog_blink_active = False
@@ -1592,88 +1589,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _maybe_resend_setposdg_if_stale_at_rest(self, hw_on: bool) -> None:
-        """Wenn Soll und Ist dauerhaft auseinanderlaufen (z. B. verlorenes SETPOSDG) und
-        der Rotor meldet Stillstand (Fährt = aus): nach ≥1 s dasselbe Soll erneut senden.
-
-        Nur bei Hardware-Verbindung; kein Nutzertastendruck nötig.
-        """
-        import time as _time
-
-        if not hw_on:
-            self._stale_tgt_az_since = None
-            self._stale_tgt_el_since = None
-            return
-
-        now = float(_time.time())
-        min_diff_deg = 0.3
-        hold_s = 1.0
-
-        def _axis_mismatch_deg(az_el: str) -> float:
-            ax = self.ctrl.az if az_el == "az" else self.ctrl.el
-            try:
-                pd = int(getattr(ax, "pos_d10", 0))
-                td = int(getattr(ax, "target_d10", 0))
-            except Exception:
-                return 0.0
-            p_deg = pd / 10.0
-            t_deg = td / 10.0
-            if bool(getattr(ax, "position_wrap_360", False)):
-                return abs(float(shortest_delta_deg(p_deg, t_deg)))
-            return abs(p_deg - t_deg)
-
-        def _run_one(
-            axis: str,
-            since_attr: str,
-            *,
-            enable: bool,
-            referenced: bool,
-            moving: bool,
-        ) -> None:
-            since = getattr(self, since_attr)
-            if not enable or not referenced or moving:
-                setattr(self, since_attr, None)
-                return
-            diff = _axis_mismatch_deg(axis)
-            if diff <= min_diff_deg:
-                setattr(self, since_attr, None)
-                return
-            if since is None:
-                setattr(self, since_attr, now)
-                return
-            if (now - float(since)) < hold_s:
-                return
-            try:
-                ax = self.ctrl.az if axis == "az" else self.ctrl.el
-                td = int(getattr(ax, "target_d10", 0))
-                deg = td / 10.0
-                if axis == "az":
-                    self.ctrl.set_az_deg(deg, force=True)
-                else:
-                    self.ctrl.set_el_deg(deg, force=True)
-                self.logbuf.write(
-                    "INFO",
-                    f"{axis.upper()}: Soll/Ist ≈{diff:.1f}° bei Stillstand ≥{hold_s:.0f}s — SETPOSDG wiederholt",
-                )
-            except Exception as e:
-                self._log_exception("_maybe_resend_setposdg_if_stale_at_rest", e)
-            setattr(self, since_attr, None)
-
-        _run_one(
-            "az",
-            "_stale_tgt_az_since",
-            enable=bool(getattr(self.ctrl, "enable_az", True)),
-            referenced=bool(getattr(self.ctrl.az, "referenced", False)),
-            moving=bool(getattr(self.ctrl.az, "moving", False)),
-        )
-        _run_one(
-            "el",
-            "_stale_tgt_el_since",
-            enable=bool(getattr(self.ctrl, "enable_el", False)),
-            referenced=bool(getattr(self.ctrl.el, "referenced", False)),
-            moving=bool(getattr(self.ctrl.el, "moving", False)),
-        )
-
     def _notify_pst_position(self) -> None:
         """Sendet AZ-Position via PST-UDP wenn sie sich geändert hat."""
         if self._udp_pst is None or not self._udp_pst.is_active:
@@ -2100,7 +2015,6 @@ class MainWindow(QMainWindow):
             self._error_popup.maybe_show(self, "EL", getattr(self.ctrl.el, "error_code", 0))
             self._warning_popup.maybe_show(self, "EL", self.ctrl.el)
 
-        self._maybe_resend_setposdg_if_stale_at_rest(hw_on)
         self._notify_pst_position()
         self._update_actions_locked_by_moving()
         self._update_title_bar()

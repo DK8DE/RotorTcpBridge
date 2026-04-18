@@ -368,14 +368,24 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 if self.enable_az:
                     sent_any = (
                         self._poll_pos(
-                            self.slave_az, self.az, "AZ", now, expected_period_s=pos_period
+                            self.slave_az,
+                            self.az,
+                            "AZ",
+                            now,
+                            expected_period_s=pos_period,
+                            high_priority=poll_restrict,
                         )
                         or sent_any
                     )
                 if self.enable_el:
                     sent_any = (
                         self._poll_pos(
-                            self.slave_el, self.el, "EL", now, expected_period_s=pos_period
+                            self.slave_el,
+                            self.el,
+                            "EL",
+                            now,
+                            expected_period_s=pos_period,
+                            high_priority=poll_restrict,
                         )
                         or sent_any
                     )
@@ -656,9 +666,13 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._acc_bins_finalize_pending_el = False
 
     def _send_setpos(self, dst: int, d10: int, axis: str, retry_count: int = 0):
-        """SETPOSDG senden. Bei fehlendem ACK nach ~250ms automatisch einmal erneut versuchen.
+        """SETPOSDG senden. Bei fehlendem ACK nach ~250ms einmal erneut — **nur**, wenn das
+        Achsen-Ziel seither nicht überschrieben wurde.
 
-        Retry wegen möglicher RS485-Kollisionen; Verbindung bleibt bei Timeout erhalten.
+        Ohne diese Prüfung würde ein verspäteter Retry bei schnellen Hotkey-Bursts ein **alt**-
+        Ziel nachschieben, nachdem der Nutzer längst einen neueren Wert gesendet hat — der
+        Rotor fährt dann „zurück nach 0“ / zum veralteten Ziel. Retry wegen möglicher
+        RS485-Kollisionen; Verbindung bleibt bei Timeout erhalten.
         """
         try:
             self.note_setposdg_poll_restrict()
@@ -676,11 +690,41 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         params = f"{deg:.2f}".replace(".", ",")
         line = build(self.master_id, dst, "SETPOSDG", params)
 
+        d10_sent = int(d10)
+        axs_target = self.az if axu == "AZ" else self.el
+
+        def _current_axis_target_d10() -> Optional[int]:
+            try:
+                lst = getattr(axs_target, "last_set_sent_target_d10", None)
+                if lst is None:
+                    return None
+                return int(lst)
+            except Exception:
+                return None
+
         def done(tel: Optional[Telegram], err: Optional[str]):
+            # Auch ACK/NAK, die vom HardwareClient an den Pending-Callback gehen,
+            # müssen die Achse als „online“ halten. Sonst veraltet last_rx_ts bei
+            # schnellen Hotkey-Bursts (SETPOSDG-Kette, Polling ist währenddessen
+            # unterdrückt) und die Offline-Bewertung setzt target_d10 auf 0.
+            # Das führte reproduzierbar zu Sprüngen wie SETPOSDG:25 → SETPOSDG:1.
+            if tel is not None:
+                try:
+                    axs_target.online = True
+                    axs_target.last_rx_ts = time.time()
+                except Exception:
+                    pass
             if err:
                 if retry_count < 1:
+                    cur = _current_axis_target_d10()
+                    if cur is not None and cur != d10_sent:
+                        self.log.write(
+                            "INFO",
+                            f"{axis} SETPOSDG kein ACK ({err}); Retry verworfen, Ziel hat sich auf {cur / 10.0:.2f}° geändert.",
+                        )
+                        return
                     self.log.write("INFO", f"{axis} SETPOSDG kein ACK ({err}), Retry...")
-                    self._send_setpos(dst, d10, axis, retry_count=1)
+                    self._send_setpos(dst, d10_sent, axis, retry_count=1)
                 else:
                     self.log.write("WARN", f"{axis} SETPOSDG keine Antwort nach Retry ({err})")
                 return
@@ -700,13 +744,28 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
     # -------------------- Poll helpers --------------------
     def _poll_pos(
-        self, dst: int, axis_state: AxisState, axis: str, now_ts: float, expected_period_s: float
+        self,
+        dst: int,
+        axis_state: AxisState,
+        axis: str,
+        now_ts: float,
+        expected_period_s: float,
+        high_priority: bool = False,
     ) -> bool:
-        """GETPOSDG senden — ohne Warten auf ein voriges ACK.
+        """GETPOSDG senden — mit Coalescing und optional erhöhter Priorität.
 
-        Der Hardware-Client setzt bei ``expect_prefix=None`` kein ``_pending``; Antworten
-        laufen asynchron über ``on_async_telegram``. Früheres Inflight-Gating verzögerte
-        bei verspäteten ACKs den nächsten Send und wirkte wie Ruckeln.
+        Ohne Coalescing werden bei schnellen Hotkey-Bursts (SETPOSDG-Kette) pro
+        Tick neue GETPOSDG in die TX-Queue geworfen, obwohl die vorherigen noch
+        nicht beantwortet sind. Die SETPOSDG haben Priorität 0 und dominieren
+        die PriorityQueue → GETPOSDG (Prio 5) stauen sich und werden erst nach
+        dem Burst als Batch gesendet (Ist-Zeiger friert ein).
+
+        Deshalb:
+        - ``pos_poll_inflight`` sorgt dafür, dass immer nur EIN GETPOSDG pro
+          Achse in Queue/Flight ist. Watchdog 0,9 s verhindert Dauerblockade.
+        - ``high_priority=True`` (während SETPOSDG-Grace/Bewegung) hebt die
+          Priorität auf 0, damit das Positions-Poll per FIFO zwischen den
+          SETPOSDG-Commands eingereiht wird und der Ist-Zeiger mitläuft.
         """
         _ = now_ts
         try:
@@ -714,9 +773,21 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         except Exception:
             axis_state.pos_poll_expected_period_s = 0.2
 
+        now = time.time()
+        try:
+            if bool(getattr(axis_state, "pos_poll_inflight", False)):
+                last = float(getattr(axis_state, "pos_poll_sent_ts", 0.0) or 0.0)
+                if (now - last) < 0.9:
+                    return False
+        except Exception:
+            pass
+
+        prio = 0 if high_priority else 5
         line = build(self.master_id, dst, "GETPOSDG", "0")
+        axis_state.pos_poll_inflight = True
+        axis_state.pos_poll_sent_ts = now
         self.hw.send_request(
-            HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5)
+            HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=prio)
         )
         return True
 

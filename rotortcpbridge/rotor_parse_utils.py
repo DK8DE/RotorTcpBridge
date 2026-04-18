@@ -67,9 +67,10 @@ def parse_setposcc_params(params: str) -> tuple[Optional[float], Optional[int]]:
 def parse_getposdg_ist_deg(params: str) -> Optional[float]:
     """Ist-Position aus ACK_GETPOSDG-Parametern (Grad, Komma als Dezimaltrenner).
 
-    Firmware liefert entweder einen Wert, ``Ist;Soll`` oder ``Ist:Soll``.
-    Für die Anzeige/Interpolation ist immer die **Ist**-Komponente (erster Wert) nötig —
-    nicht das letzte ``;``-Segment (das wäre oft das Soll und würde den Zeiger ruckeln).
+    Im RS485-ASCII-Rahmen ist die letzte Zahl nach ``:`` bereits die Checksumme (siehe
+    :mod:`rs485_protocol`), sodass ``params`` für jede Achse **genau einen** Positionswert
+    enthält. ``Ist;Soll`` (semikolongetrennt) wird weiter unterstützt — hier ist der erste
+    Wert der Ist.
     """
     try:
         p = str(params or "").strip()
@@ -82,3 +83,9 @@ def parse_getposdg_ist_deg(params: str) -> Optional[float]:
     if ":" in p:
         return parse_float(p.split(":", 1)[0].strip())
     return parse_float(p)
+
+
+def parse_getposdg_axis_deg(params: str, *, is_az: bool) -> Optional[float]:
+    """Alias für :func:`parse_getposdg_ist_deg` (AZ und EL haben getrennte Slaves/ACKs)."""
+    _ = is_az
+    return parse_getposdg_ist_deg(params)

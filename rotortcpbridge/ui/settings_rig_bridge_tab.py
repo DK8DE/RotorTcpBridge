@@ -36,24 +36,6 @@ _RIG_DEF_SETFREQ_GAP_MS = 10
 from .led_widget import Led
 from .ui_utils import px_to_dip
 
-# Hamlib NET rigctl: Kurz-Tooltips (Tab ist deutschsprachig)
-_HAMLIB_HOST_TOOLTIP = (
-    "Hier kann die lokale IP eingetragen werden, auf der der Service laufen soll, oder 127.0.0.1."
-)
-_HAMLIB_PORT_TOOLTIP = (
-    "Hier den Port eintragen, über den sich die Anwendung verbinden soll. Standard ist 4532. "
-    "Jede neue Verbindung braucht einen eigenen Port."
-)
-_HAMLIB_NAME_TOOLTIP = "Dient nur der Orientierung, welche Software hier angebunden ist."
-
-# Flrig (ein Host/Port): Tooltips analog Hamlib NET
-_FLRIG_HOST_TOOLTIP = (
-    "Hier kann die lokale IP eingetragen werden, auf der Flrig läuft, oder 127.0.0.1."
-)
-_FLRIG_PORT_TOOLTIP = (
-    "Hier den Port eintragen, über den sich die Anwendung mit Flrig verbinden soll. Standard ist 12345."
-)
-
 # Gängige UART-Baudraten (wie typische COM-Dialoge)
 _BAUD_RATES = (
     300,
@@ -142,9 +124,9 @@ class RigBridgeTab(QWidget):
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(10)
 
-        gb_general = QGroupBox("Allgemein")
+        gb_general = QGroupBox(t("rig.group_general"))
         fl_general = QFormLayout(gb_general)
-        self.chk_enabled = QCheckBox("Rig-Bridge aktiv")
+        self.chk_enabled = QCheckBox(t("rig.enabled"))
         self.cb_rig_brand = QComboBox()
         self.cb_rig_model = QComboBox()
         self.lbl_rig_info = QLabel("-")
@@ -152,25 +134,19 @@ class RigBridgeTab(QWidget):
         btn_row_general = QWidget()
         hl_general = QHBoxLayout(btn_row_general)
         hl_general.setContentsMargins(0, 0, 0, 0)
-        self.btn_test = QPushButton("Verbindung testen")
-        self.btn_test.setToolTip(
-            format_tooltip(
-                "Sendet Set-Frequenz auf 144,300 MHz (CAT je Marke, z. B. Yaesu FA…;) und protokolliert RX.\n"
-                "Mit aktiver „Verbinden“-Session: gleicher COM-Port, kurz serialisiert gegen den Worker.\n"
-                "Ohne Verbindung: COM wird kurz separat geöffnet. Reine Ziffer im Port wird zu COMn (Windows)."
-            )
-        )
+        self.btn_test = QPushButton(t("rig.btn_test"))
+        self.btn_test.setToolTip(format_tooltip(t("rig.btn_test_tooltip")))
         self.btn_test.setMinimumWidth(170)
         self.btn_test.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         hl_general.addWidget(self.btn_test)
         hl_general.addStretch(1)
         fl_general.addRow(self.chk_enabled)
-        fl_general.addRow("Funkgeräte-Marke", self.cb_rig_brand)
-        fl_general.addRow("Funkgeräte-Modell", self.cb_rig_model)
-        fl_general.addRow("Hamlib-Modell-ID", self.lbl_rig_info)
+        fl_general.addRow(t("rig.radio_brand"), self.cb_rig_brand)
+        fl_general.addRow(t("rig.radio_model"), self.cb_rig_model)
+        fl_general.addRow(t("rig.hamlib_model_id"), self.lbl_rig_info)
         fl_general.addRow(btn_row_general)
 
-        gb_status = QGroupBox("Statusanzeige")
+        gb_status = QGroupBox(t("rig.group_status"))
         fl_status = QFormLayout(gb_status)
         self.led_radio = Led(14, self)
         self.lbl_status = QLabel("-")
@@ -182,27 +158,17 @@ class RigBridgeTab(QWidget):
         led_l.setContentsMargins(0, 0, 0, 0)
         led_l.addWidget(self.led_radio, 0, Qt.AlignmentFlag.AlignLeft)
         led_l.addWidget(self.lbl_status, 1)
-        fl_status.addRow("Verbindung", led_wrap)
-        fl_status.addRow("Letzter Fehler", self.lbl_error)
-        fl_status.addRow("Letzter Kontakt", self.lbl_last)
-        fl_status.addRow("COM-Port", self.lbl_com)
+        fl_status.addRow(t("rig.status_connection"), led_wrap)
+        fl_status.addRow(t("rig.status_last_error"), self.lbl_error)
+        fl_status.addRow(t("rig.status_last_contact"), self.lbl_last)
+        fl_status.addRow(t("rig.status_com_port"), self.lbl_com)
 
-        gb_serial = QGroupBox("Funkgerät / serielle Verbindung")
+        gb_serial = QGroupBox(t("rig.group_serial"))
         outer_serial = QVBoxLayout(gb_serial)
-        self.chk_auto_connect = QCheckBox("Bei Programmstart mit Funkgerät verbinden")
-        self.chk_auto_connect.setToolTip(
-            format_tooltip(
-                "Wenn Rig-Bridge aktiv ist: COM beim Start der Anwendung öffnen. "
-                "Danach starten Flrig und Hamlib (rigctld) automatisch, sofern dort „Autostart“ gesetzt ist."
-            )
-        )
-        self.chk_auto_reconnect = QCheckBox("Automatisch wieder verbinden")
-        self.chk_auto_reconnect.setToolTip(
-            format_tooltip(
-                "Vorgabe für künftige Wiederherstellung der COM-Session (Konfiguration); "
-                "die Rig-Bridge nutzt sie, sobald die Logik dafür angebunden ist."
-            )
-        )
+        self.chk_auto_connect = QCheckBox(t("rig.auto_connect"))
+        self.chk_auto_connect.setToolTip(format_tooltip(t("rig.auto_connect_tooltip")))
+        self.chk_auto_reconnect = QCheckBox(t("rig.auto_reconnect"))
+        self.chk_auto_reconnect.setToolTip(format_tooltip(t("rig.auto_reconnect_tooltip")))
         outer_serial.addWidget(self.chk_auto_connect)
         outer_serial.addWidget(self.chk_auto_reconnect)
         grid_serial = QGridLayout()
@@ -210,82 +176,31 @@ class RigBridgeTab(QWidget):
         self.cb_com = QComboBox()
         self.cb_com.setEditable(False)
         self.cb_com.view().setMouseTracking(True)
-        self.cb_com.setToolTip(
-            format_tooltip(
-                "Serieller COM-Port des Funkgeräts (CAT).\n"
-                "Nach USB-Stecker ziehen/neu einstecken oder anderem Port: Liste mit „↻“ aktualisieren.\n"
-                "Reine Ziffern werden unter Windows zu COMn aufgelöst.\n"
-                "In der aufgeklappten Liste: Maus über einen Eintrag halten für die Treiber-/Gerätebeschreibung."
-            )
-        )
+        self.cb_com.setToolTip(format_tooltip(t("rig.com_port_tooltip")))
         self.btn_refresh_com = QPushButton("\u21bb")
-        self.btn_refresh_com.setToolTip(format_tooltip("COM-Ports aktualisieren"))
+        self.btn_refresh_com.setToolTip(format_tooltip(t("rig.com_refresh_tooltip")))
         self.btn_refresh_com.setFixedWidth(px_to_dip(self, 34))
         _nw = 88
         self.cb_baud = QComboBox()
         for br in _BAUD_RATES:
             self.cb_baud.addItem(str(br), br)
         self.cb_baud.setFixedWidth(px_to_dip(self, _nw))
-        self.cb_baud.setToolTip(
-            format_tooltip(
-                "UART-Baudrate der CAT-Schnittstelle laut Funkgeräte-Handbuch "
-                "(typisch 38400, 9600 oder 115200). Muss zum Gerät passen, sonst keine zuverlässige CAT-Kommunikation."
-            )
-        )
-        self.lbl_serial_frame = QLabel(
-            "Serieller Rahmen (fest): 8 Datenbits · 1 Stopbit · keine Parität (8N1)"
-        )
+        self.cb_baud.setToolTip(format_tooltip(t("rig.baud_tooltip")))
+        self.lbl_serial_frame = QLabel(t("rig.serial_frame"))
         self.lbl_serial_frame.setWordWrap(True)
-        self.lbl_serial_frame.setToolTip(
-            format_tooltip(
-                "Fest vorgegeben und nicht einstellbar: 8 Datenbits, 1 Stopbit, keine Parität (8N1).\n"
-                "Entspricht der üblichen CAT-UART vieler Hersteller."
-            )
-        )
+        self.lbl_serial_frame.setToolTip(format_tooltip(t("rig.serial_frame_tooltip")))
         self.ed_timeout = _make_float_line_edit(self, 0.05, 10.0, 2, _nw)
-        self.ed_timeout.setToolTip(
-            format_tooltip(
-                "Maximale Wartezeit pro serieller CAT-Operation in Sekunden (Lesen/Schreiben am COM-Port).\n"
-                "Zu klein: Timeouts oder abgebrochene Befehle bei langsamen Geräten oder langen Kabeln.\n"
-                "Zu groß: längere Blockaden, falls das Gerät nicht antwortet."
-            )
-        )
+        self.ed_timeout.setToolTip(format_tooltip(t("rig.timeout_tooltip")))
         self.ed_poll = _make_int_line_edit(self, 30, 5000, _nw)
-        self.ed_poll.setToolTip(
-            format_tooltip(
-                "Abstand in Millisekunden zwischen periodischen CAT-Abfragen (z. B. Frequenz), "
-                "wenn Clients oder die Anzeige aktuelle Werte vom Funkgerät brauchen.\n"
-                "Kleiner = schnellere Aktualisierung, mehr Last auf COM und Gerät; größer = weniger Traffic."
-            )
-        )
+        self.ed_poll.setToolTip(format_tooltip(t("rig.poll_tooltip")))
         self.ed_cat_drain = _make_int_line_edit(self, 20, 500, _nw)
-        self.ed_cat_drain.setToolTip(
-            format_tooltip(
-                "Nach jedem CAT-Schreibbefehl (FA/TX/MD): maximal so lange auf Echo oder `;` warten "
-                "(Millisekunden). Zu groß = langsame WSJT-X-Runden; zu klein = evtl. verpasstes Echo bei manchen Geräten."
-            )
-        )
+        self.ed_cat_drain.setToolTip(format_tooltip(t("rig.cat_drain_tooltip")))
         self.ed_setfreq_gap = _make_int_line_edit(self, 0, 200, _nw)
-        self.ed_setfreq_gap.setToolTip(
-            format_tooltip(
-                "Kurze Pause nach jedem seriellen SETFREQ (FA…;) in Millisekunden. Hilft, wenn das Funkgerät bei schnellem "
-                "Abstimmen mit ``?;`` antwortet oder Schritte auslässt. 0 = keine zusätzliche Pause."
-            )
-        )
-        self.btn_connect = QPushButton("Verbinden")
-        self.btn_connect.setToolTip(
-            format_tooltip(
-                "Öffnet die serielle CAT-Session zum gewählten COM-Port mit eingestellter Baudrate.\n"
-                "Vorher Marke/Modell prüfen; danach können Flrig/Hamlib über dieselbe Session arbeiten."
-            )
-        )
-        self.btn_disconnect = QPushButton("Trennen")
-        self.btn_disconnect.setToolTip(
-            format_tooltip(
-                "Schließt die CAT-Verbindung zum Funkgerät.\n"
-                "Laufende TCP-Dienste (Flrig/Hamlib) bitte separat mit „Stop“ beenden, falls aktiv."
-            )
-        )
+        self.ed_setfreq_gap.setToolTip(format_tooltip(t("rig.setfreq_gap_tooltip")))
+        self.btn_connect = QPushButton(t("rig.btn_connect"))
+        self.btn_connect.setToolTip(format_tooltip(t("rig.btn_connect_tooltip")))
+        self.btn_disconnect = QPushButton(t("rig.btn_disconnect"))
+        self.btn_disconnect.setToolTip(format_tooltip(t("rig.btn_disconnect_tooltip")))
         btn_serial_col = QWidget()
         hl_btn_serial = QHBoxLayout(btn_serial_col)
         hl_btn_serial.setContentsMargins(0, 0, 0, 0)
@@ -293,23 +208,23 @@ class RigBridgeTab(QWidget):
         hl_btn_serial.addWidget(self.btn_connect, 0)
         hl_btn_serial.addWidget(self.btn_disconnect, 0)
         hl_btn_serial.addStretch(1)
-        grid_serial.addWidget(QLabel("COM-Port"), 0, 0)
+        grid_serial.addWidget(QLabel(t("rig.com_port_label")), 0, 0)
         grid_serial.addWidget(self.cb_com, 0, 1)
         grid_serial.addWidget(self.btn_refresh_com, 0, 2)
-        grid_serial.addWidget(QLabel("Baudrate"), 1, 0)
+        grid_serial.addWidget(QLabel(t("rig.baud_label")), 1, 0)
         grid_serial.addWidget(self.cb_baud, 1, 1)
         grid_serial.addWidget(self.lbl_serial_frame, 2, 0, 1, 3)
-        grid_serial.addWidget(QLabel("Timeout (s)"), 3, 0)
+        grid_serial.addWidget(QLabel(t("rig.timeout_label")), 3, 0)
         grid_serial.addWidget(self.ed_timeout, 3, 1)
-        grid_serial.addWidget(QLabel("Polling-Intervall (ms)"), 4, 0)
+        grid_serial.addWidget(QLabel(t("rig.poll_label")), 4, 0)
         grid_serial.addWidget(self.ed_poll, 4, 1)
-        grid_serial.addWidget(QLabel("CAT-Drain nach Schreiben (max., ms)"), 5, 0)
+        grid_serial.addWidget(QLabel(t("rig.cat_drain_label")), 5, 0)
         grid_serial.addWidget(self.ed_cat_drain, 5, 1)
-        grid_serial.addWidget(QLabel("Pause nach SETFREQ (ms)"), 6, 0)
+        grid_serial.addWidget(QLabel(t("rig.setfreq_gap_label")), 6, 0)
         grid_serial.addWidget(self.ed_setfreq_gap, 6, 1)
         grid_serial.addWidget(btn_serial_col, 7, 1, 1, 2)
 
-        gb_protocols = QGroupBox("Protokolle")
+        gb_protocols = QGroupBox(t("rig.group_protocols"))
         vl_protocols = QVBoxLayout(gb_protocols)
         self._protocol_leds: dict[str, Led] = {}
         self._protocol_client_led: dict[str, Led] = {}
@@ -321,37 +236,37 @@ class RigBridgeTab(QWidget):
         self._protocol_stop: dict[str, QPushButton] = {}
 
         for name in ("flrig",):
-            title = "Flrig"
+            title = t("rig.flrig_title")
             gb_single = QGroupBox(title)
             fl_single = QFormLayout(gb_single)
-            chk = QCheckBox(f"{title} aktiv")
+            chk = QCheckBox(t("rig.flrig_active"))
             host = QLineEdit()
             host.setFixedWidth(px_to_dip(self, 100))
-            host.setToolTip(format_tooltip(_FLRIG_HOST_TOOLTIP))
+            host.setToolTip(format_tooltip(t("rig.flrig_host_tooltip")))
             port = QLineEdit()
             port.setValidator(QIntValidator(1, 65535, self))
             port.setFixedWidth(px_to_dip(self, 56))
-            port.setToolTip(format_tooltip(_FLRIG_PORT_TOOLTIP))
-            chk_auto = QCheckBox("Start beim Programmstart")
+            port.setToolTip(format_tooltip(t("rig.flrig_port_tooltip")))
+            chk_auto = QCheckBox(t("rig.flrig_autostart"))
             led = Led(12, self)
             self._lbl_flrig_bind_clients = QLabel("")
             self._lbl_flrig_bind_clients.setWordWrap(True)
             cli_led = Led(12, self)
-            btn_start = QPushButton("Flrig Service Starten")
-            btn_stop = QPushButton("Flrig Service stoppen")
+            btn_start = QPushButton(t("rig.flrig_btn_start"))
+            btn_stop = QPushButton(t("rig.flrig_btn_stop"))
             row_host_port = QWidget()
             hl_host_port = QHBoxLayout(row_host_port)
             hl_host_port.setContentsMargins(0, 0, 0, 0)
             hl_host_port.setSpacing(8)
-            hl_host_port.addWidget(QLabel("Host"))
+            hl_host_port.addWidget(QLabel(t("rig.lbl_host")))
             hl_host_port.addWidget(host, 1)
-            hl_host_port.addWidget(QLabel("Port"))
+            hl_host_port.addWidget(QLabel(t("rig.lbl_port")))
             hl_host_port.addWidget(port, 0)
             row_status = QWidget()
             hl_status = QHBoxLayout(row_status)
             hl_status.setContentsMargins(0, 0, 0, 0)
             hl_status.setSpacing(8)
-            hl_status.addWidget(QLabel("Status"))
+            hl_status.addWidget(QLabel(t("rig.lbl_status")))
             hl_status.addWidget(led, 0, Qt.AlignmentFlag.AlignLeft)
             hl_status.addSpacing(10)
             hl_status.addWidget(self._lbl_flrig_bind_clients, 1)
@@ -373,38 +288,38 @@ class RigBridgeTab(QWidget):
             fl_single.addRow(row_status)
             vl_protocols.addWidget(gb_single)
 
-        gb_hamlib = QGroupBox("Hamlib NET rigctl")
+        gb_hamlib = QGroupBox(t("rig.group_hamlib"))
         fl_hamlib = QFormLayout(gb_hamlib)
-        self._protocol_enabled["hamlib"] = QCheckBox("Hamlib NET rigctl aktiv")
+        self._protocol_enabled["hamlib"] = QCheckBox(t("rig.hamlib_active"))
         self._hamlib_host = QLineEdit()
         self._hamlib_host.setFixedWidth(px_to_dip(self, 100))
-        self._hamlib_host.setToolTip(format_tooltip(_HAMLIB_HOST_TOOLTIP))
+        self._hamlib_host.setToolTip(format_tooltip(t("rig.hamlib_host_tooltip")))
         row_hamlib_host = QWidget()
         hl_hh = QHBoxLayout(row_hamlib_host)
         hl_hh.setContentsMargins(0, 0, 0, 0)
         hl_hh.setSpacing(8)
-        hl_hh.addWidget(QLabel("Host"))
+        hl_hh.addWidget(QLabel(t("rig.lbl_host")))
         hl_hh.addWidget(self._hamlib_host, 1)
         self._hamlib_rows_box = QWidget()
         self._hamlib_rows_layout = QVBoxLayout(self._hamlib_rows_box)
         self._hamlib_rows_layout.setContentsMargins(0, 0, 0, 0)
         self._hamlib_rows_layout.setSpacing(6)
         self._hamlib_rows: list[tuple[QLineEdit, QLineEdit, QLabel, QLabel, Led, QWidget]] = []
-        self.btn_hamlib_add_row = QPushButton("Eine weitere Verbindung anlegen")
+        self.btn_hamlib_add_row = QPushButton(t("rig.hamlib_btn_add_row"))
         self.btn_hamlib_add_row.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.btn_hamlib_add_row.clicked.connect(lambda: self._hamlib_add_row("", ""))
-        self._protocol_autostart["hamlib"] = QCheckBox("Start beim Programmstart")
-        self.chk_hamlib_debug = QCheckBox("Hamlib-Diagnose (Zeitabstände + lange Antworten)")
+        self._protocol_autostart["hamlib"] = QCheckBox(t("rig.hamlib_autostart"))
+        self.chk_hamlib_debug = QCheckBox(t("rig.hamlib_debug"))
         self._protocol_leds["hamlib"] = Led(12, self)
         self._lbl_hamlib_bind_clients = QLabel("")
         self._lbl_hamlib_bind_clients.setWordWrap(False)
-        self._protocol_start["hamlib"] = QPushButton("Hamlib NET Service Starten")
-        self._protocol_stop["hamlib"] = QPushButton("Hamlib NET Service stoppen")
+        self._protocol_start["hamlib"] = QPushButton(t("rig.hamlib_btn_start"))
+        self._protocol_stop["hamlib"] = QPushButton(t("rig.hamlib_btn_stop"))
         row_hamlib_status = QWidget()
         hl_hs = QHBoxLayout(row_hamlib_status)
         hl_hs.setContentsMargins(0, 0, 0, 0)
         hl_hs.setSpacing(8)
-        hl_hs.addWidget(QLabel("Status"))
+        hl_hs.addWidget(QLabel(t("rig.lbl_status")))
         hl_hs.addWidget(self._protocol_leds["hamlib"], 0, Qt.AlignmentFlag.AlignLeft)
         hl_hs.addSpacing(10)
         hl_hs.addWidget(self._lbl_hamlib_bind_clients, 1)
@@ -413,9 +328,7 @@ class RigBridgeTab(QWidget):
         hl_hs.addWidget(self._protocol_stop["hamlib"], 0)
         fl_hamlib.addRow(self._protocol_enabled["hamlib"])
         fl_hamlib.addRow(row_hamlib_host)
-        lbl_hamlib_ports = QLabel(
-            "Ports / Programm (je Zeile ein Listener, gleicher Host oben):"
-        )
+        lbl_hamlib_ports = QLabel(t("rig.hamlib_ports_header"))
         lbl_hamlib_ports.setWordWrap(True)
         lbl_hamlib_ports.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         fl_hamlib.addRow(lbl_hamlib_ports)
@@ -431,18 +344,10 @@ class RigBridgeTab(QWidget):
         fl_hamlib.addRow(row_hamlib_status)
         vl_protocols.addWidget(gb_hamlib)
 
-        gb_diag = QGroupBox("Diagnose / Logging")
+        gb_diag = QGroupBox(t("rig.group_diagnostics"))
         fl_diag = QFormLayout(gb_diag)
-        self.chk_serial_log = QCheckBox(
-            "Rig-Befehle loggen (TCP-Zeilen + COM TX/RX mit Zeitstempel im Fenster unten)"
-        )
-        self.chk_serial_log.setToolTip(
-            format_tooltip(
-                "Wenn aktiv: dieselben Zeilen wie im Diagnosefenster unten zusätzlich in rotortcpbridge.log "
-                "(Benutzer-AppData). Flrig-/Hamlib-TCP, COM-Worker und Rohbytes (hex + ASCII). "
-                "Warnungen/Fehler werden immer geloggt. Bei sehr hoher SETFREQ-Rate ggf. deaktivieren."
-            )
-        )
+        self.chk_serial_log = QCheckBox(t("rig.diag_log_cb"))
+        self.chk_serial_log.setToolTip(format_tooltip(t("rig.diag_log_tooltip")))
         fl_diag.addRow(self.chk_serial_log)
         self.txt_diag = QTextEdit()
         self.txt_diag.setReadOnly(True)
@@ -503,15 +408,15 @@ class RigBridgeTab(QWidget):
         hl.setContentsMargins(0, 0, 0, 0)
         hl.setSpacing(8)
         ed_port = QLineEdit()
-        ed_port.setPlaceholderText("Port")
+        ed_port.setPlaceholderText(t("rig.hamlib_port_placeholder"))
         ed_port.setFixedWidth(px_to_dip(self, 56))
         ed_port.setText(port_text)
-        ed_port.setToolTip(format_tooltip(_HAMLIB_PORT_TOOLTIP))
+        ed_port.setToolTip(format_tooltip(t("rig.hamlib_port_tooltip")))
         ed_name = QLineEdit()
-        ed_name.setPlaceholderText("z. B. WSJT-X (freiwillig)")
+        ed_name.setPlaceholderText(t("rig.hamlib_name_placeholder"))
         ed_name.setFixedWidth(px_to_dip(self, 150))
         ed_name.setText(name_text)
-        ed_name.setToolTip(format_tooltip(_HAMLIB_NAME_TOOLTIP))
+        ed_name.setToolTip(format_tooltip(t("rig.hamlib_name_tooltip")))
         led_d = px_to_dip(self, 12)
         lbl_hp = QLabel("")
         lbl_hp.setWordWrap(False)
@@ -525,8 +430,8 @@ class RigBridgeTab(QWidget):
         lbl_n.setMinimumWidth(px_to_dip(self, 72))
         lbl_n.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         cli_led = Led(led_d, self)
-        btn_del = QPushButton("Löschen")
-        btn_del.setToolTip(format_tooltip("Diese Port-Zeile entfernen"))
+        btn_del = QPushButton(t("rig.hamlib_btn_del"))
+        btn_del.setToolTip(format_tooltip(t("rig.hamlib_btn_del_tooltip")))
         hl.addWidget(ed_port, 0)
         hl.addWidget(ed_name, 0)
         hl.addWidget(lbl_hp, 0)
@@ -749,7 +654,7 @@ class RigBridgeTab(QWidget):
                 i = self.cb_com.count() - 1
                 self.cb_com.setItemData(
                     i,
-                    "In der Konfiguration gespeichert, aktuell nicht in der Windows-Portliste.",
+                    t("rig.com_saved_not_available"),
                     Qt.ItemDataRole.ToolTipRole,
                 )
                 self.cb_com.setCurrentIndex(i)

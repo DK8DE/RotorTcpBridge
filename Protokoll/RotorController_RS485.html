@@ -10,7 +10,7 @@
             font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             line-height: 1.5;
             padding: 20px;
-            max-width: 900px;
+            max-width: 1200px;
             margin: 0 auto;
             background: #f7f7f7;
         }
@@ -122,7 +122,7 @@
 <body>
 <div class="section" id="intro">
   <h1>Rotor‑Controller – RS485‑Anleitung &amp; Firmware‑Dokumentation (DE)</h1>
-  <p class="muted">Stand: 2026-03-28 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler &amp; Warnungen. Die <b>Befehlstabelle</b> ist mit dem RotorTcpBridge‑Katalog abgeglichen (<code>command_catalog.py</code> / Befehlsfenster).</p>
+  <p class="muted">Stand: 2026-04-16 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler &amp; Warnungen. Die <b>Befehlstabelle</b> ist mit dem RotorTcpBridge‑Katalog abgeglichen (<code>command_catalog.py</code> / Befehlsfenster). Diese Datei ist mit <code>RotorTcpBridge/Protokoll/RotorController_RS485.html</code> abgestimmt.</p>
 </div>
 <main>
 <section class="toc" id="toc">
@@ -131,6 +131,7 @@
 <li><a href="#protocol">1. RS485‑Protokoll (Format, Dezimal, Checksumme)</a></li>
 <li><a href="#encoders">2. Encoder‑Varianten (fest in der Firmware)</a></li>
 <li><a href="#cmd-table">3. RS485‑Befehle – Tabelle</a></li>
+<li><a href="#hw-controller-config">Hardwarecontroller Configuration (Display‑Controller)</a></li>
 <li><a href="#cmd-details">4. RS485‑Befehle – Erklärung &amp; Empfehlungen</a></li>
 <li><a href="#vars-table">5. INO‑Konfig‑Variablen – Tabelle</a></li>
 <li><a href="#vars-details">6. INO‑Variablen – Erklärung &amp; gute Werte</a></li>
@@ -176,6 +177,8 @@
   <li><b>Slave‑ID</b>: ist die Zieladresse (<code>DST</code>) und kann mit <code>SETID</code> geändert werden.</li>
   <li><b>Master‑ID</b>: ist immer die Quelladresse (<code>SRC</code>) der Anfrage. Der Slave antwortet an genau diese ID (die Antwort hat dann <code>SRC=Slave</code> und <code>DST=Master</code>).</li>
   <li>Die Master‑ID muss also nicht <code>0</code> sein. Wenn mehrere Master existieren, antwortet der Slave jeweils an den Master, der die Anfrage geschickt hat.</li>
+  <li><b>Zwei Master auf derselben RS485‑Leitung</b> (z.B. PC mit eigenem USB‑RS485‑Adapter am gleichen Bus wie der Display‑Controller — der Datenverkehr des PC muss dafür <b>nicht</b> „durch den Controller“ geroutet sein): Der PC soll eine <b>andere Master‑ID</b> nutzen als der Controller (<code>config.json</code> <code>master_id</code> am Display). Sonst sind <code>ACK_GETPOSDG</code>/<code>ACK_SETPOSDG</code> mit gleichem <code>DST</code> nicht dem richtigen Gerät zuordenbar — Pending und Ist‑Anzeige können stolpern, wenn beide viel abfragen.</li>
+  <li><b>Nur Mitlausch per USB</b> (PC liest nur den Mitschnitt dessen, was der Controller ohnehin sendet/empfängt, ohne selbst auf dieselbe RS485‑Leitung zu senden): Dann betrifft das obige Zuordnungsproblem den PC‑Pfad nicht; die Ursachen für abweichendes UI‑Verhalten liegen woanders (z.B. Buslast, Timing, SETPOSCC).</li>
 </ul>
 
 <h3>Beispiele</h3>
@@ -190,9 +193,10 @@
 <pre><code>#20:7:ACK_SETPOSDG:1:28$</code></pre>
 
 <h3>Asynchrone Meldungen (ERR)</h3>
-<p>Wenn ein <b>Fehler</b> auftritt (z.B. Blockade, Not‑Stop, Stall), stoppt der Motor und der Slave sendet zusätzlich ein <code>ERR</code>‑Telegramm an den zuletzt aktiven Master:</p>
-<pre><code>#20:7:ERR:16:43$</code></pre>
-<p>Im Beispiel ist der Fehlercode <code>16</code>. Die Checksumme ist <code>20 + 7 + 16 = 43</code>. Der Fehler bleibt aktiv, bis er quittiert wird (siehe <code>SETREF</code>).</p>
+<p>Wenn ein <b>Fehler</b> auftritt (z.B. Blockade, Not‑Stop, Stall), stoppt der Motor und der Slave sendet ein <code>ERR</code>‑Telegramm asynchron. Neuer Standard ist Broadcast (DST=255):</p>
+<pre><code>#20:255:ERR:16:291$</code></pre>
+<p>Im Beispiel ist der Fehlercode <code>16</code>. Die Checksumme ist <code>20 + 255 + 16 = 291</code>. Der Fehler bleibt aktiv, bis er quittiert wird (siehe <code>SETREF</code>).</p>
+<p><b>Wichtig:</b> Die Controller-Firmware behandelt <code>ERR</code> an <code>DST=255</code> gleich wie bisherige ERR-Meldungen. Zyklisches <code>GETERR</code> ist dafür nicht mehr erforderlich.</p>
 
 <div class="note"><b>Tipp:</b> Wenn von der Master‑Seite aus geparst werden soll, ist die Trennung so gedacht: Felder mit <code>:</code>, und innerhalb von <code>PARAMS</code> (falls mehrere Werte) mit <code>;</code>.</div>
 <div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
@@ -555,9 +559,9 @@
 <td><b><a href="#cmd-DELWARN">DELWARN</a></b><br>Warnungen löschen.</td>
 </tr>
 <tr>
-<td><code>#0:20:GETERR:...:CS$</code></td>
+<td><code>#0:20:GETERR:...:CS$</code><br><span class="muted">optional, nicht mehr für zyklisches Polling empfohlen</span></td>
 <td><code>#20:0:ACK_ERR:0:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETERR:REASON:CS$</code></span></td>
-<td><b><a href="#cmd-GETERR">GETERR</a></b><br>Aktuellen Fehlercode abfragen.</td>
+<td><b><a href="#cmd-GETERR">GETERR</a></b><br>Aktuellen Fehlercode manuell abfragen (Fehlerfluss läuft primär über asynchrones <code>ERR</code>).</td>
 </tr>
 <tr>
 <td><code>#0:20:SETREF:...:CS$</code></td>
@@ -573,6 +577,11 @@
 <td><code>#0:20:SETPOSDG:...:CS$</code></td>
 <td><code>#20:0:ACK_SETPOSDG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETPOSDG:REASON:CS$</code></span></td>
 <td><b><a href="#cmd-SETPOSDG">SETPOSDG</a></b><br>Positionsfahrt in Grad starten.</td>
+</tr>
+<tr>
+<td><code>#2:1:SETPOSCC:&lt;deg&gt;;&lt;rotor_id&gt;:CS$</code></td>
+<td><span class="muted">(kein Slave-Pflicht-ACK; optional NAK je nach Gerät)</span></td>
+<td><b><a href="#cmd-SETPOSCC">SETPOSCC</a></b><br>Encoder-Vorschau-Soll (Display-Controller): Payload ist <code>&lt;deg&gt;;&lt;rotor_id&gt;</code>, kein Fahrauftrag. Auf USB mitgespiegelt — PC kann den Sollzeiger des richtigen Rotors vor SETPOSDG nachführen.</td>
 </tr>
 <tr>
 <td><code>#0:20:GETID:...:CS$</code></td>
@@ -633,6 +642,16 @@
 <td><code>#0:20:SETHOMEBACKOFF:...:CS$</code></td>
 <td><code>#20:0:ACK_SETHOMEBACKOFF:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETHOMEBACKOFF:REASON:CS$</code></span></td>
 <td><b><a href="#cmd-SETHOMEBACKOFF">SETHOMEBACKOFF</a></b><br>Homing Rückzug (Grad) setzen.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETHOMEBLSCALE:...:CS$</code></td>
+<td><code>#20:0:ACK_GETHOMEBLSCALE:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETHOMEBLSCALE:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETHOMEBLSCALE">GETHOMEBLSCALE</a></b><br>Homing: Backlash-Skalierung (0–1) lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETHOMEBLSCALE:...:CS$</code></td>
+<td><code>#20:0:ACK_SETHOMEBLSCALE:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETHOMEBLSCALE:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETHOMEBLSCALE">SETHOMEBLSCALE</a></b><br>Homing: Faktor für die Backlash-Berechnung (0–1) setzen.</td>
 </tr>
 <tr>
 <td><code>#0:20:GETHOMRETURN:...:CS$</code></td>
@@ -872,6 +891,82 @@
 </table>
 <div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
 </section>
+
+<section class="section" id="hw-controller-config">
+<h2>Hardwarecontroller Configuration</h2>
+<div class="danger"><b>Falsche Adresse = Antwort vom Rotor, nicht vom Controller:</b> Wenn Sie <code>DST = rotor_id</code> verwenden (z.&nbsp;B. <code>20</code>), geht das Telegramm an den <b>Antriebs‑Slave</b>. Der Rotor kennt <code>GETCONTID</code>, <code>GETCONANTNAME*</code> usw. nicht und antwortet mit <code>#&lt;RotorID&gt;:&lt;SRC&gt;:NAK_…:NOTIMPL:…$</code> — das ist <b>kein</b> Checksummenfehler auf dem Controller. Richtig ist <code>DST = master_id</code> aus der <code>config.json</code> des Display‑Controllers (typ. <code>2</code>), <b>nicht</b> die Rotor‑Slave‑ID.</div>
+<p>Diese Befehle richten sich <b>nicht</b> an den Rotor‑Slave (Antrieb), sondern an den <b>Display‑/Hardware‑Controller</b> (ESP32 mit UI). Zieladresse <code>DST</code> ist die im Gerät konfigurierte <b>Master‑ID</b> des Controllers (entspricht <code>master_id</code> in <code>config.json</code> auf der FFat‑Partition). <code>SRC</code> ist die ID des sendenden Clients (z.&nbsp;B. PC‑Software).</p>
+<p><b>Beispiel</b> (PC <code>SRC = 1</code>, Controller <code>master_id = 2</code>, GET‑Parameter <code>0</code>): Anfrage <code>#1:2:GETCONTID:0:3$</code> — Checksumme <code>3 = 1 + 2 + 0</code>. Antwort vom Controller (nicht vom Rotor): <code>#2:1:ACK_GETCONTID:&lt;Wert&gt;:…$</code>. <span class="muted">Falsch wäre <code>#1:20:GETCONTID:0:21$</code> — das trifft den Rotor mit ID&nbsp;20.</span></p>
+<p>Die gleichen Telegramme können über <b>USB‑Seriell</b> und über <b>RS485</b> eingehen; Antworten (<code>ACK_*</code>/<code>NAK_*</code>) gehen über <code>hw_send</code> ebenfalls auf den Bus <b>und</b> zum USB‑Monitor (Spiegelung). Checksumme <code>CS</code> wie gewohnt: <code>SRC + DST + letzter Zahlenwert in PARAMS</code> (siehe Abschnitt&nbsp;1).</p>
+<p>Schreibbefehle speichern in <code>config.json</code> (Slow/Fast‑PWM, IDs, Antennen‑Labels, Touch‑Pieps, Anemometer, Encoder‑Schritt, Antennenwechsel‑Verhalten <code>concha</code> u.&nbsp;a.); die UI wird danach aktualisiert (u.&nbsp;a. Labels, RS485‑IDs, Slow/Fast‑<code>SETPWM</code> zum Rotor).</p>
+
+<table>
+<tr><th>Befehl</th><th>Antwort</th></tr>
+<tr>
+<td><code>GETCONRID</code> / <code>GETTCONRID</code> (Alias)</td>
+<td><code>ACK_GETCONRID</code> (Parameter = aktuelle <code>rotor_id</code>)</td>
+</tr>
+<tr>
+<td><code>SETCONRID</code></td>
+<td><code>ACK_SETCONRID</code> / <code>NAK_SETCONRID</code> (Rotor‑Slave‑ID 1…254)</td>
+</tr>
+<tr>
+<td><code>GETCONTID</code></td>
+<td><code>ACK_GETCONTID</code> (Parameter = <code>master_id</code> des Controllers)</td>
+</tr>
+<tr>
+<td><code>SETCONTID</code></td>
+<td><code>ACK_SETCONTID</code> / <code>NAK_SETCONTID</code> (1…254) — Ziel <code>DST = master_id</code> (unicast).</td>
+</tr>
+<tr>
+<td><code>SETCONIDF</code> oder <code>SETCONTID</code> mit <code>DST = 255</code> (Broadcast)</td>
+<td><code>ACK_SETCONIDF</code> bzw. <code>ACK_SETCONTID</code> / <code>NAK_SETCONTID</code> — setzt die <b>neue</b> Controller‑<code>master_id</code> in <code>config.json</code>, wenn die bisherige ID unbekannt ist. Checksumme: <code>CS = SRC + 255 + &lt;neue ID&gt;</code> (z.&nbsp;B. <code>#1:255:SETCONIDF:5:261$</code> mit <code>1+255+5=261</code>).</td>
+</tr>
+<tr>
+<td><code>GETCONANTNAME1</code> … <code>GETCONANTNAME3</code></td>
+<td><code>ACK_GETCONANTNAME1</code> … / <code>NAK_GETCONANTNAME*</code> — Antworttext enthält den Namen, für eine stabile CS wird <code>;0</code> angehängt (letzter Zahlenwert&nbsp;0).</td>
+</tr>
+<tr>
+<td><code>SETCONANTNAME1</code> … <code>SETCONANTNAME3</code></td>
+<td><code>ACK_SETCONANTNAME1</code> … / <code>NAK_SETCONANTNAME*</code> — ein <code>:</code> im Namen ist unzulässig (<code>NAK</code> mit Code&nbsp;1).</td>
+</tr>
+<tr>
+<td><code>GETCONSPWM</code> / <code>SETCONSPWM</code></td>
+<td><code>ACK_GETCONSPWM</code> / <code>ACK_SETCONSPWM</code> (bzw. <code>NAK_SETCONSPWM</code>) — Slow‑PWM in&nbsp;% (0…100), entspricht <code>slow_pwm</code> in der JSON.</td>
+</tr>
+<tr>
+<td><code>GETCONFPWM</code> / <code>SETCONFPWM</code></td>
+<td><code>ACK_GETCONFPWM</code> / <code>ACK_SETCONFPWM</code> (bzw. <code>NAK_SETCONFPWM</code>) — Fast‑PWM in&nbsp;% (0…100), entspricht <code>fast_pwm</code>.</td>
+</tr>
+<tr>
+<td><code>GETCONFRQ</code> / <code>SETCONFRQ</code></td>
+<td><code>ACK_GETCONFRQ</code> / <code>ACK_SETCONFRQ</code> — Touch‑Pieps‑Frequenz in&nbsp;Hz (200…4000), in <code>config.json</code> als <code>confrq</code>.</td>
+</tr>
+<tr>
+<td><code>GETLSL</code> / <code>SETLSL</code></td>
+<td><code>ACK_GETLSL</code> / <code>ACK_SETLSL</code> — Touch‑Pieps‑Lautstärke 0…50 (wie <code>Signals::tone</code>), in <code>config.json</code> als <code>lsl</code>.</td>
+</tr>
+<tr>
+<td><code>GETCONANO</code> / <code>SETCONANO</code></td>
+<td><code>ACK_GETCONANO</code> / <code>ACK_SETCONANO</code> (bzw. <code>NAK_SETCONANO</code>) — Anemometer/Wetter‑Tab: <code>1</code> = Wind, Außentemperatur und Windrichtung im Wetter‑Tab; <code>0</code> = Wetter‑Tab aus, <code>GETTEMPA</code> für Außentemp (Rotor_Info) bleibt. JSON <code>anemometer</code>.</td>
+</tr>
+<tr>
+<td><code>GETCONDELTA</code> / <code>SETCONDELTA</code></td>
+<td><code>ACK_GETCONDELTA</code> / <code>ACK_SETCONDELTA</code> (bzw. <code>NAK_SETCONDELTA</code>) — Encoder‑Schritt pro Raste: <code>1</code> oder <code>10</code> Zehntelgrad (0,1° bzw. 1° pro Klick). JSON <code>encoder_delta</code>.</td>
+</tr>
+<tr>
+<td><code>GETCONCHA</code> / <code>SETCONCHA</code></td>
+<td><code>ACK_GETCONCHA</code> / <code>ACK_SETCONCHA</code> (bzw. <code>NAK_SETCONCHA</code>) — Verhalten beim Antennenwechsel: <code>1</code> = Anzeige‑Soll (<code>taget</code>) beibehalten, <code>SETPOSDG</code> mit neuer Antennen‑Geometrie; <code>0</code> = <code>taget</code> auf die aktuelle Ist‑Anzeige (Kompass) setzen, kein zusätzliches SETPOS. JSON <code>concha</code>.</td>
+</tr>
+</table>
+
+<div class="note"><b>Pflege (Firmware):</b> Neue Konfig‑Befehle für den Display‑Controller bitte in <code>src/rotor_rs485.cpp</code> (<code>handle_local_config_command</code>), in <code>include/pwm_config.h</code> / <code>src/pwm_config.cpp</code> / <code>data/config.json</code> und <b>in dieser Tabelle</b> parallel ergänzen.</div>
+
+<div class="note"><b>NAK‑Codes (typisch):</b> <code>1</code> = ungültiger Wertebereich oder verbotenes Zeichen im Namen; <code>2</code> = Checksumme/Format passt nicht.</div>
+<p class="muted"><b>GET‑Anfragen</b> verwenden wie üblich z.&nbsp;B. <code>PARAMS = 0</code> (letzter Zahlenwert für die CS‑Bildung).</p>
+<div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
+</section>
+
 <section class="section" id="cmd-details">
 <h2>4. RS485‑Befehle – Erklärung &amp; Empfehlungen</h2>
 <p>Hier ist jeder Befehl in einem eigenen Absatz beschrieben: Was er macht, wie man ihn benutzt, und welche Werte in der Praxis oft gut funktionieren.</p>
@@ -906,6 +1001,14 @@
 <p><b>Details:</b> Parameter: Zielwinkel (z.B. 160,00).</p>
 <p><b>Gute Werte:</b> Zielwinkel in Grad, z.B. <code>160,00</code>. Bei sehr kleinen Schritten (0,01°) kann es sinnvoll sein, die Ankunftstoleranz (<code>ARRTOL</code>) etwas grösser zu wählen, damit die Regelung nicht „zittert“.</p>
 <hr>
+<h4 id="cmd-SETPOSCC"><code>SETPOSCC</code></h4>
+<p><b>Was es macht:</b> Nur Anzeige-/Vorschau-Soll melden (Encoder am Display-Controller) — <b>keine</b> Positionsfahrt am Rotor.</p>
+<p><b>Details:</b> Payload ist jetzt zweiteilig: <code>&lt;deg&gt;;&lt;rotor_id&gt;</code> (z. B. <code>151,30;20</code>). Wird bei jedem Encoder-Schritt gesendet, sobald <code>taget</code> auf dem Display neu steht; das eigentliche <code>SETPOSDG</code> folgt erst nach Encoder-Ruhepause. Gleichzeitig auf RS485 und USB (Monitor) ausgegeben, damit PC-Software den Sollzeiger früh in die richtige Richtung drehen kann.</p>
+<p><b>Neue Paketbeispiele:</b> <code>#2:1:SETPOSCC:151,30;20:23$</code>, <code>#2:1:SETPOSCC:87,00;21:24$</code>.</p>
+<p><b>PC-Software Verarbeitung (empfohlen):</b> Bei <code>SETPOSCC</code> den Parameterstring an <code>;</code> splitten. Teil&nbsp;1 = Vorschauwinkel in Grad (Komma-&gt;Punkt, dann Float), Teil&nbsp;2 = Rotor-ID (int). UI-Update nur auf den Rotor-Kontext anwenden, dessen ID mit Teil&nbsp;2 übereinstimmt. Frames ohne Rotor-ID (Altformat) optional als Fallback auf den aktuell selektierten Rotor mappen oder ignorieren.</p>
+<p><b>Checksumme:</b> Unverändert nach Protokollregel (SRC + DST + letzte Zahl im Payload). Da die letzte Zahl nun die Rotor-ID ist, basiert die CS bei <code>SETPOSCC</code> auf dieser ID.</p>
+<p><b>Hinweis:</b> Der Rotor-Slave muss den Befehl nicht verstehen; unkritisch, wenn er ignoriert wird.</p>
+<hr>
 <h4 id="cmd-STOP"><code>STOP</code></h4>
 <p><b>Was es macht:</b> Weicher Stop (normales Abbremsen).</p>
 <p><b>Details:</b> Beendet eine Positionsfahrt. Fehler werden NICHT gelöscht.</p>
@@ -916,7 +1019,8 @@
 <hr>
 <h4 id="cmd-GETERR"><code>GETERR</code></h4>
 <p><b>Was es macht:</b> Aktuellen Fehlercode abfragen.</p>
-<p><b>Details:</b> Antwort ACK_ERR mit einem Code oder 0.</p>
+<p><b>Details:</b> Antwort <code>ACK_ERR</code> mit einem Code oder 0.</p>
+<p><b>Aktueller Betrieb:</b> In der aktuellen Controller-Firmware wird <code>GETERR</code> nicht mehr zyklisch gepollt. Fehler kommen asynchron als <code>ERR</code> (typisch <code>#&lt;rotor_id&gt;:255:ERR:&lt;code&gt;:&lt;cs&gt;$</code>) und werden direkt übernommen. <code>GETERR</code> ist damit primär für manuelle Diagnose/Service gedacht.</p>
 <hr>
 <h4 id="cmd-GETWARN"><code>GETWARN</code></h4>
 <p><b>Was es macht:</b> Warnungen abfragen (können mehrere sein).</p>
@@ -1197,6 +1301,14 @@
 <h4 id="cmd-SETHOMEBACKOFF"><code>SETHOMEBACKOFF</code></h4>
 <p><b>Was es macht:</b> Homing Rückzug (Grad) setzen.</p>
 <p><b>Details:</b> Typisch 10..60°.</p>
+<hr>
+<h4 id="cmd-GETHOMEBLSCALE"><code>GETHOMEBLSCALE</code></h4>
+<p><b>Was es macht:</b> Homing: Skalierung der Backlash-Berechnung (0–1) lesen.</p>
+<p><b>Details:</b> Typischer Default <code>0,50</code>. Wert wird im Rotor gespeichert (NV-Key <code>hbl</code>, falls in der Firmware so benannt).</p>
+<hr>
+<h4 id="cmd-SETHOMEBLSCALE"><code>SETHOMEBLSCALE</code></h4>
+<p><b>Was es macht:</b> Homing: Faktor für die Backlash-Berechnung (0–1) setzen.</p>
+<p><b>Details:</b> Standard <code>0,50</code>. Wenn beim Umkehren zu viel Weg „weg“ wirkt: Wert vergrößern (max. 1,0).</p>
 <hr>
 <h4 id="cmd-GETHOMRETURN"><code>GETHOMRETURN</code></h4>
 <p><b>Was es macht:</b> Rückfahrt auf 0 nach Homing an/aus lesen.</p>
@@ -1515,6 +1627,13 @@
 <td>Homing: Rückzug vom Endschalter (Grad)</td>
 </tr>
 <tr>
+<td><code>g_homeBacklashScale</code></td>
+<td><code>hbl</code></td>
+<td>ja</td>
+<td>SETHOMEBLSCALE/GETHOMEBLSCALE</td>
+<td>Homing: Backlash-Berechnung (0–1)</td>
+</tr>
+<tr>
 <td><code>g_homeReturnToZero</code></td>
 <td><code>hrz</code></td>
 <td>ja</td>
@@ -1807,6 +1926,11 @@
 <p class="muted"><b>Default:</b> <code>static float g_homeBackoff = 30.0f;</code></p>
 <p><b>Speicherung:</b> Ja (Key <code>hbo</code>). Ändern über RS485: <b>SETHOMEBACKOFF/GETHOMEBACKOFF</b>.</p>
 <hr>
+<h3 id="var-g_homeBacklashScale"><code>g_homeBacklashScale</code></h3>
+<p><b>Kurz:</b> Homing: Skalierung der Backlash-Berechnung (0–1)</p>
+<p class="muted"><b>Default:</b> <code>static float g_homeBacklashScale = 0.5f;</code> (Bezeichnung in der Firmware kann abweichen.)</p>
+<p><b>Speicherung:</b> Ja (Key <code>hbl</code>, sofern in der Firmware vorgesehen). Ändern über RS485: <b>SETHOMEBLSCALE/GETHOMEBLSCALE</b>.</p>
+<hr>
 <h3 id="var-g_homeReturnToZero"><code>g_homeReturnToZero</code></h3>
 <p><b>Kurz:</b> Homing: danach auf 0 fahren (1/0)</p>
 <p class="muted"><b>Default:</b> <code>static bool g_homeReturnToZero = true;</code></p>
@@ -2053,7 +2177,7 @@
 <section class="section" id="errors">
 <h2>9. Fehler</h2>
 <p>Fehler stoppen den Motor und bleiben aktiv („gelatched“), bis sie quittiert werden (siehe SETREF).</p>
-<p><b>Abfragen:</b> <code>GETERR</code> → Antwort <code>ACK_ERR</code> mit einem Code oder <code>0</code></p>
+<p><b>Abfragen:</b> Primär asynchron über <code>ERR</code> vom Rotor (typisch an <code>DST=255</code>). <code>GETERR</code> bleibt als manuelle Service-Abfrage verfügbar.</p>
 <p><b>Quittieren:</b> <code>SETREF:0</code> oder <code>SETREF:1</code> (quittiert immer den Fehler; <code>SETREF:1</code> startet zusätzlich Homing)</p>
 <table>
 <tr><th>ID</th><th>Name</th><th>Ursache (typisch)</th><th>Was tun?</th><th>Wie löschen?</th></tr>
@@ -2064,6 +2188,7 @@
 <tr><td>15</td><td><code>SE_IS_HARD</code></td><td>Strom-Hardlimit</td><td>Zu hoher Motorstrom länger als Hold</td><td>Mechanik prüfen, IMAX/Grace/Hold prüfen, dann SETREF</td></tr>
 <tr><td>16</td><td><code>SE_STALL</code></td><td>Stall: Encoder bewegt sich nicht</td><td>PWM an, aber zu wenige Encoder-Counts im Timeout</td><td>Mechanik/Haftreibung, MINPWM/KICK/STALLTIMEOUT anpassen, dann SETREF</td></tr>
 <tr><td>17</td><td><code>SE_HOME_FAIL</code></td><td>Homing fehlgeschlagen</td><td>Timeout in Homing-Phase oder Endschalterproblem</td><td>Endschalter, Counts-Parameter, HOMETIMEOUT prüfen, dann SETREF</td></tr>
+<tr><td>18</td><td><code>SE_POS_TIMEOUT</code></td><td>Positionsfahrt: Ziel nicht innerhalb der eingestellten Zeit erreicht</td><td>Die Fahrt zur Zielposition dauert länger als das konfigurierte Positions‑Timeout</td><td><code>SETPOSTIMEOUT</code> hochsetzen, Mechanik prüfen (Haftreibung, Blockade, Antrieb), dann SETREF</td></tr>
 </table>
 <div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
 </section>

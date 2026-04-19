@@ -39,7 +39,7 @@
   "main.rig_hamlib_detail": "{detail} · {n} clients",
   "main.rig_hamlib_detail_hosts": "{detail}",
   "main.rig_bridge_client": "Client",
-  "main.rig_proto_stopped": "Service not running",
+  "main.rig_proto_stopped": "Stopped",
   "main.rig_freq_suffix": "MHz",
   "main.rig_freq_placeholder": "e.g. 14.295000",
   "main.pst_udp_error_title": "PST Emulator – Port in use",

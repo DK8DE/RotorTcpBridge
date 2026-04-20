@@ -6,7 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QDoubleValidator, QIntValidator, QTextCursor
+from PySide6.QtGui import QDoubleValidator, QIntValidator
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -14,10 +14,13 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
     QLineEdit,
@@ -112,6 +115,14 @@ class RigBridgeTab(QWidget):
         self.cfg = cfg
         self.manager = manager
         self.save_cfg_cb = save_cfg_cb
+        # Liste aller Profil-Dicts (Reihenfolge = Anzeigereihenfolge).
+        self._profiles: list[dict] = []
+        # Profil-ID, das gerade im Formular editiert wird.
+        self._selected_id: str = ""
+        # Profil-ID, das als "aktiv" markiert ist (nutzt die COM-CAT-Strecke).
+        self._active_id: str = ""
+        # Guard gegen reentrante Loads, waehrend wir zwischen Profilen wechseln.
+        self._switching_profile: bool = False
         self._build_ui()
         self._load_from_config()
         self._timer = QTimer(self)
@@ -124,12 +135,43 @@ class RigBridgeTab(QWidget):
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(10)
 
+        # Profile-Verwaltung oben: Liste + Buttons. Das rechte Formular
+        # arbeitet immer auf dem in der Liste ausgewaehlten Profil.
+        gb_profiles = QGroupBox(t("rig_bridge.group_profiles"))
+        hl_profiles = QHBoxLayout(gb_profiles)
+        self.lst_profiles = QListWidget()
+        self.lst_profiles.setMaximumHeight(px_to_dip(self, 110))
+        self.lst_profiles.setMinimumWidth(px_to_dip(self, 180))
+        self.lst_profiles.currentRowChanged.connect(self._on_profile_selected)
+        hl_profiles.addWidget(self.lst_profiles, 1)
+        btn_col = QWidget()
+        vl_btn = QVBoxLayout(btn_col)
+        vl_btn.setContentsMargins(0, 0, 0, 0)
+        vl_btn.setSpacing(4)
+        self.btn_profile_new = QPushButton(t("rig_bridge.btn_new"))
+        self.btn_profile_rename = QPushButton(t("rig_bridge.btn_rename"))
+        self.btn_profile_del = QPushButton(t("rig_bridge.btn_delete"))
+        self.btn_profile_active = QPushButton(t("rig_bridge.btn_set_active"))
+        for b in (self.btn_profile_new, self.btn_profile_rename, self.btn_profile_del, self.btn_profile_active):
+            vl_btn.addWidget(b)
+        vl_btn.addStretch(1)
+        hl_profiles.addWidget(btn_col, 0)
+        self.btn_profile_new.clicked.connect(self._on_profile_new)
+        self.btn_profile_rename.clicked.connect(self._on_profile_rename)
+        self.btn_profile_del.clicked.connect(self._on_profile_delete)
+        self.btn_profile_active.clicked.connect(self._on_profile_set_active)
+        main.addWidget(gb_profiles)
+
         gb_general = QGroupBox(t("rig.group_general"))
         fl_general = QFormLayout(gb_general)
         self.chk_enabled = QCheckBox(t("rig.enabled"))
+        self.chk_enabled.setToolTip(format_tooltip(t("rig.enabled_tooltip")))
         self.cb_rig_brand = QComboBox()
+        self.cb_rig_brand.setToolTip(format_tooltip(t("rig.radio_brand_tooltip")))
         self.cb_rig_model = QComboBox()
+        self.cb_rig_model.setToolTip(format_tooltip(t("rig.radio_model_tooltip")))
         self.lbl_rig_info = QLabel("-")
+        self.lbl_rig_info.setToolTip(format_tooltip(t("rig.hamlib_model_id_tooltip")))
         self._hamlib_models: list[dict[str, str | int]] = []
         btn_row_general = QWidget()
         hl_general = QHBoxLayout(btn_row_general)
@@ -146,25 +188,21 @@ class RigBridgeTab(QWidget):
         fl_general.addRow(t("rig.hamlib_model_id"), self.lbl_rig_info)
         fl_general.addRow(btn_row_general)
 
-        gb_status = QGroupBox(t("rig.group_status"))
-        fl_status = QFormLayout(gb_status)
         self.led_radio = Led(14, self)
         self.lbl_status = QLabel("-")
         self.lbl_error = QLabel("-")
         self.lbl_last = QLabel("-")
         self.lbl_com = QLabel("-")
-        led_wrap = QWidget()
-        led_l = QHBoxLayout(led_wrap)
-        led_l.setContentsMargins(0, 0, 0, 0)
-        led_l.addWidget(self.led_radio, 0, Qt.AlignmentFlag.AlignLeft)
-        led_l.addWidget(self.lbl_status, 1)
-        fl_status.addRow(t("rig.status_connection"), led_wrap)
-        fl_status.addRow(t("rig.status_last_error"), self.lbl_error)
-        fl_status.addRow(t("rig.status_last_contact"), self.lbl_last)
-        fl_status.addRow(t("rig.status_com_port"), self.lbl_com)
 
         gb_serial = QGroupBox(t("rig.group_serial"))
         outer_serial = QVBoxLayout(gb_serial)
+        conn_row = QWidget()
+        conn_l = QHBoxLayout(conn_row)
+        conn_l.setContentsMargins(0, 0, 0, 0)
+        conn_l.addWidget(QLabel(t("rig.status_connection")), 0, Qt.AlignmentFlag.AlignLeft)
+        conn_l.addWidget(self.led_radio, 0, Qt.AlignmentFlag.AlignLeft)
+        conn_l.addWidget(self.lbl_status, 1)
+        outer_serial.addWidget(conn_row)
         self.chk_auto_connect = QCheckBox(t("rig.auto_connect"))
         self.chk_auto_connect.setToolTip(format_tooltip(t("rig.auto_connect_tooltip")))
         self.chk_auto_reconnect = QCheckBox(t("rig.auto_reconnect"))
@@ -240,6 +278,7 @@ class RigBridgeTab(QWidget):
             gb_single = QGroupBox(title)
             fl_single = QFormLayout(gb_single)
             chk = QCheckBox(t("rig.flrig_active"))
+            chk.setToolTip(format_tooltip(t("rig.flrig_active_tooltip")))
             host = QLineEdit()
             host.setFixedWidth(px_to_dip(self, 100))
             host.setToolTip(format_tooltip(t("rig.flrig_host_tooltip")))
@@ -248,12 +287,15 @@ class RigBridgeTab(QWidget):
             port.setFixedWidth(px_to_dip(self, 56))
             port.setToolTip(format_tooltip(t("rig.flrig_port_tooltip")))
             chk_auto = QCheckBox(t("rig.flrig_autostart"))
+            chk_auto.setToolTip(format_tooltip(t("rig.flrig_autostart_tooltip")))
             led = Led(12, self)
             self._lbl_flrig_bind_clients = QLabel("")
             self._lbl_flrig_bind_clients.setWordWrap(True)
             cli_led = Led(12, self)
             btn_start = QPushButton(t("rig.flrig_btn_start"))
+            btn_start.setToolTip(format_tooltip(t("rig.flrig_btn_start_tooltip")))
             btn_stop = QPushButton(t("rig.flrig_btn_stop"))
+            btn_stop.setToolTip(format_tooltip(t("rig.flrig_btn_stop_tooltip")))
             row_host_port = QWidget()
             hl_host_port = QHBoxLayout(row_host_port)
             hl_host_port.setContentsMargins(0, 0, 0, 0)
@@ -291,6 +333,7 @@ class RigBridgeTab(QWidget):
         gb_hamlib = QGroupBox(t("rig.group_hamlib"))
         fl_hamlib = QFormLayout(gb_hamlib)
         self._protocol_enabled["hamlib"] = QCheckBox(t("rig.hamlib_active"))
+        self._protocol_enabled["hamlib"].setToolTip(format_tooltip(t("rig.hamlib_active_tooltip")))
         self._hamlib_host = QLineEdit()
         self._hamlib_host.setFixedWidth(px_to_dip(self, 100))
         self._hamlib_host.setToolTip(format_tooltip(t("rig.hamlib_host_tooltip")))
@@ -306,15 +349,20 @@ class RigBridgeTab(QWidget):
         self._hamlib_rows_layout.setSpacing(6)
         self._hamlib_rows: list[tuple[QLineEdit, QLineEdit, QLabel, QLabel, Led, QWidget]] = []
         self.btn_hamlib_add_row = QPushButton(t("rig.hamlib_btn_add_row"))
+        self.btn_hamlib_add_row.setToolTip(format_tooltip(t("rig.hamlib_btn_add_row_tooltip")))
         self.btn_hamlib_add_row.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.btn_hamlib_add_row.clicked.connect(lambda: self._hamlib_add_row("", ""))
         self._protocol_autostart["hamlib"] = QCheckBox(t("rig.hamlib_autostart"))
+        self._protocol_autostart["hamlib"].setToolTip(format_tooltip(t("rig.hamlib_autostart_tooltip")))
         self.chk_hamlib_debug = QCheckBox(t("rig.hamlib_debug"))
+        self.chk_hamlib_debug.setToolTip(format_tooltip(t("rig.hamlib_debug_tooltip")))
         self._protocol_leds["hamlib"] = Led(12, self)
         self._lbl_hamlib_bind_clients = QLabel("")
         self._lbl_hamlib_bind_clients.setWordWrap(False)
         self._protocol_start["hamlib"] = QPushButton(t("rig.hamlib_btn_start"))
+        self._protocol_start["hamlib"].setToolTip(format_tooltip(t("rig.hamlib_btn_start_tooltip")))
         self._protocol_stop["hamlib"] = QPushButton(t("rig.hamlib_btn_stop"))
+        self._protocol_stop["hamlib"].setToolTip(format_tooltip(t("rig.hamlib_btn_stop_tooltip")))
         row_hamlib_status = QWidget()
         hl_hs = QHBoxLayout(row_hamlib_status)
         hl_hs.setContentsMargins(0, 0, 0, 0)
@@ -344,20 +392,9 @@ class RigBridgeTab(QWidget):
         fl_hamlib.addRow(row_hamlib_status)
         vl_protocols.addWidget(gb_hamlib)
 
-        gb_diag = QGroupBox(t("rig.group_diagnostics"))
-        fl_diag = QFormLayout(gb_diag)
-        self.chk_serial_log = QCheckBox(t("rig.diag_log_cb"))
-        self.chk_serial_log.setToolTip(format_tooltip(t("rig.diag_log_tooltip")))
-        fl_diag.addRow(self.chk_serial_log)
-        self.txt_diag = QTextEdit()
-        self.txt_diag.setReadOnly(True)
-        fl_diag.addRow(self.txt_diag)
-
         main.addWidget(gb_general)
-        main.addWidget(gb_status)
         main.addWidget(gb_serial)
-        main.addWidget(gb_protocols)
-        main.addWidget(gb_diag, 1)
+        main.addWidget(gb_protocols, 1)
 
         self.btn_refresh_com.clicked.connect(self._refresh_com_ports)
         self.cb_com.currentIndexChanged.connect(self._on_com_selection_changed)
@@ -366,7 +403,7 @@ class RigBridgeTab(QWidget):
         self.btn_test.clicked.connect(self._on_test)
         self.cb_rig_brand.currentIndexChanged.connect(self._on_brand_changed)
         self.cb_rig_model.currentIndexChanged.connect(self._update_rig_info_label)
-        self.chk_serial_log.stateChanged.connect(self.apply_to_manager)
+        self.chk_enabled.stateChanged.connect(self.apply_to_manager)
         self.ed_cat_drain.editingFinished.connect(self.apply_to_manager)
         self.ed_setfreq_gap.editingFinished.connect(self.apply_to_manager)
         self.chk_auto_connect.stateChanged.connect(self.apply_to_manager)
@@ -402,7 +439,25 @@ class RigBridgeTab(QWidget):
             row_w.deleteLater()
         self._hamlib_rows.clear()
 
+    def _hamlib_next_free_port(self, default: int = 4532) -> int:
+        """Ermittelt den naechsten freien rigctl-Port basierend auf den bereits
+        angelegten Zeilen. Erste Zeile -> ``default`` (4532), danach max+1."""
+        used: list[int] = []
+        for ed_p, _ed_n, _lhp, _ln, _cli, _w in self._hamlib_rows:
+            try:
+                p = int(ed_p.text().strip())
+            except (TypeError, ValueError):
+                continue
+            if 1 <= p <= 65535:
+                used.append(p)
+        if not used:
+            return default
+        nxt = max(used) + 1
+        return min(65535, max(1, nxt))
+
     def _hamlib_add_row(self, port_text: str, name_text: str) -> None:
+        if not port_text:
+            port_text = str(self._hamlib_next_free_port())
         row_w = QWidget()
         hl = QHBoxLayout(row_w)
         hl.setContentsMargins(0, 0, 0, 0)
@@ -470,17 +525,300 @@ class RigBridgeTab(QWidget):
                 out.append({"port": p, "name": nm})
         return out
 
+    # --------------------------------------------------- Profile-Verwaltung
+    def _refresh_profiles_list(self) -> None:
+        """Listen-Widget synchron zu ``self._profiles`` + Aktiv-Marker.
+
+        Der aktive Eintrag wird zusaetzlich beschriftet (Marker aus i18n).
+        """
+        self.lst_profiles.blockSignals(True)
+        self.lst_profiles.clear()
+        marker = t("rig_bridge.active_marker")
+        for pr in self._profiles:
+            name = str(pr.get("name", "") or pr.get("id", ""))
+            if str(pr.get("id", "")) == self._active_id:
+                label = f"{name} {marker}".strip()
+            else:
+                label = name
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, str(pr.get("id", "")))
+            self.lst_profiles.addItem(item)
+        # Auswahl auf _selected_id wiederherstellen, sonst erstes Element.
+        idx = 0
+        for i in range(self.lst_profiles.count()):
+            if self.lst_profiles.item(i).data(Qt.ItemDataRole.UserRole) == self._selected_id:
+                idx = i
+                break
+        self.lst_profiles.setCurrentRow(idx)
+        self.lst_profiles.blockSignals(False)
+
+    def _on_profile_selected(self, row: int) -> None:
+        if self._switching_profile or row < 0 or row >= self.lst_profiles.count():
+            return
+        new_id = self.lst_profiles.item(row).data(Qt.ItemDataRole.UserRole)
+        if not isinstance(new_id, str) or new_id == self._selected_id:
+            return
+        # Aktuelles Formular einfrieren und ins bisherige Profil speichern.
+        self._capture_form_into_profile(self._selected_id)
+        self._selected_id = new_id
+        self._load_selected_profile_into_form()
+
+    def _capture_form_into_profile(self, rig_id: str) -> None:
+        """Form-Inhalt ins Profil-Dict ``rig_id`` zurueckschreiben."""
+        if not rig_id:
+            return
+        prof = self._find_profile(rig_id)
+        if prof is None:
+            return
+        form = self._form_to_profile_dict()
+        form["id"] = prof.get("id", rig_id)
+        form["name"] = prof.get("name", form.get("selected_rig", "") or rig_id)
+        prof.update(form)
+
+    def _load_selected_profile_into_form(self) -> None:
+        prof = self._find_profile(self._selected_id)
+        if prof is None:
+            return
+        self._switching_profile = True
+        try:
+            self._rig_loading_cfg = True
+            try:
+                self._load_profile_dict_into_form(prof)
+            finally:
+                self._rig_loading_cfg = False
+        finally:
+            self._switching_profile = False
+        self.refresh_status()
+
+    def _find_profile(self, rig_id: str) -> dict | None:
+        for p in self._profiles:
+            if str(p.get("id", "")) == str(rig_id):
+                return p
+        return None
+
+    def _make_unique_id(self, base: str) -> str:
+        existing = {str(p.get("id", "")) for p in self._profiles}
+        base = (base or "rig").strip() or "rig"
+        if base not in existing:
+            return base
+        i = 2
+        while f"{base}_{i}" in existing:
+            i += 1
+        return f"{base}_{i}"
+
+    def _on_profile_new(self) -> None:
+        self._capture_form_into_profile(self._selected_id)
+        new_id = self._make_unique_id("rig")
+        new_name, ok = QInputDialog.getText(
+            self, t("rig_bridge.btn_new"), t("rig_bridge.new_name_prompt"), text=f"Rig {len(self._profiles) + 1}"
+        )
+        if not ok:
+            return
+        new_name = (new_name or "").strip() or f"Rig {len(self._profiles) + 1}"
+        prof = {
+            "id": new_id,
+            "name": new_name,
+            "enabled": True,
+            "selected_rig": "Generic CAT",
+            "rig_brand": "Generisch",
+            "rig_model": "CAT (generisch)",
+            "hamlib_rig_id": 0,
+            "com_port": "",
+            "baudrate": 9600,
+            "databits": 8,
+            "stopbits": 1,
+            "parity": "N",
+            "timeout_s": 0.2,
+            "polling_interval_ms": 30,
+            "auto_connect": False,
+            "auto_reconnect": True,
+            "log_serial_traffic": True,
+            "cat_post_write_drain_ms": 50,
+            "setfreq_gap_ms": 10,
+        }
+        self._profiles.append(prof)
+        self._selected_id = new_id
+        self._refresh_profiles_list()
+        self._load_selected_profile_into_form()
+        self.apply_to_manager()
+
+    def _on_profile_rename(self) -> None:
+        self._capture_form_into_profile(self._selected_id)
+        prof = self._find_profile(self._selected_id)
+        if prof is None:
+            return
+        current = str(prof.get("name", "") or prof.get("id", ""))
+        new_name, ok = QInputDialog.getText(
+            self,
+            t("rig_bridge.btn_rename"),
+            t("rig_bridge.rename_prompt"),
+            text=current,
+        )
+        if not ok:
+            return
+        new_name = (new_name or "").strip()
+        if not new_name or new_name == current:
+            return
+        prof["name"] = new_name
+        self._refresh_profiles_list()
+        self.apply_to_manager()
+
+    def _on_profile_delete(self) -> None:
+        if len(self._profiles) <= 1:
+            QMessageBox.information(
+                self, t("rig_bridge.btn_delete"), t("rig_bridge.cannot_delete_last")
+            )
+            return
+        prof = self._find_profile(self._selected_id)
+        if prof is None:
+            return
+        if (
+            QMessageBox.question(
+                self,
+                t("rig_bridge.btn_delete"),
+                t("rig_bridge.confirm_delete").replace("{name}", str(prof.get("name", ""))),
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        idx = self._profiles.index(prof)
+        del self._profiles[idx]
+        # Aktives Profil wurde geloescht? → erstes nehmen.
+        if self._active_id == prof.get("id", ""):
+            self._active_id = str(self._profiles[0].get("id", ""))
+        # Neue Auswahl.
+        new_idx = max(0, min(idx, len(self._profiles) - 1))
+        self._selected_id = str(self._profiles[new_idx].get("id", ""))
+        self._refresh_profiles_list()
+        self._load_selected_profile_into_form()
+        self.apply_to_manager()
+
+    def _on_profile_set_active(self) -> None:
+        self._capture_form_into_profile(self._selected_id)
+        if not self._selected_id:
+            return
+        self._active_id = self._selected_id
+        self._refresh_profiles_list()
+        self.apply_to_manager()
+
     def _load_from_config(self) -> None:
         self._rig_loading_cfg = True
         try:
-            self._load_from_config_inner()
+            rb = dict(self.cfg.get("rig_bridge", {}) or {})
+            rigs_raw = rb.get("rigs")
+            profiles: list[dict] = []
+            if isinstance(rigs_raw, list) and rigs_raw:
+                for pr in rigs_raw:
+                    if isinstance(pr, dict):
+                        p = dict(pr)
+                        p.setdefault("id", f"rig_{len(profiles)}")
+                        p.setdefault("name", str(p.get("selected_rig", "") or p["id"]))
+                        p.setdefault("enabled", True)
+                        # flrig/hamlib sind global — aus Profilen entfernen.
+                        p.pop("flrig", None)
+                        p.pop("hamlib", None)
+                        profiles.append(p)
+            if not profiles:
+                # Altform: flache Struktur → ein Profil bauen.
+                flat = {
+                    k: v
+                    for k, v in rb.items()
+                    if k not in ("rigs", "active_rig_id", "flrig", "hamlib")
+                }
+                flat.setdefault("id", "default")
+                flat.setdefault("name", str(flat.get("selected_rig", "") or "Rig 1"))
+                flat.setdefault("enabled", True)
+                profiles = [flat]
+            self._profiles = profiles
+            active_id = str(rb.get("active_rig_id", "") or "")
+            if not any(p.get("id") == active_id for p in profiles):
+                active_id = str(profiles[0].get("id", ""))
+            self._active_id = active_id
+            self._selected_id = active_id
+            # Globales rig_bridge.enabled → chk_enabled soll Rig-Bridge gesamt anzeigen.
+            self._global_enabled = bool(rb.get("enabled", False))
+
+            # Globale Flrig/Hamlib-Settings einmalig ins Formular uebernehmen
+            # (profilunabhaengig). Fallback: noch in einem Profil vorhanden?
+            global_flrig = dict(rb.get("flrig") or {})
+            global_hamlib = dict(rb.get("hamlib") or {})
+            if not global_flrig or not global_hamlib:
+                donor = next(
+                    (p for p in profiles if p.get("id") == active_id),
+                    profiles[0] if profiles else {},
+                )
+                if not global_flrig and isinstance(donor.get("flrig"), dict):
+                    global_flrig = dict(donor["flrig"])
+                if not global_hamlib and isinstance(donor.get("hamlib"), dict):
+                    global_hamlib = dict(donor["hamlib"])
+            self._load_global_flrig_hamlib_into_form(global_flrig, global_hamlib)
+
+            self._refresh_profiles_list()
+            cur = self._find_profile(self._selected_id)
+            if cur is None and profiles:
+                cur = profiles[0]
+                self._selected_id = str(cur.get("id", ""))
+            if cur is not None:
+                self._load_profile_dict_into_form(cur)
         finally:
             self._rig_loading_cfg = False
         self.refresh_status()
 
-    def _load_from_config_inner(self) -> None:
-        cfg = self.cfg.get("rig_bridge", {})
-        self.chk_enabled.setChecked(bool(cfg.get("enabled", False)))
+    def _load_global_flrig_hamlib_into_form(
+        self, flrig: dict, hamlib: dict
+    ) -> None:
+        """Globale Flrig-/Hamlib-Settings ins Formular uebertragen.
+
+        Diese Werte sind NICHT profilabhaengig und werden deshalb nur beim
+        Einlesen der Konfiguration (und nach Profilaenderungen nicht erneut)
+        gesetzt.
+        """
+        fl = dict(flrig or {})
+        hl = dict(hamlib or {})
+        self._protocol_enabled["flrig"].setChecked(bool(fl.get("enabled", False)))
+        self._protocol_host["flrig"].setText(str(fl.get("host", "127.0.0.1")))
+        self._protocol_port["flrig"].setText(str(int(fl.get("port", 12345))))
+        self._protocol_autostart["flrig"].setChecked(bool(fl.get("autostart", False)))
+        self._protocol_enabled["hamlib"].setChecked(bool(hl.get("enabled", False)))
+        self._hamlib_host.setText(str(hl.get("host", "127.0.0.1")))
+        self._hamlib_clear_rows()
+        listeners = hl.get("listeners")
+        if not listeners and "port" in hl:
+            try:
+                p = int(hl.get("port", 4532))
+            except (TypeError, ValueError):
+                p = 4532
+            self._hamlib_add_row(str(max(1, min(65535, p))), "")
+        elif isinstance(listeners, list) and len(listeners) > 0:
+            for it in listeners:
+                if not isinstance(it, dict):
+                    continue
+                nm = str(it.get("name", "") or "")
+                if "port" not in it or it.get("port") in (None, ""):
+                    self._hamlib_add_row("", nm)
+                else:
+                    try:
+                        p = int(it["port"])
+                    except (TypeError, ValueError):
+                        continue
+                    self._hamlib_add_row(str(max(1, min(65535, p))), nm)
+        else:
+            self._hamlib_add_row("", "")
+        self._protocol_autostart["hamlib"].setChecked(bool(hl.get("autostart", False)))
+        self.chk_hamlib_debug.setChecked(bool(hl.get("debug_traffic", False)))
+
+    def _load_profile_dict_into_form(self, cfg: dict) -> None:
+        """Formular mit den Werten des gegebenen Profil-Dicts fuellen.
+
+        ``chk_enabled`` ist die GLOBALE ``rig_bridge.enabled``-Flagge und
+        spiegelt ``self._global_enabled`` — sie ist damit unabhaengig vom
+        gerade selektierten Profil. Die per-Profil-Aktivschaltung
+        passiert ueber den Profilwechsel (``Aktiv setzen``/Combobox im
+        Hauptfenster); Profile haben kein eigenes Deaktivieren mehr.
+        """
+        self.chk_enabled.blockSignals(True)
+        self.chk_enabled.setChecked(bool(getattr(self, "_global_enabled", False)))
+        self.chk_enabled.blockSignals(False)
         self._load_hamlib_models()
         self._populate_brand_combo()
         saved_brand = str(cfg.get("rig_brand", "")).strip()
@@ -509,41 +847,10 @@ class RigBridgeTab(QWidget):
         self.ed_setfreq_gap.blockSignals(True)
         self.ed_setfreq_gap.setText(str(int(cfg.get("setfreq_gap_ms", _RIG_DEF_SETFREQ_GAP_MS))))
         self.ed_setfreq_gap.blockSignals(False)
-        self._protocol_enabled["flrig"].setChecked(bool(cfg.get("flrig", {}).get("enabled", False)))
-        self._protocol_host["flrig"].setText(str(cfg.get("flrig", {}).get("host", "127.0.0.1")))
-        self._protocol_port["flrig"].setText(str(int(cfg.get("flrig", {}).get("port", 12345))))
-        self._protocol_autostart["flrig"].setChecked(bool(cfg.get("flrig", {}).get("autostart", False)))
-        self._protocol_enabled["hamlib"].setChecked(bool(cfg.get("hamlib", {}).get("enabled", False)))
-        self._hamlib_host.setText(str(cfg.get("hamlib", {}).get("host", "127.0.0.1")))
-        self._hamlib_clear_rows()
-        hlib = cfg.get("hamlib", {}) or {}
-        listeners = hlib.get("listeners")
-        if not listeners and "port" in hlib:
-            try:
-                p = int(hlib.get("port", 4532))
-            except (TypeError, ValueError):
-                p = 4532
-            self._hamlib_add_row(str(max(1, min(65535, p))), "")
-        elif isinstance(listeners, list) and len(listeners) > 0:
-            for it in listeners:
-                if not isinstance(it, dict):
-                    continue
-                nm = str(it.get("name", "") or "")
-                if "port" not in it or it.get("port") in (None, ""):
-                    self._hamlib_add_row("", nm)
-                else:
-                    try:
-                        p = int(it["port"])
-                    except (TypeError, ValueError):
-                        continue
-                    self._hamlib_add_row(str(max(1, min(65535, p))), nm)
-        else:
-            self._hamlib_add_row("", "")
-        self._protocol_autostart["hamlib"].setChecked(bool(cfg.get("hamlib", {}).get("autostart", False)))
-        self.chk_hamlib_debug.setChecked(bool(cfg.get("hamlib", {}).get("debug_traffic", False)))
-        self.chk_serial_log.blockSignals(True)
-        self.chk_serial_log.setChecked(bool(cfg.get("log_serial_traffic", True)))
-        self.chk_serial_log.blockSignals(False)
+        # flrig/hamlib sind global und werden nur aus _load_from_config
+        # uebernommen — beim Profilwechsel bleiben sie unveraendert.
+        # ``log_serial_traffic`` ist immer aktiv, solange Rig-Bridge laeuft —
+        # es gibt keinen UI-Schalter mehr und die Profile tragen den Default.
         self.chk_auto_connect.blockSignals(True)
         self.chk_auto_reconnect.blockSignals(True)
         self.chk_auto_connect.setChecked(bool(cfg.get("auto_connect", False)))
@@ -552,13 +859,18 @@ class RigBridgeTab(QWidget):
         self.chk_auto_reconnect.blockSignals(False)
         self._rig_combo_apply_max_width()
 
-    def to_config(self) -> dict:
+    def _form_to_profile_dict(self) -> dict:
+        """Liest die Formularfelder in ein einzelnes Profil-Dict (ohne
+        ``id``/``name``). ``chk_enabled`` steuert nicht mehr das Profil,
+        sondern die globale Rig-Bridge — deshalb bleibt ``enabled`` hier
+        immer True, damit das Profil jederzeit aktivierbar ist.
+        """
         rig_id = int(self.cb_rig_model.currentData() or 0)
         rig_brand = self.cb_rig_brand.currentText().strip()
         rig_model = self.cb_rig_model.currentText().strip()
         selected_rig = f"{rig_brand} {rig_model}".strip()
         return {
-            "enabled": bool(self.chk_enabled.isChecked()),
+            "enabled": True,
             "selected_rig": selected_rig,
             "rig_brand": rig_brand,
             "rig_model": rig_model,
@@ -576,20 +888,58 @@ class RigBridgeTab(QWidget):
             "setfreq_gap_ms": self._int_from_field(self.ed_setfreq_gap.text(), _RIG_DEF_SETFREQ_GAP_MS, 0, 200),
             "auto_connect": bool(self.chk_auto_connect.isChecked()),
             "auto_reconnect": bool(self.chk_auto_reconnect.isChecked()),
-            "log_serial_traffic": bool(self.chk_serial_log.isChecked()),
-            "flrig": {
-                "enabled": bool(self._protocol_enabled["flrig"].isChecked()),
-                "host": self._protocol_host["flrig"].text().strip() or "127.0.0.1",
-                "port": self._int_from_field(self._protocol_port["flrig"].text(), 12345, 1, 65535),
-                "autostart": bool(self._protocol_autostart["flrig"].isChecked()),
-            },
-            "hamlib": {
-                "enabled": bool(self._protocol_enabled["hamlib"].isChecked()),
-                "host": self._hamlib_host.text().strip() or "127.0.0.1",
-                "listeners": self._hamlib_listeners_to_config(),
-                "autostart": bool(self._protocol_autostart["hamlib"].isChecked()),
-                "debug_traffic": bool(self.chk_hamlib_debug.isChecked()),
-            },
+            # Logging laeuft jetzt immer mit, solange die Rig-Bridge aktiv ist.
+            "log_serial_traffic": True,
+        }
+
+    def _form_to_global_flrig(self) -> dict:
+        """Flrig-Formular in das GLOBALE Flrig-Settings-Dict umwandeln."""
+        return {
+            "enabled": bool(self._protocol_enabled["flrig"].isChecked()),
+            "host": self._protocol_host["flrig"].text().strip() or "127.0.0.1",
+            "port": self._int_from_field(self._protocol_port["flrig"].text(), 12345, 1, 65535),
+            "autostart": bool(self._protocol_autostart["flrig"].isChecked()),
+        }
+
+    def _form_to_global_hamlib(self) -> dict:
+        """Hamlib-Formular in das GLOBALE Hamlib-Settings-Dict umwandeln."""
+        return {
+            "enabled": bool(self._protocol_enabled["hamlib"].isChecked()),
+            "host": self._hamlib_host.text().strip() or "127.0.0.1",
+            "listeners": self._hamlib_listeners_to_config(),
+            "autostart": bool(self._protocol_autostart["hamlib"].isChecked()),
+            "debug_traffic": bool(self.chk_hamlib_debug.isChecked()),
+        }
+
+    def to_config(self) -> dict:
+        """Komplettes ``rig_bridge``-Dict im neuen Profilformat bauen.
+
+        Vor dem Export wird das aktuell editierte Profil aus dem Formular
+        uebernommen, damit keine Aenderungen verloren gehen.
+        """
+        # Aktuelles Formular ins zugehoerige Profil schreiben und das
+        # Global-Flag aus der Checkbox in ``_global_enabled`` spiegeln.
+        self._capture_form_into_profile(self._selected_id)
+        self._global_enabled = bool(self.chk_enabled.isChecked())
+        rigs_out: list[dict] = []
+        for pr in self._profiles:
+            entry = dict(pr)
+            entry.setdefault("id", f"rig_{len(rigs_out)}")
+            entry.setdefault("name", str(entry.get("selected_rig", "") or entry["id"]))
+            # flrig/hamlib sind global — aus Profilen fernhalten.
+            entry.pop("flrig", None)
+            entry.pop("hamlib", None)
+            rigs_out.append(entry)
+        active = self._active_id or (str(rigs_out[0].get("id", "")) if rigs_out else "")
+        if not any(p.get("id") == active for p in rigs_out) and rigs_out:
+            active = str(rigs_out[0].get("id", ""))
+            self._active_id = active
+        return {
+            "enabled": bool(self._global_enabled),
+            "active_rig_id": active,
+            "flrig": self._form_to_global_flrig(),
+            "hamlib": self._form_to_global_hamlib(),
+            "rigs": rigs_out,
         }
 
     def apply_to_manager(self) -> None:
@@ -920,13 +1270,3 @@ class RigBridgeTab(QWidget):
             self._lbl_hamlib_bind_clients.setText("")
         else:
             self._lbl_hamlib_bind_clients.setText(t("settings.rig_listen_none", host=hh))
-        self.txt_diag.setPlainText(self.manager.diagnostics_text())
-        # Nach setPlainText ist die Ansicht oben; Scroll erst nach Layout-Berechnung ans Ende
-        QTimer.singleShot(0, self._scroll_diag_to_bottom)
-
-    def _scroll_diag_to_bottom(self) -> None:
-        bar = self.txt_diag.verticalScrollBar()
-        bar.setValue(bar.maximum())
-        cur = self.txt_diag.textCursor()
-        cur.movePosition(QTextCursor.MoveOperation.End)
-        self.txt_diag.setTextCursor(cur)

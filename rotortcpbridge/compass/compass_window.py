@@ -191,7 +191,7 @@ class CompassWindow(QDialog):
         self._act_heatmap_dwell.setCheckable(True)
         self._act_heatmap_dwell.setData("dwell")
         self.menu_heatmap_az.addAction(self._act_heatmap_strom)
-        self.menu_heatmap_az.addAction(self._act_heatmap_om)
+        # OM-Radar wird nur eingehaengt, wenn AirScout/KST aktiv ist (siehe _fill_heatmap_az_list)
         self.menu_heatmap_az.addAction(self._act_heatmap_dwell)
         for _a in (self._act_heatmap_strom, self._act_heatmap_om, self._act_heatmap_dwell):
             _a.toggled.connect(self._on_heatmap_az_action_toggled)
@@ -501,8 +501,15 @@ class CompassWindow(QDialog):
         return [self._act_heatmap_strom, self._act_heatmap_om, self._act_heatmap_dwell]
 
     def _fill_heatmap_az_list(self) -> None:
-        """OM-Radar-Eintrag nur wenn AirScout/KST aktiv."""
+        """OM-Radar-Eintrag nur wenn AirScout/KST aktiv: physisch aus Menue entfernen,
+        damit er auch bei unerwartetem Qt-Verhalten garantiert nicht auftaucht."""
         show_om = self._aswatch_enabled()
+        present = self._act_heatmap_om in self.menu_heatmap_az.actions()
+        if show_om and not present:
+            # Zwischen Strom und Standzeit einsortieren
+            self.menu_heatmap_az.insertAction(self._act_heatmap_dwell, self._act_heatmap_om)
+        elif not show_om and present:
+            self.menu_heatmap_az.removeAction(self._act_heatmap_om)
         self._act_heatmap_om.setVisible(show_om)
         if not show_om and self._act_heatmap_om.isChecked():
             self._act_heatmap_om.setChecked(False)

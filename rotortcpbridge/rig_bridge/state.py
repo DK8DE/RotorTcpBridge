@@ -16,6 +16,10 @@ class RadioStateCache:
     connected: bool = False
     selected_rig: str = ""
     com_port: str = ""
+    #: Profil-ID (aus ``rig_bridge.rigs``), dessen Funkgeraet aktuell verbunden ist.
+    active_rig_id: str = ""
+    #: Anzeigename des aktiven Profils (fuer UI + CAT-Simulation).
+    active_rig_name: str = ""
     #: 0 = noch keine Frequenz aus Software/CAT bekannt (kein erzwungenes 2-m-Band).
     frequency_hz: int = 0
     mode: str = "USB"
@@ -41,6 +45,8 @@ class RadioStateCache:
                 "connected": bool(self.connected),
                 "selected_rig": str(self.selected_rig),
                 "com_port": str(self.com_port),
+                "active_rig_id": str(self.active_rig_id),
+                "active_rig_name": str(self.active_rig_name),
                 "frequency_hz": int(self.frequency_hz),
                 "mode": str(self.mode),
                 "ptt": bool(self.ptt),

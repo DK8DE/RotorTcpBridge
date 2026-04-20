@@ -27,6 +27,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "listen_port_az": 4001,
         "listen_port_el": 4002,
     },
+    # SPID BIG-RAS / CAT über serielle Schnittstelle (z. B. com0com). Jeder
+    # Listener bedient entweder den Rotor (ROT2PROG-13-Byte-Frames, AZ+EL in
+    # einem Frame) oder ein Funkgeraet (CAT-Protokoll des aktiven Rig-Profils).
+    # Das Ziel wird ueber ``target`` festgelegt:
+    #   * ``"rotor"``             → SPID-BIG-RAS-Listener
+    #   * ``"rig:<rig_id>"``     → CAT-Listener, simuliert das Profil ``rig_id``
+    "pst_serial": {
+        "enabled": False,
+        # Einträge: {"port": "COM21", "baudrate": 115200, "enabled": true,
+        #            "target": "rotor" | "rig:<id>"}
+        "listeners": [],
+    },
     "hardware_link": {
         "mode": "com",
         "tcp_ip": "192.168.1.50",
@@ -60,25 +72,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "pwm": {"set_on_connect": False, "value_pct": 100.0},
     "behavior": {"auto_reference_on_connect": False},
+    # Rig-Bridge: mehrere Profile, eines ist aktiv. Das aktive Profil steuert
+    # die echte CAT-Verbindung und ist Ziel der Rig-CAT-Listener auf der
+    # virtuellen seriellen Schnittstelle (com0com).
     "rig_bridge": {
         "enabled": False,
-        "selected_rig": "Generic CAT",
-        "rig_brand": "Generisch",
-        "rig_model": "CAT (generisch)",
-        "hamlib_rig_id": 0,
-        "com_port": "COM1",
-        "baudrate": 9600,
-        "databits": 8,
-        "stopbits": 1,
-        "parity": "N",
-        "timeout_s": 0.2,
-        "polling_interval_ms": 30,
-        "auto_connect": False,
-        "auto_reconnect": True,
-        "log_serial_traffic": True,
-        "cat_post_write_drain_ms": 50,
-        "setfreq_gap_ms": 10,
-        "flrig": {"enabled": False, "host": "127.0.0.1", "port": 12345, "autostart": False},
+        "active_rig_id": "default",
+        # Flrig/Hamlib-NET sind TCP-Protokolle, die *eine* aktive Funkgeraete-
+        # verbindung nach aussen bereitstellen. Sie gelten deshalb global und
+        # nicht pro Rig-Profil — beim Profilwechsel wechselt nur das dahinter
+        # angesprochene Funkgeraet; Host/Port/Autostart bleiben gleich.
+        "flrig": {
+            "enabled": False,
+            "host": "127.0.0.1",
+            "port": 12345,
+            "autostart": False,
+        },
         "hamlib": {
             "enabled": False,
             "host": "127.0.0.1",
@@ -86,6 +95,29 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "autostart": False,
             "debug_traffic": False,
         },
+        "rigs": [
+            {
+                "id": "default",
+                "name": "Rig 1",
+                "enabled": True,
+                "selected_rig": "Generic CAT",
+                "rig_brand": "Generisch",
+                "rig_model": "CAT (generisch)",
+                "hamlib_rig_id": 0,
+                "com_port": "COM1",
+                "baudrate": 9600,
+                "databits": 8,
+                "stopbits": 1,
+                "parity": "N",
+                "timeout_s": 0.2,
+                "polling_interval_ms": 30,
+                "auto_connect": False,
+                "auto_reconnect": True,
+                "log_serial_traffic": True,
+                "cat_post_write_drain_ms": 50,
+                "setfreq_gap_ms": 10,
+            }
+        ],
     },
     "ui": {
         # Anzeige der Windrichtung im Kompass:
@@ -264,6 +296,94 @@ def load_config() -> Dict[str, Any]:
         rb = cfg["rotor_bus"]
         rb.setdefault("enable_az", True)
         rb.setdefault("enable_el", True)
+
+    # Migration: rig_bridge flach → {rigs: [...], active_rig_id}.
+    # Alte Konfigurationen hatten com_port/rig_brand/... direkt unterhalb
+    # "rig_bridge". Neu lebt das pro Profil in ``rigs[]``; das aktive Profil
+    # referenziert ``active_rig_id``.
+    if "rig_bridge" in cfg and isinstance(cfg["rig_bridge"], dict):
+        rb = cfg["rig_bridge"]
+        if "rigs" not in rb or not isinstance(rb.get("rigs"), list) or not rb.get("rigs"):
+            # Flach → ein Profil. flrig/hamlib bleiben aber GLOBAL — die
+            # alten flachen Keys flrig/hamlib wandern daher nicht ins Profil
+            # (vergleiche naechster Migrationsblock).
+            flat = {
+                k: v
+                for k, v in rb.items()
+                if k not in ("rigs", "active_rig_id", "flrig", "hamlib")
+            }
+            # Ein Profil aus der alten flachen Struktur bauen.
+            selected_rig = str(flat.get("selected_rig", "") or "").strip() or "Rig 1"
+            profile = dict(flat)
+            profile.setdefault("id", "default")
+            profile.setdefault("name", selected_rig)
+            # Globales "enabled" war frueher identisch mit "Rig-Bridge an".
+            # Wir speichern pro Profil zusaetzlich ein "enabled" (Standard True),
+            # damit einzelne Profile deaktiviert werden koennen, ohne das
+            # Dropdown leer zu machen.
+            profile.setdefault("enabled", True)
+            new_rb: Dict[str, Any] = {
+                "enabled": bool(flat.get("enabled", False)),
+                "active_rig_id": str(profile["id"]),
+                "rigs": [profile],
+            }
+            # Eventuell vorhandenes flaches flrig/hamlib bleibt auf der
+            # obersten Rig-Bridge-Ebene liegen (globale Protokoll-Einstellungen).
+            if isinstance(rb.get("flrig"), dict):
+                new_rb["flrig"] = dict(rb["flrig"])
+            if isinstance(rb.get("hamlib"), dict):
+                new_rb["hamlib"] = dict(rb["hamlib"])
+            cfg["rig_bridge"] = new_rb
+        else:
+            # Neue Form — nur Defaults absichern.
+            rb.setdefault("active_rig_id", "")
+            rb.setdefault("enabled", False)
+            for pr in rb["rigs"]:
+                if isinstance(pr, dict):
+                    pr.setdefault("enabled", True)
+                    pr.setdefault("name", str(pr.get("selected_rig", "") or pr.get("id", "Rig")))
+            if not rb["active_rig_id"] and rb["rigs"]:
+                first = rb["rigs"][0]
+                if isinstance(first, dict):
+                    rb["active_rig_id"] = str(first.get("id", "default"))
+
+    # Migration: Flrig/Hamlib sind globale Settings (ein TCP-Server fuer alle
+    # Rigs). Aeltere Configs hielten sie pro Profil. Hebt sie aus dem aktiven
+    # (oder ersten) Profil auf die oberste Rig-Bridge-Ebene und entfernt sie
+    # anschliessend aus allen Profilen.
+    if "rig_bridge" in cfg and isinstance(cfg["rig_bridge"], dict):
+        rb = cfg["rig_bridge"]
+        rigs_list = rb.get("rigs") if isinstance(rb.get("rigs"), list) else []
+        if rigs_list:
+            src_prof: Dict[str, Any] | None = None
+            aid = str(rb.get("active_rig_id", "") or "")
+            for pr in rigs_list:
+                if isinstance(pr, dict) and str(pr.get("id", "")) == aid:
+                    src_prof = pr
+                    break
+            if src_prof is None:
+                for pr in rigs_list:
+                    if isinstance(pr, dict):
+                        src_prof = pr
+                        break
+            if isinstance(src_prof, dict):
+                if "flrig" not in rb and isinstance(src_prof.get("flrig"), dict):
+                    rb["flrig"] = dict(src_prof["flrig"])
+                if "hamlib" not in rb and isinstance(src_prof.get("hamlib"), dict):
+                    rb["hamlib"] = dict(src_prof["hamlib"])
+            for pr in rigs_list:
+                if isinstance(pr, dict):
+                    pr.pop("flrig", None)
+                    pr.pop("hamlib", None)
+
+    # Migration: pst_serial Listener um ``target`` erweitern.
+    if "pst_serial" in cfg and isinstance(cfg["pst_serial"], dict):
+        ps = cfg["pst_serial"]
+        lst = ps.get("listeners")
+        if isinstance(lst, list):
+            for item in lst:
+                if isinstance(item, dict):
+                    item.setdefault("target", "rotor")
 
     # Merge defaults (für neue Felder bei Updates)
     merged = json.loads(json.dumps(DEFAULT_CONFIG))

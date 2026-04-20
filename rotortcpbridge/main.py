@@ -11,12 +11,14 @@ from .app_config import load_config, save_config
 from .net_utils import check_internet
 
 from .ui.map_tiles import install_rotortiles_handler
+from .ui.wheel_guard import install_wheel_guard
 from .app_icon import get_app_icon
 from .i18n import load_lang
 from .logutil import LogBuffer
 from .hardware_client import HardwareClient
 from .rotor_controller import RotorController
 from .pst_server import PstDualServer
+from .pst_serial import PstSerialManager
 from .udp_ucxlog import UdpUcxLogListener
 from .udp_aswatchlist import UdpAswatchlistListener
 from .udp_pst_rotator import UdpPstRotator
@@ -35,8 +37,10 @@ def main():
     log = LogBuffer()
     rig_bridge_manager = RigBridgeManager(cfg.get("rig_bridge", {}), log.write)
     try:
-        rb_cfg = cfg.get("rig_bridge", {})
-        if bool(rb_cfg.get("enabled", False)) and bool(rb_cfg.get("auto_connect", False)):
+        # ``get_config_dict`` liefert die neue Form (globaler ``enabled`` +
+        # ``active_rig_id``); den konkreten Autoconnect-Wert liest die
+        # Bruecke anhand des aktiven Profils (``self._cfg.auto_connect``).
+        if bool(rig_bridge_manager._cfg.enabled) and bool(rig_bridge_manager._cfg.auto_connect):
             rig_bridge_manager.connect_radio_and_autostart_protocols()
     except Exception as exc:
         log.write("WARN", f"Rig-Bridge Autostart fehlgeschlagen: {exc}")
@@ -73,6 +77,15 @@ def main():
     if bool(cfg["pst_server"].get("enabled", False)):
         pst.start()
 
+    # SPID BIG-RAS / CAT über serielle Schnittstelle (com0com etc.)
+    # Der Manager bekommt einen Zeiger auf die Rig-Bridge, damit
+    # Rig-Listener das aktive Profil kennen und Schreibbefehle in die
+    # bestehende CAT-Queue legen koennen.
+    pst_serial = PstSerialManager(ctrl, log, rig_bridge=rig_bridge_manager)
+    pst_serial.update_config(cfg.get("pst_serial", {}))
+    if bool(cfg.get("pst_serial", {}).get("enabled", False)):
+        pst_serial.start_all()
+
     # UDP UcxLog-Listener (wenn aktiviert)
     udp_ucxlog = UdpUcxLogListener(ctrl, log, cfg=cfg)
     ui_cfg = cfg.get("ui", {})
@@ -101,6 +114,9 @@ def main():
 
     app = QApplication(sys.argv)
     install_rotortiles_handler()
+    # Verhindert, dass Mausrad ueber ComboBoxen/Spinboxen deren Wert aendert,
+    # ohne dass das Widget fokussiert ist (gilt global fuer alle Fenster).
+    install_wheel_guard(app)
     # App-Icon global setzen (wirkt als Default für alle Fenster)
     app.setWindowIcon(get_app_icon())
 
@@ -136,6 +152,7 @@ def main():
         udp_aswatch=udp_aswatch,
         aswatch_bridge=aswatch_bridge,
         rig_bridge_manager=rig_bridge_manager,
+        pst_serial=pst_serial,
     )
     w.resize(1100, 650)
     w.show()
@@ -148,6 +165,10 @@ def main():
     udp_ucxlog.stop()
     udp_aswatch.stop()
     udp_pst.stop()
+    try:
+        pst_serial.stop_all()
+    except Exception:
+        pass
     log.close()
     sys.exit(rc)
 

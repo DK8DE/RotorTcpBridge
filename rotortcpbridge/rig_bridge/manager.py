@@ -17,15 +17,166 @@ from .state import RadioStateCache
 from .status import RigBridgeStatusModel
 
 
+_DEFAULT_FLRIG: dict[str, Any] = {
+    "enabled": False,
+    "host": "127.0.0.1",
+    "port": 12345,
+    "autostart": False,
+}
+_DEFAULT_HAMLIB: dict[str, Any] = {
+    "enabled": False,
+    "host": "127.0.0.1",
+    "listeners": [{"port": 4532, "name": ""}],
+    "autostart": False,
+    "debug_traffic": False,
+}
+
+
+def _normalize_rb_dict(
+    cfg_dict: dict | None,
+) -> tuple[list[dict], str, bool, dict, dict]:
+    """Akzeptiert neue UND alte ``rig_bridge``-Struktur und liefert
+    ``(profiles, active_id, global_enabled, flrig, hamlib)``.
+
+    Flrig und Hamlib sind globale TCP-Server-Einstellungen und leben daher
+    auf der obersten ``rig_bridge``-Ebene (nicht mehr pro Rig-Profil).
+
+    - Neue Form: ``{"enabled": bool, "active_rig_id": str,
+      "flrig": {..}, "hamlib": {..}, "rigs": [..]}``.
+    - Alte Form (flach): alles direkt unter ``rig_bridge`` → als ein Profil
+      mit ``id="default"`` verpackt; ``flrig``/``hamlib`` werden als global
+      uebernommen (falls vorhanden).
+    - Aeltere Profilstruktur mit flrig/hamlib pro Profil: hochheben auf
+      Top-Level (aus aktivem oder erstem Profil), Profile werden bereinigt.
+    """
+    src = dict(cfg_dict or {})
+    rigs = src.get("rigs")
+    flrig_src: dict = dict(src.get("flrig") or {})
+    hamlib_src: dict = dict(src.get("hamlib") or {})
+    if isinstance(rigs, list) and rigs:
+        profiles: list[dict] = []
+        for pr in rigs:
+            if not isinstance(pr, dict):
+                continue
+            p = dict(pr)
+            p.setdefault("id", f"rig_{len(profiles)}")
+            p.setdefault("name", str(p.get("selected_rig", "") or p["id"]))
+            p.setdefault("enabled", True)
+            profiles.append(p)
+        if not profiles:
+            profiles = [{"id": "default", "name": "Rig 1", "enabled": True}]
+        active_id = str(src.get("active_rig_id", "") or profiles[0]["id"])
+        if not any(p["id"] == active_id for p in profiles):
+            active_id = str(profiles[0]["id"])
+        # Uebergangsbetrieb: falls flrig/hamlib noch in einem Profil stecken,
+        # einmalig nach oben ziehen (aktives oder erstes Profil). Anschliessend
+        # entfernen, damit sie tatsaechlich global wirken.
+        if not flrig_src or not hamlib_src:
+            donor = next(
+                (p for p in profiles if p["id"] == active_id),
+                profiles[0],
+            )
+            if not flrig_src and isinstance(donor.get("flrig"), dict):
+                flrig_src = dict(donor["flrig"])
+            if not hamlib_src and isinstance(donor.get("hamlib"), dict):
+                hamlib_src = dict(donor["hamlib"])
+        for p in profiles:
+            p.pop("flrig", None)
+            p.pop("hamlib", None)
+        flrig = dict(_DEFAULT_FLRIG)
+        flrig.update(flrig_src)
+        hamlib = dict(_DEFAULT_HAMLIB)
+        hamlib.update(hamlib_src)
+        return profiles, active_id, bool(src.get("enabled", False)), flrig, hamlib
+
+    # Flache Altstruktur
+    flat = {
+        k: v
+        for k, v in src.items()
+        if k not in ("rigs", "active_rig_id", "flrig", "hamlib")
+    }
+    selected = str(flat.get("selected_rig", "") or "").strip() or "Rig 1"
+    profile = dict(flat)
+    profile.setdefault("id", "default")
+    profile.setdefault("name", selected)
+    profile.setdefault("enabled", True)
+    # Die TCP-Server-Konfiguration wurde in der alten flachen Form ggf.
+    # bereits unter flrig/hamlib mitgefuehrt — uebernehmen, ansonsten Defaults.
+    flrig = dict(_DEFAULT_FLRIG)
+    flrig.update(flrig_src)
+    hamlib = dict(_DEFAULT_HAMLIB)
+    hamlib.update(hamlib_src)
+    return (
+        [profile],
+        str(profile["id"]),
+        bool(flat.get("enabled", False)),
+        flrig,
+        hamlib,
+    )
+
+
+def _profile_as_radio_cfg(
+    profile: dict,
+    global_enabled: bool,
+    flrig: dict,
+    hamlib: dict,
+) -> RigBridgeConfig:
+    """Ein Profil-Dict + globale TCP-Settings in eine ``RigBridgeConfig``
+    fuer den ``RadioConnectionManager`` umwandeln.
+
+    Das globale ``enabled`` und das Profil-``enabled`` werden zu einem
+    einzigen ``enabled`` fuer die alte Struktur verknuepft (beide muessen
+    True sein, damit die Bruecke aktiv ist). ``flrig``/``hamlib`` stammen
+    aus der obersten ``rig_bridge``-Ebene und sind profilunabhaengig.
+    """
+    flat = dict(profile)
+    flat.pop("flrig", None)
+    flat.pop("hamlib", None)
+    flat["enabled"] = bool(global_enabled) and bool(profile.get("enabled", True))
+    flat["flrig"] = dict(flrig or {})
+    flat["hamlib"] = dict(hamlib or {})
+    return RigBridgeConfig.from_dict(flat)
+
+
 class RigBridgeManager:
-    """Verwaltet Funkgeräteverbindung und alle Protokolle."""
+    """Verwaltet Funkgeräteverbindung und alle Protokolle.
+
+    Arbeitet intern mit einer Liste von Rig-Profilen; genau eines ist
+    aktiv und hat Verbindung zur realen seriellen CAT-Leitung. Alle
+    TCP-Protokolle (FLRig/Hamlib) und CAT-Simulation auf virtuellen COMs
+    beziehen sich stets auf das aktive Profil.
+    """
 
     def __init__(self, cfg_dict: dict, log_write: Callable[[str, str], None]):
         self._log_write = log_write
-        self._cfg = RigBridgeConfig.from_dict(cfg_dict)
+        profiles, active_id, global_enabled, flrig, hamlib = _normalize_rb_dict(cfg_dict)
+        self._profiles: list[dict] = profiles
+        self._active_id: str = active_id
+        self._global_enabled: bool = global_enabled
+        self._flrig_cfg: dict = dict(flrig)
+        self._hamlib_cfg: dict = dict(hamlib)
+        active_profile = self._get_profile_dict(active_id) or profiles[0]
+        self._cfg = _profile_as_radio_cfg(
+            active_profile, global_enabled, self._flrig_cfg, self._hamlib_cfg
+        )
         self._state = RadioStateCache()
-        self._state.update(selected_rig=self._cfg.selected_rig, com_port=self._cfg.com_port)
+        self._state.update(
+            selected_rig=self._cfg.selected_rig,
+            com_port=self._cfg.com_port,
+            active_rig_id=str(active_profile.get("id", "")),
+            active_rig_name=str(active_profile.get("name", "")),
+        )
         self._lock = threading.RLock()
+        #: ``refresh_rig_frequency_from_cat`` ist heute **nicht blockierend**:
+        #: Ein externer Poller (Hamlib/Flrig/Rig-Serial-Listener) bekommt sofort
+        #: den Cache-Wert zurueck. Im Hintergrund wird hoechstens alle
+        #: ``_cat_refresh_min_interval_s`` ein READFREQ auf die Worker-Queue
+        #: gelegt. Das schuetzt den TRX vor Ueberlast (Yaesu newcat quittiert
+        #: sonst zu eng stehende Kommandos mit ``?;``) und verhindert, dass
+        #: SETFREQ-Befehle hinter einem Stapel READFREQ verhungern.
+        self._cat_refresh_lock = threading.Lock()
+        self._last_cat_refresh_mono: float = 0.0
+        self._cat_refresh_min_interval_s: float = 0.30
         self._diag_lines: list[str] = []
         self._rig_serial_activity_flag = False
         self._rig_flrig_activity_flag = False
@@ -175,10 +326,46 @@ class RigBridgeManager:
             )
 
     def update_config(self, cfg_dict: dict) -> None:
-        """Konfiguration aktualisieren."""
+        """Konfiguration aktualisieren — neue Struktur (``rigs`` + ``active_rig_id``)
+        oder alte flache Struktur. Beim Wechsel des aktiven Profils wird die
+        bestehende COM-Verbindung sauber getrennt, bevor die neue Konfiguration
+        uebernommen wird (sonst kollidiert der serielle Worker mit dem neuen
+        Port).
+        """
+        profiles, active_id, global_enabled, flrig, hamlib = _normalize_rb_dict(cfg_dict)
+        prev_active = self._active_id
+        prev_global = bool(self._global_enabled)
+        active_profile = next((p for p in profiles if p["id"] == active_id), profiles[0])
+        profile_switched = bool(prev_active and prev_active != active_id)
+
+        # Wechsel des aktiven Profils → alte Verbindung trennen.
+        if profile_switched:
+            try:
+                self.stop_protocol("flrig")
+            except Exception:
+                pass
+            try:
+                self.stop_protocol("hamlib")
+            except Exception:
+                pass
+            try:
+                self.disconnect_radio()
+            except Exception:
+                pass
+
         with self._lock:
+            self._profiles = profiles
+            self._active_id = str(active_id)
+            self._global_enabled = bool(global_enabled)
+            self._flrig_cfg = dict(flrig)
+            self._hamlib_cfg = dict(hamlib)
             prev_traffic = bool(self._cfg.log_serial_traffic)
-            self._cfg = RigBridgeConfig.from_dict(cfg_dict)
+            self._cfg = _profile_as_radio_cfg(
+                active_profile,
+                global_enabled,
+                self._flrig_cfg,
+                self._hamlib_cfg,
+            )
             if prev_traffic and not bool(self._cfg.log_serial_traffic):
                 self._diag_lines.clear()
             self._radio.update_config(self._cfg)
@@ -186,10 +373,103 @@ class RigBridgeManager:
                 srv.set_debug_traffic(bool(self._cfg.hamlib.get("debug_traffic", False)))
                 srv.set_log_serial_traffic(bool(self._cfg.log_serial_traffic))
             self._flrig.set_log_client_traffic(bool(self._cfg.log_serial_traffic))
-            self._state.update(selected_rig=self._cfg.selected_rig, com_port=self._cfg.com_port)
+            self._state.update(
+                selected_rig=self._cfg.selected_rig,
+                com_port=self._cfg.com_port,
+                active_rig_id=str(active_profile.get("id", "")),
+                active_rig_name=str(active_profile.get("name", "")),
+            )
+            now_enabled = bool(self._cfg.enabled)
+            auto_conn = bool(self._cfg.auto_connect)
+            # Nach Profilwechsel ODER Aktivierung der Rig-Bridge muss der
+            # Auto-Reconnect-Pfad wieder greifen. ``disconnect_radio()``
+            # hatte ``_allow_auto_reconnect`` auf False gesetzt.
+            if now_enabled and (profile_switched or (not prev_global and now_enabled)):
+                self._allow_auto_reconnect = True
+
+        # Ausserhalb des Locks: bei enabled + auto_connect direkt verbinden,
+        # wenn noch nicht verbunden. Andernfalls uebernimmt der
+        # Auto-Reconnect-Loop innerhalb weniger Sekunden.
+        try:
+            if now_enabled and auto_conn and not self._radio.is_serial_connected():
+                self.connect_radio_and_autostart_protocols()
+        except Exception:
+            pass
 
     def get_config_dict(self) -> dict:
-        return self._cfg.to_dict()
+        """Komplettes ``rig_bridge``-Dict (neue Struktur) mit aktivem Zustand."""
+        return {
+            "enabled": bool(self._global_enabled),
+            "active_rig_id": str(self._active_id),
+            "flrig": dict(self._flrig_cfg),
+            "hamlib": dict(self._hamlib_cfg),
+            "rigs": [dict(p) for p in self._profiles],
+        }
+
+    # ------------------------------------------------------------ Profiles
+    def _get_profile_dict(self, rig_id: str) -> dict | None:
+        rig_id = str(rig_id or "")
+        for p in self._profiles:
+            if str(p.get("id", "")) == rig_id:
+                return p
+        return None
+
+    def list_profiles(self) -> list[dict]:
+        """Profile-Uebersicht fuer UI / Listener-Manager.
+
+        Liefert Kopien mit den fuer Anzeige wichtigen Feldern
+        (``id``, ``name``, ``rig_brand``, ``rig_model``, ``enabled``,
+        ``com_port``). Reihenfolge entspricht Config.
+        """
+        out: list[dict] = []
+        for p in self._profiles:
+            out.append(
+                {
+                    "id": str(p.get("id", "")),
+                    "name": str(p.get("name", "") or p.get("selected_rig", "") or p.get("id", "")),
+                    "rig_brand": str(p.get("rig_brand", "") or ""),
+                    "rig_model": str(p.get("rig_model", "") or ""),
+                    "enabled": bool(p.get("enabled", True)),
+                    "com_port": str(p.get("com_port", "") or ""),
+                    "hamlib_rig_id": int(p.get("hamlib_rig_id", 0) or 0),
+                }
+            )
+        return out
+
+    def active_rig_id(self) -> str:
+        with self._lock:
+            return str(self._active_id)
+
+    def get_profile(self, rig_id: str) -> dict | None:
+        """Rohes Profil-Dict (Kopie) zum angegebenen Rig-Profil."""
+        p = self._get_profile_dict(rig_id)
+        return dict(p) if p is not None else None
+
+    def set_active_profile(self, rig_id: str) -> tuple[bool, str]:
+        """Aktives Rig-Profil umschalten.
+
+        Schritte: Protokolle stoppen → COM trennen → Config uebernehmen
+        → bei ``auto_connect`` neu verbinden. Gibt ``(ok, msg)`` zurueck
+        (ok=False wenn Profil unbekannt).
+        """
+        rig_id = str(rig_id or "")
+        if rig_id == self._active_id:
+            return True, "bereits aktiv"
+        if self._get_profile_dict(rig_id) is None:
+            return False, "unbekanntes Profil"
+        # Neue Config bauen, aber mit identischer Profiltabelle — nur
+        # ``active_rig_id`` aendert sich.
+        new_cfg = {
+            "enabled": bool(self._global_enabled),
+            "active_rig_id": rig_id,
+            "flrig": dict(self._flrig_cfg),
+            "hamlib": dict(self._hamlib_cfg),
+            "rigs": [dict(p) for p in self._profiles],
+        }
+        # ``update_config`` uebernimmt Disconnect alt + Reconnect neu
+        # (sofern ``enabled`` + ``auto_connect``).
+        self.update_config(new_cfg)
+        return True, "umgeschaltet"
 
     def _enqueue_radio_write(self, command: str, log_ctx: str = "") -> None:
         self._radio.write_command(command, log_ctx=log_ctx)
@@ -211,16 +491,43 @@ class RigBridgeManager:
         )
 
     def refresh_rig_frequency_from_cat(self, timeout_s: float = 0.65) -> bool:
-        """Synchron ``READFREQ`` — für Flrig ``rig.get_vfo*`` / Hamlib ``f`` (frische VFO vom TRX)."""
+        """Asynchron ``READFREQ`` anfordern — der Aufrufer blockiert **nicht**.
+
+        Frueher war das ein synchroner Aufruf (``read_frequency_sync``), der
+        den Listener-Thread bis zu 650 ms schlafen legte. Ein externes Programm
+        wie Ham Radio Deluxe pollt ``FA;`` aber mit 5–20 Hz — das hat:
+
+        * den Listener-Thread an der Byte-Aufnahme vom com0com-Port gehindert
+          (OS-Puffer lief voll, SET-Befehle kamen verspaetet),
+        * die Worker-Queue mit READFREQs geflutet, sodass SETFREQ dahinter
+          auflief, und
+        * den echten Funkgeraet mit zu dicht aneinander liegenden Befehlen
+          ueberlastet (Yaesu newcat: ``?;``-Antworten, verschluckte Bytes).
+
+        Neues Verhalten:
+
+        * Sofort ``True`` zurueckgeben — der Aufrufer nutzt den aktuellen
+          Cache-Wert (``_state.frequency_hz``).
+        * Wenn seit dem letzten Enqueue mindestens
+          ``_cat_refresh_min_interval_s`` vergangen ist, wird ein einzelnes
+          ``READFREQ`` auf die Worker-Queue gelegt (fire-and-forget) — der
+          Cache wird dann in ~30 ms bis zum naechsten Poll aktualisiert.
+        * Der ``timeout_s``-Parameter bleibt aus Kompatibilitaet erhalten,
+          wird aber nicht mehr zum Blockieren verwendet.
+        """
         try:
             if not self._radio.is_serial_connected():
                 return False
-            return bool(
-                self._radio.read_frequency_sync(
-                    float(timeout_s),
-                    log_ctx="FLRig/Hamlib-Abfrage → TRX lesen (z. B. rig.get_vfo)",
-                )
+            now = time.monotonic()
+            with self._cat_refresh_lock:
+                if (now - self._last_cat_refresh_mono) < self._cat_refresh_min_interval_s:
+                    return True
+                self._last_cat_refresh_mono = now
+            self._radio.write_command(
+                "READFREQ",
+                log_ctx="CAT/Flrig/Hamlib → TRX lesen (async)",
             )
+            return True
         except Exception:
             return False
 

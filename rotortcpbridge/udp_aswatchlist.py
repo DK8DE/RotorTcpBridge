@@ -298,6 +298,31 @@ def marker_asnearest_score(m: dict[str, Any]) -> int:
     return composite_asnearest_score(int(m.get("potential", 0)), int(m.get("duration_min", 9999)))
 
 
+def marker_passes_score(m: dict[str, Any], min_score: int) -> bool:
+    """Einheitlicher Score-Filter für Marker inkl. urgent_short-Fallback.
+
+    Bei sehr kurzer Restzeit (``urgent_short``) kann der Geometrie-Score unter der
+    Schwelle liegen, während der reine Composite-Score (Potenzial + Zeitbonus) bestehen
+    würde; dann lassen wir den Marker passieren — analog zur Infoliste, wo derselbe
+    Sonderfall bereits implementiert ist.
+    """
+    if marker_asnearest_score(m) >= min_score:
+        return True
+    if not bool(m.get("urgent_short", False)):
+        return False
+    comp = m.get("composite_score")
+    try:
+        return int(comp) >= min_score
+    except (TypeError, ValueError):
+        return (
+            composite_asnearest_score(
+                int(m.get("potential", 0)),
+                int(m.get("duration_min", 9999)),
+            )
+            >= min_score
+        )
+
+
 def pick_best_asnearest_plane(
     planes: list[dict[str, Any]],
     own_ll: tuple[float, float],
@@ -545,10 +570,17 @@ class UdpAswatchlistListener:
         cat = str(pl.get("category", ""))
         d_tot_path = haversine_km(own_ll[0], own_ll[1], dest_ll[0], dest_ll[1])
         p_cat = path_length_category_factor(d_tot_path, cat) if use_cat_path else 1.0
-        link_ok = pot >= pot_min and dur <= dur_max and geom_g >= geom_min
+        # Urgente Ankünfte (<= 2 min Restzeit) bekommen denselben Bonus-Pfad wie in der
+        # Infoliste (_summary_row_from_parsed): sonst würden Eintrag in der Liste, aber
+        # weder Linie noch Flugzeug-Marker auf der Karte erscheinen.
+        urgent_short = dur <= 2
+        link_ok = (
+            pot >= pot_min and dur <= dur_max and geom_g >= geom_min
+        ) or urgent_short
         score = asnearest_score_with_geometry(
             own_ll, dest_ll, dist_km, pot, dur, cat, use_category_path=use_cat_path
         )
+        composite = int(composite_asnearest_score(pot, dur))
         return [
             {
                 "lat": lat,
@@ -563,6 +595,8 @@ class UdpAswatchlistListener:
                 "potential": pot,
                 "duration_min": dur,
                 "score": score,
+                "composite_score": composite,
+                "urgent_short": urgent_short,
                 "path_fraction": round(path_t, 5),
                 "geom_factor": round(geom_g, 5),
                 "alt_path_factor": round(p_cat, 5),
@@ -668,7 +702,7 @@ class UdpAswatchlistListener:
             if aircraft_on:
                 markers = self._build_aircraft_markers_for_packet(parsed)
                 for m in markers:
-                    if m.get("link_ok") and marker_asnearest_score(m) >= min_score:
+                    if m.get("link_ok") and marker_passes_score(m, min_score):
                         row["hover_plane_lat"] = m["lat"]
                         row["hover_plane_lon"] = m["lon"]
                         row["hover_partner_lat"] = m["partner_lat"]
@@ -715,7 +749,7 @@ class UdpAswatchlistListener:
             if self._asnearest_dest_on_map(parsed_sel):
                 markers = self._build_aircraft_markers_for_packet(parsed_sel)
                 flat_map = [
-                    m for m in markers if m.get("link_ok") and marker_asnearest_score(m) >= min_score
+                    m for m in markers if m.get("link_ok") and marker_passes_score(m, min_score)
                 ]
         # Ohne Klick auf ein Rufzeichen in der Liste: keine Flugzeug-Marker (kein „alle auf einmal“)
         try:

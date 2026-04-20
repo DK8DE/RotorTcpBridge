@@ -79,16 +79,58 @@ class MainWindow(QMainWindow):
             out[p] = str(it.get("name", "") or "").strip()
         return out
 
-    @staticmethod
-    def _rig_radio_identity_text(st) -> str:
-        """Marke und Modell für die Anzeige unter der Frequenz (Rig-Bridge-Config)."""
-        b = (getattr(st, "rig_brand", None) or "").strip()
-        m = (getattr(st, "rig_model", None) or "").strip()
-        n = (getattr(st, "selected_rig", None) or "").strip()
-        parts = [x for x in (b, m) if x]
-        if parts:
-            return " · ".join(parts)
-        return n
+    def _active_rig_view(self) -> dict:
+        """Liefert eine flache Sicht auf das aktive Rig-Profil.
+
+        Die ``rig_bridge``-Konfig ist profilbasiert (``rigs`` + ``active_rig_id``).
+        Viele UI-Stellen lesen aber weiterhin flache Felder wie ``com_port``
+        oder die globalen TCP-Protokolle ``flrig``/``hamlib``. Diese
+        Helper-Methode gibt ein Dict zurueck, das das aktive Profil mit
+        dem globalen ``enabled``-Flag und den global gepflegten
+        ``flrig``/``hamlib``-Settings kombiniert. Fuer alte flache Configs
+        wird das Dict unveraendert zurueckgeliefert.
+        """
+        rb = dict(self.cfg.get("rig_bridge") or {})
+        rigs = rb.get("rigs")
+        global_flrig = dict(rb.get("flrig") or {}) if isinstance(rb.get("flrig"), dict) else {}
+        global_hamlib = dict(rb.get("hamlib") or {}) if isinstance(rb.get("hamlib"), dict) else {}
+        if not isinstance(rigs, list):
+            # Altform: flache Struktur, direkte Ruecklieferung genuegt.
+            return rb
+        active_id = str(rb.get("active_rig_id", "") or "")
+        active: dict | None = None
+        for p in rigs:
+            if isinstance(p, dict) and str(p.get("id", "")) == active_id:
+                active = p
+                break
+        if active is None:
+            for p in rigs:
+                if isinstance(p, dict):
+                    active = p
+                    break
+        if not isinstance(active, dict):
+            return {
+                "enabled": bool(rb.get("enabled", False)),
+                "flrig": global_flrig,
+                "hamlib": global_hamlib,
+            }
+        view = dict(active)
+        # Globales enabled UND Profil-enabled muessen True sein, damit
+        # die Bruecke als aktiv gilt — dieselbe Logik wie im Manager.
+        view["enabled"] = bool(rb.get("enabled", False)) and bool(
+            active.get("enabled", True)
+        )
+        view["active_rig_id"] = active_id
+        # Flrig/Hamlib stets aus Top-Level uebernehmen (globale Settings,
+        # nicht pro Profil). Fallback: sollte das Profil noch alte Felder
+        # tragen, diese nur als Default verwenden.
+        view["flrig"] = global_flrig or (
+            dict(active.get("flrig") or {}) if isinstance(active.get("flrig"), dict) else {}
+        )
+        view["hamlib"] = global_hamlib or (
+            dict(active.get("hamlib") or {}) if isinstance(active.get("hamlib"), dict) else {}
+        )
+        return view
 
     def _srv_led_wrap(self, led: Led) -> QWidget:
         w = QWidget()
@@ -144,6 +186,7 @@ class MainWindow(QMainWindow):
         udp_aswatch=None,
         aswatch_bridge=None,
         rig_bridge_manager=None,
+        pst_serial=None,
     ):
         super().__init__()
         self.cfg = cfg
@@ -156,6 +199,7 @@ class MainWindow(QMainWindow):
         self._udp_pst = udp_pst
         self._udp_aswatch = udp_aswatch
         self._rig_bridge_manager = rig_bridge_manager
+        self.pst_serial = pst_serial
         if aswatch_bridge is not None:
             try:
                 aswatch_bridge.users.connect(
@@ -264,6 +308,10 @@ class MainWindow(QMainWindow):
         top.addWidget(self.btn_open_map, 1)
         top.addWidget(self.btn_ref, 1)
 
+        # Funkgeraet-Zeile: Aktives-Rig-Dropdown + Frequenzanzeige in einer
+        # Zeile. Label und Combobox werden nur sichtbar, wenn mehrere Profile
+        # vorhanden sind; der Funkgeraete-Name unterhalb der Frequenz entfaellt
+        # bewusst, weil der Profilname im Dropdown denselben Kontext liefert.
         self._rig_freq_row = QGroupBox(t("main.group_radio"))
         self._rig_freq_row.setVisible(False)
         vl_rf = QVBoxLayout(self._rig_freq_row)
@@ -276,6 +324,14 @@ class MainWindow(QMainWindow):
         vl_rf.setSpacing(px_to_dip(self, 4))
         hl_rf = QHBoxLayout()
         hl_rf.setSpacing(px_to_dip(self, 6))
+        self._lbl_active_rig = QLabel(t("main.active_rig_label"))
+        self._cb_active_rig = QComboBox()
+        self._cb_active_rig.setMinimumWidth(px_to_dip(self, 140))
+        self._cb_active_rig.currentIndexChanged.connect(self._on_active_rig_changed)
+        self._lbl_active_rig.setVisible(False)
+        self._cb_active_rig.setVisible(False)
+        hl_rf.addWidget(self._lbl_active_rig, 0)
+        hl_rf.addWidget(self._cb_active_rig, 0)
         self._ed_rig_freq = QLineEdit()
         self._ed_rig_freq.setPlaceholderText(t("main.rig_freq_placeholder"))
         _rf_font = QFont(self._ed_rig_freq.font())
@@ -287,15 +343,6 @@ class MainWindow(QMainWindow):
         hl_rf.addWidget(self._ed_rig_freq, 1)
         hl_rf.addWidget(self._lbl_rig_freq_unit, 0)
         vl_rf.addLayout(hl_rf)
-        self._lbl_rig_identity = QLabel("")
-        _id_font = QFont(self._lbl_rig_identity.font())
-        _id_font.setPointSizeF(max(7.0, _id_font.pointSizeF() * 0.82))
-        self._lbl_rig_identity.setFont(_id_font)
-        self._lbl_rig_identity.setAlignment(
-            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
-        )
-        self._lbl_rig_identity.setWordWrap(True)
-        vl_rf.addWidget(self._lbl_rig_identity)
         main.addWidget(self._rig_freq_row)
 
         self.gb_antenna = QGroupBox(t("main.group_antenna_select"))
@@ -597,6 +644,7 @@ class MainWindow(QMainWindow):
             rig_bridge_manager=self._rig_bridge_manager,
             rebuild_ui_cb=self._rebuild_all_windows,
             map_window=self._map_win,
+            pst_serial=self.pst_serial,
             parent=None,
         )
         self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
@@ -989,6 +1037,7 @@ class MainWindow(QMainWindow):
                 rig_bridge_manager=self._rig_bridge_manager,
                 rebuild_ui_cb=self._rebuild_all_windows,
                 map_window=self._map_win,
+                pst_serial=self.pst_serial,
                 parent=None,
             )
         except Exception:
@@ -1009,6 +1058,17 @@ class MainWindow(QMainWindow):
                 self.pst.stop()
         except Exception as e:
             self._log_exception("_after_settings_applied PST start/stop", e)
+        # PST-Serial (com0com) Listener analog aktualisieren
+        if self.pst_serial is not None:
+            try:
+                ps_cfg = self.cfg.get("pst_serial", {}) or {}
+                self.pst_serial.update_config(ps_cfg)
+                if bool(ps_cfg.get("enabled", False)):
+                    self.pst_serial.start_all()
+                else:
+                    self.pst_serial.stop_all()
+            except Exception as e:
+                self._log_exception("_after_settings_applied PST-Serial start/stop", e)
         if hasattr(self, "_map_win") and self._map_win is not None:
             try:
                 self._map_win.on_settings_applied()
@@ -1384,7 +1444,7 @@ class MainWindow(QMainWindow):
         ucxlog_on = bool(ui.get("udp_ucxlog_enabled", False))
         pst_udp_on = bool(ui.get("udp_pst_enabled", True))
         aswatch_on = bool(ui.get("aswatch_udp_enabled", False))
-        rb = self.cfg.get("rig_bridge") or {}
+        rb = self._active_rig_view()
         rig_mod = bool(rb.get("enabled", False))
         rig_flrig = rig_mod and bool((rb.get("flrig") or {}).get("enabled", False))
         rig_ham = rig_mod and bool((rb.get("hamlib") or {}).get("enabled", False))
@@ -1429,6 +1489,91 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         return wind_on
+
+    def _refresh_active_rig_combo(self) -> None:
+        """Fuellt die QComboBox fuer den aktiven Rig-Profil-Wechsel aus den
+        Profilen des RigBridgeManagers. Combobox und Label werden nur
+        sichtbar, sobald mindestens zwei Profile existieren — sonst waere
+        die Auswahl sinnlos und wuerde die Zeile im Funkgeraete-Kasten
+        unnoetig breit machen."""
+        cb = getattr(self, "_cb_active_rig", None)
+        lbl = getattr(self, "_lbl_active_rig", None)
+        if cb is None or lbl is None:
+            return
+        rbm = getattr(self, "_rig_bridge_manager", None)
+        profiles: list[dict] = []
+        active_id = ""
+        if rbm is not None:
+            try:
+                profiles = list(rbm.list_profiles() or [])
+                active_id = str(rbm.active_rig_id() or "")
+            except Exception:
+                profiles = []
+                active_id = ""
+        show = len(profiles) >= 2
+        lbl.setVisible(show)
+        cb.setVisible(show)
+        # Vergleich ueber Signatur, um nur bei echter Aenderung neu zu bauen.
+        sig = tuple((str(p.get("id", "")), str(p.get("name", ""))) for p in profiles)
+        if getattr(self, "_active_rig_combo_sig", None) != sig:
+            cb.blockSignals(True)
+            cb.clear()
+            for p in profiles:
+                pid = str(p.get("id", ""))
+                name = str(p.get("name", "") or pid)
+                cb.addItem(name, pid)
+            cb.blockSignals(False)
+            self._active_rig_combo_sig = sig
+        # Aktuelle Auswahl angleichen.
+        if active_id:
+            for i in range(cb.count()):
+                if str(cb.itemData(i)) == active_id:
+                    if cb.currentIndex() != i:
+                        cb.blockSignals(True)
+                        cb.setCurrentIndex(i)
+                        cb.blockSignals(False)
+                    break
+
+    def _on_active_rig_changed(self, idx: int) -> None:
+        """User hat ein anderes Profil gewaehlt → im Manager aktiv schalten
+        und Rig-Listener zwingen, den neuen CatResponder einzusetzen."""
+        if idx < 0:
+            return
+        cb = getattr(self, "_cb_active_rig", None)
+        rbm = getattr(self, "_rig_bridge_manager", None)
+        if cb is None or rbm is None:
+            return
+        new_id = str(cb.itemData(idx) or "")
+        if not new_id:
+            return
+        try:
+            cur = str(rbm.active_rig_id() or "")
+        except Exception:
+            cur = ""
+        if new_id == cur:
+            return
+        try:
+            ok, msg = rbm.set_active_profile(new_id)
+        except Exception:
+            ok, msg = False, "switch failed"
+        if not ok:
+            return
+        # Konfig mitschreiben, damit der Wechsel persistent bleibt.
+        try:
+            rb_cfg = dict(self.cfg.get("rig_bridge", {}) or {})
+            rb_cfg["active_rig_id"] = new_id
+            self.cfg["rig_bridge"] = rb_cfg
+            if callable(self.save_cfg_cb):
+                self.save_cfg_cb(self.cfg)
+        except Exception:
+            pass
+        # Rig-Listener (CAT-Sim) umbinden.
+        try:
+            pst = getattr(self, "pst_serial", None)
+            if pst is not None and hasattr(pst, "refresh_rig_listeners"):
+                pst.refresh_rig_listeners()
+        except Exception:
+            pass
 
     def _on_rig_freq_poll_timer(self) -> None:
         rbm = getattr(self, "_rig_bridge_manager", None)
@@ -1675,8 +1820,13 @@ class MainWindow(QMainWindow):
             self.led_aswatch.set_state(False)
 
         rbm = getattr(self, "_rig_bridge_manager", None)
-        rb_cfg = self.cfg.get("rig_bridge") or {}
+        rb_cfg = self._active_rig_view()
         rig_mod = bool(rb_cfg.get("enabled", False))
+        # Auswahl-Combobox mit aktuellen Profilen synchron halten.
+        try:
+            self._refresh_active_rig_combo()
+        except Exception:
+            pass
         s_act = False
         f_act = False
         h_ports: set[int] = set()
@@ -1720,8 +1870,6 @@ class MainWindow(QMainWindow):
                         self._on_rig_freq_poll_timer()
                     if not vis_freq and prev_vis:
                         self._rig_freq_poll_timer.stop()
-                        if hasattr(self, "_lbl_rig_identity"):
-                            self._lbl_rig_identity.setText("")
                     if vis_freq != prev_vis:
                         self._apply_fixed_mainwindow_size()
                     if vis_freq:
@@ -1735,10 +1883,6 @@ class MainWindow(QMainWindow):
                                 ed.blockSignals(True)
                                 ed.setText(txt)
                                 ed.blockSignals(False)
-                        if hasattr(self, "_lbl_rig_identity"):
-                            self._lbl_rig_identity.setText(
-                                MainWindow._rig_radio_identity_text(st)
-                            )
 
                 fl_en = bool((rb_cfg.get("flrig") or {}).get("enabled", False))
                 if fl_en:
@@ -1925,8 +2069,6 @@ class MainWindow(QMainWindow):
             if frw is not None and frw.isVisible():
                 frw.setVisible(False)
                 self._rig_freq_poll_timer.stop()
-                if hasattr(self, "_lbl_rig_identity"):
-                    self._lbl_rig_identity.setText("")
                 self._apply_fixed_mainwindow_size()
 
         try:
@@ -1994,7 +2136,7 @@ class MainWindow(QMainWindow):
         if self._last_wind_vis != wind_on:
             self._last_wind_vis = wind_on
             size_changed = True
-        _rb = self.cfg.get("rig_bridge") or {}
+        _rb = self._active_rig_view()
         _rig_en = bool(_rb.get("enabled", False))
         rig_srv_vis = (
             _rig_en,

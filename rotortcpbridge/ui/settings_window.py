@@ -53,13 +53,14 @@ from PySide6.QtWidgets import (
 from ..compass.statistic_compass_widget import compute_bin_min_max
 from ..app_icon import get_app_icon
 from ..command_catalog import command_specs, format_cmd_tooltip
-from ..ports import list_serial_ports
+from ..ports import list_serial_port_entries, list_serial_ports
 from ..i18n import format_tooltip_html, load_lang, t, tt
 from ..geo_utils import maidenhead_to_lat_lon
 from ..net_utils import ipv4_subnet_broadcast_default
 from ..rotor_controller import SYNC_UI_NAK_PREFIX
 from ..rig_bridge.manager import RigBridgeManager
 from .settings_rig_bridge_tab import RigBridgeTab
+from .settings_com0com_tab import Com0ComTab
 from .settings_shortcuts_tab import ShortcutsTab
 from .led_widget import Led
 from .ui_utils import px_to_dip
@@ -108,6 +109,7 @@ class SettingsWindow(QDialog):
         rig_bridge_manager: RigBridgeManager | None = None,
         rebuild_ui_cb=None,
         map_window=None,
+        pst_serial=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -121,6 +123,7 @@ class SettingsWindow(QDialog):
         self.rig_bridge_manager = rig_bridge_manager
         self.rebuild_ui_cb = rebuild_ui_cb
         self._map_window = map_window
+        self.pst_serial = pst_serial
         self._antenna_giveup_done = False
         # Nur ein Controller-Bus-Load gleichzeitig (sonst verschachteln sich QEventLoops → doppelte TX)
         self._controller_load_busy = False
@@ -195,8 +198,11 @@ class SettingsWindow(QDialog):
         fl_spid_tcp_pst.addRow(t("settings.pst_port_el"), self.sp_listen_port_el)
 
         self.cb_hw_mode = QComboBox()
-        self.cb_hw_mode.addItems(["tcp", "com"])
-        self.cb_hw_mode.setCurrentText(cfg["hardware_link"]["mode"])
+        self.cb_hw_mode.addItem("TCP", "tcp")
+        self.cb_hw_mode.addItem("COM", "com")
+        _mode_cfg = str(cfg["hardware_link"]["mode"]).strip().lower() or "tcp"
+        _mi = self.cb_hw_mode.findData(_mode_cfg)
+        self.cb_hw_mode.setCurrentIndex(_mi if _mi >= 0 else 0)
         self.ed_hw_ip = QLineEdit(cfg["hardware_link"]["tcp_ip"])
         self.ed_hw_ip.setMinimumWidth(_conn_ip_w)
         self.sp_hw_port = QSpinBox()
@@ -222,6 +228,24 @@ class SettingsWindow(QDialog):
         form_bus_connection.addRow(t("settings.hw_ip"), self.ed_hw_ip)
         form_bus_connection.addRow(t("settings.hw_port"), self.sp_hw_port)
         form_bus_connection.addRow(t("settings.hw_com"), com_row_widget)
+
+        def _sync_bus_mode_rows() -> None:
+            mode = str(self.cb_hw_mode.currentData() or "tcp").strip().lower()
+            show_tcp = mode == "tcp"
+            show_com = mode == "com"
+            for field, show in (
+                (self.ed_hw_ip, show_tcp),
+                (self.sp_hw_port, show_tcp),
+                (com_row_widget, show_com),
+            ):
+                field.setVisible(show)
+                lbl = form_bus_connection.labelForField(field)
+                if lbl is not None:
+                    lbl.setVisible(show)
+
+        self._sync_bus_mode_rows = _sync_bus_mode_rows
+        self.cb_hw_mode.currentIndexChanged.connect(lambda _i: _sync_bus_mode_rows())
+        _sync_bus_mode_rows()
 
         self.chk_enable_az = QCheckBox(t("settings.chk_enable_az"))
         self.chk_enable_el = QCheckBox(t("settings.chk_enable_el"))
@@ -379,12 +403,6 @@ class SettingsWindow(QDialog):
         grid_ext_udp.addWidget(QLabel(_lbl_port), 0, 3, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         grid_ext_udp.addWidget(self.sp_udp_ucxlog_port, 0, 4, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        grid_ext_udp.addWidget(self.chk_aswatch_udp, 1, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        grid_ext_udp.addWidget(QLabel(_lbl_ip), 1, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid_ext_udp.addWidget(self.ed_aswatch_udp_listen, 1, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        grid_ext_udp.addWidget(QLabel(_lbl_port), 1, 3, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid_ext_udp.addWidget(self.sp_aswatch_udp_port, 1, 4, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-
         udp_ext_block_w = QWidget()
         udp_ext_block_w.setLayout(grid_ext_udp)
 
@@ -394,22 +412,28 @@ class SettingsWindow(QDialog):
         grid_map_airscout.setVerticalSpacing(6)
         grid_map_airscout.setColumnMinimumWidth(0, _udp_chk_col_w)
 
+        grid_map_airscout.addWidget(self.chk_aswatch_udp, 0, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_map_airscout.addWidget(QLabel(_lbl_ip), 0, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid_map_airscout.addWidget(self.ed_aswatch_udp_listen, 0, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_map_airscout.addWidget(QLabel(_lbl_port), 0, 3, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid_map_airscout.addWidget(self.sp_aswatch_udp_port, 0, 4, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
         grid_map_airscout.addWidget(
             self.chk_aswatch_aircraft,
-            0,
+            1,
             0,
             1,
             5,
             alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
         )
 
-        grid_map_airscout.addWidget(_asn_full_row(self.lbl_asnearest_min_score, self.sp_asnearest_min_score), 1, 0, 1, 5)
-        grid_map_airscout.addWidget(_asn_full_row(self.lbl_asnearest_geom_min, self.sp_asnearest_geom_min), 2, 0, 1, 5)
-        grid_map_airscout.addWidget(_asn_full_row(self.lbl_asnearest_list_max_min, self.sp_asnearest_list_max_min), 3, 0, 1, 5)
-        grid_map_airscout.addWidget(_asn_full_row(self.lbl_asnearest_list_max_rows, self.sp_asnearest_list_max_rows), 4, 0, 1, 5)
+        grid_map_airscout.addWidget(_asn_full_row(self.lbl_asnearest_min_score, self.sp_asnearest_min_score), 2, 0, 1, 5)
+        grid_map_airscout.addWidget(_asn_full_row(self.lbl_asnearest_geom_min, self.sp_asnearest_geom_min), 3, 0, 1, 5)
+        grid_map_airscout.addWidget(_asn_full_row(self.lbl_asnearest_list_max_min, self.sp_asnearest_list_max_min), 4, 0, 1, 5)
+        grid_map_airscout.addWidget(_asn_full_row(self.lbl_asnearest_list_max_rows, self.sp_asnearest_list_max_rows), 5, 0, 1, 5)
         grid_map_airscout.addWidget(
             self.chk_map_aswatch_only_asnearest_list,
-            5,
+            6,
             0,
             1,
             5,
@@ -417,7 +441,7 @@ class SettingsWindow(QDialog):
         )
         grid_map_airscout.addWidget(
             self.chk_map_aswatch_cluster,
-            6,
+            7,
             0,
             1,
             5,
@@ -470,10 +494,16 @@ class SettingsWindow(QDialog):
         vl_links.setContentsMargins(0, 0, 0, 0)
         vl_links.setSpacing(10)
         vl_links.addWidget(gb_master_rotor)
-        vl_links.addWidget(gb_udp_pst_connection)
         vl_links.addWidget(gb_bus_connection)
         vl_links.addWidget(gb_axes)
         vl_links.addStretch(1)
+
+        pg_rotor_emulation = QWidget()
+        vl_rotor_emu = QVBoxLayout(pg_rotor_emulation)
+        vl_rotor_emu.setContentsMargins(0, 0, 0, 0)
+        vl_rotor_emu.setSpacing(10)
+        vl_rotor_emu.addWidget(gb_udp_pst_connection)
+        vl_rotor_emu.addStretch(1)
 
         # SPID BIG-RAS (TCP) und UDP PST-Rotator schließen sich aus; beide aus ist erlaubt.
         if self.chk_pst_enabled.isChecked() and self.chk_udp_pst.isChecked():
@@ -494,6 +524,10 @@ class SettingsWindow(QDialog):
             self.sp_asnearest_list_max_min.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
             self.lbl_asnearest_list_max_rows.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
             self.sp_asnearest_list_max_rows.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
+            # OM-Radar-Einstellungen im Kompass-Tab nur sichtbar, wenn AirScout/KST aktiv ist
+            gb_om = getattr(self, "_gb_compass_om", None)
+            if gb_om is not None:
+                gb_om.setVisible(en)
 
         self.chk_aswatch_udp.stateChanged.connect(lambda _=None: _sync_aswatch_aircraft_row())
         self.chk_aswatch_aircraft.stateChanged.connect(lambda _=None: _sync_aswatch_aircraft_row())
@@ -1110,6 +1144,8 @@ class SettingsWindow(QDialog):
         self.sp_compass_om_sectors.setToolTip(tt("settings.compass_om_radar_sectors_tooltip"))
         fl_compass_om.addRow(t("settings.compass_om_radar_sectors"), self.sp_compass_om_sectors)
         vl_compass.addWidget(gb_compass_om)
+        self._gb_compass_om = gb_compass_om
+        gb_compass_om.setVisible(bool(self.chk_aswatch_udp.isChecked()))
         gb_compass_dwell = QGroupBox(t("settings.compass_dwell_group"))
         fl_compass_dwell = QFormLayout(gb_compass_dwell)
         self.sp_compass_dwell_sectors = QSpinBox()
@@ -1156,19 +1192,29 @@ class SettingsWindow(QDialog):
         )
         self._settings_stack.addWidget(_scroll_page(pg_ui))
         self._settings_stack.addWidget(_scroll_page(pg_links))
+        self._settings_stack.addWidget(_scroll_page(pg_rotor_emulation))
         self._settings_stack.addWidget(_scroll_page(pg_external_programs))
         self._settings_stack.addWidget(_scroll_page(pg_ant))
         self._settings_stack.addWidget(_scroll_page(pg_compass))
         self._settings_stack.addWidget(_scroll_page(pg_stats))
         self._settings_stack.addWidget(_scroll_page(pg_controller))
         self._settings_stack.addWidget(_scroll_page(self._rig_bridge_tab))
+        self._com0com_tab = Com0ComTab(
+            self.cfg,
+            self.pst_serial,
+            self.save_cfg_cb,
+            self,
+            rig_bridge_manager=self.rig_bridge_manager,
+        )
+        self._settings_stack.addWidget(_scroll_page(self._com0com_tab))
         self._shortcuts_tab = ShortcutsTab(self.cfg, self)
         self._settings_stack.addWidget(_scroll_page(self._shortcuts_tab))
-        self._tab_antenna_index = 3
-        self._tab_statistics_index = 5
-        self._tab_controller_index = 6
-        self._tab_rig_bridge_index = 7
-        self._tab_shortcuts_index = 8
+        self._tab_antenna_index = 4
+        self._tab_statistics_index = 6
+        self._tab_controller_index = 7
+        self._tab_rig_bridge_index = 8
+        self._tab_com0com_index = 9
+        self._tab_shortcuts_index = 10
         self._calvalid_timer = QTimer(self)
         self._calvalid_timer.setInterval(5000)
         self._calvalid_timer.timeout.connect(self._poll_getcalvalid_once)
@@ -1188,12 +1234,14 @@ class SettingsWindow(QDialog):
         for _lbl in (
             t("settings.group_ui"),
             t("settings.tab_connections"),
+            t("settings.tab_rotor_emulation"),
             t("settings.tab_external_programs"),
             t("settings.tab_antenna"),
             t("settings.tab_compass"),
             t("settings.tab_statistics"),
             t("settings.tab_controller"),
             "Rig-Bridge",
+            t("com0com.tab_title"),
             t("settings.tab_shortcuts"),
         ):
             self._settings_nav.addItem(_lbl)
@@ -2170,22 +2218,50 @@ class SettingsWindow(QDialog):
         self.ed_location_lon.setValue(ll[1])
 
     def _refresh_com_ports(self, select: str = ""):
-        ports = list_serial_ports()
-        current = select or self.cb_hw_com.currentText()
+        """Befuellt die COM-Port-Auswahl der Busverbindung.
+
+        Im Dropdown erscheint ``COMn — <Geraetebeschreibung>`` (soweit die
+        Beschreibung vom Windows-Geraetemanager bekannt ist). Der reine
+        ``COMn``-String wird als ``userData`` hinterlegt, damit beim Speichern
+        immer nur der Port-Name in die Config geschrieben wird.
+        """
+        entries = list_serial_port_entries()
+        current = (
+            select
+            or str(self.cb_hw_com.currentData() or "").strip()
+            or self.cb_hw_com.currentText().strip()
+        )
         self.cb_hw_com.clear()
 
-        if not ports:
+        if not entries:
             if current:
-                self.cb_hw_com.addItem(current)
+                self.cb_hw_com.addItem(current, current)
             return
 
-        for p in ports:
-            self.cb_hw_com.addItem(p)
+        _MAX_LABEL = 50
+        for dev, desc in entries:
+            label = f"{dev} — {desc}" if desc else dev
+            if len(label) > _MAX_LABEL:
+                label = label[: _MAX_LABEL - 1].rstrip() + "…"
+            self.cb_hw_com.addItem(label, dev)
+            idx = self.cb_hw_com.count() - 1
+            if desc:
+                self.cb_hw_com.setItemData(
+                    idx, f"{dev} — {desc}", Qt.ItemDataRole.ToolTipRole
+                )
 
         if current:
-            idx = self.cb_hw_com.findText(current)
+            idx = self.cb_hw_com.findData(current)
+            if idx < 0:
+                idx = self.cb_hw_com.findText(current)
             if idx >= 0:
                 self.cb_hw_com.setCurrentIndex(idx)
+            else:
+                # Alter Port (aktuell nicht angeschlossen) trotzdem beibehalten,
+                # sonst verliert der Nutzer die Config-Zuordnung nach einem
+                # Refresh ohne angestecktes Geraet.
+                self.cb_hw_com.addItem(current, current)
+                self.cb_hw_com.setCurrentIndex(self.cb_hw_com.count() - 1)
 
     def _apply_ids_live(self):
         self.ctrl.update_ids(
@@ -2224,10 +2300,14 @@ class SettingsWindow(QDialog):
         self.cfg["rotor_bus"]["enable_az"] = bool(self.chk_enable_az.isChecked())
         self.cfg["rotor_bus"]["enable_el"] = bool(self.chk_enable_el.isChecked())
 
-        self.cfg["hardware_link"]["mode"] = self.cb_hw_mode.currentText()
+        self.cfg["hardware_link"]["mode"] = str(
+            self.cb_hw_mode.currentData() or self.cb_hw_mode.currentText()
+        ).strip().lower()
         self.cfg["hardware_link"]["tcp_ip"] = self.ed_hw_ip.text().strip()
         self.cfg["hardware_link"]["tcp_port"] = int(self.sp_hw_port.value())
-        self.cfg["hardware_link"]["com_port"] = self.cb_hw_com.currentText().strip()
+        self.cfg["hardware_link"]["com_port"] = str(
+            self.cb_hw_com.currentData() or self.cb_hw_com.currentText()
+        ).strip()
         self.cfg.setdefault("ui", {})["wind_dir_display"] = str(
             self.cb_wind_dir_display.currentData() or "to"
         )
@@ -2310,6 +2390,11 @@ class SettingsWindow(QDialog):
                 self.rig_bridge_manager.update_config(self.cfg["rig_bridge"])
         except Exception as exc:
             self.logbuf.write("WARN", f"Rig-Bridge Konfigurationsübernahme fehlgeschlagen: {exc}")
+
+        try:
+            self.cfg["pst_serial"] = self._com0com_tab.to_config()
+        except Exception as exc:
+            self.logbuf.write("WARN", f"PST-Serial Konfigurationsübernahme fehlgeschlagen: {exc}")
 
         try:
             self._shortcuts_tab.apply_to_cfg(self.cfg)

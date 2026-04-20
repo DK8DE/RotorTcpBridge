@@ -74,11 +74,35 @@ class RadioConnectionManager:
         self._cat_post_write_drain_s = 0.08
         self._setfreq_gap_s = 0.0
         #: Nach SETFREQ kein FA-Lesen: vermeidet „Echo“/Ziffernrücksprung, wenn der TRX noch nachzieht.
+        #: 300 ms (vorher 110 ms) geben dem Geraet genug Zeit, um den VFO wirklich
+        #: zu setzen — sonst bekommt die Gegenstelle beim naechsten Poll die alte
+        #: Frequenz zurueck ("Frequenz springt zurueck") und der TRX fuehlt sich
+        #: von schnell aufeinanderfolgenden FA;/FA<n>; Befehlen ueberfordert
+        #: (bei Yaesu newcat sichtbar an ``?;``-Antworten).
         self._readfreq_suppress_until_mono = 0.0
-        self._post_setfreq_read_suppress_s = 0.11
+        self._post_setfreq_read_suppress_s = 0.30
         #: Mehrere FLRig/Hamlib-Clients pollen ``get_vfo``/``f`` — COM entlasten, State bleibt zuletzt gesetzt.
         self._readfreq_min_interval_s = 0.048
         self._last_readfreq_cat_mono = 0.0
+        #: Zeitstempel des zuletzt in die Queue gelegten ``SETFREQ``. Dient als
+        #: Race-Schutz: wenn ein READFREQ bereits am TRX fliegt und *waehrenddessen*
+        #: ein externes Programm eine neue Frequenz per ``FA<neu>;`` setzt, liefert
+        #: das Geraet fuer den laufenden READFREQ noch den *alten* Wert zurueck.
+        #: Diesen Reply duerfen wir nicht mehr in den Cache uebernehmen — sonst
+        #: ueberschreibt er den optimistischen Patch und die naechsten Polls
+        #: sehen kurzfristig wieder den alten Wert („Frequenz springt zurueck").
+        self._last_setfreq_enqueue_mono = 0.0
+        #: Tuning-Modus: solange der letzte SETFREQ-Enqueue weniger als X s
+        #: zurueckliegt, werden READFREQs komplett uebersprungen. Grund: beim
+        #: Drehen am externen Abstimmknopf (HRD, Logger32 …) feuert das Programm
+        #: pro Knopf-Tick sowohl ``FA<n>;`` (SET) als auch im naechsten Poll-Zyklus
+        #: ``FA;`` (READ). Wir brauchen waehrend einer aktiven Tuning-Phase den
+        #: TRX nicht mit READs zu befragen — die **optimistische State-Cache-
+        #: Aktualisierung** liefert dem externen Programm sofort den "richtigen"
+        #: Wert zurueck und der TRX kann die SETs ungestoert durchgehen lassen.
+        #: Ohne diese Sperre kloppen sich SETs und READs um Rig-Bandbreite und
+        #: der TRX verschluckt Frequenzaenderungen (null-Byte-Antworten auf SET).
+        self._tuning_active_window_s = 1.5
 
     @staticmethod
     def _is_fatal_link_error(exc: BaseException) -> bool:
@@ -327,10 +351,69 @@ class RadioConnectionManager:
         *,
         log_ctx: str = "",
     ) -> None:
-        """Schreibzugriff serialisiert über Queue."""
+        """Schreibzugriff serialisiert über Queue.
+
+        Fuer ``SETFREQ`` gilt zusaetzlich: **Coalescing**. Beim schnellen
+        Drehen am externen Abstimmknopf (Ham Radio Deluxe, Logger32 …)
+        feuert das Programm fuer jedes Knopf-Tick einen ``FA<neu>;`` ab —
+        bis zu 10–15 pro Sekunde. Das physische Yaesu/Kenwood-TRX kommt
+        damit nicht mit (Anzeichen: ``?;``-Antworten, null-Byte-Replies,
+        korrupter Binaermuell auf der CAT-Leitung, „verschluckte" SETs).
+        Die gedrehten Zwischenfrequenzen hat aber niemand interessiert —
+        nur der *letzte* Wert zaehlt. Wir entfernen daher beim Enqueue
+        eines neuen ``SETFREQ`` **alle** noch in der Queue wartenden
+        ``SETFREQ``-Items (die noch nicht am TRX waren) und ersetzen sie
+        durch den neuen. Ergebnis: max. ~12 Hz tatsaechliche CAT-SETs am
+        Rig, selbst wenn extern mit 100 Hz getrommelt wird.
+        """
+        c = str(cmd)
+        is_setfreq = self._is_setfreq_cmd(c)
+        if is_setfreq:
+            # Race-Guard: jetzt laufende READFREQ-Replies sind nicht mehr
+            # vertrauenswuerdig (TRX hat noch den alten Wert). Siehe Kommentar
+            # zu ``_last_setfreq_enqueue_mono`` im Konstruktor.
+            self._last_setfreq_enqueue_mono = time.monotonic()
+            self._drop_pending_setfreqs()
         self._write_q.put(
-            _WriteCommand(command=str(cmd), callback=callback, log_ctx=(log_ctx or "").strip())
+            _WriteCommand(command=c, callback=callback, log_ctx=(log_ctx or "").strip())
         )
+
+    def _drop_pending_setfreqs(self) -> int:
+        """Alle noch nicht bearbeiteten ``SETFREQ`` aus der Queue entfernen.
+
+        Wird vor dem Enqueue eines neueren ``SETFREQ`` aufgerufen — der
+        neue Wert ist aus Sicht des Anwenders immer der "richtige", die
+        Zwischenwerte waehrend einer schnellen Knopfdrehung sind
+        ueberfluessig und ueberlasten den TRX.
+        """
+        dropped: list[str] = []
+        # Direktzugriff auf das interne Deque von ``queue.Queue`` — benoetigt
+        # den Mutex der Queue. ``task_done``/``unfinished_tasks`` lassen wir
+        # bewusst unveraendert (niemand ruft ``join()`` auf).
+        with self._write_q.mutex:
+            q = self._write_q.queue
+            i = 0
+            while i < len(q):
+                item = q[i]
+                if self._is_setfreq_cmd(item.command):
+                    dropped.append(item.command)
+                    # Falls jemand synchron wartet (derzeit nur bei READFREQ,
+                    # aber zur Sicherheit): Event setzen statt leise weggehen.
+                    if item.done is not None:
+                        try:
+                            item.done.set()
+                        except Exception:
+                            pass
+                    del q[i]
+                else:
+                    i += 1
+        if dropped and self._log_serial:
+            self._log_write(
+                "INFO",
+                f"Rig-Bridge: {len(dropped)} aelteres/-e SETFREQ durch neueren Wert "
+                f"ersetzt (Coalescing bei schnellem Tunen)",
+            )
+        return len(dropped)
 
     def read_frequency_sync(self, timeout_s: float = 0.75, *, log_ctx: str = "") -> bool:
         """``READFREQ`` über den COM-Worker; blockiert bis Bearbeitung oder Timeout.
@@ -349,11 +432,58 @@ class RadioConnectionManager:
         self._write_q.put(_WriteCommand(command="READFREQ", done=done, log_ctx=ctx))
         return done.wait(float(timeout_s))
 
+    def _pop_next_command(self, timeout: float) -> Optional[_WriteCommand]:
+        """Naechstes Kommando aus der Queue – SETFREQ haben Vorrang.
+
+        Hintergrund: bei aktivem Tunen am externen Drehknopf stehen haeufig
+        READFREQs (von Hamlib/Flrig-Refresh bzw. Hauptfenster-Poll) **vor**
+        eigentlichen SETFREQs in der FIFO-Queue. Jeder dieser READs blockiert
+        den Worker ~30 ms und frisst Rig-Bandbreite, waehrend der User
+        darauf wartet, dass seine neue Frequenz ankommt — mit der Folge,
+        dass sich SETFREQs aufstauen und manche vom TRX gar nicht mehr
+        sauber verarbeitet werden (null-Byte-Reply, ``?;``). Wir ziehen
+        deshalb **alle wartenden SETFREQs vor** jegliche READFREQs.
+
+        Die Reihenfolge *innerhalb* der SETFREQ-Gruppe bleibt FIFO; dito
+        fuer READs.
+        """
+        try:
+            first = self._write_q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        if self._is_setfreq_cmd(first.command):
+            return first
+        # Der erste Eintrag ist *kein* SETFREQ – gibt es weiter hinten einen?
+        with self._write_q.mutex:
+            q = self._write_q.queue
+            promoted_idx = -1
+            for idx, cand in enumerate(q):
+                if self._is_setfreq_cmd(cand.command):
+                    promoted_idx = idx
+                    break
+            if promoted_idx < 0:
+                # Kein SETFREQ in der Queue -> first (READ o. ae.) wird behandelt.
+                return first
+            promoted = q[promoted_idx]
+            del q[promoted_idx]
+            # "first" zurueck an den Kopf legen, damit er als Naechster dran ist,
+            # sobald alle SETFREQs abgearbeitet sind.
+            q.appendleft(first)
+            # unfinished_tasks: wir haben first nicht verarbeitet, sondern
+            # re-queued, dafuer aber promoted "aus dem Nichts" entnommen.
+            # Netto-Aenderung 0, also nichts anpassen.
+        if self._log_serial:
+            self._log_write(
+                "INFO",
+                f"Rig-Bridge: COM Worker SETFREQ vorgezogen vor "
+                f"{first.command!r} (Tuning-Prio)",
+            )
+        return promoted
+
     def _write_loop(self) -> None:
         while self._running:
-            try:
-                item = self._write_q.get(timeout=0.2)
-            except queue.Empty:
+            item = self._pop_next_command(timeout=0.2)
+            if item is None:
                 continue
             done_ev = item.done
             try:
@@ -579,6 +709,22 @@ class RadioConnectionManager:
                     "Rig-Bridge: READFREQ übersprungen (kurz nach SETFREQ; kein Echo auf TRX)",
                 )
             return ""
+        # Aktive Tuning-Phase: letzter SETFREQ < _tuning_active_window_s her.
+        # READFREQ bringt hier nichts — der optimistische State-Patch im
+        # CatResponder liefert dem externen Programm bereits den richtigen Wert,
+        # und der TRX braucht die CAT-Leitung gerade zum Durchschalten der SETs.
+        tuning_win = float(self._tuning_active_window_s)
+        if tuning_win > 0 and self._last_setfreq_enqueue_mono > 0:
+            since_set = now - self._last_setfreq_enqueue_mono
+            if 0.0 <= since_set < tuning_win:
+                if self._debug_traffic or self._log_serial:
+                    tail = f" [{log_ctx}]" if log_ctx else ""
+                    self._log_write(
+                        "INFO",
+                        f"Rig-Bridge: READFREQ übersprungen (Tuning aktiv, "
+                        f"letzter SETFREQ vor {since_set*1000:.0f} ms){tail}",
+                    )
+                return ""
         gap = float(self._readfreq_min_interval_s)
         if gap > 0 and (now - self._last_readfreq_cat_mono) < gap:
             if self._debug_traffic:
@@ -588,6 +734,7 @@ class RadioConnectionManager:
                 )
             return ""
         self._last_readfreq_cat_mono = now
+        read_start_mono = now
         cfg = self._cfg
         read_payload, _desc = build_read_vfo_frequency_query(cfg.rig_brand)
         if not read_payload:
@@ -608,14 +755,27 @@ class RadioConnectionManager:
         self._log_serial_io("RX", rx_read, note)
         parsed = parse_fa_style_frequency_hz(rx_read)
         if parsed is not None:
-            self._state.update(frequency_hz=int(parsed))
-            if self._log_serial:
-                tail = f" [{log_ctx}]" if log_ctx else ""
-                self._log_write(
-                    "INFO",
-                    f"Rig-Bridge: VFO-Frequenz aus TRX (CAT) übernommen: "
-                    f"{parsed / 1e6:.6f} MHz ({parsed} Hz){tail}",
-                )
+            # Race-Guard: wenn waehrend des laufenden READFREQ ein neues
+            # SETFREQ in die Queue gelegt wurde, ist der gerade vom TRX
+            # gemeldete Wert "veraltet" (der TRX hat das neue SET noch nicht
+            # ausgefuehrt). State nicht ueberschreiben.
+            if self._last_setfreq_enqueue_mono > read_start_mono:
+                if self._debug_traffic or self._log_serial:
+                    tail = f" [{log_ctx}]" if log_ctx else ""
+                    self._log_write(
+                        "INFO",
+                        f"Rig-Bridge: READFREQ-Reply {parsed / 1e6:.6f} MHz "
+                        f"verworfen (SETFREQ in Flight, Race-Schutz){tail}",
+                    )
+            else:
+                self._state.update(frequency_hz=int(parsed))
+                if self._log_serial:
+                    tail = f" [{log_ctx}]" if log_ctx else ""
+                    self._log_write(
+                        "INFO",
+                        f"Rig-Bridge: VFO-Frequenz aus TRX (CAT) übernommen: "
+                        f"{parsed / 1e6:.6f} MHz ({parsed} Hz){tail}",
+                    )
         return ""
 
     def _frequency_test_set_then_read(

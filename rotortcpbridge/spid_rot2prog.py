@@ -40,25 +40,37 @@ def parse_command_packet(pkt: bytes) -> Rot2ProgCommand | None:
         return None
     H = _ascii_digits_to_int(pkt[1:5])
     V = _ascii_digits_to_int(pkt[6:10])
-    if H is None or V is None:
-        # Manche Implementierungen schicken bei STATUS/STOP evtl. 0-Bytes; wir tolerieren das
-        H = 0
-        V = 0
     ph = pkt[5]
     pv = pkt[10]
     cmd = pkt[11]
-    # Für SET dekodieren wir Zielwerte (0,1°)
     az_d10 = None
     el_d10 = None
     if cmd == CMD_SET:
-        # H = PH*(az+360), V = PV*(el+360)
-        # Für 0,1° => d10 = (H*10/PH - 3600)
-        if ph == 0:
-            ph = 10
-        if pv == 0:
-            pv = 10
-        az_d10 = int(round((H * 10) / ph - 3600))
-        el_d10 = int(round((V * 10) / pv - 3600))
+        # ROT2PROG / PstRotator / SatPC32 / Hamlib senden H und V je nach
+        # gewaehltem Rotator-Profil in zwei unterschiedlichen Aufloesungen:
+        #
+        #   * 0,1°-Aufloesung (Alfaspid RAS, RAS AZ):   H = 10*(az+360)
+        #   * 1°-Aufloesung   (Alfaspid BIG-RAS AZ/EL): H = (az+360)
+        #
+        # Die Header-Bytes PH/PV sind dabei oft nicht eindeutig (PstRotator
+        # schickt in beiden Faellen PH=PV=1), daher entscheiden wir anhand
+        # des Wertebereichs: Werte >= 1000 liegen sicher im 0,1°-Bereich
+        # (1800..8100 fuer AZ = -180°..+450°), Werte < 1000 liegen sicher im
+        # 1°-Bereich (180..810 fuer denselben Winkelbereich). Die beiden
+        # Bereiche ueberlappen sich nicht.
+        #
+        # Ist das Feld nicht mit ASCII-Digits belegt (z.B. binaere Nullen,
+        # wenn die Gegenstelle nur eine Achse setzen will), bleibt der Wert
+        # None und die Achse wird nicht verfahren.
+        def _decode(raw: int | None) -> int | None:
+            if raw is None:
+                return None
+            if raw >= 1000:
+                return raw - 3600
+            return (raw - 360) * 10
+
+        az_d10 = _decode(H)
+        el_d10 = _decode(V)
     return Rot2ProgCommand(cmd=cmd, az_d10=az_d10, el_d10=el_d10, ph=ph, pv=pv)
 
 

@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from .. import com0com
 from ..i18n import t
+from .. import verbose_cat_log
 from .led_widget import Led
 from .ui_utils import px_to_dip
 
@@ -133,6 +134,15 @@ class Com0ComTab(QWidget):
         wl.setContentsMargins(0, 0, 0, 0)
         wl.addWidget(self._led_installed, 0, Qt.AlignmentFlag.AlignLeft)
         wl.addWidget(self._lbl_installed, 1)
+        # Haken fuer erweitertes CAT-/Serial-Diagnoselog direkt neben dem
+        # Installationsstatus — nur zur Fehlersuche. Nicht persistiert:
+        # nach Neustart ist der Haken wieder aus (siehe verbose_cat_log).
+        self._chk_verbose_cat = QCheckBox(t("com0com.chk_verbose_cat"))
+        self._chk_verbose_cat.setToolTip(t("com0com.chk_verbose_cat_tip"))
+        self._chk_verbose_cat.setChecked(verbose_cat_log.is_enabled())
+        self._chk_verbose_cat.toggled.connect(self._on_verbose_cat_toggled)
+        wl.addSpacing(16)
+        wl.addWidget(self._chk_verbose_cat, 0, Qt.AlignmentFlag.AlignRight)
         fl.addRow(t("com0com.lbl_installed"), wrap)
         main.addWidget(gb_status)
 
@@ -236,6 +246,11 @@ class Com0ComTab(QWidget):
 
         main.addWidget(gb_lst)
         main.addStretch(1)
+
+    # ------------------------------------------------------------ Verbose
+    def _on_verbose_cat_toggled(self, checked: bool) -> None:
+        """Erweitertes CAT-Log umschalten (nicht persistiert)."""
+        verbose_cat_log.set_enabled(bool(checked))
 
     # ----------------------------------------------------------- Config I/O
     def _load_from_config(self) -> None:

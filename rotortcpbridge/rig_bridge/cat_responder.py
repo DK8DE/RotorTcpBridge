@@ -271,11 +271,18 @@ class YaesuNewcatResponder(_AsciiResponderBase):
         return None
 
     def _cmd_IF(self, _payload: str) -> Optional[bytes]:
-        """``IF;`` — Kompakt-Status (28 Byte inkl. IF/;), minimalistisch gefuellt.
+        """``IF;`` — Kompakt-Status im Yaesu-newcat-Format.
 
-        Aufbau (Hamlib-newcat, gekuerzt):
-        ``IF`` + P1 MEM(3) + P2 VFO_Freq(9) + P3 Clar_Off(5) + P4 RX/TX(1)
-              + P5 Mode(1) + P6 VFO(1) + P7 CTCSS(1) + P8 Tone(3) + P9 Shift(1) + ``;``
+        Format laut FT-991/FT-991A/FT-891/FT-950-Referenz (26 Byte inkl.
+        ``IF``/``;``):
+        ``IF`` + P1 MEM(3) + P2 VFO_Freq(9) + P3 Clar_Off(5 signed)
+              + P4 RX_Clar(1) + P5 TX_Clar(1) + P6 Mode(1) + P7 VFO/MEM(1)
+              + P8 CTCSS(1) + P9 Tone(1) + ``;``
+
+        Hamlib parst in WSJT-X das ``IF;``-Echo als Verifikation nach jedem
+        ``FA<neu>;`` — eine abweichende Gesamtlaenge kann dazu fuehren, dass
+        der letzte SETFREQ als „nicht angekommen" verworfen wird und die
+        Anzeige auf den vorherigen Wert zurueckspringt.
         """
         st = self._state()
         hz = int(st.get("frequency_hz", 0) or 0)
@@ -285,12 +292,13 @@ class YaesuNewcatResponder(_AsciiResponderBase):
         p1 = "000"
         p2 = self._freq_hz_str(hz, 9)
         p3 = "+0000"
-        p4 = "1" if ptt else "0"
-        p5 = ch
-        p6 = "0"  # VFO A
-        p7 = "0"
-        p8 = "000"
-        p9 = "0"
+        p4 = "0"  # RX Clarifier OFF
+        p5 = "0"  # TX Clarifier OFF
+        p6 = ch   # Mode
+        p7 = "0"  # 0 = VFO (nicht Memory/Tune)
+        p8 = "0"  # CTCSS OFF
+        p9 = "0"  # Tone/Shift OFF
+        # Laengen-Check: 2 + 3 + 9 + 5 + 1 + 1 + 1 + 1 + 1 + 1 + 1 = 26 Byte total
         return f"IF{p1}{p2}{p3}{p4}{p5}{p6}{p7}{p8}{p9};".encode("ascii")
 
     def _cmd_PS(self, payload: str) -> Optional[bytes]:

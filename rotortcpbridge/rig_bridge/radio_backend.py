@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from .. import verbose_cat_log
 from .cat_commands import (
     build_ptt_payload,
     build_read_vfo_frequency_query,
@@ -43,6 +44,16 @@ class _WriteCommand:
     done: Optional[threading.Event] = None
     #: Kurztext fürs Diagnose-Log (z. B. Flrig rig.set_frequency vs. rig.get_vfo).
     log_ctx: str = ""
+    #: Monotoner Zeitstempel beim Enqueue. Fuer SETFREQ dient er als
+    #: Race-Guard im Worker: nur wenn seit dem Enqueue dieses Befehls kein
+    #: *neuerer* SETFREQ in die Queue kam, darf der Worker den State-Cache
+    #: mit dem jetzt an den TRX geschriebenen Wert ueberschreiben — sonst
+    #: kippt ein waehrend der TRX-TX eingelaufener optimistischer Patch
+    #: (aus der naechsten schnellen Scroll-Stufe) auf den bereits
+    #: verworfenen alten Wert zurueck und das externe Programm
+    #: (WSJT-X, HRD, Logger32 …) springt beim naechsten Poll auf die alte
+    #: QRG.
+    enqueue_mono: float = 0.0
 
 
 class RadioConnectionManager:
@@ -103,6 +114,21 @@ class RadioConnectionManager:
         #: Ohne diese Sperre kloppen sich SETs und READs um Rig-Bandbreite und
         #: der TRX verschluckt Frequenzaenderungen (null-Byte-Antworten auf SET).
         self._tuning_active_window_s = 1.5
+        #: Ziel-Frequenz des letzten SETFREQ-Enqueues und Zeitstempel. Dient
+        #: als Stale-Guard fuer READFREQ-Antworten: manche TRX (z. B. FT-991)
+        #: brauchen nach einem ``FA<neu>;`` laenger als das Tuning-Window, bis
+        #: sie auf ein nachgelagertes ``FA;`` mit der *neuen* Frequenz
+        #: antworten — sie liefern erst einmal weiter den alten Wert.
+        #: Wuerden wir den uebernehmen, ueberschreiben wir den zuvor
+        #: optimistisch gepatchten neuen Wert mit der alten Frequenz und das
+        #: externe Programm (WSJT-X, HRD, Logger32) sieht beim naechsten Poll
+        #: den Rollback → Frequenz "springt zurueck". Wir verwerfen deshalb
+        #: READFREQ-Replies, die innerhalb von ``_setfreq_target_match_window_s``
+        #: nach einem SETFREQ kommen und **nicht** der Ziel-Frequenz
+        #: entsprechen.
+        self._last_setfreq_target_hz = 0
+        self._last_setfreq_target_mono = 0.0
+        self._setfreq_target_match_window_s = 5.0
 
     @staticmethod
     def _is_fatal_link_error(exc: BaseException) -> bool:
@@ -368,14 +394,28 @@ class RadioConnectionManager:
         """
         c = str(cmd)
         is_setfreq = self._is_setfreq_cmd(c)
+        now_mono = time.monotonic()
         if is_setfreq:
             # Race-Guard: jetzt laufende READFREQ-Replies sind nicht mehr
             # vertrauenswuerdig (TRX hat noch den alten Wert). Siehe Kommentar
             # zu ``_last_setfreq_enqueue_mono`` im Konstruktor.
-            self._last_setfreq_enqueue_mono = time.monotonic()
+            self._last_setfreq_enqueue_mono = now_mono
+            # Stale-Guard fuer READFREQ: Ziel-Frequenz merken, damit spaetere
+            # FA;-Antworten, die *nicht* dem Ziel entsprechen, verworfen werden
+            # koennen (TRX hat dann noch nicht umgeschaltet).
+            try:
+                self._last_setfreq_target_hz = int(self._setfreq_hz_from_command(c))
+                self._last_setfreq_target_mono = now_mono
+            except Exception:
+                pass
             self._drop_pending_setfreqs()
         self._write_q.put(
-            _WriteCommand(command=c, callback=callback, log_ctx=(log_ctx or "").strip())
+            _WriteCommand(
+                command=c,
+                callback=callback,
+                log_ctx=(log_ctx or "").strip(),
+                enqueue_mono=now_mono,
+            )
         )
 
     def _drop_pending_setfreqs(self) -> int:
@@ -590,10 +630,20 @@ class RadioConnectionManager:
         if self._debug_traffic or self._log_serial:
             self._log_write("INFO", f"Rig-Bridge: SETPTT erledigt: {desc}")
 
-    def _write_setfreq_cat_unlocked(self, hz: int, log_ctx: str = "") -> None:
+    def _write_setfreq_cat_unlocked(
+        self, hz: int, log_ctx: str = "", *, enqueue_mono: float = 0.0
+    ) -> None:
         """SETFREQ: nur CAT-Set (schnell); kein ``FA;``-Poll — sonst stufenweise Hamlib-Nutzung extrem langsam.
 
-        Der Anzeige-State kommt bereits optimistisch vom Hamlib-Server; hier geht es nur noch ums Gerät.
+        Der Anzeige-State kommt bereits optimistisch vom Hamlib-Server /
+        CatResponder / FLRig — hier geht es nur noch ums Geraet. Der zentrale
+        ``RadioStateCache`` darf am Ende **nur dann** mit ``hz`` ueberschrieben
+        werden, wenn seit dem Enqueue dieses Befehls kein neuerer ``SETFREQ``
+        in der Queue gelandet ist. Sonst kippt beim schnellen Scrollen der
+        optimistische Patch des *nachfolgenden* Tuning-Schrittes zurueck auf
+        den alten Wert — externe Programme (WSJT-X, HRD, Logger32) lesen dann
+        im naechsten Poll die veraltete QRG und werten das als "SET abgelehnt"
+        → die Anzeige springt zurueck.
         """
         ser = self._ser
         if ser is None:
@@ -619,7 +669,47 @@ class RadioConnectionManager:
             self._read_cat_response_logged(
                 ser, is_icom=False, note=rx_note, quick_drain=True
             )
-        self._state.update(frequency_hz=int(hz))
+        # Race-Guard: wenn waehrend der CAT-TX am TRX bereits ein neueres
+        # SETFREQ enqueued wurde, hat der optimistische Patch den State-Cache
+        # schon mit der NEUEREN Frequenz gefuellt. In diesem Fall darf unser
+        # (alter) Wert den Cache nicht mehr ueberschreiben — sonst bekommt
+        # das externe Programm beim naechsten Poll die falsche, zurueck-
+        # gesprungene Frequenz.
+        verbose = verbose_cat_log.is_enabled()
+        stale = bool(
+            enqueue_mono > 0.0 and self._last_setfreq_enqueue_mono > enqueue_mono
+        )
+        if verbose:
+            try:
+                before = int(self._state.snapshot().get("frequency_hz", 0) or 0)
+            except Exception:
+                before = 0
+            tail = f" [{log_ctx}]" if log_ctx else ""
+            if stale:
+                since_newer_ms = max(
+                    0.0, (self._last_setfreq_enqueue_mono - float(enqueue_mono)) * 1000.0
+                )
+                self._log_write(
+                    "INFO",
+                    f"CAT-VERB worker SETFREQ-done: State-Cache NICHT ueberschrieben "
+                    f"(veraltet, neuerer SETFREQ kam {since_newer_ms:.0f} ms spaeter "
+                    f"in die Queue); Cache bleibt bei {before} Hz (Ziel an TRX war "
+                    f"{int(hz)} Hz){tail}",
+                )
+            else:
+                self._log_write(
+                    "INFO",
+                    f"CAT-VERB worker SETFREQ-done: State-Cache bleibt/passt auf "
+                    f"{before} Hz; TRX bestaetigt {int(hz)} Hz (Cache war schon "
+                    f"optimistisch gesetzt){tail}",
+                )
+        # Der optimistische Patch vor dem Enqueue hat den Cache bereits auf
+        # ``hz`` gesetzt; ein redundantes ``state.update(frequency_hz=hz)``
+        # hier waere nur noch dann eine "Korrektur", wenn der Patch fehlte —
+        # was heute bei keinem Aufrufer (CatResponder/Hamlib/FLRig) der Fall
+        # ist. Wir unterlassen ihn bewusst, um die oben beschriebene
+        # Race-Condition beim schnellen Scrollen nicht zu triggern.
+        _ = stale  # only used for logging above
 
     def _write_mode_cat_unlocked(self, mode: str) -> None:
         """SETMODE: Modus per CAT (Yaesu ``MD0…;``, Kenwood ``MD…;``), State danach."""
@@ -663,7 +753,9 @@ class RadioConnectionManager:
                 hz = self._setfreq_hz_from_command(c)
             except (IndexError, ValueError) as exc:
                 raise RigConnectionError("SETFREQ: ungueltiger Wert") from exc
-            self._write_setfreq_cat_unlocked(hz, ctx)
+            self._write_setfreq_cat_unlocked(
+                hz, ctx, enqueue_mono=float(item.enqueue_mono or 0.0)
+            )
             return ""
         if up.startswith("SETMODE "):
             tail = c.split(None, 1)[1].strip() if " " in c else ""
@@ -702,11 +794,14 @@ class RadioConnectionManager:
         if ser is None:
             raise RigConnectionError("Keine aktive Funkgeräte-Verbindung")
         now = time.monotonic()
+        verbose = verbose_cat_log.is_enabled()
         if now < self._readfreq_suppress_until_mono:
-            if self._debug_traffic:
+            if self._debug_traffic or verbose:
+                tail = f" [{log_ctx}]" if log_ctx else ""
                 self._log_write(
                     "INFO",
-                    "Rig-Bridge: READFREQ übersprungen (kurz nach SETFREQ; kein Echo auf TRX)",
+                    f"Rig-Bridge: READFREQ übersprungen (kurz nach SETFREQ; kein Echo "
+                    f"auf TRX; noch {max(0.0, self._readfreq_suppress_until_mono - now)*1000:.0f} ms){tail}",
                 )
             return ""
         # Aktive Tuning-Phase: letzter SETFREQ < _tuning_active_window_s her.
@@ -727,10 +822,12 @@ class RadioConnectionManager:
                 return ""
         gap = float(self._readfreq_min_interval_s)
         if gap > 0 and (now - self._last_readfreq_cat_mono) < gap:
-            if self._debug_traffic:
+            if self._debug_traffic or verbose:
+                tail = f" [{log_ctx}]" if log_ctx else ""
                 self._log_write(
                     "INFO",
-                    "Rig-Bridge: READFREQ übersprungen (Entprellung bei mehreren CAT-Abfragen)",
+                    f"Rig-Bridge: READFREQ übersprungen (Entprellung bei mehreren "
+                    f"CAT-Abfragen, letzter Read vor {(now - self._last_readfreq_cat_mono)*1000:.0f} ms){tail}",
                 )
             return ""
         self._last_readfreq_cat_mono = now
@@ -767,7 +864,47 @@ class RadioConnectionManager:
                         f"Rig-Bridge: READFREQ-Reply {parsed / 1e6:.6f} MHz "
                         f"verworfen (SETFREQ in Flight, Race-Schutz){tail}",
                     )
+            elif (
+                self._last_setfreq_target_hz > 0
+                and self._last_setfreq_target_mono > 0.0
+                and self._setfreq_target_match_window_s > 0.0
+                and (now - self._last_setfreq_target_mono)
+                < float(self._setfreq_target_match_window_s)
+                and int(parsed) != int(self._last_setfreq_target_hz)
+            ):
+                # Der TRX hat auf das letzte SETFREQ noch nicht umgeschaltet
+                # und meldet weiter die alte Frequenz. Wuerden wir das in
+                # den State-Cache uebernehmen, ueberschreiben wir den
+                # zuvor optimistisch gesetzten neuen Wert mit der alten
+                # Frequenz — das externe Programm sieht beim naechsten Poll
+                # den Rollback und das Display "springt zurueck".
+                age_ms = (now - self._last_setfreq_target_mono) * 1000.0
+                if self._debug_traffic or self._log_serial:
+                    tail = f" [{log_ctx}]" if log_ctx else ""
+                    self._log_write(
+                        "INFO",
+                        f"Rig-Bridge: READFREQ-Reply {parsed / 1e6:.6f} MHz "
+                        f"verworfen (TRX meldet alte Frequenz, letztes SETFREQ "
+                        f"{int(self._last_setfreq_target_hz)} Hz vor {age_ms:.0f} ms "
+                        f"— Stale-Guard; Cache bleibt auf Ziel-Frequenz){tail}",
+                    )
+                if verbose:
+                    delta = int(parsed) - int(self._last_setfreq_target_hz)
+                    tail = f" [{log_ctx}]" if log_ctx else ""
+                    self._log_write(
+                        "INFO",
+                        f"CAT-VERB READFREQ-reply verworfen: TRX={int(parsed)} Hz, "
+                        f"Ziel={int(self._last_setfreq_target_hz)} Hz (Δ={delta:+d} Hz), "
+                        f"{age_ms:.0f} ms nach SETFREQ; Window="
+                        f"{self._setfreq_target_match_window_s*1000:.0f} ms{tail}",
+                    )
             else:
+                before_hz = 0
+                if verbose:
+                    try:
+                        before_hz = int(self._state.snapshot().get("frequency_hz", 0) or 0)
+                    except Exception:
+                        before_hz = 0
                 self._state.update(frequency_hz=int(parsed))
                 if self._log_serial:
                     tail = f" [{log_ctx}]" if log_ctx else ""
@@ -775,6 +912,15 @@ class RadioConnectionManager:
                         "INFO",
                         f"Rig-Bridge: VFO-Frequenz aus TRX (CAT) übernommen: "
                         f"{parsed / 1e6:.6f} MHz ({parsed} Hz){tail}",
+                    )
+                if verbose and before_hz and before_hz != int(parsed):
+                    delta = int(parsed) - before_hz
+                    self._log_write(
+                        "INFO",
+                        f"CAT-VERB state.update(frequency_hz) worker READFREQ-reply: "
+                        f"{before_hz} Hz → {int(parsed)} Hz (Δ={delta:+d} Hz); "
+                        f"falls der externe Wert gerade hoeher war, ueberschreibt "
+                        f"dieser Reply jetzt einen neueren optimistischen Patch!",
                     )
         return ""
 

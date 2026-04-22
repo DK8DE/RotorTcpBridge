@@ -54,6 +54,7 @@ a = Analysis(
         ('rotortcpbridge\\Antenne_T.png',            'rotortcpbridge'),
         ('rotortcpbridge\\User.PNG',                 'rotortcpbridge'),
         ('rotortcpbridge\\User_ACC.png',             'rotortcpbridge'),
+        ('rotortcpbridge\\InstallerSmall.png',       'rotortcpbridge'),
         ('rotortcpbridge\\locales\\de.json',         'rotortcpbridge\\locales'),
         ('rotortcpbridge\\locales\\en.json',         'rotortcpbridge\\locales'),
         ('rotortcpbridge\\static\\leaflet.min.js',   'rotortcpbridge\\static'),

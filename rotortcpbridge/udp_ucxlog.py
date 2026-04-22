@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import socket
 import threading
+import time
 import xml.etree.ElementTree as ET
 from .angle_utils import wrap_deg
-from .net_utils import normalize_udp_bind_host
+from .net_utils import is_local_ipv4, normalize_udp_bind_host
 
 
 class UdpUcxLogListener:
@@ -30,6 +31,12 @@ class UdpUcxLogListener:
         self._thread: threading.Thread | None = None
         self._running = False
         self.packet_received_flag = False
+        # Entprellung für "Paket von fremder IP verworfen"-Logs: pro Quell-IP
+        # frühestens alle ``_DROP_LOG_COOLDOWN_S`` Sekunden wieder melden,
+        # damit ein Dauerbeschuss aus dem LAN das Log nicht flutet.
+        self._drop_log_last_mono: dict[str, float] = {}
+
+    _DROP_LOG_COOLDOWN_S: float = 30.0
 
     @property
     def is_active(self) -> bool:
@@ -119,6 +126,23 @@ class UdpUcxLogListener:
             except Exception:
                 break
             if not data:
+                continue
+            # Quell-IP-Filter: UcxLog sendet zwar typischerweise an 127.0.0.1,
+            # aber wenn der Listener auf 0.0.0.0 gebunden ist (z. B. um von
+            # mehreren Programmen im LAN Pakete zu empfangen), koennen wir auch
+            # Pakete anderer Rotor-Setups im gleichen Subnetz mitlesen. Wir
+            # reagieren nur auf Pakete, deren Absender wir selbst sind
+            # (Loopback oder eigene Adapter-IP).
+            src_ip = addr[0] if addr else ""
+            if not is_local_ipv4(src_ip):
+                now = time.monotonic()
+                last = self._drop_log_last_mono.get(src_ip, 0.0)
+                if now - last >= self._DROP_LOG_COOLDOWN_S:
+                    self._drop_log_last_mono[src_ip] = now
+                    self.log.write(
+                        "UDP",
+                        f"UcxLog Paket von {src_ip} verworfen (nicht dieser Rechner)",
+                    )
                 continue
             az = self._parse_azimut(data)
             if az is None:

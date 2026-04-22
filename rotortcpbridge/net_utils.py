@@ -5,6 +5,8 @@ from __future__ import annotations
 import ctypes
 import platform
 import socket
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -111,3 +113,120 @@ def normalize_udp_bind_host(raw: str | None, default: str) -> str:
         return s
     except OSError:
         return default
+
+
+# -----------------------------------------------------------------------------
+# Lokale IPv4-Erkennung für UDP-Quelladressfilter
+# -----------------------------------------------------------------------------
+
+# Cache, damit wir nicht bei jedem UDP-Paket DNS/Adapter abfragen.
+# Windows-Adapter können sich im Betrieb ändern (WLAN wechselt, VPN verbindet),
+# deshalb ist die TTL bewusst kurz, aber hoch genug, dass ein dichter UDP-Strom
+# keinen Overhead verursacht.
+_LOCAL_IPS_LOCK = threading.Lock()
+_LOCAL_IPS_CACHE: set[str] = set()
+_LOCAL_IPS_CACHE_MONO: float = 0.0
+_LOCAL_IPS_TTL_S: float = 10.0
+
+
+def _enumerate_local_ipv4() -> set[str]:
+    """Ermittelt alle IPv4-Adressen der lokalen Netzwerkadapter (ohne Cache).
+
+    Kombiniert mehrere Quellen, damit auch Hosts mit mehreren Adaptern (WLAN +
+    LAN + VPN + Hyper-V …) zuverlässig alle ihre Adressen sehen:
+
+    - ``getaddrinfo(hostname)`` — meist die primäre Adresse.
+    - ``gethostbyname_ex(hostname)`` — liefert auf Windows typ. alle Adapter.
+    - Ein UDP-``connect`` zu einer öffentlichen IP, um die „ausgehende" IP zu
+      ermitteln (nützlich wenn der Hostname nicht alle Adapter nennt).
+
+    Loopback (``127.0.0.1``) ist immer enthalten.
+    """
+    ips: set[str] = {"127.0.0.1"}
+
+    try:
+        hostname = socket.gethostname()
+    except OSError:
+        hostname = ""
+
+    if hostname:
+        try:
+            for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+                addr = info[4][0]
+                if addr:
+                    ips.add(addr)
+        except socket.gaierror:
+            pass
+        try:
+            _name, _aliases, addr_list = socket.gethostbyname_ex(hostname)
+            for a in addr_list:
+                if a:
+                    ips.add(a)
+        except OSError:
+            pass
+
+    for probe in (("8.8.8.8", 80), ("1.1.1.1", 80)):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(0.25)
+            try:
+                s.connect(probe)
+                ips.add(s.getsockname()[0])
+            finally:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+    return ips
+
+
+def get_local_ipv4_addresses(force_refresh: bool = False) -> set[str]:
+    """Gibt alle IPv4-Adressen zurück, die zu diesem Rechner gehören.
+
+    Ergebnis ist kurz gecacht (``_LOCAL_IPS_TTL_S``). Loopback ist immer dabei.
+    """
+    global _LOCAL_IPS_CACHE, _LOCAL_IPS_CACHE_MONO
+    now = time.monotonic()
+    with _LOCAL_IPS_LOCK:
+        if (
+            not force_refresh
+            and _LOCAL_IPS_CACHE
+            and (now - _LOCAL_IPS_CACHE_MONO) < _LOCAL_IPS_TTL_S
+        ):
+            return set(_LOCAL_IPS_CACHE)
+    fresh = _enumerate_local_ipv4()
+    with _LOCAL_IPS_LOCK:
+        _LOCAL_IPS_CACHE = fresh
+        _LOCAL_IPS_CACHE_MONO = now
+        return set(fresh)
+
+
+def is_local_ipv4(ip: str | None) -> bool:
+    """True, wenn ``ip`` zu diesem Rechner gehört (Loopback oder lokaler Adapter).
+
+    - Alles aus ``127.0.0.0/8`` (Loopback) → True.
+    - Jede Adresse, die ein lokaler Netzwerkadapter aktuell trägt → True.
+    - Unbekannt / ungültig / Fremdadresse → False.
+
+    Die Liste der Adapter-IPs wird gecacht; wenn die Antwort beim ersten Check
+    False ist, wird ein Refresh erzwungen, damit wir bei Adapterwechseln
+    (z. B. frisch verbundenes VPN, neuer WLAN-Lease) nicht bis zum nächsten
+    TTL-Ablauf Pakete verwerfen, die doch lokal sind.
+    """
+    if not ip:
+        return False
+    s = ip.strip()
+    if not s:
+        return False
+    try:
+        socket.inet_pton(socket.AF_INET, s)
+    except OSError:
+        return False
+    if s.startswith("127."):
+        return True
+    if s in get_local_ipv4_addresses():
+        return True
+    return s in get_local_ipv4_addresses(force_refresh=True)

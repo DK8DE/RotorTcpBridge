@@ -181,7 +181,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # 127.0.0.1 = nur dieser PC; 255.255.255.255 = globaler Broadcast; sonst konkrete IPv4.
         "udp_pst_enabled": True,
         "udp_pst_port": 12000,
-        "udp_pst_listen_host": "0.0.0.0",
+        # Standardmaessig nur Loopback: Windows filtert Pakete per bind() schon nach
+        # Ziel-IP; so koennen parallele Rotor-Setups im LAN uns nicht versehentlich
+        # ansteuern. Wer von einem anderen Rechner im Netz steuern will, traegt hier
+        # die eigene LAN-IP ein (nicht 0.0.0.0).
+        "udp_pst_listen_host": "127.0.0.1",
         # Neuinstallation: in load_config beim ersten Speichern als Subnetz-Broadcast (x.y.z.255) gesetzt.
         # Leer = zur Laufzeit automatisch ipv4_subnet_broadcast_default()
         "udp_pst_send_host": "",
@@ -268,9 +272,12 @@ def load_config() -> Dict[str, Any]:
     if not p.exists():
         initial = json.loads(json.dumps(DEFAULT_CONFIG))
         ui = initial.setdefault("ui", {})
-        # Erste Installation: UcxLog/AirScout lauschen nur lokal; PST weiter auf allen Interfaces; PST-Ziel = Subnetz-Broadcast
+        # Erste Installation: UcxLog/AirScout/PST lauschen standardmaessig nur lokal
+        # (Loopback). bind("127.0.0.1") laesst Windows alle Pakete verwerfen, die
+        # nicht an diesen Rechner adressiert sind — schuetzt vor Fremd-Setups im LAN.
+        # PST-Ziel bleibt Subnetz-Broadcast, damit PstRotator-Clients uns weiter finden.
         ui["udp_ucxlog_listen_host"] = "127.0.0.1"
-        ui["udp_pst_listen_host"] = "0.0.0.0"
+        ui["udp_pst_listen_host"] = "127.0.0.1"
         ui["aswatch_udp_listen_host"] = "127.0.0.1"
         ui["udp_pst_send_host"] = ipv4_subnet_broadcast_default()
         _apply_compass_strom_analysis_defaults(ui)

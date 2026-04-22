@@ -361,7 +361,7 @@ class SettingsWindow(QDialog):
         self.chk_udp_pst.setToolTip(tt("settings.chk_udp_pst_tooltip"))
         self.chk_udp_pst.setChecked(bool(_ui0.get("udp_pst_enabled", True)))
         self.ed_udp_pst_listen = QLineEdit()
-        self.ed_udp_pst_listen.setText(str(_ui0.get("udp_pst_listen_host", "0.0.0.0")))
+        self.ed_udp_pst_listen.setText(str(_ui0.get("udp_pst_listen_host", "127.0.0.1")))
         self.ed_udp_pst_listen.setFixedWidth(_udp_ip_field_w)
         self.ed_udp_pst_listen.setToolTip(tt("settings.udp_pst_listen_tooltip"))
         self.sp_udp_pst_port = QSpinBox()
@@ -484,9 +484,15 @@ class SettingsWindow(QDialog):
         udp_pst_block_w = QWidget()
         udp_pst_block_w.setLayout(grid_pst)
 
-        gb_udp_pst_connection = QGroupBox(t("settings.group_udp_pst_connection"))
-        _vl_pst_box = QVBoxLayout(gb_udp_pst_connection)
-        _vl_pst_box.addWidget(w_spid_tcp_pst)
+        # Zwei getrennte Gruppenrahmen: SPID-BIG-RAS (TCP, Yaesu-kompatibel) und
+        # PST-Rotator (UDP). Beide sind Emulationen unterschiedlicher Protokolle
+        # und schliessen sich weiterhin gegenseitig aus (siehe Handler unten).
+        gb_spid_emulation = QGroupBox(t("settings.group_spid_emulation"))
+        _vl_spid_box = QVBoxLayout(gb_spid_emulation)
+        _vl_spid_box.addWidget(w_spid_tcp_pst)
+
+        gb_udp_pst_emulation = QGroupBox(t("settings.group_udp_pst_emulation"))
+        _vl_pst_box = QVBoxLayout(gb_udp_pst_emulation)
         _vl_pst_box.addWidget(udp_pst_block_w)
 
         pg_links = QWidget()
@@ -502,7 +508,8 @@ class SettingsWindow(QDialog):
         vl_rotor_emu = QVBoxLayout(pg_rotor_emulation)
         vl_rotor_emu.setContentsMargins(0, 0, 0, 0)
         vl_rotor_emu.setSpacing(10)
-        vl_rotor_emu.addWidget(gb_udp_pst_connection)
+        vl_rotor_emu.addWidget(gb_spid_emulation)
+        vl_rotor_emu.addWidget(gb_udp_pst_emulation)
         vl_rotor_emu.addStretch(1)
 
         # SPID BIG-RAS (TCP) und UDP PST-Rotator schließen sich aus; beide aus ist erlaubt.
@@ -1319,6 +1326,11 @@ class SettingsWindow(QDialog):
         QTimer.singleShot(0, self._update_strom_cal_buttons_enabled)
         btnrow = QHBoxLayout()
         btnrow.addWidget(self.lbl_status, 1)
+        btn_save = QPushButton(t("settings.btn_save"))
+        btn_save.setAutoDefault(False)
+        btn_save.setDefault(False)
+        btn_save.clicked.connect(self._save_only)
+        btnrow.addWidget(btn_save)
         btn_save_close = QPushButton(t("settings.btn_save_close"))
         btn_save_close.clicked.connect(self._save_and_close)
         btnrow.addWidget(btn_save_close)
@@ -3091,3 +3103,13 @@ class SettingsWindow(QDialog):
         self.lbl_status.setText(t("settings.status_closing"))
         QApplication.processEvents()
         QTimer.singleShot(600, self.close)
+
+    def _save_only(self):
+        """Wie _save_and_close, aber das Fenster bleibt offen.
+
+        Nuetzlich, wenn man mehrere Aenderungen nacheinander uebernehmen moechte,
+        ohne jedes Mal die Einstellungen neu oeffnen zu muessen. Die Erfolgs-
+        meldung wird bereits in ``_save_clicked`` gesetzt (``status_saved``).
+        """
+        self._save_clicked()
+        QApplication.processEvents()

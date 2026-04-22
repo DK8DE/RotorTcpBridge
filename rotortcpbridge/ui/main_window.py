@@ -464,7 +464,7 @@ class MainWindow(QMainWindow):
         self._srv_row_pst_udp_w = pst_udp_row_w
         try:
             self._lbl_srv_pst_udp_suffix.setText(
-                self._udp_bind_status_text("udp_pst_listen_host", "udp_pst_port", "0.0.0.0", 12000)
+                self._udp_bind_status_text("udp_pst_listen_host", "udp_pst_port", "127.0.0.1", 12000)
             )
         except Exception:
             pass
@@ -909,7 +909,7 @@ class MainWindow(QMainWindow):
                 )
             )
             self._lbl_srv_pst_udp_suffix.setText(
-                self._udp_bind_status_text("udp_pst_listen_host", "udp_pst_port", "0.0.0.0", 12000)
+                self._udp_bind_status_text("udp_pst_listen_host", "udp_pst_port", "127.0.0.1", 12000)
             )
             self._lbl_srv_aswatch_suffix.setText(
                 self._udp_bind_status_text(
@@ -1088,7 +1088,7 @@ class MainWindow(QMainWindow):
             self._udp_pst.start(
                 enabled=bool(ui.get("udp_pst_enabled", True)),
                 port=int(ui.get("udp_pst_port", 12000)),
-                listen_host=str(ui.get("udp_pst_listen_host", "0.0.0.0")),
+                listen_host=str(ui.get("udp_pst_listen_host", "127.0.0.1")),
             )
             if self._udp_pst.bind_error_msg:
                 QMessageBox.warning(
@@ -2115,7 +2115,7 @@ class MainWindow(QMainWindow):
                 )
             )
             self._lbl_srv_pst_udp_suffix.setText(
-                self._udp_bind_status_text("udp_pst_listen_host", "udp_pst_port", "0.0.0.0", 12000)
+                self._udp_bind_status_text("udp_pst_listen_host", "udp_pst_port", "127.0.0.1", 12000)
             )
             self._lbl_srv_aswatch_suffix.setText(
                 self._udp_bind_status_text(

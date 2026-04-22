@@ -36,6 +36,7 @@ except Exception:  # pragma: no cover - pyserial ist eine harte Abhängigkeit
     class SerialException(Exception):  # type: ignore[no-redef]
         pass
 
+from . import verbose_cat_log
 from .logutil import LogBuffer
 from .rig_bridge.cat_responder import CatResponder, build_responder
 from .spid_rot2prog import (
@@ -400,6 +401,20 @@ class RigSerialPort:
         if not patch or self._rb is None or not self.is_profile_active:
             return
         try:
+            if verbose_cat_log.is_enabled():
+                # Vor/Nach-Werte loggen, damit man im Fehlerbild sehen kann,
+                # ob der optimistische Patch tatsaechlich angewendet wurde
+                # und mit welcher Quelle er im Cache landet.
+                try:
+                    before = self._rb._state.snapshot()  # noqa: SLF001
+                except Exception:
+                    before = {}
+                self.log.write(
+                    "INFO",
+                    f"CAT-VERB [rig:{self.profile_id}] optimistic state_patch "
+                    f"patch={patch} before={{'frequency_hz': {before.get('frequency_hz')}, "
+                    f"'mode': {before.get('mode')!r}, 'ptt': {before.get('ptt')}}}",
+                )
             self._rb._state.update(**patch)  # noqa: SLF001
         except Exception as exc:
             self.log.write("WARN", f"SERIAL {self.port} state_patch Fehler: {exc}")
@@ -492,6 +507,18 @@ class RigSerialPort:
             except Exception:
                 pass
 
+            if verbose_cat_log.is_enabled():
+                try:
+                    ascii_preview = verbose_cat_log.format_ascii_preview(bytes(chunk))
+                    self.log.write(
+                        "PST",
+                        f"SERIAL {self.port} RIG RX len={len(chunk)} "
+                        f"hex={bytes(chunk).hex()} ascii={ascii_preview!r} "
+                        f"(externes Programm → Bruecke)",
+                    )
+                except Exception:
+                    pass
+
             if self._responder is None:
                 continue
             try:
@@ -515,6 +542,8 @@ class RigSerialPort:
                         "PST",
                         f"SERIAL {self.port} RIG TX len={len(r)} hex={r.hex()}",
                     )
+                    if verbose_cat_log.is_enabled():
+                        self._log_responder_reply(r)
                 except SerialException as exc:
                     self.last_error = str(exc)
                     self.log.write(
@@ -534,6 +563,51 @@ class RigSerialPort:
         except Exception:
             pass
         self._ser = None
+
+    def _log_responder_reply(self, reply: bytes) -> None:
+        """Nur im Verbose-Modus: Responder-Antwort ASCII-dekodieren und die
+        eingebettete Frequenz (bei ``FA``/``FB``/``IF``) aufbereiten.
+
+        Die rohe ``SERIAL … RIG TX len=N hex=…`` wird schon immer geloggt;
+        mit eingeschaltetem erweiterten Log wollen wir im Klartext sehen,
+        *welchen* VFO-Wert die Bruecke der externen Software gerade
+        zurueckgegeben hat — genau das ist der Unterschied zwischen
+        "optimistischer Patch wirkt" und "alter Cache-Wert wird echot".
+        """
+        try:
+            txt = reply.decode("ascii", errors="replace").strip()
+        except Exception:
+            return
+        hz: Optional[int] = None
+        head = txt[:2].upper() if txt else ""
+        # FA/FB<digits>; und IF...; (Yaesu newcat / legacy / Kenwood).
+        if head in ("FA", "FB") and txt.endswith(";"):
+            digits = "".join(ch for ch in txt[2:-1] if ch.isdigit())
+            if digits:
+                try:
+                    hz = int(digits)
+                except ValueError:
+                    hz = None
+        elif head == "IF" and txt.endswith(";"):
+            # newcat: IF + 3 Mem + 9 Freq + 5 Clar + …  → Stellen 5..14
+            # legacy/Kenwood: IF + 11 Freq + …          → Stellen 2..13
+            body = txt[2:-1]
+            for start, length in ((3, 9), (0, 11)):
+                cand = body[start : start + length]
+                if cand.isdigit():
+                    try:
+                        hz = int(cand)
+                        break
+                    except ValueError:
+                        continue
+        extra = ""
+        if hz is not None:
+            extra = f" (VFO={hz / 1e6:.6f} MHz, {hz} Hz)"
+        self.log.write(
+            "INFO",
+            f"CAT-VERB [rig:{self.profile_id}] Reply an externes Programm: "
+            f"{txt!r}{extra}",
+        )
 
 
 @dataclass

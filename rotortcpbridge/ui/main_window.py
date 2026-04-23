@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QFormLayout,
 )
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtGui import QAction, QFont, QGuiApplication
 from PySide6.QtCore import QEvent, Qt, QTimer
 
 from .antenna_sync import AntennaSelectionBridge
@@ -666,6 +666,9 @@ class MainWindow(QMainWindow):
         self._startup_error_check_scheduled = False
 
         apply_theme_mode(self.cfg)
+        QTimer.singleShot(0, self._repolish_menu_bar_for_os_theme)
+        QTimer.singleShot(0, self._refresh_settings_nav_theme)
+        self._install_system_theme_change_hooks()
         self._update_axis_visibility()
         self._update_srv_rows_visibility()
         self._apply_fixed_mainwindow_size()
@@ -678,6 +681,73 @@ class MainWindow(QMainWindow):
                 lambda: int(self.winId()),
                 lambda a: QTimer.singleShot(0, partial(self._apply_global_shortcut_action, a)),
             )
+
+    def _install_system_theme_change_hooks(self) -> None:
+        """Bei OS-Theme-Wechsel native Menüleiste nachziehen (nur ohne force_dark)."""
+        app = QApplication.instance()
+        if not isinstance(app, QApplication) or getattr(app, "_rtb_system_theme_hooks", False):
+            return
+        setattr(app, "_rtb_system_theme_hooks", True)
+        try:
+            sh = QGuiApplication.styleHints()
+            sh.colorSchemeChanged.connect(
+                lambda *_: QTimer.singleShot(0, self._sync_system_theme_ui)
+            )
+        except Exception:
+            pass
+
+    def _sync_system_theme_ui(self) -> None:
+        if bool((self.cfg.get("ui") or {}).get("force_dark_mode", True)):
+            return
+        try:
+            # Kein erneutes apply_theme_mode: würde System-Palette unnötig anfassen.
+            self._repolish_menu_bar_for_os_theme()
+        except Exception:
+            pass
+
+    def _refresh_settings_nav_theme(self) -> None:
+        """Einstellungs-Sidebar: wird vor erstem apply_theme_mode gebaut, daher nach Theme nachziehen."""
+        sw = getattr(self, "_settings_win", None)
+        if sw is None:
+            return
+        try:
+            sw.refresh_nav_theme()
+        except Exception:
+            pass
+
+    def _repolish_menu_bar_for_os_theme(self) -> None:
+        mb = self.menuBar()
+        if mb is None:
+            return
+        app = QApplication.instance()
+        for w in (
+            mb,
+            getattr(self, "_menu_setup", None),
+            getattr(self, "_menu_window", None),
+            getattr(self, "_menu_help", None),
+        ):
+            if w is None:
+                continue
+            ss = w.styleSheet()
+            w.setStyleSheet("")
+            st = app.style() if isinstance(app, QApplication) else w.style()
+            if st is not None:
+                try:
+                    st.unpolish(w)
+                    st.polish(w)
+                except RuntimeError:
+                    pass
+            w.setStyleSheet(ss)
+        mb.update()
+
+    def changeEvent(self, event: QEvent) -> None:
+        if event.type() in (
+            QEvent.Type.ThemeChange,
+            QEvent.Type.ApplicationPaletteChange,
+        ):
+            if not bool((self.cfg.get("ui") or {}).get("force_dark_mode", True)):
+                QTimer.singleShot(0, self._sync_system_theme_ui)
+        super().changeEvent(event)
 
     def _refresh_global_hotkeys(self) -> None:
         hc = getattr(self, "_global_hotkey_controller", None)
@@ -1045,6 +1115,9 @@ class MainWindow(QMainWindow):
 
     def _after_settings_applied(self):
         apply_theme_mode(self.cfg)
+        # Immer repolish: bei Forced-Dark sonst helle native Win-Menüleiste; bei Systemmodus OS-Farben.
+        QTimer.singleShot(0, self._repolish_menu_bar_for_os_theme)
+        QTimer.singleShot(0, self._refresh_settings_nav_theme)
         self._update_groupbox_titles()
         self._update_axis_visibility()
         self._update_srv_rows_visibility()
@@ -1831,7 +1904,11 @@ class MainWindow(QMainWindow):
         f_act = False
         h_ports: set[int] = set()
         if rbm is not None and rig_mod:
-            s_act, f_act, h_ports = rbm.take_rig_activity_flags()
+            raw = rbm.take_rig_activity_flags()
+            if isinstance(raw, tuple) and len(raw) >= 3:
+                s_act, f_act, h_ports = raw[0], raw[1], raw[2]
+            else:
+                s_act, f_act, h_ports = False, False, set()
             try:
                 st = rbm.status_model()
                 com_p = st.com_port or str(rb_cfg.get("com_port", "") or "").strip() or "—"
@@ -2034,7 +2111,7 @@ class MainWindow(QMainWindow):
         else:
             if rbm is not None:
                 try:
-                    _, _, _ = rbm.take_rig_activity_flags()
+                    rbm.take_rig_activity_flags()
                 except Exception:
                     pass
             self.led_rig_serial.set_blinking_green(False)

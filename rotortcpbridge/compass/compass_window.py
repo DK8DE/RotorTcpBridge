@@ -391,6 +391,20 @@ class CompassWindow(QDialog):
         # Wenn alle Versätze bereits bekannt: kein Request, kein Timer nötig
         QTimer.singleShot(300, self._request_immediate_stats_delayed)
         self._tick()
+        # Beim Oeffnen des Fensters soll kein Eingabefeld Fokus haben (v. a.
+        # nicht das Frequenz-QLineEdit), damit der Cursor nicht blinkt und
+        # Tasteneingaben nicht versehentlich dort landen.
+        QTimer.singleShot(0, self._clear_initial_focus)
+
+    def _clear_initial_focus(self) -> None:
+        """Fokus nach dem Anzeigen vom aktuell fokussierten Kind-Widget nehmen."""
+        try:
+            app = QApplication.instance()
+            fw = app.focusWidget() if app is not None else None
+            if fw is not None and self.isAncestorOf(fw):
+                fw.clearFocus()
+        except Exception:
+            pass
 
     def hideEvent(self, event: QHideEvent) -> None:
         """Minimieren: wie schließen für Bus-Polling (closeEvent fehlt bei Minimize)."""

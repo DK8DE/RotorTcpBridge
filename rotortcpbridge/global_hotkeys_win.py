@@ -58,7 +58,7 @@ def vk_from_key_spec(spec: str) -> int:
         return ord(s)
     if len(s) == 1 and "0" <= s <= "9":
         return ord(s)
-    # Pfeile, Bild↑/↓, +/− (Haupttastatur OEM)
+    # Pfeile, Bild↑/↓, +/− (Haupttastatur OEM), Nummernblock +/−, F1–F12
     vk_map: Dict[str, int] = {
         "LEFT": 0x25,
         "UP": 0x26,
@@ -68,8 +68,22 @@ def vk_from_key_spec(spec: str) -> int:
         "NEXT": 0x22,  # Page Down
         "OEM_PLUS": 0xBB,
         "OEM_MINUS": 0xBD,
+        # Nummernblock (eigene VK-Codes, unabhaengig von NumLock-Uebersetzung
+        # durch RegisterHotKey – getrennt vom OEM-+/− auf der Haupttastatur)
+        "NUMPAD_ADD": 0x6B,
+        "NUMPAD_SUBTRACT": 0x6D,
     }
-    return int(vk_map.get(s, ord("A")))
+    if s in vk_map:
+        return int(vk_map[s])
+    # F1 … F12 → VK_F1 (0x70) … VK_F12 (0x7B)
+    if len(s) >= 2 and s[0] == "F":
+        try:
+            n = int(s[1:])
+        except ValueError:
+            n = 0
+        if 1 <= n <= 12:
+            return 0x70 + (n - 1)
+    return ord("A")
 
 
 def _voidptr_to_int(message: Any) -> int:

@@ -33,12 +33,25 @@ def apply_theme_mode(cfg: dict) -> None:
     app = app_obj
     ui_cfg = cfg.setdefault("ui", {})
     force_dark = bool(ui_cfg.get("force_dark_mode", True))
-    if not hasattr(app, "_rtb_default_palette"):
-        setattr(app, "_rtb_default_palette", QPalette(app.palette()))
     if force_dark:
+        # Snapshot nur beim Eintritt in den Forced-Dark-Modus (nicht bei jedem
+        # erneuten apply), damit restore nach Dark wieder die zuletzt gültige
+        # Systempalette trifft.
+        if not getattr(app, "_rtb_was_force_dark", False):
+            setattr(app, "_rtb_default_palette", QPalette(app.palette()))
         app.setStyle("Fusion")
         app.setPalette(build_dark_palette())
+        setattr(app, "_rtb_was_force_dark", True)
     else:
-        base_pal = getattr(app, "_rtb_default_palette", None)
-        if isinstance(base_pal, QPalette):
-            app.setPalette(base_pal)
+        # Systemmodus: Keine app.setPalette — sonst bricht natives Windows-
+        # Theming (standardPalette() wirkt grau-braun und folgt nicht Mica/Accent).
+        # Nur nach Forced-Dark Fusion explizit zurücksetzen.
+        if getattr(app, "_rtb_was_force_dark", False):
+            try:
+                app.setStyle("")
+            except Exception:
+                pass
+            base_pal = getattr(app, "_rtb_default_palette", None)
+            if isinstance(base_pal, QPalette):
+                app.setPalette(base_pal)
+            setattr(app, "_rtb_was_force_dark", False)

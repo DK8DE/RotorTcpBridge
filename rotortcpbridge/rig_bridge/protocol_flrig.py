@@ -22,15 +22,42 @@ class _EnqueueWrite(Protocol):
     def __call__(self, command: str, log_ctx: str = ...) -> None: ...
 
 _MAX_XMLRPC_BODY = 4 * 1024 * 1024
+# Diagnose: vollständiger HTTP-Body kann groß sein — im Log abschneiden.
+_MAX_LOG_PREVIEW_BYTES = 24 * 1024
+
+
+def _peer_label(addr: object | None) -> str:
+    if not addr:
+        return "?"
+    try:
+        return f"{addr[0]}:{int(addr[1])}"  # type: ignore[index]
+    except Exception:
+        return repr(addr)
 
 # Hamlib/XML-RPC++ sendet u. a. <?clientid="hamlib(pid)"?> — das ist für ElementTree kein
 # gültiges XML (zweites PI) und würde sonst das gesamte methodCall-Parsing scheitern lassen.
 _FLRIG_CLIENTID_PI = re.compile(r"<\?clientid[^?]*\?>\s*", re.IGNORECASE)
 
-# rig.get_modes muss RIG_OK liefern (Hamlib flrig_open); pipe-getrennt wie fldigi/flrig.
+# rig.get_modes muss RIG_OK liefern (Hamlib flrig_open); flrig-Doku: **A:n** (Array), nicht ein Pipe-String.
 _FLRIG_MODES_PIPE = (
     "USB|LSB|CW|CWU|CWL|FM|AM|FMN|NFM|RTTY|RTTY-U|RTTY-L|USB-D1|LSB-D1|"
     "DATA|DATA-USB|DATA-LSB|DIG|DIGU|DIGL|PKT|PKT-U|PKT-L|WFM|SPEC|C4FM|DV"
+)
+# flrig-Hilfe: ``rig.get_modes`` ist **A:n** (Array), nicht ein einzelner Pipe-String.
+_FLRIG_MODE_LIST: tuple[str, ...] = tuple(
+    x.strip() for x in _FLRIG_MODES_PIPE.split("|") if x.strip()
+)
+# ``rig.get_bws`` / Tabellen-Clients: typische P/B-Werte in Hz (Strings wie flrig).
+_FLRIG_BW_TABLE_STR: tuple[str, ...] = (
+    "1800",
+    "2100",
+    "2400",
+    "2700",
+    "3000",
+    "3300",
+    "3600",
+    "3900",
+    "4200",
 )
 
 
@@ -98,6 +125,22 @@ def _method_response_void() -> str:
         "<?xml version=\"1.0\"?><methodResponse><params><param><value>"
         "<boolean>1</boolean></value></param></params></methodResponse>"
     )
+
+
+def _method_response_i4(n: int) -> str:
+    return _method_response_value(f"<i4>{int(n)}</i4>")
+
+
+def _method_response_array_i4(values: tuple[int, ...]) -> str:
+    parts = "".join(f"<value><i4>{int(v)}</i4></value>" for v in values)
+    return _method_response_value(f"<array><data>{parts}</data></array>")
+
+
+def _method_response_array_strings(values: tuple[str, ...]) -> str:
+    parts = "".join(
+        f"<value><string>{_xml_escape(str(v))}</string></value>" for v in values
+    )
+    return _method_response_value(f"<array><data>{parts}</data></array>")
 
 
 def _method_fault_unknown(method: str) -> str:
@@ -348,7 +391,7 @@ class FlrigBridgeServer:
     def _accept_loop(self) -> None:
         while self._running and self._sock is not None:
             try:
-                c, _ = self._sock.accept()
+                c, addr = self._sock.accept()
             except OSError:
                 break
             except Exception:
@@ -363,53 +406,117 @@ class FlrigBridgeServer:
                 break
             self._clients.add(c)
             self._on_clients_changed(len(self._clients))
-            threading.Thread(target=self._client_loop, args=(c,), daemon=True).start()
+            threading.Thread(target=self._client_loop, args=(c, addr), daemon=True).start()
 
-    def _client_loop(self, client: socket.socket) -> None:
+    def _client_loop(self, client: socket.socket, peer_addr: object | None = None) -> None:
+        peer_s = _peer_label(peer_addr)
+        if self._log_client_traffic:
+            self._log_write("INFO", f"Flrig TCP: Client verbunden von {peer_s}")
         try:
             with client:
                 buf = bytearray()
                 while self._running:
                     chunk = client.recv(8192)
                     if not chunk:
+                        if self._log_client_traffic and len(buf) > 0:
+                            self._log_write(
+                                "INFO",
+                                f"Flrig TCP {peer_s}: Verbindungsende vom Client, "
+                                f"Restpuffer {len(buf)} B",
+                            )
                         break
                     buf += chunk
                     nl = buf.find(b"\n")
                     if nl < 0:
                         if len(buf) > 8192:
+                            if self._log_client_traffic:
+                                head = buf[: min(400, len(buf))].decode("latin-1", errors="replace")
+                                self._log_write(
+                                    "WARN",
+                                    f"Flrig TCP {peer_s}: keine Zeilenende in den ersten "
+                                    f"{len(buf)} B (Anfang {head!r}…) — Verbindung wird getrennt",
+                                )
                             break
                         continue
                     first_line = buf[:nl].decode("latin-1", errors="replace").strip()
+                    if self._log_client_traffic:
+                        self._log_write(
+                            "INFO",
+                            f"Flrig TCP {peer_s}: erste Zeile erkannt ({first_line[:120]!r}…)"
+                            if len(first_line) > 120
+                            else f"Flrig TCP {peer_s}: erste Zeile erkannt {first_line!r}",
+                        )
                     if _first_line_is_http(first_line):
-                        self._xmlrpc_loop(client, buf)
+                        self._xmlrpc_loop(client, buf, peer_s)
                         return
-                    self._legacy_line_loop(client, buf)
+                    self._legacy_line_loop(client, buf, peer_s)
                     return
         except Exception:
             pass
         finally:
             self._clients.discard(client)
             self._on_clients_changed(len(self._clients))
+            if self._log_client_traffic:
+                self._log_write("INFO", f"Flrig TCP: Client-Sitzung beendet ({peer_s})")
 
-    def _xmlrpc_loop(self, client: socket.socket, buf: bytearray) -> None:
+    def _xmlrpc_loop(self, client: socket.socket, buf: bytearray, peer_s: str = "?") -> None:
         try:
             while self._running:
                 raw = _read_full_http_request(client, buf)
                 if raw is None:
+                    if self._log_client_traffic and len(buf) > 0:
+                        self._log_write(
+                            "WARN",
+                            f"Flrig TCP {peer_s}: unvollständiger HTTP-Request oder zu groß "
+                            f"(Restpuffer {len(buf)} B)",
+                        )
                     break
                 try:
                     self._on_tcp_activity()
                 except Exception:
                     pass
                 if self._log_client_traffic:
-                    head = raw[: min(200, len(raw))].decode("latin-1", errors="replace")
-                    self._log_write("INFO", f"Flrig XML-RPC Request (Anfang): {head!r}…")
+                    first_crlf = raw.find(b"\r\n")
+                    req_line = (
+                        raw[:first_crlf].decode("latin-1", errors="replace")
+                        if first_crlf >= 0
+                        else raw[:120].decode("latin-1", errors="replace")
+                    )
+                    self._log_write(
+                        "INFO",
+                        f"Flrig TCP {peer_s}: HTTP-Rohdaten {len(raw)} B, erste Zeile: {req_line!r}",
+                    )
+                    body_raw = _http_body(raw)
+                    bl = len(body_raw)
+                    if bl <= _MAX_LOG_PREVIEW_BYTES:
+                        body_txt = body_raw.decode("utf-8", errors="replace")
+                        self._log_write(
+                            "INFO",
+                            f"Flrig TCP {peer_s}: XML-RPC-Body ({bl} B):\n{body_txt}",
+                        )
+                    else:
+                        prev = body_raw[:_MAX_LOG_PREVIEW_BYTES].decode("utf-8", errors="replace")
+                        self._log_write(
+                            "INFO",
+                            f"Flrig TCP {peer_s}: XML-RPC-Body ({bl} B, Anfang {_MAX_LOG_PREVIEW_BYTES} B):\n"
+                            f"{prev}\n… [gekürzt]",
+                        )
                 body = _http_body(raw)
                 method = _parse_method_name(body)
                 if method is None:
+                    if self._log_client_traffic:
+                        self._log_write(
+                            "WARN",
+                            f"Flrig TCP {peer_s}: methodName nicht erkennbar — sende XML-RPC-Fault (parse)",
+                        )
                     resp_xml = _method_fault_unknown("(parse)")
                 else:
                     params = _param_scalar_values(body)
+                    if self._log_client_traffic:
+                        self._log_write(
+                            "INFO",
+                            f"Flrig TCP {peer_s}: aufgerufen {method!r}, Parameter: {params!r}",
+                        )
                     resp_xml = self._dispatch_xmlrpc(method, params, body)
                 # Hamlib read_string(..., "\n", 1): jede „Zeile“ endet mit \n. Ohne \n nach
                 # dem XML-Block blockiert der Client auf weiteren Socket-Bytes bis Timeout
@@ -425,13 +532,29 @@ class FlrigBridgeServer:
                 )
                 if self._running:
                     client.sendall(http)
-                if self._log_client_traffic and method is not None:
+                if self._log_client_traffic:
+                    m = method if method is not None else "(parse)"
+                    rlen = len(resp_xml)
+                    if rlen <= 4000:
+                        self._log_write(
+                            "INFO",
+                            f"Flrig TCP {peer_s}: Antwort auf {m!r} — HTTP 200, "
+                            f"XML {rlen} Zeichen:\n{resp_xml}",
+                        )
+                    else:
+                        tail = "…" if rlen > 1800 else ""
+                        self._log_write(
+                            "INFO",
+                            f"Flrig TCP {peer_s}: Antwort auf {m!r} — HTTP 200, "
+                            f"XML {rlen} Zeichen (Anfang):\n{resp_xml[:1800]}{tail}",
+                        )
                     self._log_write(
                         "INFO",
-                        f"Flrig XML-RPC {method} → HTTP 200, Body {len(resp_bytes)} B (inkl. abschließendes LF)",
+                        f"Flrig TCP {peer_s}: gesendet {len(http)} B roh "
+                        f"(inkl. Header), Nutzlast-Zeilenende LF wie von Hamlib erwartet",
                     )
         except Exception as exc:
-            self._log_write("WARN", f"Flrig XML-RPC Verbindungsfehler: {exc!r}")
+            self._log_write("WARN", f"Flrig TCP {peer_s}: XML-RPC Verbindungsfehler: {exc!r}")
 
     def _patch_state(self, patch: dict[str, Any]) -> None:
         if self._on_state_patch is not None and patch:
@@ -482,11 +605,15 @@ class FlrigBridgeServer:
         if m == "rig.get_AB":
             return sval(f"<string>{_xml_escape(vfo if vfo in ('A', 'B') else 'A')}</string>")
         if m == "rig.get_modes":
-            return sval(f"<string>{_FLRIG_MODES_PIPE}</string>")
-        if m in ("rig.get_bwA", "rig.get_bwB", "rig.get_bw", "rig.get_bws"):
-            return sval("<string>3000</string>")
+            return _method_response_array_strings(_FLRIG_MODE_LIST)
+        if m in ("rig.get_bwA", "rig.get_bwB", "rig.get_bw"):
+            # flrig: ``rig.get_bw*`` ist **A:n** — aktuelle P/B als Array (ein Eintrag).
+            return _method_response_array_strings(("3000",))
+        if m == "rig.get_bws":
+            return _method_response_array_strings(_FLRIG_BW_TABLE_STR)
         if m == "rig.get_split":
-            return sval("<i4>0</i4>")
+            sp = bool(st.get("split", False))
+            return sval(f"<i4>{1 if sp else 0}</i4>")
         if m == "rig.get_ptt":
             return sval(f"<i4>{1 if ptt else 0}</i4>")
 
@@ -497,11 +624,16 @@ class FlrigBridgeServer:
             "rig.get_swrmeter",
             "rig.get_SWR",
             "rig.get_Sunits",
-            "rig.get_pwrmeter",
         ):
             return sval("<string>0</string>")
-        if m in ("rig.get_volume", "rig.get_rfgain", "rig.get_micgain", "rig.get_power"):
-            return sval("<i4>0</i4>")
+        if m == "rig.get_pwrmeter":
+            # flrig ``s:n`` — Ausgangsleistung (String); reine „0“ wirkt in Loggern oft wie leer.
+            return sval("<string>25</string>")
+        if m in ("rig.get_volume", "rig.get_rfgain", "rig.get_micgain"):
+            return _method_response_i4(0)
+        if m == "rig.get_power":
+            # flrig ``i:n`` — **Regel**-Leistungspegel (Skala), nicht Messwatt; 0 = oft unbenutzt/leer.
+            return _method_response_i4(100)
         if m == "rig.get_agc":
             return sval("<i4>0</i4>")
 
@@ -516,6 +648,7 @@ class FlrigBridgeServer:
             "rig.set_vfoB_fast",
             "main.set_frequency",
             "rig.set_frequency",
+            "rig.set_verify_frequency",
         ):
             fhz: float | None = None
             for p in params:
@@ -539,6 +672,25 @@ class FlrigBridgeServer:
                     f"SETFREQ {hz_i}",
                     f"Software z.B. UcxLog (Flrig {m}) → TRX",
                 )
+            return _method_response_void()
+
+        if m in ("rig.mod_vfoA", "rig.mod_vfoB"):
+            delta = 0
+            for p in params:
+                if isinstance(p, (int, float)):
+                    delta = int(p)
+                    break
+            if delta == 0 and params:
+                try:
+                    delta = int(float(str(params[0]).strip()))
+                except (ValueError, TypeError):
+                    delta = 0
+            new_hz = hz + delta
+            self._patch_state({"frequency_hz": new_hz})
+            self._enqueue_write(
+                f"SETFREQ {new_hz}",
+                f"Software (Flrig {m}) → TRX",
+            )
             return _method_response_void()
 
         if m in ("rig.set_mode", "rig.set_modeA", "rig.set_modeB", "rig.set_verify_mode", "rig.set_verify_modeA", "rig.set_verify_modeB"):
@@ -587,20 +739,100 @@ class FlrigBridgeServer:
             return _method_response_void()
 
         if m in ("rig.set_split", "rig.set_verify_split"):
+            v = 0
+            for p in params:
+                if isinstance(p, int):
+                    v = int(p)
+                    break
+                if isinstance(p, float):
+                    v = int(p)
+                    break
+                if isinstance(p, str) and p.strip().isdigit():
+                    v = int(p.strip())
+                    break
+            self._patch_state({"split": bool(v)})
             return _method_response_void()
 
-        if m.startswith("rig.set_bw") or m == "rig.set_bandwidth":
+        if m.startswith("rig.set_bw") or m in (
+            "rig.set_bandwidth",
+            "rig.set_BW",
+            "rig.set_verify_bw",
+            "rig.set_verify_bandwidth",
+            "rig.set_verify_BW",
+        ):
             return _method_response_void()
 
-        if m in ("rig.shutdown", "rig.tune"):
+        if m in (
+            "rig.set_pbt",
+            "rig.set_pbt_inner",
+            "rig.set_pbt_outer",
+            "rig.set_notch",
+            "rig.set_verify_notch",
+            "rig.set_power",
+            "rig.set_verify_power",
+            "rig.set_volume",
+            "rig.set_verify_volume",
+            "rig.set_rfgain",
+            "rig.set_verify_rfgain",
+            "rig.set_micgain",
+            "rig.set_verify_micgain",
+            "rig.mod_vol",
+            "rig.mod_pwr",
+            "rig.mod_rfg",
+            "rig.mod_bw",
+        ):
             return _method_response_void()
+
+        if m in (
+            "rig.swap",
+            "rig.vfoA2B",
+            "rig.freqA2B",
+            "rig.modeA2B",
+            "rig.tune",
+            "rig.cmd",
+            "rig.shutdown",
+        ):
+            return _method_response_void()
+
+        # CWIO / FSKIO: QLog u. a. rufen rig.cwio_send auf; die Bridge hat keinen
+        # separaten CWIO-Hardware-Pfad — erfolgreiche No-Op-Antwort wie „nicht aktiv“.
+        if m in (
+            "rig.cwio_send",
+            "rig.cwio_set_wpm",
+            "rig.cwio_text",
+            "rig.mod_cwio_wpm",
+            "rig.fskio_text",
+        ):
+            return _method_response_void()
+
+        # QLog (CW Key Speed / Flrig-Profil): braucht eine echte Zahl, sonst Fault → Rig „verbunden“ nicht.
+        if m in ("rig.cwio_get_wpm", "rig.fskio_get_wpm"):
+            return _method_response_i4(20)
+
+        if m == "rig.get_info":
+            return sval("<string></string>")
+        if m == "rig.get_sideband":
+            return sval("<string>U</string>")
+        if m == "rig.get_notch":
+            return _method_response_i4(0)
+        if m == "rig.get_pwrmax":
+            return sval("<string>100</string>")
+        if m == "rig.get_update":
+            return sval("<string></string>")
+        if m == "rig.get_pbt":
+            return _method_response_array_i4((0, 0))
+        if m in ("rig.get_pbt_inner", "rig.get_pbt_outer"):
+            return _method_response_i4(0)
+
+        if m == "rig.cat_priority":
+            return sval("<string></string>")
 
         if m == "rig.cat_string":
             return sval("<string></string>")
 
         return _method_fault_unknown(m)
 
-    def _legacy_line_loop(self, client: socket.socket, buf: bytearray) -> None:
+    def _legacy_line_loop(self, client: socket.socket, buf: bytearray, peer_s: str = "?") -> None:
         try:
             while True:
                 if not self._running:
@@ -614,7 +846,7 @@ class FlrigBridgeServer:
                     text = line.decode("ascii", errors="ignore").strip()
                     if not text:
                         continue
-                    out = self._handle_cmd(text)
+                    out = self._handle_cmd(text, peer_s)
                     if self._running:
                         try:
                             client.sendall((out + "\n").encode("ascii", errors="ignore"))
@@ -627,7 +859,7 @@ class FlrigBridgeServer:
         except Exception:
             pass
 
-    def _handle_cmd(self, cmd: str) -> str:
+    def _handle_cmd(self, cmd: str, peer_s: str = "?") -> str:
         if not self._running:
             return "ERR"
         try:
@@ -635,7 +867,7 @@ class FlrigBridgeServer:
         except Exception:
             pass
         if self._log_client_traffic:
-            self._log_write("INFO", f"Flrig TCP RX: {cmd!r}")
+            self._log_write("INFO", f"Flrig TCP {peer_s}: Text RX: {cmd!r}")
         up = cmd.upper()
         if up == "GET FREQ" and self._refresh_frequency_before_read is not None:
             try:
@@ -679,5 +911,5 @@ class FlrigBridgeServer:
         else:
             out = "ERR"
         if self._log_client_traffic:
-            self._log_write("INFO", f"Flrig TCP TX: {out!r}")
+            self._log_write("INFO", f"Flrig TCP {peer_s}: Text TX: {out!r}")
         return out

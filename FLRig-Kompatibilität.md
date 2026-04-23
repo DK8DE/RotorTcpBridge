@@ -1,6 +1,6 @@
 # FLRig-Kompatibilität (RotorTcpBridge Rig-Bridge)
 
-Die Rig-Bridge spricht mit Programmen wie **WSJT-X**, **fldigi** oder **UcxLog** über dieselbe **XML-RPC-Schnittstelle** wie [FLRig](https://www.w1hkj.org/). Implementiert ist ein **Teilmenge** der Methoden; nicht unterstützte Aufrufe liefern eine XML-RPC-**Fault** mit `unknown method …` (Hamlib/flrig-Clients erkennen das typischerweise als nicht verfügbar).
+Die Rig-Bridge spricht mit Programmen wie **WSJT-X**, **fldigi**, **UcxLog** oder **QLog** über dieselbe **XML-RPC-Schnittstelle** wie [FLRig](https://www.w1hkj.org/). Ziel ist **breite Kompatibilität** mit der Methodenliste aus der [FLRig XML-RPC-Hilfe](https://www.w1hkj.org/flrig-help/xmlrpc_server.html): alle dort genannten üblichen `rig.*`- und `main.*`-Aufrufe werden **beantwortet** (kein `unknown method` für die dokumentierten Namen).
 
 **Quellcode:** `rotortcpbridge/rig_bridge/protocol_flrig.py` (`FlrigBridgeServer._dispatch_xmlrpc`, Textmodus `_handle_cmd`).
 
@@ -12,84 +12,61 @@ Die Rig-Bridge spricht mit Programmen wie **WSJT-X**, **fldigi** oder **UcxLog**
 - **Fldigi XML-RPC** (ähnliches Schema): [Xmlrpc Control – Fldigi](https://www.w1hkj.org/FldigiHelp/xmlrpc_control_page.html)  
 - In **FLRig** oft: **Hilfe → XML-Help** (lokale Methodenliste).
 
-Signaturen und Namen dort sind die **Referenz** für Clients. RotorTcpBridge muss nicht jede Methode implementieren; die Tabelle unten beschreibt den **aktuellen Stand** in diesem Projekt.
+Signaturen und Namen dort sind die **Referenz** für Clients.
 
 ---
 
-## XML-RPC: unterstützte Methoden
+## Verhalten: CAT vs. Stub vs. No-Op
 
-### Meta / Lesen (ohne CAT oder mit Stub)
+| Kategorie | Beispiele | Hinweis |
+|-----------|-----------|---------|
+| **Echtes CAT** (Queue zum Funkgerät) | `rig.set_vfo*`, `main.set_frequency`, `rig.set_frequency`, `rig.set_verify_frequency`, `rig.set_mode*`, `rig.set_ptt*`, `rig.mod_vfoA` / `rig.mod_vfoB` | Frequenz/Modus/PTT und VFO-Relativsprünge wie in FLRig üblich an die Bridge-Queue (`SETFREQ`, `SETMODE`, `SETPTT`). |
+| **State ohne CAT** | `rig.set_AB`, `rig.set_split` | Nur interner Cache (`vfo`, `split`). |
+| **No-Op, erfolgreich (void)** | Bandbreite, PBT, Notch, Leistung, Volume/RF/Mic, `rig.mod_vol` / `mod_pwr` / `mod_rfg` / `mod_bw`, `rig.swap`, `rig.vfoA2B`, `rig.freqA2B`, `rig.modeA2B`, `rig.tune`, `rig.cmd`, `rig.shutdown`, **CWIO/FSKIO** (`rig.cwio_send`, `rig.cwio_set_wpm`, `rig.cwio_text`, `rig.mod_cwio_wpm`, `rig.fskio_text`) | Verhindert Client-Fehler; **kein** paralleles CWIO-Keying über die Bridge (QLog bricht sonst mit `unknown method rig.cwio_send` ab). |
+| **Getter-Stub** | `rig.get_info`, `rig.get_sideband`, `rig.get_notch`, `rig.get_pwrmax`, `rig.get_update`, `rig.get_pbt` (Array), `rig.get_pbt_inner` / `outer`, S-Meter, `rig.get_bw*` usw. | Sinnvolle Platzhalter; **kein** echtes S-Meter-/PBT-CAT, sofern nicht später ergänzt. |
+| **`rig.cat_string` / `rig.cat_priority`** | Leerer String | Kein Roh-CAT-Passthrough. |
 
-| Methode | Antwort / Verhalten |
-|--------|----------------------|
-| `main.get_version` | Fester Versions-String (Kompatibilität mit flrig_open). |
-| `rig.get_xcvr` | Kennung `RotorTcpBridge`. |
-| `rig.get_pwrmeter_scale` | `"100"`. |
-| `rig.get_mode`, `rig.get_modeA`, `rig.get_modeB` | Modus aus **internem State** (letzter `rig.set_mode*` / Startwert). |
-| `rig.get_vfo`, `rig.get_vfoA`, `rig.get_vfoB`, `main.get_frequency`, `main.get_freq` | Vor der Antwort optional **CAT READFREQ** (`FA;` o. ä.), dann Frequenz in **Hz als String** (FLRig-konform). |
-| `rig.get_AB` | VFO `A`/`B` aus State. |
-| `rig.get_modes` | Pipe-getrennte Modusliste wie FLRig (siehe Konstante `_FLRIG_MODES_PIPE` im Code). |
-| `rig.get_bw`, `rig.get_bwA`, `rig.get_bwB`, `rig.get_bws` | Platzhalter `"3000"`. |
-| `rig.get_split` | Immer `0` (kein Split). |
-| `rig.get_ptt` | Aus State. |
-| `rig.get_DBM`, `rig.get_smeter`, `rig.get_swrmeter`, `rig.get_SWR`, `rig.get_Sunits`, `rig.get_pwrmeter` | Stub `"0"`. |
-| `rig.get_volume`, `rig.get_rfgain`, `rig.get_micgain`, `rig.get_power`, `rig.get_agc` | Stub `0`. |
+### Nicht unterstützt (Fault)
+
+Methoden außerhalb `rig.*` / `main.*` oder **neue/unbekannte** Namen, die nicht in der FLRig-Doku stehen → **XML-RPC Fault** `unknown method <name>`.
+
+---
+
+## XML-RPC: zentrale Methoden (Auszug)
+
+### Lesen (mit optional READFREQ vor Abfrage)
+
+`rig.get_vfoA`, `rig.get_vfoB`, `rig.get_vfo`, `main.get_frequency`, `main.get_freq` — wie zuvor optional **CAT READFREQ**, Antwort **Hz als String** (FLRig-konform).
+
+Weitere Getter siehe Code-Block „S-Meter / Pegel“ und „Zusätzliche Getter“ in `protocol_flrig.py`.
 
 ### Schreiben (State + ggf. CAT)
 
 | Methode | State | CAT / Queue |
-|--------|--------|----------------|
-| `rig.set_vfo`, `rig.set_vfoA`, `rig.set_vfoB`, `rig.set_verify_vfoA`, `rig.set_verify_vfoB`, `rig.set_vfoA_fast`, `rig.set_vfoB_fast`, `main.set_frequency`, `rig.set_frequency` | `frequency_hz` | `SETFREQ` → serielles CAT (Marke/Modell siehe `cat_commands.py`). |
-| `rig.set_mode`, `rig.set_modeA`, `rig.set_modeB`, `rig.set_verify_mode`, `rig.set_verify_modeA`, `rig.set_verify_modeB` | `mode` | `SETMODE` → CAT (Icom CI-V: aktuell nur State, kein Modus-CAT). |
-| `rig.set_ptt`, `rig.set_ptt_fast`, `rig.set_verify_ptt` | `ptt` | `SETPTT` → CAT. |
-| `rig.set_AB`, `rig.set_verify_AB` | `vfo` | Kein CAT. |
-| `rig.set_split`, `rig.set_verify_split` | — | No-op, erfolgreiche Antwort. |
-| `rig.set_bw*`, `rig.set_bandwidth` | — | No-op, erfolgreiche Antwort. |
-| `rig.shutdown`, `rig.tune` | — | No-op, erfolgreiche Antwort. |
-| `rig.cat_string` | — | Leerer String. |
-
-### Nicht unterstützt
-
-Alle anderen `main.*` / `rig.*` Methoden → **XML-RPC Fault** `unknown method <name>`.
+|--------|--------|-------------|
+| `rig.set_vfo*`, `main.set_frequency`, `rig.set_frequency`, **`rig.set_verify_frequency`** | `frequency_hz` | `SETFREQ` |
+| **`rig.mod_vfoA`**, **`rig.mod_vfoB`** | Relativ zu aktueller Anzeigefrequenz | `SETFREQ` |
+| `rig.set_mode*` | `mode` | `SETMODE` |
+| `rig.set_ptt*` | `ptt` | `SETPTT` |
+| `rig.set_split*` | `split` | — |
+| `rig.set_AB*` | `vfo` | — |
 
 ---
 
 ## Textzeilen-Protokoll (Legacy)
 
-Wenn die erste Zeile **nicht** wie HTTP aussieht, wird ein einfacher **zeilenweiser** Modus verwendet (`_handle_cmd`):
-
-| Befehl | Verhalten |
-|--------|-------------|
-| `GET FREQ` | optional READFREQ, dann Hz als Text |
-| `SET FREQ <hz>` | State + `SETFREQ` |
-| `GET MODE` | Modus aus State |
-| `SET MODE <name>` | State + `SETMODE` |
-| `GET PTT` / `SET PTT <0\|1>` | State + `SETPTT` |
-| `GET VFO` | VFO aus State |
-| sonst | `ERR` |
-
----
-
-## XML-RPC-Parameter (Parser)
-
-Clients unterscheiden sich bei der Kodierung:
-
-- **Namespaces** auf `methodCall` / Kind-Elementen  
-- **`<value>FM</value>`** ohne `<string>` (z. B. Indy / Apache XML-RPC)  
-- **`<value><string>FM</string></value>`**  
-
-Der Parser in `protocol_flrig.py` (`_param_scalar_values`, Fallbacks `_body_first_frequency_hz`, `_body_mode_name_from_set_mode_xml`) soll diese Fälle abdecken. Tritt dennoch ein Problem auf, **Rig-Befehle loggen** aktivieren und den rohen Request prüfen.
+Unverändert: `GET FREQ`, `SET FREQ`, `GET MODE`, `SET MODE`, `GET PTT`, `SET PTT`, `GET VFO`, sonst `ERR`.
 
 ---
 
 ## Grenzen / Erwartungen
 
-- **Stub-Getter** (Pegel, Bandbreite, …) verhindern Client-Hänger; sie ersetzen **kein** echtes S-Meter-/Audio-CAT.
-- **Frequenz/Modus/PTT** sind die Hauptpfade zum Funkgerät; tatsächliche CAT-Befehle hängen von **Marke/Modell** und `cat_commands.py` ab.
-- Parallele Clients (FLRig + Hamlib) teilen sich **eine** COM-Session; Last und Reihenfolge siehe Entwicklerkommentare in `radio_backend.py` / `manager.py`.
+- **CWIO/FSKIO** antworten erfolgreich, **steuern aber kein Morse** über die Bridge — für echtes CW-Keying weiterhin Funkgerät/FLRig/CAT-Keyer nutzen.
+- **Stub-Getter** ersetzen kein echtes Mess-CAT.
+- Parallele Clients teilen sich **eine** COM-Session; Last und Reihenfolge siehe `radio_backend.py` / `manager.py`.
 
 ---
 
 ## Änderungen an der Kompatibilität
 
-Neue FLRig-Methoden: in `_dispatch_xmlrpc` ergänzen und in dieser Datei dokumentieren. Nach Möglichkeit mit Referenz zur W1HKJ-Doku und einem kurzen Satz zum CAT-Verhalten.
+Neue FLRig-Methoden: in `_dispatch_xmlrpc` ergänzen und diese Datei anpassen.

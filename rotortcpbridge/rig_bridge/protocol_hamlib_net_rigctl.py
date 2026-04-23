@@ -16,6 +16,46 @@ from .rigctld_dump_state import build_rigctld_dump_state_block
 from .utils import bind_tcp_listen_socket
 
 
+def _try_extract_rigctld_line(buf: bytes) -> tuple[bytes, bytes, bool] | None:
+    """Erstes vollständiges Telegramm.
+
+    Rückgabe ``(line_bytes, rest_buf, used_semicolon_framing)``.
+
+    - rigctld/Hamlib: Zeilenende ``\\r\\n``, ``\\n`` oder ``\\r`` (dritter Wert
+      ``False``).
+    - Manche Programme schicken stattdessen **nur CAT mit ``;``** (z. B.
+      ``PS;``) ohne Zeilenumbruch auf den rigctld-Port — dann ``True``, damit
+      wir einmalig darauf hinweisen können (QLog muss **NET rigctl** nutzen).
+    """
+    if not buf:
+        return None
+    crlf = buf.find(b"\r\n")
+    lf = buf.find(b"\n")
+    cr = buf.find(b"\r")
+    candidates: list[tuple[int, int]] = []
+    if crlf >= 0:
+        candidates.append((crlf, 2))
+    if lf >= 0:
+        candidates.append((lf, 1))
+    if cr >= 0:
+        candidates.append((cr, 1))
+    if candidates:
+        cut, sep_len = min(candidates, key=lambda t: t[0])
+        line = buf[:cut]
+        rest = buf[cut + sep_len :]
+        return (line, rest, False)
+    # Kein Newline: Yaesu-/CAT-artig bis zum ersten ';' (max. 128 Zeichen)
+    semi = buf.find(b";")
+    if semi <= 0:
+        return None
+    body = buf[:semi]
+    if len(body) + 1 > 128:
+        return None
+    if any(b < 32 or b > 126 for b in body):
+        return None
+    return (body, buf[semi + 1 :], True)
+
+
 def _rigctld_vfo_name_to_internal(name: str) -> str:
     """Rigctld-Namen (VFOA, Main, …) auf internes Kurzfeld (A/B)."""
     t = (name or "").strip().upper()
@@ -144,6 +184,7 @@ class HamlibNetRigctlServer:
         on_state_patch: Callable[[dict[str, Any]], None] | None = None,
         debug_traffic: bool = False,
         log_serial_traffic: bool = True,
+        log_tcp_traffic: bool = False,
         log_label: str = "",
         on_tcp_activity: Callable[[], None] | None = None,
         refresh_frequency_for_read: Callable[[], bool] | None = None,
@@ -157,6 +198,7 @@ class HamlibNetRigctlServer:
         self._refresh_frequency_for_read = refresh_frequency_for_read
         self._debug_traffic = bool(debug_traffic)
         self._log_serial_traffic = bool(log_serial_traffic)
+        self._log_tcp_traffic = bool(log_tcp_traffic)
         self._log_label = str(log_label or "").strip()
         self._sock = None
         self._running = False
@@ -179,6 +221,15 @@ class HamlibNetRigctlServer:
         """TCP rigctld-Zeilen ins Rig-Diagnose-Log (Einstellung „Rig-Befehle loggen“)."""
         self._log_serial_traffic = bool(enabled)
 
+    def set_log_tcp_traffic(self, enabled: bool) -> None:
+        """Nur Hamlib-TCP (rigctl-Zeilen) ins Hauptlog, ohne volles COM-Protokoll."""
+        self._log_tcp_traffic = bool(enabled)
+
+    def _net_log_enabled(self) -> bool:
+        return bool(
+            self._debug_traffic or self._log_serial_traffic or self._log_tcp_traffic
+        )
+
     def start(self, host: str, port: int) -> None:
         """Server starten; bei geändertem Host/Port vorher sauber neu binden."""
         with self._lifecycle_lock:
@@ -196,11 +247,12 @@ class HamlibNetRigctlServer:
             self._running = True
             self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
             self._accept_thread.start()
-            self._log_write(
-                "INFO",
-                f"{self._log_pfx()}Hamlib rigctl (rigctld-kompatibel) lauscht auf {host}:{port} "
-                f"(IPv4+IPv6 über ::, falls vom System unterstützt)",
-            )
+            if self._net_log_enabled():
+                self._log_write(
+                    "INFO",
+                    f"{self._log_pfx()}Hamlib rigctl (rigctld-kompatibel) lauscht auf {host}:{port} "
+                    f"(IPv4+IPv6 über ::, falls vom System unterstützt)",
+                )
 
     def stop(self) -> None:
         with self._lifecycle_lock:
@@ -259,50 +311,95 @@ class HamlibNetRigctlServer:
             threading.Thread(target=self._client_loop, args=(c,), daemon=True).start()
 
     def _client_loop(self, client: socket.socket) -> None:
+        peer = "?"
+        try:
+            a = client.getpeername()
+            peer = f"{a[0]}:{a[1]}"
+        except Exception:
+            pass
         try:
             with client:
+                if self._net_log_enabled():
+                    self._log_write(
+                        "INFO",
+                        f"{self._log_pfx()}Hamlib NET Sitzung von {peer} (rigctld)",
+                    )
+                try:
+                    client.settimeout(180.0)
+                except Exception:
+                    pass
                 dbg_last_rx = time.monotonic()
                 buf = b""
+                last_partial_log_mono = 0.0
+                warned_semicolon_framing = False
+                abort_session = False
                 while True:
                     if not self._running:
                         break
-                    chunk = client.recv(1024)
+                    try:
+                        chunk = client.recv(1024)
+                    except socket.timeout:
+                        if self._net_log_enabled():
+                            self._log_write(
+                                "WARN",
+                                f"{self._log_pfx()}Hamlib NET: recv Timeout (180 s) {peer}, "
+                                f"Zwischenpuffer {len(buf)} Byte — Verbindung wird getrennt",
+                            )
+                        break
                     if not chunk:
                         break
                     buf += chunk
-                    while b"\n" in buf:
+                    while True:
                         if not self._running:
                             buf = b""
+                            abort_session = True
                             break
-                        line, buf = buf.split(b"\n", 1)
+                        extracted = _try_extract_rigctld_line(buf)
+                        if extracted is None:
+                            break
+                        line, buf, used_semicolon_framing = extracted
                         cmd = line.decode("ascii", errors="ignore").strip()
+                        if (
+                            used_semicolon_framing
+                            and self._net_log_enabled()
+                            and not warned_semicolon_framing
+                        ):
+                            warned_semicolon_framing = True
+                            self._log_write(
+                                "WARN",
+                                f"{self._log_pfx()}Hamlib NET: Befehl nur mit Semikolon begrenzt "
+                                f"({cmd!r}), ohne rigctld-Zeilenumbruch (\\n). "
+                                f"In QLog Hamlib NET rigctl / rigctld nutzen — nicht "
+                                f"serielles Yaesu-CAT (…;) auf denselben TCP-Port.",
+                            )
                         try:
                             self._on_tcp_activity()
                         except Exception:
                             pass
-                        if self._debug_traffic or self._log_serial_traffic:
+                        if self._net_log_enabled():
                             now = time.monotonic()
                             dt_ms = (now - dbg_last_rx) * 1000.0
                             dbg_last_rx = now
-                            if self._debug_traffic:
-                                if "dump_state" in cmd.lower():
-                                    self._log_write(
-                                        "INFO",
-                                        f"{self._log_pfx()}Hamlib NET RX (+{dt_ms:.1f} ms): dump_state",
-                                    )
-                                else:
-                                    self._log_write(
-                                        "INFO",
-                                        f"{self._log_pfx()}Hamlib NET RX (+{dt_ms:.1f} ms): {cmd!r}",
-                                    )
+                            if "dump_state" in cmd.lower():
+                                self._log_write(
+                                    "INFO",
+                                    f"{self._log_pfx()}Hamlib NET RX (+{dt_ms:.1f} ms): dump_state",
+                                )
+                            elif self._debug_traffic:
+                                self._log_write(
+                                    "INFO",
+                                    f"{self._log_pfx()}Hamlib NET RX (+{dt_ms:.1f} ms): {cmd!r}",
+                                )
                             else:
-                                if "dump_state" not in cmd.lower():
-                                    self._log_write("INFO", f"{self._log_pfx()}Hamlib NET RX: {cmd!r}")
+                                self._log_write(
+                                    "INFO",
+                                    f"{self._log_pfx()}Hamlib NET RX: {cmd!r}",
+                                )
                         if not self._running:
                             break
-                        out = self._handle_cmd(cmd)
+                        out = self._handle_cmd(cmd, quiet_unknown=used_semicolon_framing)
                         if out and self._running:
-                            if self._debug_traffic or self._log_serial_traffic:
+                            if self._net_log_enabled():
                                 if len(out) > 400 or "dump_state" in cmd.lower():
                                     self._log_write(
                                         "INFO",
@@ -318,11 +415,56 @@ class HamlibNetRigctlServer:
                                 payload += b"\n"
                             try:
                                 client.sendall(payload)
-                            except Exception:
+                            except socket.timeout:
+                                if self._net_log_enabled():
+                                    self._log_write(
+                                        "WARN",
+                                        f"{self._log_pfx()}Hamlib NET: send Timeout (180 s) {peer}",
+                                    )
+                                abort_session = True
                                 break
-        except Exception:
-            pass
+                            except Exception:
+                                abort_session = True
+                                break
+                    if abort_session:
+                        break
+                    if len(buf) > 8192:
+                        if self._net_log_enabled():
+                            hx = buf[:64].hex()
+                            self._log_write(
+                                "WARN",
+                                f"{self._log_pfx()}Hamlib NET: Puffer >8192 B ohne gültiges "
+                                f"Zeilenende — verworfen (hex_start={hx}…)",
+                            )
+                        buf = b""
+                    elif buf and self._net_log_enabled():
+                        now_mono = time.monotonic()
+                        if now_mono - last_partial_log_mono >= 15.0:
+                            last_partial_log_mono = now_mono
+                            hx = buf[:64].hex()
+                            self._log_write(
+                                "INFO",
+                                f"{self._log_pfx()}Hamlib NET: warte auf Zeilenende "
+                                f"({len(buf)} B empfangen, hex_start={hx}…)",
+                            )
+        except Exception as exc:
+            if self._net_log_enabled():
+                try:
+                    self._log_write(
+                        "WARN",
+                        f"{self._log_pfx()}Hamlib NET Sitzung {peer}: {exc!r}",
+                    )
+                except Exception:
+                    pass
         finally:
+            if self._net_log_enabled():
+                try:
+                    self._log_write(
+                        "INFO",
+                        f"{self._log_pfx()}Hamlib NET Sitzung beendet ({peer})",
+                    )
+                except Exception:
+                    pass
             self._clients.discard(client)
             self._on_clients_changed(len(self._clients))
 
@@ -331,7 +473,7 @@ class HamlibNetRigctlServer:
         hz = int(st.get("frequency_hz", 0) or 0)
         return str(max(0, hz))
 
-    def _handle_cmd(self, cmd: str) -> str:
+    def _handle_cmd(self, cmd: str, *, quiet_unknown: bool = False) -> str:
         """rigctld-Zeilenprotokoll; unbekannte Befehle mit RPRT -11."""
         if not self._running:
             return ""
@@ -428,4 +570,9 @@ class HamlibNetRigctlServer:
             return "1"
         if cmd.startswith("\\set_conf "):
             return "RPRT 0"
+        if self._net_log_enabled() and not quiet_unknown:
+            self._log_write(
+                "WARN",
+                f"{self._log_pfx()}Hamlib NET: unbekannter Befehl {cmd!r} → RPRT -11",
+            )
         return "RPRT -11"

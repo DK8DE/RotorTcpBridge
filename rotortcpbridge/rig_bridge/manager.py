@@ -22,6 +22,7 @@ _DEFAULT_FLRIG: dict[str, Any] = {
     "host": "127.0.0.1",
     "port": 12345,
     "autostart": False,
+    "log_tcp_traffic": True,
 }
 _DEFAULT_HAMLIB: dict[str, Any] = {
     "enabled": False,
@@ -29,6 +30,7 @@ _DEFAULT_HAMLIB: dict[str, Any] = {
     "listeners": [{"port": 4532, "name": ""}],
     "autostart": False,
     "debug_traffic": False,
+    "log_tcp_traffic": False,
 }
 
 
@@ -38,8 +40,8 @@ def _normalize_rb_dict(
     """Akzeptiert neue UND alte ``rig_bridge``-Struktur und liefert
     ``(profiles, active_id, global_enabled, flrig, hamlib)``.
 
-    Flrig und Hamlib sind globale TCP-Server-Einstellungen und leben daher
-    auf der obersten ``rig_bridge``-Ebene (nicht mehr pro Rig-Profil).
+    Flrig und Hamlib sind globale TCP-Server-Einstellungen und leben
+    daher auf der obersten ``rig_bridge``-Ebene (nicht mehr pro Rig-Profil).
 
     - Neue Form: ``{"enabled": bool, "active_rig_id": str,
       "flrig": {..}, "hamlib": {..}, "rigs": [..]}``.
@@ -83,6 +85,7 @@ def _normalize_rb_dict(
         for p in profiles:
             p.pop("flrig", None)
             p.pop("hamlib", None)
+            p.pop("cat_tcp", None)
         flrig = dict(_DEFAULT_FLRIG)
         flrig.update(flrig_src)
         hamlib = dict(_DEFAULT_HAMLIB)
@@ -93,7 +96,7 @@ def _normalize_rb_dict(
     flat = {
         k: v
         for k, v in src.items()
-        if k not in ("rigs", "active_rig_id", "flrig", "hamlib")
+        if k not in ("rigs", "active_rig_id", "flrig", "hamlib", "cat_tcp")
     }
     selected = str(flat.get("selected_rig", "") or "").strip() or "Rig 1"
     profile = dict(flat)
@@ -126,12 +129,13 @@ def _profile_as_radio_cfg(
 
     Das globale ``enabled`` und das Profil-``enabled`` werden zu einem
     einzigen ``enabled`` fuer die alte Struktur verknuepft (beide muessen
-    True sein, damit die Bruecke aktiv ist). ``flrig``/``hamlib`` stammen
-    aus der obersten ``rig_bridge``-Ebene und sind profilunabhaengig.
+    True sein, damit die Bruecke aktiv ist). ``flrig``/``hamlib``
+    stammen aus der obersten ``rig_bridge``-Ebene und sind profilunabhaengig.
     """
     flat = dict(profile)
     flat.pop("flrig", None)
     flat.pop("hamlib", None)
+    flat.pop("cat_tcp", None)
     flat["enabled"] = bool(global_enabled) and bool(profile.get("enabled", True))
     flat["flrig"] = dict(flrig or {})
     flat["hamlib"] = dict(hamlib or {})
@@ -167,16 +171,19 @@ class RigBridgeManager:
             active_rig_name=str(active_profile.get("name", "")),
         )
         self._lock = threading.RLock()
-        #: ``refresh_rig_frequency_from_cat`` ist heute **nicht blockierend**:
-        #: Ein externer Poller (Hamlib/Flrig/Rig-Serial-Listener) bekommt sofort
-        #: den Cache-Wert zurueck. Im Hintergrund wird hoechstens alle
-        #: ``_cat_refresh_min_interval_s`` ein READFREQ auf die Worker-Queue
-        #: gelegt. Das schuetzt den TRX vor Ueberlast (Yaesu newcat quittiert
-        #: sonst zu eng stehende Kommandos mit ``?;``) und verhindert, dass
-        #: SETFREQ-Befehle hinter einem Stapel READFREQ verhungern.
+        #: ``refresh_rig_frequency_from_cat`` legt nur ein READFREQ in die
+        #: Worker-Queue (blockiert nicht auf die CAT-Antwort). Trotzdem darf
+        #: der Aufruf **nicht direkt** aus Hamlib-/Flrig-Socket-Threads erfolgen:
+        #: unter Last kann die Interaktion mit der Queue kurz warten und dann
+        #: der TCP-Client (z. B. QLog) das gesamte Programm „einfrieren“ wirken
+        #: lassen. Stattdessen ``request_cat_refresh_async`` (Event + Hintergrund-
+        #: Thread) nutzen.
         self._cat_refresh_lock = threading.Lock()
         self._last_cat_refresh_mono: float = 0.0
         self._cat_refresh_min_interval_s: float = 0.30
+        #: Letzte Log-Zeit, wenn UI-READFREQ wegen Flrig/Hamlib ausbleibt (sonst „Ruhe“ im Log).
+        self._ui_poll_skip_log_mono: float | None = None
+        self._ui_poll_skip_log_cooldown_s: float = 75.0
         self._diag_lines: list[str] = []
         self._rig_serial_activity_flag = False
         self._rig_flrig_activity_flag = False
@@ -197,6 +204,14 @@ class RigBridgeManager:
         )
         self._radio.update_config(self._cfg)
         self._reconnect_thread.start()
+        self._cat_refresh_stop = threading.Event()
+        self._cat_refresh_wakeup = threading.Event()
+        self._cat_refresh_thread = threading.Thread(
+            target=self._cat_refresh_bridge_loop,
+            name="rig-bridge-cat-refresh",
+            daemon=True,
+        )
+        self._cat_refresh_thread.start()
         #: FLRig: HTTP-Clients schließen oft nach jeder XML-RPC-Anfrage — für die UI wird die
         #: Anzahl kurz gehalten (>0), damit LED und Zähler nicht zwischen 0/1 flackern.
         self._flrig_last_nonempty_ts: float = 0.0
@@ -211,11 +226,13 @@ class RigBridgeManager:
             get_state=self._state.snapshot,
             enqueue_write=self._enqueue_radio_write,
             on_clients_changed=self._on_flrig_clients_changed,
-            log_write=self._log_and_diag,
-            log_client_traffic=bool(self._cfg.log_serial_traffic),
+            log_write=self._flrig_protocol_log,
+            log_client_traffic=bool(
+                self._cfg.log_serial_traffic or self._cfg.flrig.get("log_tcp_traffic", True)
+            ),
             on_state_patch=self._hamlib_state_patch,
             on_tcp_activity=self._pulse_rig_flrig_activity,
-            refresh_frequency_before_read=self.refresh_rig_frequency_from_cat,
+            refresh_frequency_before_read=self.flrig_refresh_frequency_before_read,
         )
         #: Port → laufender rigctld-Server (mehrere Clients pro Port möglich)
         self._hamlib_servers: dict[int, HamlibNetRigctlServer] = {}
@@ -247,15 +264,44 @@ class RigBridgeManager:
                 self._diag_lines = self._diag_lines[-500:]
         self._log_write(level, stamped)
 
+    def _hamlib_protocol_log(self, level: str, msg: str) -> None:
+        """Nur Hamlib rigctld: Aufruf nur bei aktivem TCP-/Voll-Diagnose-Logging.
+
+        Immer ins Hauptlog (``_log_write``) und in die Rig-Diagnosezeilen —
+        unabhaengig von ``log_serial_traffic``, damit Hamlib-Analyse ohne
+        vollstaendiges COM-Protokoll moeglich ist.
+        """
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        stamped = f"[{ts}] {msg}"
+        line = f"[{level}] {stamped}"
+        with self._lock:
+            self._diag_lines.append(line)
+            if len(self._diag_lines) > 500:
+                self._diag_lines = self._diag_lines[-500:]
+        self._log_write(level, stamped)
+
+    def _flrig_protocol_log(self, level: str, msg: str) -> None:
+        """Flrig TCP/XML-RPC: wie Hamlib — immer sichtbar, wenn der Flrig-Server loggt.
+
+        Unabhaengig von ``log_serial_traffic``, damit Port-Traffic analysierbar ist.
+        """
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        stamped = f"[{ts}] {msg}"
+        line = f"[{level}] {stamped}"
+        with self._lock:
+            self._diag_lines.append(line)
+            if len(self._diag_lines) > 500:
+                self._diag_lines = self._diag_lines[-500:]
+        self._log_write(level, stamped)
+
     def diagnostics_text(self) -> str:
         with self._lock:
             return "\n".join(self._diag_lines[-200:])
 
     def take_rig_activity_flags(self) -> tuple[bool, bool, set[int]]:
-        """UI-Takt: COM-, Flrig-, Hamlib-TCP-Aktivität abholen (einmalige Pulse).
+        """UI-Takt: COM-, Flrig- und Hamlib-Aktivität abholen (einmalige Pulse).
 
-        Dritter Wert: Menge der Hamlib-Listener-Ports, auf denen seit dem letzten Abruf
-        TCP-Verkehr war (für getrennte LED-Blinken pro Port).
+        Dritter Wert: Hamlib-Listener-Ports mit TCP seit letztem Abruf.
         """
         with self._lock:
             s = self._rig_serial_activity_flag
@@ -372,7 +418,10 @@ class RigBridgeManager:
             for srv in self._hamlib_servers.values():
                 srv.set_debug_traffic(bool(self._cfg.hamlib.get("debug_traffic", False)))
                 srv.set_log_serial_traffic(bool(self._cfg.log_serial_traffic))
-            self._flrig.set_log_client_traffic(bool(self._cfg.log_serial_traffic))
+                srv.set_log_tcp_traffic(bool(self._cfg.hamlib.get("log_tcp_traffic", False)))
+            self._flrig.set_log_client_traffic(
+                bool(self._cfg.log_serial_traffic or self._cfg.flrig.get("log_tcp_traffic", True))
+            )
             self._state.update(
                 selected_rig=self._cfg.selected_rig,
                 com_port=self._cfg.com_port,
@@ -484,7 +533,26 @@ class RigBridgeManager:
         n_fl = int(self._state.protocol_clients.get("flrig", 0) or 0)
         n_hm = int(self._state.protocol_clients.get("hamlib", 0) or 0)
         if n_fl > 0 or n_hm > 0:
+            now = time.monotonic()
+            last = self._ui_poll_skip_log_mono
+            cd = float(self._ui_poll_skip_log_cooldown_s)
+            if last is None or (now - last) >= cd:
+                self._ui_poll_skip_log_mono = now
+                bits: list[str] = []
+                if n_fl > 0:
+                    bits.append(f"Flrig {n_fl} TCP-Client(s)")
+                if n_hm > 0:
+                    bits.append(f"Hamlib rigctl {n_hm} TCP-Client(s)")
+                self._log_write(
+                    "INFO",
+                    "Rig-Bridge: UI-READFREQ (Hauptfenster-Poll) ist aus — "
+                    + ", ".join(bits)
+                    + ". CAT-Frequenz kommt von dort (async); COM-Details wie gewohnt "
+                    "über „Rig-Befehle loggen“ / Hamlib-Diagnose. "
+                    f"Diese Meldung höchstens alle {int(cd)} s.",
+                )
             return
+        self._ui_poll_skip_log_mono = None
         self._radio.write_command(
             "READFREQ",
             log_ctx="Hauptfenster-Poll → TRX lesen",
@@ -531,6 +599,61 @@ class RigBridgeManager:
         except Exception:
             return False
 
+    def _cat_refresh_bridge_loop(self) -> None:
+        """Nur in ``_cat_refresh_thread``: READFREQ-Anforderungen von Hamlib/Flrig bündeln.
+
+        Hamlib ``f`` / Flrig ``rig.get_vfo*`` feuern sehr schnell — mehrere
+        ``set()`` auf dem Event werden zu einem Durchlauf von
+        ``refresh_rig_frequency_from_cat`` zusammengefasst (zusätzliche
+        Entlastung durch ``_cat_refresh_min_interval_s`` dort).
+        """
+        while not self._cat_refresh_stop.is_set():
+            if not self._cat_refresh_wakeup.wait(timeout=0.4):
+                continue
+            self._cat_refresh_wakeup.clear()
+            if self._cat_refresh_stop.is_set():
+                break
+            try:
+                self.refresh_rig_frequency_from_cat()
+            except Exception:
+                pass
+
+    def request_cat_refresh_async(self) -> bool:
+        """READFREQ vom TRX anfordern — **ohne** den aufrufenden Socket-/HTTP-Thread zu belasten.
+
+        Sofort ``True``, wenn die Anforderung übernommen wurde (oder Stop
+        aktiv ist: ``False``). Die eigentliche Queue-Operation läuft im
+        Hintergrund-Thread ``_cat_refresh_bridge_loop``.
+        """
+        if self._cat_refresh_stop.is_set():
+            return False
+        try:
+            self._cat_refresh_wakeup.set()
+            return True
+        except Exception:
+            return False
+
+    def flrig_refresh_frequency_before_read(self) -> bool:
+        """Vor Flrig ``rig.get_vfo*`` / ``main.get_freq*``: bei leerem Frequenz-Cache kurz synchron ``FA``.
+
+        Strikte Logger (z. B. QLog) zeigen sonst eine leere VFO-Zeile, weil die erste
+        XML-RPC-Antwort noch ``0`` Hz liefert, während ``READFREQ`` erst asynchron
+        nachzieht. Einmaliges kurzes Blocken nur bei ``frequency_hz==0``; danach
+        wie gewohnt asynchron über ``request_cat_refresh_async``.
+        """
+        try:
+            if not self._radio.is_serial_connected():
+                return self.request_cat_refresh_async()
+            hz = int(self._state.snapshot().get("frequency_hz", 0) or 0)
+            if hz <= 0:
+                return self._radio.read_frequency_sync(
+                    0.38,
+                    log_ctx="Flrig rig.get_vfo* (sync, Cache 0 Hz)",
+                )
+        except Exception:
+            pass
+        return self.request_cat_refresh_async()
+
     def enqueue_set_frequency_hz(self, hz: int) -> None:
         """Funkgerät auf ``hz`` abstimmen (serieller CAT-``SETFREQ``-Pfad wie Hamlib/Flrig)."""
         v = int(hz)
@@ -559,7 +682,7 @@ class RigBridgeManager:
             return False, str(exc)
 
     def connect_radio_and_autostart_protocols(self) -> tuple[bool, str]:
-        """COM verbinden; bei Erfolg Flrig/Hamlib starten, sofern in der Konfiguration Autostart an ist."""
+        """COM verbinden; bei Erfolg Flrig/Hamlib starten, sofern Autostart an ist."""
         ok, msg = self.connect_radio()
         if ok:
             self.start_enabled_protocols()
@@ -581,9 +704,22 @@ class RigBridgeManager:
         return self._radio.run_frequency_test_ephemeral(self._cfg, int(freq_hz), self._log_and_diag)
 
     def _hamlib_on_clients(self, port: int, n: int) -> None:
+        prev = int(self._hamlib_client_counts.get(port, 0))
         self._hamlib_client_counts[port] = int(n)
         total = sum(self._hamlib_client_counts.values())
         self._state.set_protocol_clients("hamlib", total)
+        if int(n) > prev:
+            self._log_write(
+                "INFO",
+                "Hamlib rigctl: TCP-Client verbunden auf Port "
+                f"{port} (je Port: {dict(self._hamlib_client_counts)}, Summe={total})",
+            )
+        elif int(n) < prev:
+            self._log_write(
+                "INFO",
+                "Hamlib rigctl: TCP-Client getrennt von Port "
+                f"{port} (je Port: {dict(self._hamlib_client_counts)}, Summe={total})",
+            )
 
     def hamlib_listener_client_counts(self) -> dict[int, int]:
         """Port → Anzahl verbundener Hamlib-/rigctld-Clients (Hauptfenster: eine Zeile pro Port)."""
@@ -596,6 +732,25 @@ class RigBridgeManager:
         self._hamlib_servers.clear()
         self._hamlib_client_counts.clear()
         self._state.set_protocol_clients("hamlib", 0)
+
+    def _snapshot_active_profile(self) -> dict:
+        with self._lock:
+            p = self._get_profile_dict(self._active_id)
+            return dict(p) if p is not None else {}
+
+    def _hamlib_reserved_ports(self) -> set[int]:
+        out: set[int] = set()
+        raw = self._hamlib_cfg.get("listeners")
+        if not isinstance(raw, list):
+            return out
+        for it in raw:
+            if not isinstance(it, dict) or it.get("port") in (None, ""):
+                continue
+            try:
+                out.add(max(1, min(65535, int(it["port"]))))
+            except (TypeError, ValueError):
+                continue
+        return out
 
     def _parse_hamlib_start_entries(self) -> tuple[list[tuple[int, str]] | None, str | None]:
         """Konfigurierte Listener: (Port, Anzeigename). Fehler → (None, Meldung)."""
@@ -631,13 +786,14 @@ class RigBridgeManager:
             get_state=self._state.snapshot,
             enqueue_write=self._enqueue_radio_write,
             on_clients_changed=lambda n, pp=port: self._hamlib_on_clients(pp, n),
-            log_write=self._log_and_diag,
+            log_write=self._hamlib_protocol_log,
             on_state_patch=self._hamlib_state_patch,
             debug_traffic=bool(self._cfg.hamlib.get("debug_traffic", False)),
             log_serial_traffic=bool(self._cfg.log_serial_traffic),
+            log_tcp_traffic=bool(self._cfg.hamlib.get("log_tcp_traffic", False)),
             log_label=log_label,
             on_tcp_activity=lambda pp=port: self._pulse_rig_hamlib_activity(pp),
-            refresh_frequency_for_read=self.refresh_rig_frequency_from_cat,
+            refresh_frequency_for_read=self.request_cat_refresh_async,
         )
 
     def start_protocol(self, name: str) -> tuple[bool, str]:
@@ -694,6 +850,11 @@ class RigBridgeManager:
 
     def stop_all(self) -> None:
         self._reconnect_stop.set()
+        self._cat_refresh_stop.set()
+        self._cat_refresh_wakeup.set()
+        t_cat = getattr(self, "_cat_refresh_thread", None)
+        if t_cat is not None and t_cat.is_alive():
+            t_cat.join(timeout=1.5)
         for name in ("flrig", "hamlib"):
             self.stop_protocol(name)
         self.disconnect_radio()

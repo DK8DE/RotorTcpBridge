@@ -17,6 +17,7 @@ from PySide6.QtGui import (
     QColor,
     QCloseEvent,
     QFont,
+    QGuiApplication,
     QHideEvent,
     QKeyEvent,
     QPalette,
@@ -1356,6 +1357,8 @@ class SettingsWindow(QDialog):
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
+        self._apply_settings_nav_style()
+        self._connect_settings_nav_os_theme_signals()
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(True)
         if hasattr(self.ctrl, "request_immediate_stats"):
@@ -1391,8 +1394,37 @@ class SettingsWindow(QDialog):
         self._apply_settings_window_open_size()
         QTimer.singleShot(0, self._apply_settings_window_open_size)
 
+    def _connect_settings_nav_os_theme_signals(self) -> None:
+        """Solange das Fenster sichtbar ist: OS-Farbschema-Wechsel → Tabliste neu stylen."""
+        if getattr(self, "_rtb_nav_scheme_connected", False):
+            return
+        try:
+            sh = QGuiApplication.styleHints()
+
+            def _on_scheme(*_a) -> None:
+                QTimer.singleShot(0, self._apply_settings_nav_style)
+
+            self._rtb_nav_on_scheme_changed = _on_scheme
+            sh.colorSchemeChanged.connect(self._rtb_nav_on_scheme_changed)
+            self._rtb_nav_scheme_connected = True
+        except Exception:
+            pass
+
+    def _disconnect_settings_nav_os_theme_signals(self) -> None:
+        if not getattr(self, "_rtb_nav_scheme_connected", False):
+            return
+        try:
+            h = getattr(self, "_rtb_nav_on_scheme_changed", None)
+            if h is not None:
+                QGuiApplication.styleHints().colorSchemeChanged.disconnect(h)
+        except Exception:
+            pass
+        self._rtb_nav_scheme_connected = False
+        self._rtb_nav_on_scheme_changed = None
+
     def hideEvent(self, event: QHideEvent) -> None:
         """Minimieren: Polling-Flag zurück (closeEvent kommt bei Minimize nicht)."""
+        self._disconnect_settings_nav_os_theme_signals()
         self._antenna_refresh_timer.stop()
         self._antenna_request_timer.stop()
         self._antenna_giveup_timer.stop()
@@ -1404,6 +1436,11 @@ class SettingsWindow(QDialog):
 
     def changeEvent(self, event: QEvent) -> None:
         """Minimize ohne hideEvent: Timer stoppen wie bei hideEvent."""
+        if event.type() in (
+            QEvent.Type.ThemeChange,
+            QEvent.Type.ApplicationPaletteChange,
+        ):
+            QTimer.singleShot(0, self._apply_settings_nav_style)
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
             self._antenna_refresh_timer.stop()
@@ -1415,6 +1452,7 @@ class SettingsWindow(QDialog):
                 self.ctrl.set_settings_window_open(False)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._disconnect_settings_nav_os_theme_signals()
         self._antenna_refresh_timer.stop()
         self._antenna_request_timer.stop()
         self._antenna_giveup_timer.stop()
@@ -1988,9 +2026,21 @@ class SettingsWindow(QDialog):
             QTimer.singleShot(0, self._shortcuts_tab.refresh_antenna_shortcut_row_labels)
             QTimer.singleShot(400, self._shortcuts_tab.refresh_antenna_shortcut_row_labels)
 
+    def refresh_nav_theme(self) -> None:
+        """Nach globalem Palette-/Style-Wechsel (z. B. Force-Dark): linke Tab-Leiste neu einfärben."""
+        if not hasattr(self, "_settings_nav"):
+            return
+        self._apply_settings_nav_style()
+
     def _apply_settings_nav_style(self) -> None:
-        """Sidebar wie große Kacheln; Farben aus der System-/App-Palette (Highlight, Base, …)."""
-        p = self.palette()
+        """Sidebar wie große Kacheln; Farben aus der App-Palette.
+
+        Unter Windows liefert ``self.palette()`` am Top-Level-Dialog oft noch das
+        helle Systemschema, während ``QApplication.palette()`` nach erzwungenem
+        Dark-Mode korrekt dunkel ist — daher immer die Anwendungspalette.
+        """
+        app = QApplication.instance()
+        p = app.palette() if isinstance(app, QApplication) else self.palette()
 
         def _hex(c: QColor) -> str:
             return c.name(QColor.NameFormat.HexRgb)
@@ -2040,6 +2090,31 @@ class SettingsWindow(QDialog):
             }}
             """
         )
+        # Repolish im nächsten Tick: zu früh in __init__ kann w.style() noch auf freigegebenen QStyle zeigen.
+        QTimer.singleShot(0, self._repolish_settings_nav_widgets)
+
+    def _repolish_settings_nav_widgets(self) -> None:
+        """Nach Windows-Theme-Wechsel Stylesheet der Tabliste erzwingen (native Cache)."""
+        app = QApplication.instance()
+        for w in (
+            getattr(self, "_settings_nav_wrap", None),
+            getattr(self, "_settings_nav", None),
+        ):
+            if w is None:
+                continue
+            ss = w.styleSheet()
+            w.setStyleSheet("")
+            st = app.style() if isinstance(app, QApplication) else w.style()
+            if st is not None:
+                try:
+                    st.unpolish(w)
+                    st.polish(w)
+                except RuntimeError:
+                    pass
+            w.setStyleSheet(ss)
+        nav = getattr(self, "_settings_nav", None)
+        if nav is not None:
+            nav.update()
 
     def _update_antenna_visibility(self) -> None:
         self._update_strom_cal_sections_visibility()

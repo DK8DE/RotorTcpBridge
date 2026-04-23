@@ -72,6 +72,7 @@ class RigBridgeConfig:
             "host": "127.0.0.1",
             "port": 12345,
             "autostart": False,
+            "log_tcp_traffic": True,
         }
     )
     hamlib: dict[str, Any] = field(
@@ -81,6 +82,7 @@ class RigBridgeConfig:
             "listeners": [{"port": 4532, "name": ""}],
             "autostart": False,
             "debug_traffic": False,
+            "log_tcp_traffic": False,
         }
     )
 
@@ -150,8 +152,10 @@ class RigBridgeConfig:
         self.timeout_s = max(0.05, min(10.0, float(self.timeout_s)))
         self.polling_interval_ms = max(30, min(5000, int(self.polling_interval_ms)))
         self.flrig["port"] = max(1, min(65535, int(self.flrig.get("port", 12345))))
+        self.flrig["log_tcp_traffic"] = bool(self.flrig.get("log_tcp_traffic", True))
         _normalize_hamlib_listeners_dict(self.hamlib)
         self.hamlib["debug_traffic"] = bool(self.hamlib.get("debug_traffic", False))
+        self.hamlib["log_tcp_traffic"] = bool(self.hamlib.get("log_tcp_traffic", False))
         self.log_serial_traffic = bool(self.log_serial_traffic)
         self.cat_post_write_drain_ms = max(20, min(500, int(self.cat_post_write_drain_ms)))
         self.setfreq_gap_ms = max(0, min(200, int(self.setfreq_gap_ms)))

@@ -288,6 +288,8 @@ class RigBridgeTab(QWidget):
             port.setToolTip(format_tooltip(t("rig.flrig_port_tooltip")))
             chk_auto = QCheckBox(t("rig.flrig_autostart"))
             chk_auto.setToolTip(format_tooltip(t("rig.flrig_autostart_tooltip")))
+            self.chk_flrig_log_tcp = QCheckBox(t("rig.flrig_log_tcp"))
+            self.chk_flrig_log_tcp.setToolTip(format_tooltip(t("rig.flrig_log_tcp_tooltip")))
             led = Led(12, self)
             self._lbl_flrig_bind_clients = QLabel("")
             self._lbl_flrig_bind_clients.setWordWrap(True)
@@ -327,6 +329,7 @@ class RigBridgeTab(QWidget):
             fl_single.addRow(chk)
             fl_single.addRow(row_host_port)
             fl_single.addRow(chk_auto)
+            fl_single.addRow(self.chk_flrig_log_tcp)
             fl_single.addRow(row_status)
             vl_protocols.addWidget(gb_single)
 
@@ -356,6 +359,8 @@ class RigBridgeTab(QWidget):
         self._protocol_autostart["hamlib"].setToolTip(format_tooltip(t("rig.hamlib_autostart_tooltip")))
         self.chk_hamlib_debug = QCheckBox(t("rig.hamlib_debug"))
         self.chk_hamlib_debug.setToolTip(format_tooltip(t("rig.hamlib_debug_tooltip")))
+        self.chk_hamlib_log_tcp = QCheckBox(t("rig.hamlib_log_tcp"))
+        self.chk_hamlib_log_tcp.setToolTip(format_tooltip(t("rig.hamlib_log_tcp_tooltip")))
         self._protocol_leds["hamlib"] = Led(12, self)
         self._lbl_hamlib_bind_clients = QLabel("")
         self._lbl_hamlib_bind_clients.setWordWrap(False)
@@ -389,6 +394,7 @@ class RigBridgeTab(QWidget):
         fl_hamlib.addRow(row_hamlib_add)
         fl_hamlib.addRow(self._protocol_autostart["hamlib"])
         fl_hamlib.addRow(self.chk_hamlib_debug)
+        fl_hamlib.addRow(self.chk_hamlib_log_tcp)
         fl_hamlib.addRow(row_hamlib_status)
         vl_protocols.addWidget(gb_hamlib)
 
@@ -408,6 +414,9 @@ class RigBridgeTab(QWidget):
         self.ed_setfreq_gap.editingFinished.connect(self.apply_to_manager)
         self.chk_auto_connect.stateChanged.connect(self.apply_to_manager)
         self.chk_auto_reconnect.stateChanged.connect(self.apply_to_manager)
+        self.chk_hamlib_debug.stateChanged.connect(self.apply_to_manager)
+        self.chk_hamlib_log_tcp.stateChanged.connect(self.apply_to_manager)
+        self.chk_flrig_log_tcp.stateChanged.connect(self.apply_to_manager)
         self._wire_protocol_buttons()
 
     def _rig_combo_apply_max_width(self) -> None:
@@ -717,13 +726,14 @@ class RigBridgeTab(QWidget):
                         # flrig/hamlib sind global — aus Profilen entfernen.
                         p.pop("flrig", None)
                         p.pop("hamlib", None)
+                        p.pop("cat_tcp", None)
                         profiles.append(p)
             if not profiles:
                 # Altform: flache Struktur → ein Profil bauen.
                 flat = {
                     k: v
                     for k, v in rb.items()
-                    if k not in ("rigs", "active_rig_id", "flrig", "hamlib")
+                    if k not in ("rigs", "active_rig_id", "flrig", "hamlib", "cat_tcp")
                 }
                 flat.setdefault("id", "default")
                 flat.setdefault("name", str(flat.get("selected_rig", "") or "Rig 1"))
@@ -764,9 +774,7 @@ class RigBridgeTab(QWidget):
             self._rig_loading_cfg = False
         self.refresh_status()
 
-    def _load_global_flrig_hamlib_into_form(
-        self, flrig: dict, hamlib: dict
-    ) -> None:
+    def _load_global_flrig_hamlib_into_form(self, flrig: dict, hamlib: dict) -> None:
         """Globale Flrig-/Hamlib-Settings ins Formular uebertragen.
 
         Diese Werte sind NICHT profilabhaengig und werden deshalb nur beim
@@ -779,6 +787,7 @@ class RigBridgeTab(QWidget):
         self._protocol_host["flrig"].setText(str(fl.get("host", "127.0.0.1")))
         self._protocol_port["flrig"].setText(str(int(fl.get("port", 12345))))
         self._protocol_autostart["flrig"].setChecked(bool(fl.get("autostart", False)))
+        self.chk_flrig_log_tcp.setChecked(bool(fl.get("log_tcp_traffic", True)))
         self._protocol_enabled["hamlib"].setChecked(bool(hl.get("enabled", False)))
         self._hamlib_host.setText(str(hl.get("host", "127.0.0.1")))
         self._hamlib_clear_rows()
@@ -806,6 +815,7 @@ class RigBridgeTab(QWidget):
             self._hamlib_add_row("", "")
         self._protocol_autostart["hamlib"].setChecked(bool(hl.get("autostart", False)))
         self.chk_hamlib_debug.setChecked(bool(hl.get("debug_traffic", False)))
+        self.chk_hamlib_log_tcp.setChecked(bool(hl.get("log_tcp_traffic", False)))
 
     def _load_profile_dict_into_form(self, cfg: dict) -> None:
         """Formular mit den Werten des gegebenen Profil-Dicts fuellen.
@@ -899,6 +909,7 @@ class RigBridgeTab(QWidget):
             "host": self._protocol_host["flrig"].text().strip() or "127.0.0.1",
             "port": self._int_from_field(self._protocol_port["flrig"].text(), 12345, 1, 65535),
             "autostart": bool(self._protocol_autostart["flrig"].isChecked()),
+            "log_tcp_traffic": bool(self.chk_flrig_log_tcp.isChecked()),
         }
 
     def _form_to_global_hamlib(self) -> dict:
@@ -909,6 +920,7 @@ class RigBridgeTab(QWidget):
             "listeners": self._hamlib_listeners_to_config(),
             "autostart": bool(self._protocol_autostart["hamlib"].isChecked()),
             "debug_traffic": bool(self.chk_hamlib_debug.isChecked()),
+            "log_tcp_traffic": bool(self.chk_hamlib_log_tcp.isChecked()),
         }
 
     def to_config(self) -> dict:
@@ -917,6 +929,11 @@ class RigBridgeTab(QWidget):
         Vor dem Export wird das aktuell editierte Profil aus dem Formular
         uebernommen, damit keine Aenderungen verloren gehen.
         """
+        # Während ``_load_from_config`` feuern setChecked-Handler (Hamlib-Log
+        # usw.) — ohne Abbruch würde ``_capture_form_into_profile`` das Profil aus
+        # noch leeren Widgets in die JSON schreiben.
+        if getattr(self, "_rig_loading_cfg", False):
+            return dict(self.cfg.get("rig_bridge") or {})
         # Aktuelles Formular ins zugehoerige Profil schreiben und das
         # Global-Flag aus der Checkbox in ``_global_enabled`` spiegeln.
         self._capture_form_into_profile(self._selected_id)
@@ -929,6 +946,7 @@ class RigBridgeTab(QWidget):
             # flrig/hamlib sind global — aus Profilen fernhalten.
             entry.pop("flrig", None)
             entry.pop("hamlib", None)
+            entry.pop("cat_tcp", None)
             rigs_out.append(entry)
         active = self._active_id or (str(rigs_out[0].get("id", "")) if rigs_out else "")
         if not any(p.get("id") == active for p in rigs_out) and rigs_out:
@@ -943,6 +961,8 @@ class RigBridgeTab(QWidget):
         }
 
     def apply_to_manager(self) -> None:
+        if getattr(self, "_rig_loading_cfg", False):
+            return
         self.cfg["rig_bridge"] = self.to_config()
         self.manager.update_config(self.cfg["rig_bridge"])
         self.save_cfg_cb(self.cfg)

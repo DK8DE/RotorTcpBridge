@@ -52,12 +52,20 @@ _SPECIAL_HOTKEY_ENTRIES: tuple[tuple[str, str], ...] = (
     ("settings.shortcuts_key_page_down", "NEXT"),
     ("settings.shortcuts_key_plus", "OEM_PLUS"),
     ("settings.shortcuts_key_minus", "OEM_MINUS"),
+    ("settings.shortcuts_key_numpad_plus", "NUMPAD_ADD"),
+    ("settings.shortcuts_key_numpad_minus", "NUMPAD_SUBTRACT"),
 )
+
+
+# F1 … F12 (Label identisch zum Token)
+_FUNCTION_KEY_TOKENS: tuple[str, ...] = tuple(f"F{i}" for i in range(1, 13))
 
 
 def _fill_hotkey_combo(cb: QComboBox) -> None:
     for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
         cb.addItem(c, c)
+    for tok in _FUNCTION_KEY_TOKENS:
+        cb.addItem(tok, tok)
     for tr_key, data in _SPECIAL_HOTKEY_ENTRIES:
         cb.addItem(t(tr_key), data)
     for d in "0123456789":
@@ -65,6 +73,7 @@ def _fill_hotkey_combo(cb: QComboBox) -> None:
 
 
 _HOTKEY_SINGLE_CHAR = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+_HOTKEY_FUNCTION_KEYS = frozenset(_FUNCTION_KEY_TOKENS)
 
 
 def _select_hotkey_combo(cb: QComboBox, saved: str, default: str) -> None:
@@ -342,8 +351,11 @@ class ShortcutsTab(QWidget):
             self.cb_el_plus,
             self.cb_el_minus,
         ):
+            # Reihenfolge in _fill_hotkey_combo: 26 Buchstaben, dann F1–F12,
+            # dann Sondertasten (Pfeile/Bild/+/−/Num-+/Num-−), dann 10 Ziffern.
+            offset = 26 + len(_FUNCTION_KEY_TOKENS)
             for i, (tr_key, _data) in enumerate(_SPECIAL_HOTKEY_ENTRIES):
-                cb.setItemText(26 + i, t(tr_key))
+                cb.setItemText(offset + i, t(tr_key))
         self._refresh_hotkey_duplicate_ui()
         self.refresh_antenna_shortcut_row_labels()
 

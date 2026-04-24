@@ -442,24 +442,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        pst_udp_row = QHBoxLayout()
-        pst_udp_row.setContentsMargins(0, 0, 0, 0)
-        pst_udp_row.setSpacing(px_to_dip(self, 6))
-        pst_udp_row.addWidget(self._srv_led_wrap(self.led_pst_udp))
-        self._lbl_srv_pst_udp_suffix = QLabel("")
-        pst_udp_row.addWidget(self._lbl_srv_pst_udp_suffix)
-        pst_udp_row.addStretch(1)
-        pst_udp_row_w = QWidget()
-        pst_udp_row_w.setLayout(pst_udp_row)
-        srv_form.addRow(t("main.srv_pst_udp_prefix"), pst_udp_row_w)
-        self._srv_row_pst_udp_w = pst_udp_row_w
-        try:
-            self._lbl_srv_pst_udp_suffix.setText(
-                self._udp_bind_status_text("udp_pst_listen_host", "udp_pst_port", "127.0.0.1", 12000)
-            )
-        except Exception:
-            pass
-
         aswatch_row = QHBoxLayout()
         aswatch_row.setContentsMargins(0, 0, 0, 0)
         aswatch_row.setSpacing(px_to_dip(self, 6))
@@ -477,6 +459,24 @@ class MainWindow(QMainWindow):
                 self._udp_bind_status_text(
                     "aswatch_udp_listen_host", "aswatch_udp_port", "127.0.0.1", 9872
                 )
+            )
+        except Exception:
+            pass
+
+        pst_udp_row = QHBoxLayout()
+        pst_udp_row.setContentsMargins(0, 0, 0, 0)
+        pst_udp_row.setSpacing(px_to_dip(self, 6))
+        pst_udp_row.addWidget(self._srv_led_wrap(self.led_pst_udp))
+        self._lbl_srv_pst_udp_suffix = QLabel("")
+        pst_udp_row.addWidget(self._lbl_srv_pst_udp_suffix)
+        pst_udp_row.addStretch(1)
+        pst_udp_row_w = QWidget()
+        pst_udp_row_w.setLayout(pst_udp_row)
+        srv_form.addRow(t("main.srv_pst_udp_prefix"), pst_udp_row_w)
+        self._srv_row_pst_udp_w = pst_udp_row_w
+        try:
+            self._lbl_srv_pst_udp_suffix.setText(
+                self._udp_bind_status_text("udp_pst_listen_host", "udp_pst_port", "127.0.0.1", 12000)
             )
         except Exception:
             pass

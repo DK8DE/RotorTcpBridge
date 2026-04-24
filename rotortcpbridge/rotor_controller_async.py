@@ -52,7 +52,9 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
             # SETPOSDG an unseren Rotor (Mitschnitt; auch bei gleicher Master-ID wie wir,
             # z. B. zweiter Rechner / Echo auf dem Bus – Ziel muss trotzdem ins UI)
             cmd_u = str(tel.cmd or "").strip().upper()
-            if cmd_u in ("SETPOSDG", "SETPOSCC") and (d == saz or d == sel):
+            if cmd_u == "SETPOSDG" and (d == saz or d == sel):
+                return True
+            if cmd_u == "SETPOSCC" and (d == saz or d == sel):
                 return True
             # Broadcast: gewählte Antenne (alle Teilnehmer)
             if cmd_u == "SETASELECT" and d == int(BROADCAST_DST):
@@ -110,24 +112,27 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 saz = int(self.slave_az)
                 sel = int(self.slave_el)
                 mid = int(self.master_id)
-                # Encoder/Controller (z. B. SRC 2) kann SETPOSCC an Rotor-Slave oder an unsere
-                # Master-ID senden (#2:1:… = an Bridge). Payload kann ``Winkel;Rotor-ID`` sein.
+                # Encoder/Controller: SETPOSCC oft direkt an Slave-Adresse (AZ/EL) — dann ist
+                # ``dst`` maßgeblich für den Zeiger, nicht ``;rotor_id`` (kann CS-Teil / anderes Gerät sein).
+                # Nur wenn ``dst`` nicht unser AZ/EL-Slave ist: Achse aus ``Winkel;Rotor-ID`` oder Bridge (master_id).
                 axis_dst: int | None = None
-                try:
-                    _, rid = parse_setposcc_params(str(tel.params or ""))
-                except Exception:
-                    rid = None
-                if rid is not None:
-                    if rid == saz and self.enable_az:
-                        axis_dst = saz
-                    elif rid == sel and self.enable_el:
-                        axis_dst = sel
-                    else:
-                        return
-                if axis_dst is None:
-                    if dst == saz or dst == sel:
-                        axis_dst = dst
-                    elif dst == mid:
+                if dst == saz:
+                    axis_dst = saz
+                elif dst == sel:
+                    axis_dst = sel
+                else:
+                    try:
+                        _, rid = parse_setposcc_params(str(tel.params or ""))
+                    except Exception:
+                        rid = None
+                    if rid is not None:
+                        if rid == saz and self.enable_az:
+                            axis_dst = saz
+                        elif rid == sel and self.enable_el:
+                            axis_dst = sel
+                        else:
+                            return
+                    if axis_dst is None and dst == mid:
                         if self.enable_az:
                             axis_dst = saz
                         elif self.enable_el:

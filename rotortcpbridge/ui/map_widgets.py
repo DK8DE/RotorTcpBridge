@@ -7,9 +7,9 @@ import time
 from typing import Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
-from PySide6.QtCore import QRect, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QPainter, QPalette, QPen
-from PySide6.QtWidgets import QFrame, QWidget
+from PySide6.QtCore import QRect, QRectF, Qt, QTimer, QUrl
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QFrame, QGraphicsDropShadowEffect, QWidget
 from PySide6.QtWebEngineCore import QWebEnginePage
 
 from ..angle_utils import shortest_delta_deg, wrap_deg
@@ -58,6 +58,10 @@ class MapWindOverlay(QFrame):
         self.setFixedSize(self._OVERLAY_W, self._OVERLAY_H)
         self.setObjectName("mapWindOverlay")
         self._dark_mode = False
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+        self._shadow_fx = QGraphicsDropShadowEffect(self)
+        self.setGraphicsEffect(self._shadow_fx)
         self._apply_theme()
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
@@ -93,19 +97,25 @@ class MapWindOverlay(QFrame):
         self.setVisible(bool(on))
 
     def _apply_theme(self) -> None:
-        # Wie Infopanel/ASNEAREST auf der Karte: halbtransparent + Rand (Karte scheint leicht durch)
+        # Wie #infoMain / #asnearestBlock in map_html.py (nicht die ASwatch-Marker-Bubbles).
         if self._dark_mode:
             self.setStyleSheet(
-                "#mapWindOverlay { background-color: rgba(28, 28, 30, 0.45); color: #eaeaea; "
-                "border-radius: 8px; border: 1px solid rgba(180, 180, 190, 0.25); "
+                "#mapWindOverlay { background-color: transparent; color: #eaeaea; "
+                "border-radius: 8px; border: none; "
                 "}"
             )
+            self._shadow_fx.setBlurRadius(12)
+            self._shadow_fx.setOffset(0, 1)
+            self._shadow_fx.setColor(QColor(0, 0, 0, 89))  # box-shadow 0 1px 4px ~35%
         else:
             self.setStyleSheet(
-                "#mapWindOverlay { background-color: rgba(255, 255, 255, 0.22); color: #1a1a1a; "
-                "border-radius: 8px; border: 1px solid rgba(128, 128, 128, 0.35); "
+                "#mapWindOverlay { background-color: transparent; color: #1a1a1a; "
+                "border-radius: 8px; border: none; "
                 "}"
             )
+            self._shadow_fx.setBlurRadius(10)
+            self._shadow_fx.setOffset(0, 1)
+            self._shadow_fx.setColor(QColor(0, 0, 0, 20))  # box-shadow 0 1px 3px ~8%
 
     def _animate_wind_dir(self) -> None:
         if self._wind_dir_deg is None or self._wind_dir_draw_deg is None:
@@ -128,6 +138,21 @@ class MapWindOverlay(QFrame):
         with QPainter(self) as p:
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            # map_html #infoMain / body.map-dark #infoMain
+            if self._dark_mode:
+                _bg = QColor(28, 28, 30, int(0.45 * 255))
+                _br = QColor(180, 180, 190, int(0.25 * 255))
+            else:
+                _bg = QColor(255, 255, 255, int(0.22 * 255))
+                _br = QColor(128, 128, 128, int(0.35 * 255))
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(self.rect().adjusted(1, 1, -2, -2)), 8.0, 8.0)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(_bg)
+            p.drawPath(path)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(_br, 1))
+            p.drawPath(path)
             m = self._MARGIN
             full = self.rect().adjusted(m, m, -m, -m)
             # Unteren Streifen für km/h; Pfeil nur im Bereich darüber (mehr Platz für die Richtung)
@@ -168,7 +193,8 @@ class MapWindOverlay(QFrame):
                     p.drawPixmap(int(-w / 2.0), int(-h / 2.0), scaled)
                     p.restore()
                 else:
-                    p.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 2))
+                    _fg = QColor(234, 234, 234) if self._dark_mode else QColor(26, 26, 26)
+                    p.setPen(QPen(_fg, 2))
                     rad = math.radians(wd)
                     x2 = cx + math.sin(rad) * r
                     y2 = cy - math.cos(rad) * r

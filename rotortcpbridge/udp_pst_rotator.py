@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 import socket
 import threading
+import time
 from .angle_utils import wrap_deg
 from .net_utils import ipv4_subnet_broadcast_default, normalize_udp_bind_host
 from .pst_notify_logic import pst_notify_position_decision
@@ -89,6 +90,8 @@ class UdpPstRotator:
         self._zero_confirm: int = 0
         # Wird auf True gesetzt wenn ein Steuerpaket eingeht → LED blinken
         self.packet_received_flag = False
+        # Letztes eingehendes Steuerpaket (für Traffic-LED in Einstellungen / GUI)
+        self._last_rx_ts: float = 0.0
         # Fehlermeldung wenn Port beim Start belegt war (None = kein Fehler)
         self.bind_error_msg: str | None = None
 
@@ -99,6 +102,13 @@ class UdpPstRotator:
     @property
     def is_active(self) -> bool:
         return bool(self._enabled and self._running and self._sock_rx is not None)
+
+    @property
+    def last_rx_ts(self) -> float:
+        try:
+            return float(self._last_rx_ts or 0.0)
+        except Exception:
+            return 0.0
 
     def start(
         self,
@@ -265,6 +275,7 @@ class UdpPstRotator:
             return
 
         sender = f"{addr[0]}:{addr[1]}" if addr else "?"
+        self._last_rx_ts = time.time()
         self.packet_received_flag = True
 
         # Kurzabfragen ohne XML-Wrapper

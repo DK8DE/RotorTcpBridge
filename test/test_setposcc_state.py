@@ -196,6 +196,24 @@ def test_setposcc_bridge_payload_rotor_id_selects_el() -> None:
     assert c.az.compass_target_d10 is None
 
 
+def test_setposcc_dst_slave_wins_over_payload_rotor_id() -> None:
+    """Zieladresse = AZ-Slave: Kompass AZ, auch wenn ;rotor_id auf EL zeigt (Bus-Ziel zählt)."""
+    c = RotorController(
+        _hw_stub(),
+        master_id=1,
+        slave_az=20,
+        slave_el=21,
+        log=_Log(),
+        enable_az=True,
+        enable_el=True,
+    )
+    c.az.moving = False
+    tel = Telegram(src=2, dst=20, cmd="SETPOSCC", params="45,0;21", cs=0.0, ok=True)
+    c._on_async_tel(tel)
+    assert c.az.compass_target_d10 == 450
+    assert c.el.compass_target_d10 is None
+
+
 def test_setposcc_unknown_rotor_id_in_payload_dropped() -> None:
     c = RotorController(
         _hw_stub(),

@@ -34,6 +34,23 @@ def _peer_label(addr: object | None) -> str:
     except Exception:
         return repr(addr)
 
+
+def _peer_host_key_for_count(sock: socket.socket) -> str:
+    """Eindeutige Gegenstelle für die Client-Anzeige (mehrere TCP-Sitzungen = ein Host).
+
+    FLRig/qLog u. a. nutzen parallel mehrere HTTP-Verbindungen (Connection Pool) —
+    jede hat einen eigenen Ephemeral-Port. Für die GUI zählen wir pro Remote-IP
+    nur einmal; ohne gültigen Peer fällt die Zählung auf einen pro-Socket-Schlüssel zurück.
+    """
+    try:
+        p = sock.getpeername()
+        h = p[0]
+        if isinstance(h, str) and h.lower().startswith("::ffff:"):
+            h = h[7:]
+        return str(h).lower()
+    except Exception:
+        return f":sock:{id(sock)}"
+
 # Hamlib/XML-RPC++ sendet u. a. <?clientid="hamlib(pid)"?> — das ist für ElementTree kein
 # gültiges XML (zweites PI) und würde sonst das gesamte methodCall-Parsing scheitern lassen.
 _FLRIG_CLIENTID_PI = re.compile(r"<\?clientid[^?]*\?>\s*", re.IGNORECASE)
@@ -382,11 +399,21 @@ class FlrigBridgeServer:
                 ls.close()
             except Exception:
                 pass
-        self._on_clients_changed(0)
+        self._emit_client_peer_count()
         t = self._accept_thread
         self._accept_thread = None
         if t is not None and t.is_alive():
             t.join(timeout=4.0)
+
+    def _emit_client_peer_count(self) -> None:
+        """Callback mit Anzahl logischer Gegenstellen (eindeutige Remote-IPs), nicht TCP-Sockets."""
+        keys: set[str] = set()
+        for c in self._clients:
+            keys.add(_peer_host_key_for_count(c))
+        try:
+            self._on_clients_changed(len(keys))
+        except Exception:
+            pass
 
     def _accept_loop(self) -> None:
         while self._running and self._sock is not None:
@@ -405,7 +432,7 @@ class FlrigBridgeServer:
                     pass
                 break
             self._clients.add(c)
-            self._on_clients_changed(len(self._clients))
+            self._emit_client_peer_count()
             threading.Thread(target=self._client_loop, args=(c, addr), daemon=True).start()
 
     def _client_loop(self, client: socket.socket, peer_addr: object | None = None) -> None:
@@ -455,7 +482,7 @@ class FlrigBridgeServer:
             pass
         finally:
             self._clients.discard(client)
-            self._on_clients_changed(len(self._clients))
+            self._emit_client_peer_count()
             if self._log_client_traffic:
                 self._log_write("INFO", f"Flrig TCP: Client-Sitzung beendet ({peer_s})")
 

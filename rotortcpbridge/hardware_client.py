@@ -464,8 +464,8 @@ class HardwareClient:
                             if self.on_async_telegram:
                                 try:
                                     cmd_u = (tel.cmd or "").strip().upper()
-                                    # SETASELECT (Broadcast): Fremdgeräte können CS abweichen (s. rotor_controller_async)
-                                    if tel.ok or "SETASELECT" in cmd_u:
+                                    # SETASELECT / SETPOSCC (Mitschnitt): CS kann abweichen
+                                    if tel.ok or "SETASELECT" in cmd_u or "SETPOSCC" in cmd_u:
                                         self.on_async_telegram(tel)
                                 except Exception:
                                     pass

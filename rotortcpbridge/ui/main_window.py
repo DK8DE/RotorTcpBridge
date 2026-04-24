@@ -222,6 +222,10 @@ class MainWindow(QMainWindow):
         self._pst_udp_blink_phase = 0
         self._pst_udp_blink_active = False
         self._pst_udp_blink_sequence = (True, False, True, False, True, False, True, False, True)
+        self._pst_tcp_blink_phase = 0
+        self._pst_tcp_blink_active = False
+        self._pst_tcp_prev_last_rx_ts = 0.0
+        self._pst_tcp_blink_sequence = (True, False, True, False, True, False, True, False, True)
         self._aswatch_blink_phase = 0
         self._aswatch_blink_active = False
         self._aswatch_blink_sequence = (True, False, True, False, True, False, True, False, True)
@@ -379,7 +383,6 @@ class MainWindow(QMainWindow):
         led_d = px_to_dip(self, 12)
         self._srv_led_d = led_d
         self.led_pst = Led(led_d, self)
-        self.led_pst_conn = Led(led_d, self)
         self.led_ucxlog = Led(led_d, self)
         self.led_pst_udp = Led(led_d, self)
         self.led_aswatch = Led(led_d, self)
@@ -418,18 +421,6 @@ class MainWindow(QMainWindow):
         pst_row_w.setLayout(pst_row)
         srv_form.addRow(t("main.srv_pst_label"), pst_row_w)
         self._srv_row_pst_w = pst_row_w
-
-        pst_conn_row = QHBoxLayout()
-        pst_conn_row.setContentsMargins(0, 0, 0, 0)
-        pst_conn_row.setSpacing(px_to_dip(self, 6))
-        pst_conn_row.addWidget(self._srv_led_wrap(self.led_pst_conn))
-        self._lbl_srv_pst_conn = QLabel(t("main.srv_pst_conn_text"))
-        pst_conn_row.addWidget(self._lbl_srv_pst_conn)
-        pst_conn_row.addStretch(1)
-        pst_conn_row_w = QWidget()
-        pst_conn_row_w.setLayout(pst_conn_row)
-        srv_form.addRow(t("main.srv_pst_conn_label"), pst_conn_row_w)
-        self._srv_row_pst_conn_w = pst_conn_row_w
 
         ucxlog_row = QHBoxLayout()
         ucxlog_row.setContentsMargins(0, 0, 0, 0)
@@ -645,6 +636,7 @@ class MainWindow(QMainWindow):
             rebuild_ui_cb=self._rebuild_all_windows,
             map_window=self._map_win,
             pst_serial=self.pst_serial,
+            udp_pst=self._udp_pst,
             parent=None,
         )
         self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
@@ -950,9 +942,6 @@ class MainWindow(QMainWindow):
             lab = sf.labelForField(self._srv_row_pst_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_pst_label"))
-            lab = sf.labelForField(self._srv_row_pst_conn_w)
-            if isinstance(lab, QLabel):
-                lab.setText(t("main.srv_pst_conn_label"))
             lab = sf.labelForField(self._srv_row_ucxlog_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_ucxlog_prefix"))
@@ -971,7 +960,6 @@ class MainWindow(QMainWindow):
             lab = sf.labelForField(self._srv_row_rig_hamlib_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_rig_hamlib_label"))
-            self._lbl_srv_pst_conn.setText(t("main.srv_pst_conn_text"))
             self._lbl_srv_ucxlog_suffix.setText(
                 self._udp_bind_status_text(
                     "udp_ucxlog_listen_host", "udp_ucxlog_port", "127.0.0.1", 12040
@@ -1107,6 +1095,7 @@ class MainWindow(QMainWindow):
                 rebuild_ui_cb=self._rebuild_all_windows,
                 map_window=self._map_win,
                 pst_serial=self.pst_serial,
+                udp_pst=self._udp_pst,
                 parent=None,
             )
         except Exception:
@@ -1522,7 +1511,6 @@ class MainWindow(QMainWindow):
         rig_ham = rig_mod and bool((rb.get("hamlib") or {}).get("enabled", False))
         try:
             self._srv_form.setRowVisible(self._srv_row_pst_w, pst_on)
-            self._srv_form.setRowVisible(self._srv_row_pst_conn_w, pst_on)
             self._srv_form.setRowVisible(self._srv_row_ucxlog_w, ucxlog_on)
             self._srv_form.setRowVisible(self._srv_row_pst_udp_w, pst_udp_on)
             self._srv_form.setRowVisible(self._srv_row_aswatch_w, aswatch_on)
@@ -1825,17 +1813,29 @@ class MainWindow(QMainWindow):
 
         pst_on = bool(self.pst.running)
         hw_on = bool(self.hw.is_connected())
-        self.led_pst.set_state(pst_on)
-        try:
-            last_rx = float(getattr(self.pst, "last_rx_ts", 0.0) or 0.0)
-            pst_recent = pst_on and (last_rx > 0.0) and ((_time.time() - last_rx) <= 2.0)
-        except Exception as e:
-            self._log_exception("_tick pst_recent", e)
-            pst_recent = False
-        try:
-            self.led_pst_conn.set_state(bool(pst_recent))
-        except Exception as e:
-            self._log_exception("_tick led_pst_conn", e)
+        if not pst_on:
+            self._pst_tcp_blink_active = False
+            self._pst_tcp_prev_last_rx_ts = 0.0
+            self.led_pst.set_state(False)
+        else:
+            try:
+                last_rx_ts = float(getattr(self.pst, "last_rx_ts", 0.0) or 0.0)
+                prev_rx = float(self._pst_tcp_prev_last_rx_ts or 0.0)
+                if last_rx_ts > prev_rx + 1e-9:
+                    self._pst_tcp_prev_last_rx_ts = last_rx_ts
+                    self._pst_tcp_blink_phase = 0
+                    self._pst_tcp_blink_active = True
+            except Exception as e:
+                self._log_exception("_tick pst_tcp_rx", e)
+            if self._pst_tcp_blink_active:
+                seq = self._pst_tcp_blink_sequence
+                if self._pst_tcp_blink_phase < len(seq):
+                    self.led_pst.set_state(seq[self._pst_tcp_blink_phase])
+                    self._pst_tcp_blink_phase += 1
+                else:
+                    self._pst_tcp_blink_active = False
+            if not self._pst_tcp_blink_active:
+                self.led_pst.set_state(True)
 
         udp = getattr(self, "_udp_ucxlog", None)
         if udp is not None:
@@ -2161,9 +2161,19 @@ class MainWindow(QMainWindow):
             self._log_exception("_tick led_hw / HW-Timeout-Anzeige", e)
             self.led_hw.set_state(hw_on)
 
-        self.lbl_pst.setText(
-            f"{t('main.pst_running') if pst_on else t('main.pst_stopped')}  AZ:{self.pst.port_az}  EL:{self.pst.port_el}  Host:{self.pst.host}"
-        )
+        ps = self.cfg.get("pst_server", {}) or {}
+        _h = str(getattr(self.pst, "host", None) or ps.get("listen_host", "0.0.0.0") or "0.0.0.0").strip()
+        _pa = getattr(self.pst, "port_az", None)
+        _pe = getattr(self.pst, "port_el", None)
+        try:
+            _paz = int(_pa) if _pa is not None else int(ps.get("listen_port_az", 4001))
+        except (TypeError, ValueError):
+            _paz = 4001
+        try:
+            _pel = int(_pe) if _pe is not None else int(ps.get("listen_port_el", 4002))
+        except (TypeError, ValueError):
+            _pel = 4002
+        self.lbl_pst.setText(f"{_h}:{_paz}:{_pel}")
         hl = self.cfg["hardware_link"]
         mode = hl.get("mode", "tcp")
         ip = str(hl.get("tcp_ip", "") or "")

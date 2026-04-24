@@ -111,12 +111,14 @@ class SettingsWindow(QDialog):
         rebuild_ui_cb=None,
         map_window=None,
         pst_serial=None,
+        udp_pst=None,
         parent=None,
     ):
         super().__init__(parent)
         self.cfg = cfg
         self.ctrl = controller
         self.pst = pst_server
+        self._udp_pst = udp_pst
         self.hw = hw_client
         self.save_cfg_cb = save_cfg_cb
         self.logbuf = logbuf
@@ -198,6 +200,26 @@ class SettingsWindow(QDialog):
         fl_spid_tcp_pst.addRow(t("settings.pst_port_az"), self.sp_listen_port_az)
         fl_spid_tcp_pst.addRow(t("settings.pst_port_el"), self.sp_listen_port_el)
 
+        _pst_led_d = max(8, px_to_dip(self, 12))
+        row_pst_tcp_status = QWidget()
+        hl_pst_tcp = QHBoxLayout(row_pst_tcp_status)
+        hl_pst_tcp.setContentsMargins(0, 0, 0, 0)
+        hl_pst_tcp.setSpacing(8)
+        hl_pst_tcp.addWidget(QLabel(t("rig.lbl_status")))
+        self._led_pst_tcp_running = Led(_pst_led_d, self)
+        self._led_pst_tcp_running.setToolTip(tt("settings.pst_tcp_led_running_tooltip"))
+        hl_pst_tcp.addWidget(self._led_pst_tcp_running, 0, Qt.AlignmentFlag.AlignLeft)
+        hl_pst_tcp.addSpacing(10)
+        self._lbl_pst_tcp_bind = QLabel("")
+        self._lbl_pst_tcp_bind.setWordWrap(True)
+        hl_pst_tcp.addWidget(self._lbl_pst_tcp_bind, 1)
+        hl_pst_tcp.addStretch(1)
+        fl_spid_tcp_pst.addRow(row_pst_tcp_status)
+
+        self._pst_tcp_status_timer = QTimer(self)
+        self._pst_tcp_status_timer.setInterval(500)
+        self._pst_tcp_status_timer.timeout.connect(self._tick_emulation_status)
+
         self.cb_hw_mode = QComboBox()
         self.cb_hw_mode.addItem("TCP", "tcp")
         self.cb_hw_mode.addItem("COM", "com")
@@ -270,6 +292,7 @@ class SettingsWindow(QDialog):
 
         _udp_ip_field_w = px_to_dip(self, 102)  # 82 + 20 px
         _udp_port_field_w = px_to_dip(self, 76 - 15)  # 61 px
+        _udp_port_ucx_aswatch_w = px_to_dip(self, 100)  # UCXLog / AirScout / UDP-PST-Port (5 Ziffern)
         _udp_target_field_w = px_to_dip(self, 102)  # Ziel-IP wie Listen-IP (+20 px)
         # Checkbox-Spalte: Basisbreite minus gewünschten Linksschub (kein neg. margin – der clippt Beschriftung)
         _udp_chk_col_w = max(0, px_to_dip(self, 218) - px_to_dip(self, 130))
@@ -291,7 +314,7 @@ class SettingsWindow(QDialog):
         self.sp_udp_ucxlog_port = QSpinBox()
         self.sp_udp_ucxlog_port.setRange(1, 65535)
         self.sp_udp_ucxlog_port.setValue(int(_ui0.get("udp_ucxlog_port", 12040)))
-        self.sp_udp_ucxlog_port.setFixedWidth(_udp_port_field_w)
+        self.sp_udp_ucxlog_port.setFixedWidth(_udp_port_ucx_aswatch_w)
         self.sp_udp_ucxlog_port.setToolTip(tt("settings.ucxlog_udp_port_tooltip"))
 
         self.chk_aswatch_udp = QCheckBox(t("settings.chk_aswatch_udp"))
@@ -304,7 +327,7 @@ class SettingsWindow(QDialog):
         self.sp_aswatch_udp_port = QSpinBox()
         self.sp_aswatch_udp_port.setRange(1, 65535)
         self.sp_aswatch_udp_port.setValue(int(_ui0.get("aswatch_udp_port", 9872)))
-        self.sp_aswatch_udp_port.setFixedWidth(_udp_port_field_w)
+        self.sp_aswatch_udp_port.setFixedWidth(_udp_port_ucx_aswatch_w)
         self.sp_aswatch_udp_port.setToolTip(tt("settings.aswatch_udp_port_tooltip"))
 
         self.chk_aswatch_aircraft = QCheckBox(t("settings.chk_aswatch_aircraft"))
@@ -368,7 +391,7 @@ class SettingsWindow(QDialog):
         self.sp_udp_pst_port = QSpinBox()
         self.sp_udp_pst_port.setRange(1, 65534)
         self.sp_udp_pst_port.setValue(int(_ui0.get("udp_pst_port", 12000)))
-        self.sp_udp_pst_port.setFixedWidth(_udp_port_field_w)
+        self.sp_udp_pst_port.setFixedWidth(_udp_port_ucx_aswatch_w)
         self.sp_udp_pst_port.setToolTip(tt("settings.udp_pst_port_tooltip"))
         self.ed_udp_pst_send_host = QLineEdit()
         _pst_auto_host = ipv4_subnet_broadcast_default()
@@ -485,6 +508,20 @@ class SettingsWindow(QDialog):
         udp_pst_block_w = QWidget()
         udp_pst_block_w.setLayout(grid_pst)
 
+        row_udp_pst_status = QWidget()
+        hl_udp_pst = QHBoxLayout(row_udp_pst_status)
+        hl_udp_pst.setContentsMargins(0, 0, 0, 0)
+        hl_udp_pst.setSpacing(8)
+        hl_udp_pst.addWidget(QLabel(t("rig.lbl_status")))
+        self._led_udp_pst_running = Led(_pst_led_d, self)
+        self._led_udp_pst_running.setToolTip(tt("settings.udp_pst_led_running_tooltip"))
+        hl_udp_pst.addWidget(self._led_udp_pst_running, 0, Qt.AlignmentFlag.AlignLeft)
+        hl_udp_pst.addSpacing(10)
+        self._lbl_udp_pst_bind = QLabel("")
+        self._lbl_udp_pst_bind.setWordWrap(True)
+        hl_udp_pst.addWidget(self._lbl_udp_pst_bind, 1)
+        hl_udp_pst.addStretch(1)
+
         # Zwei getrennte Gruppenrahmen: SPID-BIG-RAS (TCP, Yaesu-kompatibel) und
         # PST-Rotator (UDP). Beide sind Emulationen unterschiedlicher Protokolle
         # und schliessen sich weiterhin gegenseitig aus (siehe Handler unten).
@@ -495,6 +532,7 @@ class SettingsWindow(QDialog):
         gb_udp_pst_emulation = QGroupBox(t("settings.group_udp_pst_emulation"))
         _vl_pst_box = QVBoxLayout(gb_udp_pst_emulation)
         _vl_pst_box.addWidget(udp_pst_block_w)
+        _vl_pst_box.addWidget(row_udp_pst_status)
 
         pg_links = QWidget()
         vl_links = QVBoxLayout(pg_links)
@@ -516,8 +554,8 @@ class SettingsWindow(QDialog):
         # SPID BIG-RAS (TCP) und UDP PST-Rotator schließen sich aus; beide aus ist erlaubt.
         if self.chk_pst_enabled.isChecked() and self.chk_udp_pst.isChecked():
             self.chk_udp_pst.setChecked(False)
-        self.chk_pst_enabled.stateChanged.connect(self._on_spid_vs_udp_pst_exclusive)
-        self.chk_udp_pst.stateChanged.connect(self._on_udp_pst_vs_spid_exclusive)
+        self.chk_pst_enabled.stateChanged.connect(self._on_pst_tcp_emulation_toggled)
+        self.chk_udp_pst.stateChanged.connect(self._on_udp_pst_emulation_toggled)
 
         def _sync_aswatch_aircraft_row():
             en = self.chk_aswatch_udp.isChecked()
@@ -1373,6 +1411,8 @@ class SettingsWindow(QDialog):
         self._antenna_request_timer.start()
         self._antenna_giveup_timer.start()
         self._hw_link_timer.start()
+        self._pst_tcp_status_timer.start()
+        QTimer.singleShot(0, self._tick_emulation_status)
         self._update_strom_cal_buttons_enabled()
         if self._settings_nav.currentRow() == getattr(self, "_tab_statistics_index", -1):
             self._start_calvalid_timer()
@@ -1429,6 +1469,7 @@ class SettingsWindow(QDialog):
         self._antenna_request_timer.stop()
         self._antenna_giveup_timer.stop()
         self._hw_link_timer.stop()
+        self._pst_tcp_status_timer.stop()
         self._stop_calvalid_timer()
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(False)
@@ -1447,6 +1488,7 @@ class SettingsWindow(QDialog):
             self._antenna_request_timer.stop()
             self._antenna_giveup_timer.stop()
             self._hw_link_timer.stop()
+            self._pst_tcp_status_timer.stop()
             self._stop_calvalid_timer()
             if hasattr(self.ctrl, "set_settings_window_open"):
                 self.ctrl.set_settings_window_open(False)
@@ -1457,6 +1499,7 @@ class SettingsWindow(QDialog):
         self._antenna_request_timer.stop()
         self._antenna_giveup_timer.stop()
         self._hw_link_timer.stop()
+        self._pst_tcp_status_timer.stop()
         self._stop_calvalid_timer()
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(False)
@@ -1900,19 +1943,69 @@ class SettingsWindow(QDialog):
                 return False
         return True
 
-    def _on_spid_vs_udp_pst_exclusive(self, _state: int) -> None:
-        """Nur eines aktiv: SPID BIG-RAS vs. UDP PST-Rotator."""
-        if self.chk_pst_enabled.isChecked():
+    def _apply_pst_emulation_live_from_ui(self) -> None:
+        """Checkboxen + Felder → Config speichern; SPID-TCP und UDP-PST sofort starten/stoppen (gegenseitig exklusiv)."""
+        if self.chk_pst_enabled.isChecked() and self.chk_udp_pst.isChecked():
             self.chk_udp_pst.blockSignals(True)
             self.chk_udp_pst.setChecked(False)
             self.chk_udp_pst.blockSignals(False)
+        self._sync_pst_server_cfg_from_tcp_ui()
+        self._sync_udp_pst_cfg_from_ui()
+        try:
+            self.save_cfg_cb(self.cfg)
+        except Exception as exc:
+            self.logbuf.write("WARN", f"PST-Emulation live: Config speichern fehlgeschlagen: {exc}")
+        ps = self.cfg.get("pst_server", {}) or {}
+        if bool(ps.get("enabled")):
+            try:
+                self.pst.restart(
+                    str(ps.get("listen_host", "0.0.0.0")),
+                    int(ps.get("listen_port_az", 4001)),
+                    int(ps.get("listen_port_el", 4002)),
+                )
+            except Exception as exc:
+                self.logbuf.write("WARN", f"PST-TCP live: Neustart fehlgeschlagen: {exc}")
+        else:
+            try:
+                self.pst.stop()
+            except Exception as exc:
+                self.logbuf.write("WARN", f"PST-TCP live: Stop fehlgeschlagen: {exc}")
+        u = getattr(self, "_udp_pst", None)
+        if u is not None:
+            try:
+                ui = self.cfg.get("ui", {}) or {}
+                u.start(
+                    enabled=bool(ui.get("udp_pst_enabled")),
+                    port=int(ui.get("udp_pst_port", 12000)),
+                    send_host=None,
+                    listen_host=str(ui.get("udp_pst_listen_host", "127.0.0.1")),
+                )
+            except Exception as exc:
+                self.logbuf.write("WARN", f"UDP PST live: {exc}")
+        if self.after_apply_cb:
+            try:
+                self.after_apply_cb()
+            except Exception as exc:
+                self.logbuf.write("WARN", f"PST-Emulation live: after_apply_cb: {exc}")
+        self._tick_emulation_status()
 
-    def _on_udp_pst_vs_spid_exclusive(self, _state: int) -> None:
-        """Nur eines aktiv: UDP PST-Rotator vs. SPID BIG-RAS."""
-        if self.chk_udp_pst.isChecked():
-            self.chk_pst_enabled.blockSignals(True)
-            self.chk_pst_enabled.setChecked(False)
-            self.chk_pst_enabled.blockSignals(False)
+    def _on_pst_tcp_emulation_toggled(self, _state: object = None) -> None:
+        """SPID BIG-RAS an → UDP-PST aus; jede Änderung sofort auf Dienste anwenden."""
+        if self.chk_pst_enabled.checkState() == Qt.CheckState.Checked:
+            if self.chk_udp_pst.isChecked():
+                self.chk_udp_pst.blockSignals(True)
+                self.chk_udp_pst.setChecked(False)
+                self.chk_udp_pst.blockSignals(False)
+        self._apply_pst_emulation_live_from_ui()
+
+    def _on_udp_pst_emulation_toggled(self, _state: object = None) -> None:
+        """UDP-PST an → SPID-TCP aus; jede Änderung sofort auf Dienste anwenden."""
+        if self.chk_udp_pst.checkState() == Qt.CheckState.Checked:
+            if self.chk_pst_enabled.isChecked():
+                self.chk_pst_enabled.blockSignals(True)
+                self.chk_pst_enabled.setChecked(False)
+                self.chk_pst_enabled.blockSignals(False)
+        self._apply_pst_emulation_live_from_ui()
 
     def _update_status_on_open(self) -> None:
         """Statuszeile beim Öffnen: welche Achsen aktiv und online sind."""
@@ -2173,6 +2266,63 @@ class SettingsWindow(QDialog):
         """Periodisch: Verbindungsabhängige Buttons + Antennennamen (HW-Controller)."""
         self._update_strom_cal_buttons_enabled()
         self._update_antenna_offset_enabled()
+
+    def _sync_pst_server_cfg_from_tcp_ui(self) -> None:
+        """PST-TCP-Gruppe → ``cfg['pst_server']`` und ``ui.udp_pst_enabled`` (ohne vollständigen Speichern-Dialog)."""
+        self.cfg.setdefault("pst_server", {})
+        self.cfg["pst_server"]["enabled"] = bool(self.chk_pst_enabled.isChecked())
+        self.cfg["pst_server"]["listen_host"] = self.ed_listen_host.text().strip()
+        self.cfg["pst_server"]["listen_port_az"] = int(self.sp_listen_port_az.value())
+        self.cfg["pst_server"]["listen_port_el"] = int(self.sp_listen_port_el.value())
+        self.cfg.setdefault("ui", {})["udp_pst_enabled"] = bool(self.chk_udp_pst.isChecked())
+
+    def _tick_pst_tcp_status(self) -> None:
+        """Status-LED und Bind-Text für den PST-TCP-Emulationsdienst."""
+        try:
+            pst_on = bool(getattr(self.pst, "running", False))
+        except Exception:
+            pst_on = False
+        self._led_pst_tcp_running.set_state(pst_on)
+        host = (self.ed_listen_host.text() or "").strip() or "0.0.0.0"
+        try:
+            paz = int(self.sp_listen_port_az.value())
+            pel = int(self.sp_listen_port_el.value())
+        except Exception:
+            paz, pel = 4001, 4002
+        self._lbl_pst_tcp_bind.setText(t("settings.pst_tcp_bind_detail", host=host, az=paz, el=pel))
+
+    def _tick_emulation_status(self) -> None:
+        self._tick_pst_tcp_status()
+        self._tick_udp_pst_status()
+
+    def _sync_udp_pst_cfg_from_ui(self) -> None:
+        """UDP-PST-Gruppe → ``cfg['ui']`` (Ports, Hosts, aktiv)."""
+        ui = self.cfg.setdefault("ui", {})
+        ui["udp_pst_enabled"] = bool(self.chk_udp_pst.isChecked())
+        ui["udp_pst_port"] = int(self.sp_udp_pst_port.value())
+        ui["udp_pst_listen_host"] = self.ed_udp_pst_listen.text().strip()
+        ui["udp_pst_send_host"] = self.ed_udp_pst_send_host.text().strip()
+
+    def _tick_udp_pst_status(self) -> None:
+        """Status-LEDs und Bind-Text für den UDP-PST-Rotator-Emulator."""
+        u = getattr(self, "_udp_pst", None)
+        if u is None:
+            self._led_udp_pst_running.set_state(False)
+            self._lbl_udp_pst_bind.setText("")
+            return
+        on = bool(u.is_active)
+        self._led_udp_pst_running.set_state(on)
+        lh = (self.ed_udp_pst_listen.text() or "").strip() or "127.0.0.1"
+        try:
+            p = int(self.sp_udp_pst_port.value())
+        except Exception:
+            p = 12000
+        tgt = (self.ed_udp_pst_send_host.text() or "").strip()
+        if not tgt:
+            tgt = t("settings.udp_pst_bind_target_auto")
+        self._lbl_udp_pst_bind.setText(
+            t("settings.udp_pst_bind_detail", listen=lh, port=p, target=tgt, reply_port=p + 1)
+        )
 
     def _push_antenna_angles_to_config(self) -> None:
         """Öffnungswinkel-Spinboxen sofort in Config schreiben."""

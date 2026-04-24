@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from ..ports import list_serial_ports
 from .cat_commands import normalize_com_port
-from .config import RigBridgeConfig
+from .config import RigBridgeConfig, clamp_rig_profile_display_name
 from .protocol_flrig import FlrigBridgeServer
 from .protocol_hamlib_net_rigctl import HamlibNetRigctlServer
 from .radio_backend import RadioConnectionManager
@@ -64,6 +64,7 @@ def _normalize_rb_dict(
             p.setdefault("id", f"rig_{len(profiles)}")
             p.setdefault("name", str(p.get("selected_rig", "") or p["id"]))
             p.setdefault("enabled", True)
+            p["name"] = clamp_rig_profile_display_name(p.get("name"))
             profiles.append(p)
         if not profiles:
             profiles = [{"id": "default", "name": "Rig 1", "enabled": True}]
@@ -103,6 +104,7 @@ def _normalize_rb_dict(
     profile.setdefault("id", "default")
     profile.setdefault("name", selected)
     profile.setdefault("enabled", True)
+    profile["name"] = clamp_rig_profile_display_name(profile.get("name"))
     # Die TCP-Server-Konfiguration wurde in der alten flachen Form ggf.
     # bereits unter flrig/hamlib mitgefuehrt — uebernehmen, ansonsten Defaults.
     flrig = dict(_DEFAULT_FLRIG)
@@ -237,6 +239,12 @@ class RigBridgeManager:
         #: Port → laufender rigctld-Server (mehrere Clients pro Port möglich)
         self._hamlib_servers: dict[int, HamlibNetRigctlServer] = {}
         self._hamlib_client_counts: dict[int, int] = {}
+
+    def _cfg_flrig_port(self) -> int:
+        try:
+            return max(1, min(65535, int(self._cfg.flrig.get("port", 12345))))
+        except Exception:
+            return 12345
 
     def _on_flrig_clients_changed(self, n: int) -> None:
         n = max(0, int(n))
@@ -527,9 +535,8 @@ class RigBridgeManager:
         """VFO-Frequenz per CAT (``FA;``) vom Funkgerät lesen und in den State schreiben."""
         if not self._radio.is_serial_connected():
             return
-        # Flrig (rig.get_vfo*) und Hamlib (``f``) lesen die Frequenz bereits pro Client — zusätzlicher
-        # UI-Poll würde die COM-Schlange stauen (Doppel-READFREQ), verzögert Abstimmung und kann
-        # sporadische ``.?;``/Parser-Stolperer am Yaesu-CAT begünstigen.
+        # Flrig (rig.get_vfo*) und Hamlib (``f``) pollen/lesen selbst —
+        # ein zusätzlicher UI-``FA;`` staut die COM-Schlange (Doppel-READFREQ).
         n_fl = int(self._state.protocol_clients.get("flrig", 0) or 0)
         n_hm = int(self._state.protocol_clients.get("hamlib", 0) or 0)
         if n_fl > 0 or n_hm > 0:
@@ -779,6 +786,10 @@ class RigBridgeManager:
         ports = [p for p, _ in resolved]
         if len(ports) != len(set(ports)):
             return None, "Hamlib: jeder Port darf nur einmal vorkommen."
+        fp = self._cfg_flrig_port()
+        for p, _n in resolved:
+            if int(p) == int(fp):
+                return None, "Hamlib: Port kollidiert mit Flrig."
         return resolved, None
 
     def _make_hamlib_server(self, port: int, log_label: str) -> HamlibNetRigctlServer:
@@ -802,6 +813,9 @@ class RigBridgeManager:
             return False, "Funkgerät nicht verbunden"
         try:
             if name == "flrig":
+                fp = self._cfg_flrig_port()
+                if fp in self._hamlib_reserved_ports():
+                    return False, "Flrig: Port kollidiert mit einem Hamlib-rigctl-Port."
                 self._flrig.start(self._cfg.flrig.get("host", "127.0.0.1"), int(self._cfg.flrig.get("port", 12345)))
             elif name == "hamlib":
                 entries, err = self._parse_hamlib_start_entries()

@@ -54,7 +54,7 @@ from PySide6.QtWidgets import (
 from ..compass.statistic_compass_widget import compute_bin_min_max
 from ..app_icon import get_app_icon
 from ..command_catalog import command_specs, format_cmd_tooltip
-from ..ports import list_serial_port_entries, list_serial_ports
+from ..ports import list_serial_port_entries
 from ..i18n import format_tooltip_html, load_lang, t, tt
 from ..geo_utils import maidenhead_to_lat_lon
 from ..net_utils import ipv4_subnet_broadcast_default
@@ -2114,7 +2114,8 @@ class SettingsWindow(QDialog):
             w.setStyleSheet(ss)
         nav = getattr(self, "_settings_nav", None)
         if nav is not None:
-            nav.update()
+            # QListWidget erbt QAbstractItemView.update(index) — nicht QWidget.update().
+            QWidget.update(nav)
 
     def _update_antenna_visibility(self) -> None:
         self._update_strom_cal_sections_visibility()
@@ -2473,10 +2474,8 @@ class SettingsWindow(QDialog):
         uih["compass_dwell_full_minutes"] = float(self.sp_compass_dwell_minutes.value())
         try:
             self.cfg["rig_bridge"] = self._rig_bridge_tab.to_config()
-            if self.rig_bridge_manager is not None:
-                self.rig_bridge_manager.update_config(self.cfg["rig_bridge"])
         except Exception as exc:
-            self.logbuf.write("WARN", f"Rig-Bridge Konfigurationsübernahme fehlgeschlagen: {exc}")
+            self.logbuf.write("WARN", f"Rig-Bridge Konfiguration lesen fehlgeschlagen: {exc}")
 
         try:
             self.cfg["pst_serial"] = self._com0com_tab.to_config()
@@ -2583,6 +2582,14 @@ class SettingsWindow(QDialog):
 
         if self.after_apply_cb:
             self.after_apply_cb()
+
+        # PST-Serial (after_apply_cb) zuerst anwenden, dann Rig-Bridge — sonst COM-Konflikt
+        # mit virtuellen com0com-Ports (PermissionError 13).
+        try:
+            if self.rig_bridge_manager is not None and "rig_bridge" in self.cfg:
+                self.rig_bridge_manager.update_config(self.cfg["rig_bridge"])
+        except Exception as exc:
+            self.logbuf.write("WARN", f"Rig-Bridge Konfigurationsübernahme fehlgeschlagen: {exc}")
 
         if lang_changed and self.rebuild_ui_cb:
             self.rebuild_ui_cb()

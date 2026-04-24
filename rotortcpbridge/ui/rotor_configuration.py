@@ -1001,7 +1001,7 @@ class CommandButtonsWindow(QDialog):
             QMessageBox.warning(self, t("cmd.btn_send"), t("cmd.msgbox_send_failed", err=e))
 
     @Slot(str, str, str, str)
-    def _apply_send_result(self, cmd: str, ack_cmd: str, params: str, err: str) -> None:
+    def _apply_send_result(self, cmd: str, _ack_cmd: str, params: str, err: str) -> None:
         if err:
             self.lbl_hint.setText(t("cmd.hint_no_response", cmd=cmd, err=err))
         else:

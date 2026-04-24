@@ -191,7 +191,7 @@ class MapWebPage(QWebEnginePage):
         self._on_click_cb = on_click_cb
         self._on_tile_error_cb = on_tile_error_cb
 
-    def javaScriptConsoleMessage(self, level, message, line_number, source_id):
+    def javaScriptConsoleMessage(self, level, message, _line_number, _source_id):
         if message == "ROTOR_TILEERROR" and self._on_tile_error_cb:
             self._on_tile_error_cb()
 

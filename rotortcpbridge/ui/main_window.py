@@ -876,7 +876,7 @@ class MainWindow(QMainWindow):
         default_host: str,
         default_port: int,
     ) -> str:
-        """Kurzinfo „IP:Port“ für UDP-Zeilen in der Server-Gruppe."""
+        """Kurzinfo „host:port“ für UDP-Zeilen in der Server-Gruppe (Suffix rechts)."""
         ui = self.cfg.get("ui", {})
         h = str(ui.get(host_key, default_host) or default_host).strip() or default_host
         try:
@@ -972,7 +972,6 @@ class MainWindow(QMainWindow):
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_rig_hamlib_label"))
             self._lbl_srv_pst_conn.setText(t("main.srv_pst_conn_text"))
-            ui = self.cfg.get("ui", {})
             self._lbl_srv_ucxlog_suffix.setText(
                 self._udp_bind_status_text(
                     "udp_ucxlog_listen_host", "udp_ucxlog_port", "127.0.0.1", 12040
@@ -1626,9 +1625,9 @@ class MainWindow(QMainWindow):
         if new_id == cur:
             return
         try:
-            ok, msg = rbm.set_active_profile(new_id)
+            ok, _ = rbm.set_active_profile(new_id)
         except Exception:
-            ok, msg = False, "switch failed"
+            ok = False
         if not ok:
             return
         # Konfig mitschreiben, damit der Wechsel persistent bleibt.
@@ -2106,6 +2105,7 @@ class MainWindow(QMainWindow):
                         lbl.setToolTip("")
                         cli_led.set_state(False)
                         wrow.setToolTip("")
+
             except Exception as e:
                 self._log_exception("_tick rig-bridge LEDs", e)
         else:
@@ -2185,7 +2185,6 @@ class MainWindow(QMainWindow):
             self.lbl_hw.setText(f"{t('main.hw_disconnected')}  {detail}")
 
         try:
-            ui = self.cfg.get("ui", {})
             self._lbl_srv_ucxlog_suffix.setText(
                 self._udp_bind_status_text(
                     "udp_ucxlog_listen_host", "udp_ucxlog_port", "127.0.0.1", 12040

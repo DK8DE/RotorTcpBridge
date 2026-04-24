@@ -288,7 +288,6 @@ class YaesuNewcatResponder(_AsciiResponderBase):
         hz = int(st.get("frequency_hz", 0) or 0)
         mode = _normalize_hamlib_mode_name(str(st.get("mode", "USB")))
         ch = _yaesu_newcat_mode_char(mode)
-        ptt = bool(st.get("ptt", False))
         p1 = "000"
         p2 = self._freq_hz_str(hz, 9)
         p3 = "+0000"

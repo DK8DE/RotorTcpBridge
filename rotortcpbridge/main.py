@@ -36,14 +36,6 @@ def main():
     load_lang(cfg.get("ui", {}).get("language", "de"))
     log = LogBuffer()
     rig_bridge_manager = RigBridgeManager(cfg.get("rig_bridge", {}), log.write)
-    try:
-        # ``get_config_dict`` liefert die neue Form (globaler ``enabled`` +
-        # ``active_rig_id``); den konkreten Autoconnect-Wert liest die
-        # Bruecke anhand des aktiven Profils (``self._cfg.auto_connect``).
-        if bool(rig_bridge_manager._cfg.enabled) and bool(rig_bridge_manager._cfg.auto_connect):
-            rig_bridge_manager.connect_radio_and_autostart_protocols()
-    except Exception as exc:
-        log.write("WARN", f"Rig-Bridge Autostart fehlgeschlagen: {exc}")
 
     hw = HardwareClient(cfg["hardware_link"], log)
     hw.start()
@@ -85,6 +77,15 @@ def main():
     pst_serial.update_config(cfg.get("pst_serial", {}))
     if bool(cfg.get("pst_serial", {}).get("enabled", False)):
         pst_serial.start_all()
+
+    # Rig-Bridge-COM **nach** PST-Serial-Listenern: sonst kann Autoconnect zuerst
+    # denselben COM-Port öffnen (z. B. com0com-Ende = Profil-COM) und die
+    # virtuellen PST-/RIG-Listener bekommen PermissionError (13).
+    try:
+        if bool(rig_bridge_manager._cfg.enabled) and bool(rig_bridge_manager._cfg.auto_connect):
+            rig_bridge_manager.connect_radio_and_autostart_protocols()
+    except Exception as exc:
+        log.write("WARN", f"Rig-Bridge Autostart fehlgeschlagen: {exc}")
 
     # UDP UcxLog-Listener (wenn aktiviert)
     udp_ucxlog = UdpUcxLogListener(ctrl, log, cfg=cfg)

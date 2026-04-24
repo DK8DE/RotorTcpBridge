@@ -8,10 +8,7 @@ from __future__ import annotations
 import ctypes
 import sys
 from ctypes import wintypes
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
-
-if TYPE_CHECKING:
-    from PySide6.QtCore import QByteArray
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 WM_HOTKEY = 0x0312
 

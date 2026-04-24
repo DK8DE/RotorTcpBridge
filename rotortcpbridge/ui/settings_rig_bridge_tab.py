@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from ..i18n import format_tooltip, t
 from ..ports import list_serial_port_entries
 from ..rig_bridge.cat_commands import normalize_com_port
+from ..rig_bridge.config import clamp_rig_profile_display_name
 from ..rig_bridge.manager import RigBridgeManager
 
 # Defaults wenn rig_bridge in der JSON fehlt oder Felder fehlen (an RigBridgeConfig angeglichen)
@@ -581,7 +582,9 @@ class RigBridgeTab(QWidget):
             return
         form = self._form_to_profile_dict()
         form["id"] = prof.get("id", rig_id)
-        form["name"] = prof.get("name", form.get("selected_rig", "") or rig_id)
+        form["name"] = clamp_rig_profile_display_name(
+            prof.get("name", form.get("selected_rig", "") or rig_id)
+        )
         prof.update(form)
 
     def _load_selected_profile_into_form(self) -> None:
@@ -618,12 +621,18 @@ class RigBridgeTab(QWidget):
     def _on_profile_new(self) -> None:
         self._capture_form_into_profile(self._selected_id)
         new_id = self._make_unique_id("rig")
+        default_nm = clamp_rig_profile_display_name(f"Rig {len(self._profiles) + 1}")
         new_name, ok = QInputDialog.getText(
-            self, t("rig_bridge.btn_new"), t("rig_bridge.new_name_prompt"), text=f"Rig {len(self._profiles) + 1}"
+            self,
+            t("rig_bridge.btn_new"),
+            t("rig_bridge.new_name_prompt"),
+            text=default_nm,
         )
         if not ok:
             return
-        new_name = (new_name or "").strip() or f"Rig {len(self._profiles) + 1}"
+        new_name = clamp_rig_profile_display_name(
+            (new_name or "").strip() or f"Rig {len(self._profiles) + 1}"
+        )
         prof = {
             "id": new_id,
             "name": new_name,
@@ -656,7 +665,7 @@ class RigBridgeTab(QWidget):
         prof = self._find_profile(self._selected_id)
         if prof is None:
             return
-        current = str(prof.get("name", "") or prof.get("id", ""))
+        current = clamp_rig_profile_display_name(str(prof.get("name", "") or prof.get("id", "")))
         new_name, ok = QInputDialog.getText(
             self,
             t("rig_bridge.btn_rename"),
@@ -665,7 +674,7 @@ class RigBridgeTab(QWidget):
         )
         if not ok:
             return
-        new_name = (new_name or "").strip()
+        new_name = clamp_rig_profile_display_name((new_name or "").strip())
         if not new_name or new_name == current:
             return
         prof["name"] = new_name
@@ -723,6 +732,7 @@ class RigBridgeTab(QWidget):
                         p.setdefault("id", f"rig_{len(profiles)}")
                         p.setdefault("name", str(p.get("selected_rig", "") or p["id"]))
                         p.setdefault("enabled", True)
+                        p["name"] = clamp_rig_profile_display_name(p.get("name"))
                         # flrig/hamlib sind global — aus Profilen entfernen.
                         p.pop("flrig", None)
                         p.pop("hamlib", None)
@@ -738,6 +748,7 @@ class RigBridgeTab(QWidget):
                 flat.setdefault("id", "default")
                 flat.setdefault("name", str(flat.get("selected_rig", "") or "Rig 1"))
                 flat.setdefault("enabled", True)
+                flat["name"] = clamp_rig_profile_display_name(flat.get("name"))
                 profiles = [flat]
             self._profiles = profiles
             active_id = str(rb.get("active_rig_id", "") or "")
@@ -943,6 +954,7 @@ class RigBridgeTab(QWidget):
             entry = dict(pr)
             entry.setdefault("id", f"rig_{len(rigs_out)}")
             entry.setdefault("name", str(entry.get("selected_rig", "") or entry["id"]))
+            entry["name"] = clamp_rig_profile_display_name(entry.get("name"))
             # flrig/hamlib sind global — aus Profilen fernhalten.
             entry.pop("flrig", None)
             entry.pop("hamlib", None)

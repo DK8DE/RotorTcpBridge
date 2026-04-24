@@ -44,14 +44,25 @@ _ZERO_CONFIRM_TICKS = 3
 
 
 def _parse_ipv4_send_host(raw: str | None, log) -> str:
-    """Gültige IPv4 für sendto; sonst 127.0.0.1 und Log."""
+    """Gültige IPv4 für sendto; sonst 127.0.0.1 und Log.
+
+    ``0.0.0.0`` ist unter Windows kein gültiges Ziel für ``sendto`` (WinError 10049),
+    kommt aber vor, wenn es mit dem Lausch-Host verwechselt wurde.
+    """
     s = (raw or "").strip() or "127.0.0.1"
     try:
         socket.inet_pton(socket.AF_INET, s)
-        return s
     except OSError:
         log.write("WARN", f"UDP PST-Rotator: ungültige Ziel-IP {raw!r}, verwende 127.0.0.1")
         return "127.0.0.1"
+    if s == "0.0.0.0":
+        log.write(
+            "WARN",
+            "UDP PST-Rotator: Ziel-IP 0.0.0.0 ist kein gültiges sendto-Ziel (Windows) — "
+            "verwende 127.0.0.1. Für Broadcast z. B. x.y.z.255 oder 255.255.255.255 eintragen.",
+        )
+        return "127.0.0.1"
+    return s
 
 
 class UdpPstRotator:

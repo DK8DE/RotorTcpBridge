@@ -383,6 +383,25 @@ def load_config() -> Dict[str, Any]:
                     pr.pop("flrig", None)
                     pr.pop("hamlib", None)
 
+    # Rig-Profil-Anzeigenamen auf max. Länge begrenzen (ältere Configs).
+    if "rig_bridge" in cfg and isinstance(cfg["rig_bridge"], dict):
+        from .rig_bridge.config import clamp_rig_profile_display_name
+
+        rb = cfg["rig_bridge"]
+        rigs_list = rb.get("rigs")
+        if isinstance(rigs_list, list):
+            for pr in rigs_list:
+                if isinstance(pr, dict):
+                    pr["name"] = clamp_rig_profile_display_name(
+                        pr.get("name", pr.get("id", ""))
+                    )
+
+    # Migration: udp_pst_send_host "0.0.0.0" → leer (Windows: sendto ungültig, WinError 10049).
+    if "ui" in cfg and isinstance(cfg["ui"], dict):
+        ui_m = cfg["ui"]
+        if str(ui_m.get("udp_pst_send_host", "")).strip() == "0.0.0.0":
+            ui_m["udp_pst_send_host"] = ""
+
     # Migration: pst_serial Listener um ``target`` erweitern.
     if "pst_serial" in cfg and isinstance(cfg["pst_serial"], dict):
         ps = cfg["pst_serial"]

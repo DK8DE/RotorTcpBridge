@@ -202,6 +202,10 @@ class RadioConnectionManager:
     def _is_setfreq_cmd(cmd: str) -> bool:
         return str(cmd).strip().upper().startswith("SETFREQ ")
 
+    def _is_cat_tune_priority_item(self, item: _WriteCommand) -> bool:
+        """SETFREQ — vor READFREQ zu behandeln (schnelles Tunen)."""
+        return self._is_setfreq_cmd(item.command)
+
     @staticmethod
     def _setfreq_hz_from_command(cmd: str) -> int:
         arg = str(cmd).strip().split(None, 1)[1].strip()
@@ -231,17 +235,28 @@ class RadioConnectionManager:
         )
 
     @staticmethod
-    def _read_cat_quick(ser, *, is_icom: bool, max_wait_s: float) -> bytes:
+    def _read_cat_quick(
+        ser,
+        *,
+        is_icom: bool,
+        max_wait_s: float,
+    ) -> bytes:
         """Kurzes Abtropfen nach Schreib-CAT (Echo/`;`).
 
         Viele TRX antworten auf ``FA…``/``TX…`` nicht. Wichtig: ``ser.read`` blockiert bis
         ``ser.timeout`` — daher Timeout hier kurz setzen, sonst folgen 300–500 ms pro Leerlauf.
+
         """
-        deadline = time.monotonic() + max(0.02, float(max_wait_s))
+        max_w = max(0.006, float(max_wait_s))
+        deadline = time.monotonic() + max_w
+        if max_w <= 0.08:
+            read_slot = min(0.012, max(0.003, max_w * 0.35))
+        else:
+            read_slot = 0.02
         buf = b""
         old_tmo = getattr(ser, "timeout", 0.25)
         try:
-            ser.timeout = 0.02
+            ser.timeout = read_slot
             while time.monotonic() < deadline:
                 chunk = ser.read(128)
                 if chunk:
@@ -251,7 +266,7 @@ class RadioConnectionManager:
                     if not is_icom and b";" in buf:
                         break
                 else:
-                    time.sleep(0.002)
+                    time.sleep(0.001)
         finally:
             try:
                 ser.timeout = old_tmo
@@ -267,10 +282,19 @@ class RadioConnectionManager:
         min_deadline_s: float = 0.0,
         note: str = "",
         quick_drain: bool = False,
+        quick_drain_max_s: float | None = None,
     ) -> bytes:
         if quick_drain:
+            tmo = (
+                float(quick_drain_max_s)
+                if quick_drain_max_s is not None
+                else float(self._cat_post_write_drain_s)
+            )
+            tmo = max(0.008, min(0.5, tmo))
             rx = self._read_cat_quick(
-                ser, is_icom=is_icom, max_wait_s=self._cat_post_write_drain_s
+                ser,
+                is_icom=is_icom,
+                max_wait_s=tmo,
             )
         else:
             rx = self._read_cat_response_ephemeral(
@@ -455,6 +479,28 @@ class RadioConnectionManager:
             )
         return len(dropped)
 
+    def drop_pending_fire_and_forget_readfreqs(self) -> int:
+        """Nur ``READFREQ`` ohne ``done``-Event aus der Queue (typ. Hauptfenster-Poll).
+
+        Synchrone ``read_frequency_sync``-Einträge (mit ``done``) bleiben, damit
+        Flrig/Hamlib-Erstabfragen nicht hängen bleiben.
+        """
+        dropped = 0
+        with self._write_q.mutex:
+            q = self._write_q.queue
+            i = 0
+            while i < len(q):
+                item = q[i]
+                if (
+                    str(item.command).strip().upper() == "READFREQ"
+                    and item.done is None
+                ):
+                    dropped += 1
+                    del q[i]
+                else:
+                    i += 1
+        return dropped
+
     def read_frequency_sync(self, timeout_s: float = 0.75, *, log_ctx: str = "") -> bool:
         """``READFREQ`` über den COM-Worker; blockiert bis Bearbeitung oder Timeout.
 
@@ -473,36 +519,28 @@ class RadioConnectionManager:
         return done.wait(float(timeout_s))
 
     def _pop_next_command(self, timeout: float) -> Optional[_WriteCommand]:
-        """Naechstes Kommando aus der Queue – SETFREQ haben Vorrang.
+        """Naechstes Kommando aus der Queue – ``SETFREQ`` hat Vorrang vor ``READFREQ``.
 
         Hintergrund: bei aktivem Tunen am externen Drehknopf stehen haeufig
         READFREQs (von Hamlib/Flrig-Refresh bzw. Hauptfenster-Poll) **vor**
-        eigentlichen SETFREQs in der FIFO-Queue. Jeder dieser READs blockiert
-        den Worker ~30 ms und frisst Rig-Bandbreite, waehrend der User
-        darauf wartet, dass seine neue Frequenz ankommt — mit der Folge,
-        dass sich SETFREQs aufstauen und manche vom TRX gar nicht mehr
-        sauber verarbeitet werden (null-Byte-Reply, ``?;``). Wir ziehen
-        deshalb **alle wartenden SETFREQs vor** jegliche READFREQs.
-
-        Die Reihenfolge *innerhalb* der SETFREQ-Gruppe bleibt FIFO; dito
-        fuer READs.
+        eigentlichen SETFREQs in der FIFO-Queue. Wir ziehen wartende
+        ``SETFREQ``-Einträge vor jegliche READFREQs.
         """
         try:
             first = self._write_q.get(timeout=timeout)
         except queue.Empty:
             return None
-        if self._is_setfreq_cmd(first.command):
+        if self._is_cat_tune_priority_item(first):
             return first
-        # Der erste Eintrag ist *kein* SETFREQ – gibt es weiter hinten einen?
+        # Der erste Eintrag hat keine Tuning-Priorität – gibt es weiter hinten einen?
         with self._write_q.mutex:
             q = self._write_q.queue
             promoted_idx = -1
             for idx, cand in enumerate(q):
-                if self._is_setfreq_cmd(cand.command):
+                if self._is_cat_tune_priority_item(cand):
                     promoted_idx = idx
                     break
             if promoted_idx < 0:
-                # Kein SETFREQ in der Queue -> first (READ o. ae.) wird behandelt.
                 return first
             promoted = q[promoted_idx]
             del q[promoted_idx]
@@ -515,8 +553,7 @@ class RadioConnectionManager:
         if self._log_serial:
             self._log_write(
                 "INFO",
-                f"Rig-Bridge: COM Worker SETFREQ vorgezogen vor "
-                f"{first.command!r} (Tuning-Prio)",
+                f"Rig-Bridge: COM Worker SETFREQ vorgezogen vor {first.command!r} (Tuning-Prio)",
             )
         return promoted
 
@@ -536,8 +573,8 @@ class RadioConnectionManager:
                 t0 = time.monotonic()
                 with self._io_lock:
                     response = self._send_and_read_unlocked(item)
+                dt_ms = (time.monotonic() - t0) * 1000.0
                 if self._debug_traffic and self._is_setfreq_cmd(item.command):
-                    dt_ms = (time.monotonic() - t0) * 1000.0
                     self._log_write(
                         "INFO",
                         f"Rig-Bridge: COM SETFREQ in {dt_ms:.1f} ms ({item.command!r})",

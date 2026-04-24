@@ -7,6 +7,19 @@ from typing import Any
 
 from .cat_commands import normalize_com_port
 
+# Maximale Länge für Rig-Profil-Anzeigenamen (Funkgerät-Profile in der UI/Config).
+RIG_PROFILE_NAME_MAX_LEN = 20
+
+
+def clamp_rig_profile_display_name(
+    name: str | None, *, max_len: int = RIG_PROFILE_NAME_MAX_LEN
+) -> str:
+    """Profilname trimmen und auf ``max_len`` Zeichen kürzen."""
+    s = str(name or "").strip()
+    if len(s) <= max_len:
+        return s
+    return s[:max_len]
+
 
 def _normalize_hamlib_listeners_dict(h: dict[str, Any]) -> None:
     """listeners-Liste vereinheitlichen; Legacy ``port`` → eine Zeile nur wenn ``listeners`` fehlt/leer."""

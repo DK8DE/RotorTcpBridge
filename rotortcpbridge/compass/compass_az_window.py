@@ -589,7 +589,6 @@ class CompassWidget(QWidget):
             txt_font.setBold(True)
             txt_font.setPixelSize(16)
             painter.setFont(txt_font)
-            fm_txt = QFontMetrics(txt_font)
             painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
 
             ist_txt = self._overlay_ist or ""

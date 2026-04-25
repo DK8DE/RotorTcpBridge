@@ -331,7 +331,7 @@ class CompassWidget(QWidget):
         self.update()
 
     def set_om_radar_sector_count(self, n: int) -> None:
-        """Anzahl Sektoren für OM-Radar (10–100), Standard 60."""
+        """Anzahl Sektoren für OM-Radar (10–100), Standard 20."""
         nn = max(10, min(100, int(n)))
         if nn != self._om_radar_n:
             self._om_radar_n = nn

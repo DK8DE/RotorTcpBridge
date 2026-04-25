@@ -10,7 +10,9 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QMainWindow,
+    QMenu,
     QMessageBox,
+    QSystemTrayIcon,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -45,7 +47,11 @@ from .map_window import MapWindow
 from .about_window import AboutWindow
 from .rotor_configuration import CommandButtonsWindow
 from .warnings_errors_window import WarningsErrorsWindow
-from .rig_freq_utils import format_rig_freq_mhz, parse_rig_freq_mhz_text
+from .rig_freq_utils import (
+    apply_rig_freq_band_alert_styles,
+    format_rig_freq_mhz,
+    parse_rig_freq_mhz_text,
+)
 from .ui_utils import px_to_dip
 from .theme import apply_theme_mode
 from .popup_handlers import ErrorPopupHandler, WarningPopupHandler
@@ -242,6 +248,7 @@ class MainWindow(QMainWindow):
         self._aswatch_aircraft_last: list = []
         self._asnearest_summary_last: list = []
         self._actions_locked_while_moving: bool | None = None
+        self._minimized_to_tray: bool = False
 
         self._antenna_bridge = AntennaSelectionBridge(self)
 
@@ -286,6 +293,17 @@ class MainWindow(QMainWindow):
         self._act_log = QAction(t("main.btn_log"), self)
         self._act_log.triggered.connect(self._toggle_log)
         self._menu_help.addAction(self._act_log)
+
+        self._tray_icon: QSystemTrayIcon | None = None
+        self._tray_menu: QMenu | None = None
+        self._act_tray_restore: QAction | None = None
+        self._act_tray_compass: QAction | None = None
+        self._act_tray_map: QAction | None = None
+        self._act_tray_weather: QAction | None = None
+        self._act_tray_settings: QAction | None = None
+        self._act_tray_commands: QAction | None = None
+        self._act_tray_quit: QAction | None = None
+        self._init_tray_icon()
 
         menubar.setStyleSheet("QMenuBar { font-weight: bold; }")
         _menu_bold = "QMenu { font-weight: bold; }"
@@ -733,6 +751,17 @@ class MainWindow(QMainWindow):
         mb.update()
 
     def changeEvent(self, event: QEvent) -> None:
+        if event.type() == QEvent.Type.WindowStateChange:
+            try:
+                if (
+                    self.isMinimized()
+                    and self._tray_available()
+                    and bool((self.cfg.get("ui") or {}).get("minimize_to_tray", False))
+                ):
+                    self._minimized_to_tray = True
+                    QTimer.singleShot(0, self.hide)
+            except Exception:
+                pass
         if event.type() in (
             QEvent.Type.ThemeChange,
             QEvent.Type.ApplicationPaletteChange,
@@ -835,6 +864,55 @@ class MainWindow(QMainWindow):
         dlg = AboutWindow(parent=self)
         dlg.exec()
 
+    def _tray_available(self) -> bool:
+        try:
+            return bool(self._tray_icon is not None) and bool(
+                QSystemTrayIcon.isSystemTrayAvailable()
+            )
+        except Exception:
+            return False
+
+    def _restore_from_tray(self) -> None:
+        self._minimized_to_tray = False
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._restore_from_tray()
+
+    def _init_tray_icon(self) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        tray = QSystemTrayIcon(self)
+        tray.setIcon(get_app_icon())
+        tray.setToolTip(t("app.title"))
+        menu = QMenu(self)
+        self._act_tray_restore = menu.addAction(t("app.title"))
+        self._act_tray_restore.triggered.connect(self._restore_from_tray)
+        menu.addSeparator()
+        self._act_tray_compass = menu.addAction(t("main.btn_compass"))
+        self._act_tray_compass.triggered.connect(self._open_compass)
+        self._act_tray_map = menu.addAction(t("main.btn_map"))
+        self._act_tray_map.triggered.connect(self._open_map)
+        self._act_tray_weather = menu.addAction(t("main.btn_weather"))
+        self._act_tray_weather.triggered.connect(self._open_weather)
+        self._act_tray_settings = menu.addAction(t("main.btn_settings"))
+        self._act_tray_settings.triggered.connect(self._open_settings)
+        self._act_tray_commands = menu.addAction(t("main.btn_commands"))
+        self._act_tray_commands.triggered.connect(self._open_commands)
+        menu.addSeparator()
+        self._act_tray_quit = menu.addAction(t("main.tray_quit"))
+        self._act_tray_quit.triggered.connect(self.close)
+        tray.setContextMenu(menu)
+        tray.activated.connect(self._on_tray_activated)
+        tray.show()
+        self._tray_icon = tray
+        self._tray_menu = menu
+
     def _open_settings(self):
         if not bool(getattr(self._act_settings, "isEnabled", lambda: True)()):
             return
@@ -910,6 +988,25 @@ class MainWindow(QMainWindow):
         self._menu_help.setTitle(t("main.menu_help"))
         self._act_version.setText(t("main.menu_version"))
         self._act_log.setText(t("main.btn_log"))
+        try:
+            if self._tray_icon is not None:
+                self._tray_icon.setToolTip(t("app.title"))
+            if self._act_tray_restore is not None:
+                self._act_tray_restore.setText(t("app.title"))
+            if self._act_tray_compass is not None:
+                self._act_tray_compass.setText(t("main.btn_compass"))
+            if self._act_tray_map is not None:
+                self._act_tray_map.setText(t("main.btn_map"))
+            if self._act_tray_weather is not None:
+                self._act_tray_weather.setText(t("main.btn_weather"))
+            if self._act_tray_settings is not None:
+                self._act_tray_settings.setText(t("main.btn_settings"))
+            if self._act_tray_commands is not None:
+                self._act_tray_commands.setText(t("main.btn_commands"))
+            if self._act_tray_quit is not None:
+                self._act_tray_quit.setText(t("main.tray_quit"))
+        except Exception:
+            pass
         self._refresh_menubar_top_level()
         self.btn_open_compass.setText(t("main.btn_compass"))
         self.btn_open_map.setText(t("main.btn_map"))
@@ -1734,6 +1831,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         try:
+            if self._tray_icon is not None:
+                self._tray_icon.hide()
+        except Exception:
+            pass
+        try:
             hc = getattr(self, "_global_hotkey_controller", None)
             if hc is not None:
                 hc.unregister_all()
@@ -1764,6 +1866,14 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         super().closeEvent(event)
+        # Ohne quitOnLastWindowClosed muss ein echtes Schließen des Hauptfensters die
+        # Event-Schleife beenden (hide() in den Tray ruft closeEvent nicht auf).
+        try:
+            app2 = QApplication.instance()
+            if app2 is not None:
+                app2.quit()
+        except Exception:
+            pass
 
     def _on_ref_start_failed(self, axis: str) -> None:
         """Wird aus Hintergrundthread aufgerufen – auf UI-Thread weiterleiten."""
@@ -1959,6 +2069,17 @@ class MainWindow(QMainWindow):
                                 ed.blockSignals(True)
                                 ed.setText(txt)
                                 ed.blockSignals(False)
+                        apply_rig_freq_band_alert_styles(
+                            ed,
+                            getattr(self, "_lbl_rig_freq_unit", None),
+                            hz_disp,
+                        )
+                    else:
+                        apply_rig_freq_band_alert_styles(
+                            getattr(self, "_ed_rig_freq", None),
+                            getattr(self, "_lbl_rig_freq_unit", None),
+                            0,
+                        )
 
                 fl_en = bool((rb_cfg.get("flrig") or {}).get("enabled", False))
                 if fl_en:

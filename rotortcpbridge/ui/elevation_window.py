@@ -25,7 +25,11 @@ from PySide6.QtWidgets import (
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from ..i18n import format_tooltip, t, tt
-from .rig_freq_utils import format_rig_freq_mhz, parse_rig_freq_mhz_text
+from .rig_freq_utils import (
+    apply_rig_freq_band_alert_styles,
+    format_rig_freq_mhz,
+    parse_rig_freq_mhz_text,
+)
 
 
 def _html_greek_nu(text: str) -> str:
@@ -635,6 +639,7 @@ class ElevationProfileWindow(QDialog):
         row.addWidget(self._ed_freq, 0)
         self._lbl_freq_unit = QLabel(t("main.rig_freq_suffix"))
         row.addWidget(self._lbl_freq_unit, 0)
+        self._apply_elevation_freq_band_style()
         self._rig_freq_poll_timer = QTimer(self)
         self._rig_freq_poll_timer.setInterval(1000)
         self._rig_freq_poll_timer.timeout.connect(self._rig_freq_poll_tick)
@@ -794,6 +799,26 @@ class ElevationProfileWindow(QDialog):
             if self._save_cfg_cb:
                 self._save_cfg_cb(self._cfg)
 
+    def _apply_elevation_freq_band_style(self) -> None:
+        """AFU-Band: normale Farbe; außerhalb → rot (Live-CAT oder manuelle Eingabe)."""
+        ed = getattr(self, "_ed_freq", None)
+        lbl = getattr(self, "_lbl_freq_unit", None)
+        if ed is None:
+            return
+        hz = 0
+        if self._rig_cat_live():
+            rbm = self._rig_bridge_manager
+            if rbm is not None:
+                try:
+                    st = rbm.status_model()
+                    hz = int(st.frequency_hz or 0)
+                except Exception:
+                    hz = 0
+        else:
+            p = parse_rig_freq_mhz_text(ed.text())
+            hz = int(p or 0)
+        apply_rig_freq_band_alert_styles(ed, lbl, hz)
+
     def _parse_elevation_freq_mhz(self) -> Optional[float]:
         p = parse_rig_freq_mhz_text(self._ed_freq.text())
         if p is None:
@@ -803,9 +828,9 @@ class ElevationProfileWindow(QDialog):
     def _rig_freq_poll_tick(self) -> None:
         """Wie Hauptfenster: CAT lesen und Anzeige aktualisieren, wenn Funkgerät live."""
         rbm = self._rig_bridge_manager
-        if rbm is None or self._cfg is None:
-            return
         try:
+            if rbm is None or self._cfg is None:
+                return
             rb_cfg = self._cfg.get("rig_bridge") or {}
             if not bool(rb_cfg.get("enabled", False)):
                 return
@@ -830,6 +855,8 @@ class ElevationProfileWindow(QDialog):
                     self._rebuild_chart()
         except Exception:
             pass
+        finally:
+            self._apply_elevation_freq_band_style()
 
     def _on_elevation_freq_text_changed(self, _text: str) -> None:
         """Offline: gültige Eingabe sofort für Profil nutzen (ohne Live-CAT)."""
@@ -837,10 +864,12 @@ class ElevationProfileWindow(QDialog):
             return
         mhz = self._parse_elevation_freq_mhz()
         if mhz is None:
+            self._apply_elevation_freq_band_style()
             return
         self._freq_mhz = mhz
         if self._last_elev is not None:
             self._rebuild_chart()
+        self._apply_elevation_freq_band_style()
 
     def _on_elevation_freq_editing_finished(self) -> None:
         if self._rig_cat_live():
@@ -848,11 +877,13 @@ class ElevationProfileWindow(QDialog):
             return
         mhz = self._parse_elevation_freq_mhz()
         if mhz is None:
+            self._apply_elevation_freq_band_style()
             return
         self._freq_mhz = mhz
         self._persist_elevation_freq_to_cfg(mhz)
         if self._last_elev is not None:
             self._rebuild_chart()
+        self._apply_elevation_freq_band_style()
 
     def _apply_rig_set_frequency_from_field(self) -> None:
         """Live: eingegebene Frequenz an die Rig-Bridge senden (analog Hauptfenster)."""
@@ -878,6 +909,7 @@ class ElevationProfileWindow(QDialog):
                 self._rebuild_chart()
         except Exception:
             pass
+        self._apply_elevation_freq_band_style()
 
     def closeEvent(self, event) -> None:
         try:

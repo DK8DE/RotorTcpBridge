@@ -22,7 +22,7 @@ AZ_N_USED = AZ_N_TOTAL - 2 * BINS_SKIP_EDGE  # 62
 EL_N_USED = EL_N_SEG - 2 * BINS_SKIP_EDGE  # 8
 
 # OM-Radar (AirScout/KST): Standard-Sektoren (konfigurierbar 10–100 in den Einstellungen)
-OM_RADAR_N_DEFAULT = 60
+OM_RADAR_N_DEFAULT = 20
 OM_RADAR_N = OM_RADAR_N_DEFAULT  # Abwärtskompatibel für Importe
 
 # (thr_blue, norm_min, norm_max, thr_red) — thr_blue ≤ norm_min ≤ norm_max ≤ thr_red

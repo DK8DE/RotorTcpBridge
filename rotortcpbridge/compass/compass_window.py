@@ -26,7 +26,11 @@ from ..app_icon import get_app_icon
 from ..angle_utils import clamp_el, fmt_deg, om_beam_contributions_per_sector, wrap_deg
 from ..geo_utils import bearing_deg, effective_station_lat_lon, haversine_km, maidenhead_to_lat_lon
 from ..i18n import t, tt
-from ..ui.rig_freq_utils import format_rig_freq_mhz, parse_rig_freq_mhz_text
+from ..ui.rig_freq_utils import (
+    apply_rig_freq_band_alert_styles,
+    format_rig_freq_mhz,
+    parse_rig_freq_mhz_text,
+)
 from ..ui.favorite_selection_sync import (
     apply_saved_selection_to_favorites_combo,
     clear_selection_if_favorite_removed,
@@ -687,9 +691,9 @@ class CompassWindow(QDialog):
 
     def _om_radar_sector_count(self) -> int:
         try:
-            n = int(self.cfg.get("ui", {}).get("compass_om_radar_sectors", 60))
+            n = int(self.cfg.get("ui", {}).get("compass_om_radar_sectors", 20))
         except (TypeError, ValueError):
-            n = 60
+            n = 20
         return max(10, min(100, n))
 
     def _om_opening_deg(self) -> float:
@@ -769,9 +773,9 @@ class CompassWindow(QDialog):
 
     def _dwell_sector_count(self) -> int:
         try:
-            n = int(self.cfg.get("ui", {}).get("compass_dwell_sectors", 60))
+            n = int(self.cfg.get("ui", {}).get("compass_dwell_sectors", 20))
         except (TypeError, ValueError):
-            n = 60
+            n = 20
         return max(10, min(100, n))
 
     def _dwell_full_seconds(self) -> float:
@@ -1107,10 +1111,12 @@ class CompassWindow(QDialog):
                 row.setVisible(False)
                 if self._rig_freq_poll_timer is not None:
                     self._rig_freq_poll_timer.stop()
+            apply_rig_freq_band_alert_styles(ed, self._lbl_rig_freq_suffix, 0)
             return
         try:
             st = rbm.status_model()
         except Exception:
+            apply_rig_freq_band_alert_styles(ed, self._lbl_rig_freq_suffix, 0)
             return
         vis = bool(st.radio_connected and not st.connecting)
         prev = row.isVisible()
@@ -1128,6 +1134,9 @@ class CompassWindow(QDialog):
                     ed.blockSignals(True)
                     ed.setText(txt)
                     ed.blockSignals(False)
+            apply_rig_freq_band_alert_styles(ed, self._lbl_rig_freq_suffix, hz_disp)
+        else:
+            apply_rig_freq_band_alert_styles(ed, self._lbl_rig_freq_suffix, 0)
 
     @Slot()
     def _tick(self) -> None:

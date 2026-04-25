@@ -5,6 +5,7 @@ import sys
 import rotortcpbridge.webengine_schemes  # noqa: F401
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
 from .app_config import load_config, save_config
@@ -26,8 +27,89 @@ from .rig_bridge.manager import RigBridgeManager
 from .ui.main_window import MainWindow
 
 
+_SINGLE_INSTANCE_NAME = "RotorTcpBridge.SingleInstance"
+
+
+def _focus_main_window(w: MainWindow) -> None:
+    try:
+        if w.isMinimized():
+            w.showNormal()
+        w.show()
+        w.raise_()
+        w.activateWindow()
+    except Exception:
+        pass
+
+
+def _notify_running_instance(name: str) -> bool:
+    """True wenn bereits eine Instanz läuft (wurde aktiviert)."""
+    sock = QLocalSocket()
+    try:
+        sock.connectToServer(name)
+        if not sock.waitForConnected(180):
+            return False
+        sock.write(b"ACTIVATE")
+        sock.flush()
+        sock.waitForBytesWritten(180)
+        sock.disconnectFromServer()
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            sock.abort()
+        except Exception:
+            pass
+
+
 def main():
     cfg = load_config()
+    app = QApplication(sys.argv)
+    # Tray: Hauptfenster kann per hide() unsichtbar sein, während Kompass/Einstellungen
+    # offen sind. Default (True) würde beim Schließen des letzten sichtbaren Fensters die
+    # ganze App beenden — daher False; Beenden erfolgt über MainWindow.closeEvent.
+    app.setQuitOnLastWindowClosed(False)
+    if _notify_running_instance(_SINGLE_INSTANCE_NAME):
+        app.quit()
+        return
+    # Verwaiste lokale Server-Handle von abgestürzter Instanz bereinigen.
+    try:
+        QLocalServer.removeServer(_SINGLE_INSTANCE_NAME)
+    except Exception:
+        pass
+    single_server = QLocalServer(app)
+    single_server.listen(_SINGLE_INSTANCE_NAME)
+    # Referenz halten (sonst GC -> kein Aktivierungs-Signal mehr)
+    app._single_instance_server = single_server  # type: ignore[attr-defined]
+
+    main_window_holder: dict[str, MainWindow | None] = {"window": None}
+
+    def _on_single_instance_request() -> None:
+        try:
+            while single_server.hasPendingConnections():
+                client = single_server.nextPendingConnection()
+                if client is None:
+                    break
+                try:
+                    client.waitForReadyRead(40)
+                except Exception:
+                    pass
+                try:
+                    client.readAll()
+                except Exception:
+                    pass
+                try:
+                    client.disconnectFromServer()
+                except Exception:
+                    pass
+            w0 = main_window_holder.get("window")
+            if w0 is not None:
+                _focus_main_window(w0)
+        except Exception:
+            pass
+
+    single_server.newConnection.connect(_on_single_instance_request)
+
     # Ohne Internet: Offline-Karte aktivieren (je nach Dark/Light), Live-SWPC deaktivieren
     if not check_internet():
         cfg.setdefault("ui", {})["map_offline"] = True
@@ -113,7 +195,6 @@ def main():
         hw.update_cfg(new_cfg["hardware_link"])
         log.write("INFO", "Config gespeichert")
 
-    app = QApplication(sys.argv)
     install_rotortiles_handler()
     # Verhindert, dass Mausrad ueber ComboBoxen/Spinboxen deren Wert aendert,
     # ohne dass das Widget fokussiert ist (gilt global fuer alle Fenster).
@@ -155,8 +236,9 @@ def main():
         rig_bridge_manager=rig_bridge_manager,
         pst_serial=pst_serial,
     )
+    main_window_holder["window"] = w
     w.resize(1100, 650)
-    w.show()
+    _focus_main_window(w)
 
     rc = app.exec()
     try:

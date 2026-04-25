@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QSpinBox,
     QStackedWidget,
+    QSystemTrayIcon,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -289,6 +290,17 @@ class SettingsWindow(QDialog):
         fl_display.addRow(self.chk_force_dark_mode)
 
         _ui0 = cfg.get("ui", {})
+        self.chk_minimize_to_tray = QCheckBox(t("settings.chk_minimize_to_tray"))
+        self.chk_minimize_to_tray.setChecked(bool(_ui0.get("minimize_to_tray", False)))
+        _tt_mt = tt("settings.chk_minimize_to_tray_tooltip")
+        self.chk_minimize_to_tray.setToolTip(_tt_mt)
+        _tray_ok = bool(QSystemTrayIcon.isSystemTrayAvailable())
+        self.chk_minimize_to_tray.setEnabled(_tray_ok)
+        if not _tray_ok:
+            self.chk_minimize_to_tray.setToolTip(
+                f"{_tt_mt}\n\n{t('settings.chk_minimize_to_tray_no_tray')}"
+            )
+        fl_display.addRow(self.chk_minimize_to_tray)
 
         _udp_ip_field_w = px_to_dip(self, 102)  # 82 + 20 px
         _udp_port_field_w = px_to_dip(self, 76 - 15)  # 61 px
@@ -1168,9 +1180,9 @@ class SettingsWindow(QDialog):
         vl_ant.addWidget(self.gb_antenna_misc)
         vl_ant.addStretch(1)
 
-        _om_sectors = int(cfg.get("ui", {}).get("compass_om_radar_sectors", 60))
+        _om_sectors = int(cfg.get("ui", {}).get("compass_om_radar_sectors", 20))
         _om_sectors = max(10, min(100, _om_sectors))
-        _dwell_sec = int(cfg.get("ui", {}).get("compass_dwell_sectors", 60))
+        _dwell_sec = int(cfg.get("ui", {}).get("compass_dwell_sectors", 20))
         _dwell_sec = max(10, min(100, _dwell_sec))
         try:
             _dwell_min = float(cfg.get("ui", {}).get("compass_dwell_full_minutes", 5.0))
@@ -2552,6 +2564,10 @@ class SettingsWindow(QDialog):
         self.cfg.setdefault("ui", {})["force_dark_mode"] = bool(
             self.chk_force_dark_mode.isChecked()
         )
+        if self.chk_minimize_to_tray.isEnabled():
+            self.cfg.setdefault("ui", {})["minimize_to_tray"] = bool(
+                self.chk_minimize_to_tray.isChecked()
+            )
         self.cfg.setdefault("ui", {})["udp_ucxlog_enabled"] = bool(self.chk_udp_ucxlog.isChecked())
         self.cfg.setdefault("ui", {})["udp_ucxlog_port"] = int(self.sp_udp_ucxlog_port.value())
         self.cfg.setdefault("ui", {})["udp_ucxlog_listen_host"] = self.ed_udp_ucxlog_listen.text().strip()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import json
 from pathlib import Path
 from urllib.parse import quote
@@ -54,11 +55,18 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     info_offnung = params.get("info_offnung", "Öffnungswinkel")
     info_reichweite = params.get("info_reichweite", "Reichweite")
     rig_freq_show = bool(params.get("rig_freq_show", False))
+    rig_freq_out_of_band = bool(params.get("rig_freq_out_of_band", False))
     info_frequenz = params.get("info_frequenz", "Frequenz")
     rig_freq_text = params.get("rig_freq_text", "—")
     rig_freq_block = ""
     if rig_freq_show:
-        rig_freq_block = f"<div><strong>{info_frequenz}:</strong> {rig_freq_text}</div>"
+        _rf_esc = html.escape(str(rig_freq_text), quote=True)
+        _if_esc = html.escape(str(info_frequenz), quote=True)
+        _rf_st = "color:#dc2626;font-weight:600;" if rig_freq_out_of_band else ""
+        rig_freq_block = (
+            f"<div><strong>{_if_esc}:</strong> "
+            f'<span style="{_rf_st}">{_rf_esc}</span></div>'
+        )
     asnearest_title = params.get("asnearest_title", "Nächste Verbindungen")
     aswatch_users_online = params.get("aswatch_users_online", "User online: {count}")
     asnearest_col_call = params.get("asnearest_col_call", "Rufzeichen")
@@ -858,7 +866,10 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
           '<div><strong>' + (data.info_offnung || 'Öffnungswinkel') + ':</strong> ' + data.opening.toFixed(1) + '°</div>' +
           '<div><strong>' + (data.info_reichweite || 'Reichweite') + ':</strong> ' + data.range_km.toFixed(1) + ' km</div>';
         if (data.rig_freq_show) {{
-          html += '<div><strong>' + (data.info_frequenz || 'Frequenz') + ':</strong> ' + (data.rig_freq_text || '—') + '</div>';
+          const rf = (data.rig_freq_text != null) ? String(data.rig_freq_text) : '—';
+          const rfAlert = data.rig_freq_out_of_band ? 'color:#dc2626;font-weight:600;' : '';
+          html += '<div><strong>' + (data.info_frequenz || 'Frequenz') + ':</strong> '
+            + '<span style=\"' + rfAlert + '\">' + _escapeHtmlAswatch(rf) + '</span></div>';
         }}
         infoMain.innerHTML = html;
       }}
@@ -925,24 +936,34 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     let locatorVisible = false;
     let _mapDark = {str(dark).lower()};
     let _locPrec = 2, _locDispLen = 2;
-    // Präzision je nach Zoom
+    // Präzision je nach Zoom (2/4/6/8 Zeichen Maidenhead).
+    // Ab maxZoom−3 (eine Stufe früher als „drittletzte“) … 8: Raster inkl. Ziffernpaar
+    // nach den Subquadrat-Buchstaben (z. B. …km18), vgl. maidenhead.js precision 8.
+    function _locatorFineZoomFrom() {{
+      return Math.max(3, map.getMaxZoom() - 3);
+    }}
     function _precisionForZoom(z) {{
+      const zFine = _locatorFineZoomFrom();
       if (z < 7) return 2;
       if (z < 12) return 4;
-      return 6;
+      if (z < zFine) return 6;
+      return 8;
     }}
     function _displayLengthForZoom(z) {{
+      const zFine = _locatorFineZoomFrom();
       if (z < 3) return 1;
       if (z < 7) return 2;
       if (z < 12) return 4;
-      return 6;
+      if (z < zFine) return 6;
+      return 8;
     }}
     // Zellgröße in Grad für die jeweilige Präzision
     // Werte aus maidenhead.js: latDelta, lngDelta = latDelta * 2
     function _cellSize(prec) {{
       if (prec === 2) return {{lat: 10,       lng: 20}};
       if (prec === 4) return {{lat: 1,        lng: 2}};
-      return             {{lat: 2.5/60,   lng: 5/60}};
+      if (prec === 6) return {{lat: 2.5/60,   lng: 5/60}};
+      return             {{lat: 0.25/60, lng: 0.5/60}};
     }}
     // Nur Gitternetz – Beschriftung übernehmen wir selbst
     function _createLocatorGridLayer(isDark, precision) {{
@@ -1021,7 +1042,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       const z       = map.getZoom();
       const prec    = _precisionForZoom(z);
       const dispLen = _displayLengthForZoom(z);
-      const key     = prec + '-' + dispLen;
+      const key     = map.getMaxZoom() + '-' + prec + '-' + dispLen;
       if (key === _currentLocatorKey && locatorLayer) return;
       _currentLocatorKey = key;
       _locPrec    = prec;

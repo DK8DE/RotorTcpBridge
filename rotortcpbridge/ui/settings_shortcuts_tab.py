@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QShowEvent, QStandardItemModel
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QColor, QShowEvent, QStandardItemModel
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -305,6 +305,7 @@ class ShortcutsTab(QWidget):
     def _apply_hotkey_item_enable_state(self) -> None:
         """Bereits vergebene Tasten in den anderen Dropdowns deaktivieren."""
         combos = self._hotkey_combos_all()
+        occupied_color = QColor(60, 170, 95)
         for cb in combos:
             model = cb.model()
             if not isinstance(model, QStandardItemModel):
@@ -316,7 +317,13 @@ class ShortcutsTab(QWidget):
                 item = model.item(row)
                 if item is None:
                     continue
-                item.setEnabled((d not in others) or d == my)
+                occupied = bool(d and d in others and d != my)
+                item.setEnabled(not occupied)
+                # Belegte Tasten im Dropdown sichtbar markieren (auch wenn deaktiviert).
+                item.setData(
+                    occupied_color if occupied else None,
+                    Qt.ItemDataRole.ForegroundRole,
+                )
 
     def _refresh_hotkey_duplicate_ui(self) -> None:
         combos = self._hotkey_combos_all()

@@ -41,7 +41,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "hardware_link": {
         "mode": "com",
-        "tcp_ip": "192.168.1.50",
+        "tcp_ip": "192.168.0.246",
         "tcp_port": 8886,
         "com_port": "COM1",
         "baudrate": 115200,
@@ -127,16 +127,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # Wenn True: Darkmode immer erzwingen (unabhängig von Windows).
         # Wenn False: System-/Windows-Theme verwenden.
         "force_dark_mode": True,
+        # Wenn True: Hauptfenster beim Minimieren ausblenden (Infobereich/Tray nötig).
+        "minimize_to_tray": False,
         # Wenn True: ACCBINS-Heatmap (Strom/Last) als 5px-Ring um den Kompass anzeigen.
         "compass_strom_az": False,
         "compass_strom_el": False,
         # Kompass-Ring: "off" | "strom" | "om_radar" (AZ); EL nur "off" | "strom".
         "compass_heatmap_az": "off",
         "compass_heatmap_el": "off",
-        # OM-Radar: Anzahl Richtungs-Sektoren (10 = grob, 100 = fein; Standard 60).
-        "compass_om_radar_sectors": 60,
+        # OM-Radar: Anzahl Richtungs-Sektoren (10 = grob, 100 = fein; Standard 20).
+        "compass_om_radar_sectors": 20,
         # Standzeit-Ring (AZ): Sektoren 10–100; volle Skala (rot) nach X Minuten Gesamtstillstand im Sektor.
-        "compass_dwell_sectors": 60,
+        "compass_dwell_sectors": 20,
         "compass_dwell_full_minutes": 5.0,
         # AZ-Kompass: bis zu zwei Ringe gleichzeitig: "strom" / "om_radar" / "dwell"
         "compass_heatmap_az_modes": [],
@@ -236,8 +238,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "key_ctrl_alt_minus": "NEXT",
             "target_step_deg": 3.0,
             "el_target_step_deg": 5.0,
-            "key_el_target_plus": "R",
-            "key_el_target_minus": "F",
+            "key_el_target_plus": "PRIOR",
+            "key_el_target_minus": "NEXT",
             "key_antenna_1": "1",
             "key_antenna_2": "2",
             "key_antenna_3": "3",

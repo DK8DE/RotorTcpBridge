@@ -46,7 +46,7 @@ from .favorite_selection_sync import (
 )
 from .elevation_window import ElevationProfileWindow, initial_elevation_freq_mhz
 from .map_html import build_map_html
-from .rig_freq_utils import format_rig_freq_mhz
+from .rig_freq_utils import format_rig_freq_mhz, rig_freq_out_of_band_hz
 from .map_tiles import (
     ROTORTILES_SCHEME,
     _DEBUG_TILES,
@@ -436,6 +436,7 @@ class MapWindow(QDialog):
         rbm = getattr(self, "_rig_bridge_manager", None)
         show = False
         text = "—"
+        oob = False
         if rig_mod and rbm is not None:
             try:
                 st = rbm.status_model()
@@ -443,13 +444,16 @@ class MapWindow(QDialog):
                 if show:
                     hz = int(st.frequency_hz or 0)
                     text = f"{format_rig_freq_mhz(hz)} MHz" if hz > 0 else "—"
+                    oob = rig_freq_out_of_band_hz(hz)
             except Exception:
                 show = False
                 text = "—"
+                oob = False
         return {
             "rig_freq_show": show,
             "info_frequenz": t("map.info_frequenz"),
             "rig_freq_text": text,
+            "rig_freq_out_of_band": oob,
         }
 
     def _compute_beams(self, rotor_az_deg: float, antenna_idx: int) -> list[dict]:
@@ -1100,6 +1104,7 @@ class MapWindow(QDialog):
                 "rig_freq_show": params.get("rig_freq_show", False),
                 "info_frequenz": params.get("info_frequenz", "Frequenz"),
                 "rig_freq_text": params.get("rig_freq_text", "—"),
+                "rig_freq_out_of_band": bool(params.get("rig_freq_out_of_band", False)),
                 "horizon_dist_km": params.get("horizon_dist_km", 0.0),
                 "popup_antenna": params.get("popup_antenna", "Antennenstandort"),
                 "popup_target": params.get("popup_target", "Ziel"),

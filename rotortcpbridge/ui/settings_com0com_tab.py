@@ -173,9 +173,9 @@ class Com0ComTab(QWidget):
             [
                 t("com0com.col_index"),
                 t("com0com.col_side_a"),
-                t("com0com.col_effective_a"),
-                t("com0com.col_side_b"),
                 t("com0com.col_effective_b"),
+                t("com0com.col_side_b"),
+                t("com0com.col_effective_a"),
             ]
         )
         self.tbl_pairs.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -328,9 +328,9 @@ class Com0ComTab(QWidget):
             self.tbl_pairs.insertRow(row)
             self.tbl_pairs.setItem(row, 0, QTableWidgetItem(str(pr.index)))
             self.tbl_pairs.setItem(row, 1, QTableWidgetItem(pr.side_a_name))
-            self.tbl_pairs.setItem(row, 2, QTableWidgetItem(pr.effective_a))
+            self.tbl_pairs.setItem(row, 2, QTableWidgetItem(pr.effective_b))
             self.tbl_pairs.setItem(row, 3, QTableWidgetItem(pr.side_b_name))
-            self.tbl_pairs.setItem(row, 4, QTableWidgetItem(pr.effective_b))
+            self.tbl_pairs.setItem(row, 4, QTableWidgetItem(pr.effective_a))
 
         # Port-Auswahl in Listenern nachziehen
         self._update_listener_port_choices()
@@ -339,9 +339,9 @@ class Com0ComTab(QWidget):
         """Liste ``(label, port)`` für die Listener-Combobox.
 
         Pro com0com-Paar wird **eine** Option angeboten: die A-Seite als
-        Listener-Port (den wir selbst öffnen). Das Label nennt zusätzlich
-        die Gegenseite, die das externe Programm nutzen soll, z. B.
-        ``"COM4   (extern: COM10)"``. Falls die A-Seite nicht verfügbar
+        Listener-Port (den wir selbst öffnen). Das Label zeigt zuerst den
+        externen und danach den internen Port, z. B.
+        ``"Extern COM10 - Intern COM4"``. Falls die A-Seite nicht verfügbar
         ist (kein realer Name erkennbar), fällt die Option auf die
         B-Seite zurück und benennt A als extern.
         ``port`` ist der reine Portname, der an den Listener geht.
@@ -368,10 +368,8 @@ class Com0ComTab(QWidget):
             if listener in seen:
                 continue
             seen.add(listener)
-            if extern:
-                label = f"{listener}   (extern: {extern})"
-            else:
-                label = listener
+            ext_txt = extern if extern else "?"
+            label = f"Extern {ext_txt} - Intern {listener}"
             options.append((label, listener))
         return options
 

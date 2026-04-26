@@ -815,8 +815,6 @@ class SettingsWindow(QDialog):
         _lay_cont_id.addWidget(self._lbl_controller_wait, 0, Qt.AlignmentFlag.AlignVCenter)
         _lay_cont_id.addStretch(1)
         fl_ctrl.addRow(t("settings.controller_id"), _row_cont_id)
-        self._controller_name_dirty = [False, False, False]
-        self._controller_pwm_dirty = [False, False]
         self.sp_cont_pwm_slow = QSpinBox()
         self.sp_cont_pwm_slow.setRange(0, 100)
         try:
@@ -831,14 +829,11 @@ class SettingsWindow(QDialog):
         except (TypeError, ValueError):
             self.sp_cont_pwm_fast.setValue(80)
         self.sp_cont_pwm_fast.setToolTip(tt("settings.controller_pwm_tooltip"))
-        self.sp_cont_pwm_slow.valueChanged.connect(lambda: self._mark_pwm_dirty(0))
-        self.sp_cont_pwm_fast.valueChanged.connect(lambda: self._mark_pwm_dirty(1))
         fl_ctrl.addRow(t("settings.controller_pwm_slow"), self.sp_cont_pwm_slow)
         fl_ctrl.addRow(t("settings.controller_pwm_fast"), self.sp_cont_pwm_fast)
         self.chk_cont_wind_anemo = QCheckBox(t("settings.controller_wind_anemo"))
         self.chk_cont_wind_anemo.setChecked(bool(_chw.get("wind_anemometer", False)))
         self.chk_cont_wind_anemo.setToolTip(tt("settings.controller_wind_anemo_tooltip"))
-        self.chk_cont_wind_anemo.toggled.connect(self._mark_anemo_dirty)
         self.chk_cont_wind_anemo.toggled.connect(self._update_wind_dir_display_row_visibility)
         fl_ctrl.addRow(self.chk_cont_wind_anemo)
         self.cb_cont_encoder_delta = QComboBox()
@@ -852,7 +847,6 @@ class SettingsWindow(QDialog):
             _ed = 10
         self.cb_cont_encoder_delta.setCurrentIndex(0 if _ed == 1 else 1)
         self.cb_cont_encoder_delta.setToolTip(tt("settings.controller_encoder_delta_tooltip"))
-        self.cb_cont_encoder_delta.currentIndexChanged.connect(self._mark_delta_dirty)
         fl_ctrl.addRow(t("settings.controller_encoder_delta"), self.cb_cont_encoder_delta)
         self.sp_cont_beep_freq = QSpinBox()
         self.sp_cont_beep_freq.setRange(500, 4000)
@@ -870,12 +864,6 @@ class SettingsWindow(QDialog):
         except (TypeError, ValueError):
             self.sp_cont_beep_vol.setValue(50)
         self.sp_cont_beep_vol.setToolTip(tt("settings.controller_beep_volume_tooltip"))
-        self._controller_beep_dirty = [False, False]
-        self._controller_anemo_dirty = False
-        self._controller_delta_dirty = False
-        self._controller_cha_dirty = False
-        self.sp_cont_beep_freq.valueChanged.connect(lambda: self._mark_beep_dirty(0))
-        self.sp_cont_beep_vol.valueChanged.connect(lambda: self._mark_beep_dirty(1))
         fl_ctrl.addRow(t("settings.controller_beep_freq"), self.sp_cont_beep_freq)
         fl_ctrl.addRow(t("settings.controller_beep_volume"), self.sp_cont_beep_vol)
         _w_conled = QWidget()
@@ -1103,7 +1091,6 @@ class SettingsWindow(QDialog):
         self.chk_cont_antenna_realign = QCheckBox(t("settings.antenna_realign_on_switch"))
         self.chk_cont_antenna_realign.setChecked(bool(_chw.get("antenna_realign_on_switch", False)))
         self.chk_cont_antenna_realign.setToolTip(tt("settings.antenna_realign_on_switch_tooltip"))
-        self.chk_cont_antenna_realign.toggled.connect(self._mark_cha_dirty)
         form_az_misc.addRow(self.chk_cont_antenna_realign)
         # Initial aus Config (Fallback wenn Rotor noch nicht geantwortet)
         for i, sp in enumerate([self.sp_az_antoff_1, self.sp_az_antoff_2, self.sp_az_antoff_3]):
@@ -2377,7 +2364,7 @@ class SettingsWindow(QDialog):
         )
 
     def _wire_antenna_name_sync(self) -> None:
-        """Namen nur unter Tab „Antennen“; Config + Controller-Dirty bei Änderung."""
+        """Namen nur unter Tab „Antennen“; Config bei Änderung (Controller-Bus erst beim Speichern)."""
         for i in range(3):
             self._antenna_name_edits_az[i].textChanged.connect(
                 lambda _txt="", idx=i: self._on_antenna_name_text_changed(idx),
@@ -2385,7 +2372,6 @@ class SettingsWindow(QDialog):
 
     def _on_antenna_name_text_changed(self, idx: int) -> None:
         self._push_antenna_names_to_config()
-        self._mark_controller_name_dirty(idx)
 
     def _refresh_antenna_data_once(self) -> None:
         """Versatz- und Öffnungswinkel-SpinBoxen aus Controller-State übernehmen."""
@@ -2833,6 +2819,7 @@ class SettingsWindow(QDialog):
         self._update_conled_brightness_label()
 
     def _on_conled_brightness_released(self) -> None:
+        """SETCONLEDP beim Loslassen (nur bei echter Änderung durch Ziehen); Snapshot → kein Doppel-Write beim Speichern."""
         self._update_conled_brightness_label()
         if not self._controller_hw_enabled():
             return
@@ -2867,53 +2854,6 @@ class SettingsWindow(QDialog):
             self._controller_encoder_delta_value(),
             1 if self.chk_cont_antenna_realign.isChecked() else 0,
         )
-
-    def _mark_controller_name_dirty(self, idx: int) -> None:
-        if getattr(self, "_controller_suppress_dirty", False):
-            return
-        try:
-            self._controller_name_dirty[idx] = True
-        except Exception:
-            pass
-
-    def _mark_pwm_dirty(self, idx: int) -> None:
-        if getattr(self, "_controller_suppress_dirty", False):
-            return
-        try:
-            self._controller_pwm_dirty[idx] = True
-        except Exception:
-            pass
-
-    def _mark_beep_dirty(self, idx: int) -> None:
-        if getattr(self, "_controller_suppress_dirty", False):
-            return
-        try:
-            self._controller_beep_dirty[idx] = True
-        except Exception:
-            pass
-
-    def _mark_anemo_dirty(self, _checked: bool = False) -> None:
-        if getattr(self, "_controller_suppress_dirty", False):
-            return
-        self._controller_anemo_dirty = True
-
-    def _mark_delta_dirty(self, _idx: int = -1) -> None:
-        if getattr(self, "_controller_suppress_dirty", False):
-            return
-        self._controller_delta_dirty = True
-
-    def _mark_cha_dirty(self, _checked: bool = False) -> None:
-        if getattr(self, "_controller_suppress_dirty", False):
-            return
-        self._controller_cha_dirty = True
-
-    def _clear_controller_field_dirty(self) -> None:
-        self._controller_name_dirty = [False, False, False]
-        self._controller_pwm_dirty = [False, False]
-        self._controller_beep_dirty = [False, False]
-        self._controller_anemo_dirty = False
-        self._controller_delta_dirty = False
-        self._controller_cha_dirty = False
 
     def _apply_controller_from_cfg_only(self) -> None:
         self._controller_suppress_dirty = True
@@ -2966,7 +2906,6 @@ class SettingsWindow(QDialog):
             self.chk_cont_antenna_realign.setChecked(bool(ch.get("antenna_realign_on_switch", False)))
             self._snapshot_controller = self._controller_snapshot_from_ui()
             self._set_controller_led_ok(False)
-            self._clear_controller_field_dirty()
             self._update_wind_dir_display_row_visibility()
         finally:
             self._controller_suppress_dirty = False
@@ -3103,8 +3042,6 @@ class SettingsWindow(QDialog):
                 name_acks = self._read_controller_conant_names_into_ui(dst)
                 self._set_antenna_names_led_ok(len(name_acks) == 3 and all(name_acks))
                 self._merge_snapshot_controller_antenna_names()
-                for i in range(3):
-                    self._controller_name_dirty[i] = False
             finally:
                 self._controller_suppress_dirty = False
                 self._set_antenna_names_wait_visible(False)
@@ -3222,7 +3159,6 @@ class SettingsWindow(QDialog):
             self.lbl_status.setText(t("settings.controller_status_saved"))
             self._set_controller_led_ok(all_ok)
             self._snapshot_controller = self._controller_snapshot_from_ui()
-            self._clear_controller_field_dirty()
         finally:
             self._controller_suppress_dirty = False
             self._set_controller_wait_visible(False)
@@ -3231,7 +3167,6 @@ class SettingsWindow(QDialog):
     def _save_controller_hw_if_changed(self) -> bool:
         if not self._controller_hw_enabled():
             self._snapshot_controller = self._controller_snapshot_from_ui()
-            self._clear_controller_field_dirty()
             return True
         if not hasattr(self.ctrl, "sync_ui_command_response"):
             self._snapshot_controller = self._controller_snapshot_from_ui()
@@ -3242,15 +3177,7 @@ class SettingsWindow(QDialog):
             snap = tuple(snap) + tuple(cur[i] for i in range(len(snap), len(cur)))
         if snap is None:
             snap = cur
-        _ctrl_hw_dirty = (
-            any(self._controller_name_dirty)
-            or any(self._controller_pwm_dirty)
-            or any(self._controller_beep_dirty)
-            or self._controller_anemo_dirty
-            or self._controller_delta_dirty
-            or self._controller_cha_dirty
-        )
-        if snap == cur and not _ctrl_hw_dirty:
+        if snap == cur:
             return True
         if not self.hw.is_connected():
             self._snapshot_controller = cur
@@ -3266,24 +3193,24 @@ class SettingsWindow(QDialog):
             if not _sync_got_ack_value(r):
                 all_ok = False
         for i in range(3):
-            if snap[1 + i] != cur[1 + i] or self._controller_name_dirty[i]:
+            if snap[1 + i] != cur[1 + i]:
                 cmd = f"SETCONANTNAME{i + 1}"
                 r = c.sync_ui_command_response(dst, cmd, cur[1 + i], f"ACK_{cmd}")
                 if not _sync_got_ack_value(r):
                     all_ok = False
-        if snap[4] != cur[4] or self._controller_pwm_dirty[0]:
+        if snap[4] != cur[4]:
             r = c.sync_ui_command_response(dst, "SETCONSPWM", str(int(cur[4])), "ACK_SETCONSPWM")
             if not _sync_got_ack_value(r):
                 all_ok = False
-        if snap[5] != cur[5] or self._controller_pwm_dirty[1]:
+        if snap[5] != cur[5]:
             r = c.sync_ui_command_response(dst, "SETCONFPWM", str(int(cur[5])), "ACK_SETCONFPWM")
             if not _sync_got_ack_value(r):
                 all_ok = False
-        if snap[6] != cur[6] or self._controller_beep_dirty[0]:
+        if snap[6] != cur[6]:
             r = c.sync_ui_command_response(dst, "SETCONFRQ", str(int(cur[6])), "ACK_SETCONFRQ")
             if not _sync_got_ack_value(r):
                 all_ok = False
-        if snap[7] != cur[7] or self._controller_beep_dirty[1]:
+        if snap[7] != cur[7]:
             r = c.sync_ui_command_response(dst, "SETLSL", str(int(cur[7])), "ACK_SETLSL")
             if not _sync_got_ack_value(r):
                 all_ok = False
@@ -3291,21 +3218,20 @@ class SettingsWindow(QDialog):
             r = c.sync_ui_command_response(dst, "SETCONLEDP", str(int(cur[8])), "ACK_SETCONLEDP")
             if not _sync_got_ack_value(r):
                 all_ok = False
-        if snap[9] != cur[9] or self._controller_anemo_dirty:
+        if snap[9] != cur[9]:
             r = c.sync_ui_command_response(dst, "SETCONANO", str(int(cur[9])), "ACK_SETCONANO")
             if not _sync_got_ack_value(r):
                 all_ok = False
-        if snap[10] != cur[10] or self._controller_delta_dirty:
+        if snap[10] != cur[10]:
             r = c.sync_ui_command_response(dst, "SETCONDELTA", str(int(cur[10])), "ACK_SETCONDELTA")
             if not _sync_got_ack_value(r):
                 all_ok = False
-        if snap[11] != cur[11] or self._controller_cha_dirty:
+        if snap[11] != cur[11]:
             r = c.sync_ui_command_response(dst, "SETCONCHA", str(int(cur[11])), "ACK_SETCONCHA")
             if not _sync_got_ack_value(r):
                 all_ok = False
         if all_ok:
             self._snapshot_controller = cur
-            self._clear_controller_field_dirty()
         return all_ok
 
     def _on_broadcast_setconidf(self) -> None:

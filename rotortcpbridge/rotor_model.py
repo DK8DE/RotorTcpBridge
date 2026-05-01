@@ -211,6 +211,9 @@ class AxisState:
     smooth_pos_d10f: float = 0.0
     # Zeitstempel des letzten GETPOSDG-Samples (u. a. für moving/stop_confirm-Logik).
     _last_sample_ts: float = 0.0
+    # Letzter Zeitpunkt mit echter Positionsänderung (>0,1°).
+    # Für Polling-Umschaltung: schnell nur bei realer Bewegung, nicht nur bei gesetztem moving-Flag.
+    last_motion_ts: float = 0.0
     target_d10: int = 0
     # Kompass-Soll aus Bus (SETPOSCC, z. B. Encoder-Panel): nur Anzeige; SETPOSDG/PST/manuell setzen das zurück.
     compass_target_d10: Optional[int] = None

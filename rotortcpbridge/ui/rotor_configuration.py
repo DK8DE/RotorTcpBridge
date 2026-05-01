@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..rs485_protocol import build
+from ..rs485_protocol import BROADCAST_DST, build
 from ..command_catalog import command_specs, format_cmd_tooltip
 from ..app_icon import get_app_icon
 from ..i18n import format_tooltip, t, tt
@@ -39,6 +39,8 @@ from ..backup import backups_dir
 
 
 _CMD_RE = re.compile(r"^[A-Z0-9_]+$")
+# Nicht im oberen CMD-Dropdown: nur über dedizierte UI (z. B. Broadcast-Ziel 255).
+_HIDE_FROM_MANUAL_CMD_COMBO = frozenset({"SETROTORID"})
 _SET_TO_GET_SPECIAL_MAP = {
     "SETSWAPTEMP": "GETSWAPTMP",
     "SETHOMERETURN": "GETHOMRETURN",
@@ -151,17 +153,27 @@ class CommandButtonsWindow(QDialog):
     sig_send_result = Signal(str, str, str, str)
     sig_backup_step_done = Signal(bool, str, str, int, str, str)
     sig_restore_step_done = Signal(bool, str, int, str, str)
+    # Reader-/Worker-Thread → GUI: Slave-ID hat sich geändert (zuverlässiger als postEvent)
+    sig_slave_id_renumbered = Signal(int, int)
 
-    def __init__(self, cfg: dict, controller, save_cfg_cb, parent=None):
+    def __init__(
+        self,
+        cfg: dict,
+        controller,
+        save_cfg_cb,
+        parent=None,
+        after_slave_ids_changed_cb: Optional[Callable[[], None]] = None,
+    ):
         super().__init__(parent)
         self.cfg = cfg
         self.ctrl = controller
         self.save_cfg_cb = save_cfg_cb
+        self._after_slave_ids_changed_cb = after_slave_ids_changed_cb
 
         self.setWindowTitle(t("cmd.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setFixedSize(730, 608)
+        self.setFixedSize(730, 648)
 
         self._backup_state: Optional[dict] = None
         self._restore_state: Optional[dict] = None
@@ -192,11 +204,18 @@ class CommandButtonsWindow(QDialog):
             if mapped and mapped in self._all_spec_by_name:
                 get_cmds_hidden.add(mapped)
         self._cmd_specs = [
-            c for c in all_cmd_specs if not (c.name.startswith("GET") and c.name in get_cmds_hidden)
+            c
+            for c in all_cmd_specs
+            if not (c.name.startswith("GET") and c.name in get_cmds_hidden)
+            and c.name not in _HIDE_FROM_MANUAL_CMD_COMBO
         ]
         self._spec_by_name = {c.name: c for c in self._cmd_specs}
         self._param_rows: dict[str, tuple[QLineEdit, QPushButton]] = {}
         self._send_set_inflight: set[tuple[int, str]] = set()
+        self._set_rotor_id_broadcast_inflight: bool = False
+        # DST-Listenindex beim Senden von SETID/SETROTORID (Fallback für cfg-Zuordnung)
+        self._id_change_combo_index: int = 0
+        self._slave_renumber_old_snap: int | None = None
 
         root = QVBoxLayout(self)
 
@@ -324,6 +343,27 @@ class CommandButtonsWindow(QDialog):
 
         root.addLayout(blocks_h, 1)
 
+        row_setrid = QHBoxLayout()
+        row_setrid.setSpacing(8)
+        lbl_new_id = QLabel(t("cmd.label_new_rotor_id") + ":")
+        self.ed_set_rotor_id = QLineEdit()
+        self.ed_set_rotor_id.setFixedWidth(_PARAM_EDIT_WIDTH)
+        self.ed_set_rotor_id.setPlaceholderText("1…254")
+        self.ed_set_rotor_id.setToolTip(format_tooltip(t("cmd.tooltip_setrotorid_new")))
+        lbl_new_id.setToolTip(format_tooltip(t("cmd.tooltip_setrotorid_new")))
+        self.btn_set_rotor_id = QPushButton(t("cmd.btn_set_rotor_id"))
+        self.btn_set_rotor_id.setAutoDefault(False)
+        self.btn_set_rotor_id.setDefault(False)
+        self.btn_set_rotor_id.setToolTip(format_tooltip(t("cmd.tooltip_setrotorid_new")))
+        row_setrid.addWidget(lbl_new_id)
+        row_setrid.addWidget(self.ed_set_rotor_id)
+        row_setrid.addWidget(self.btn_set_rotor_id)
+        row_setrid.addStretch(1)
+        root.addLayout(row_setrid)
+
+        self.btn_set_rotor_id.clicked.connect(self._on_set_rotor_id_broadcast_clicked)
+        self.ed_set_rotor_id.returnPressed.connect(self._on_set_rotor_id_broadcast_clicked)
+
         self.btn_backup.clicked.connect(self._on_backup_clicked)
         self.btn_restore.clicked.connect(self._on_restore_clicked)
 
@@ -335,6 +375,7 @@ class CommandButtonsWindow(QDialog):
         self.sig_send_result.connect(self._apply_send_result)
         self.sig_backup_step_done.connect(self._on_backup_step_done)
         self.sig_restore_step_done.connect(self._on_restore_step_done)
+        self.sig_slave_id_renumbered.connect(self._commit_slave_id_renumber)
 
     def event(self, e: QEvent) -> bool:
         if e.type() == _GuiCallEvent._type() and isinstance(e, _GuiCallEvent):
@@ -363,7 +404,8 @@ class CommandButtonsWindow(QDialog):
         if not ids:
             ids = [0]
         for v in ids:
-            cb.addItem(f"ID {v}", v)
+            cb.addItem(f"ID {v}")
+            cb.setItemData(cb.count() - 1, int(v), Qt.ItemDataRole.UserRole)
         return cb
 
     def _on_dst_changed(self) -> None:
@@ -503,6 +545,9 @@ class CommandButtonsWindow(QDialog):
         if spec is not None and spec.kind == "none" and spec.params_literal is not None:
             if cmd.startswith("GET") or self._get_query_cmd_for_selection(cmd) == "":
                 params = str(spec.params_literal)
+        if cmd == "SETID":
+            self._id_change_combo_index = max(0, self.cb_dst.currentIndex())
+            self._slave_renumber_old_snap = int(dst)
         try:
 
             def done(tel, err):
@@ -519,6 +564,14 @@ class CommandButtonsWindow(QDialog):
                     str(getattr(tel, "params", "") or ""),
                     "",
                 )
+                if cmd == "SETID":
+                    try:
+                        nid = int(float(str(params).replace(",", ".")))
+                    except (ValueError, TypeError):
+                        nid = None
+                    if nid is not None:
+                        od = int(dst)
+                        self.sig_slave_id_renumbered.emit(int(od), int(nid))
 
             self.ctrl.send_ui_command(
                 dst,
@@ -601,11 +654,68 @@ class CommandButtonsWindow(QDialog):
         return ed, btn
 
     def _current_dst(self) -> int:
-        v = self.cb_dst.currentData()
+        idx = self.cb_dst.currentIndex()
+        if idx < 0:
+            return 0
+        role = Qt.ItemDataRole.UserRole
+        v = self.cb_dst.itemData(idx, role)
+        if v is None:
+            v = self.cb_dst.itemData(idx)
         try:
             return int(v)
         except Exception:
+            pass
+        try:
+            return int(v.value())
+        except Exception:
             return 0
+
+    @staticmethod
+    def _int_rotor_bus_slave(raw) -> int | None:
+        if raw is None:
+            return None
+        try:
+            return int(float(str(raw).strip().replace(",", ".")))
+        except Exception:
+            return None
+
+    def _rotor_bus_keys_with_slave_id(self, slave: int) -> set[str]:
+        """Alle cfg-Keys (slave_az/slave_el), deren Wert der Slave-ID entspricht."""
+        rb = self.cfg.get("rotor_bus", {})
+        try:
+            sid = int(slave)
+        except Exception:
+            return set()
+        keys: set[str] = set()
+        for k in ("slave_az", "slave_el"):
+            v = self._int_rotor_bus_slave(rb.get(k))
+            if v is not None and v == sid:
+                keys.add(k)
+        return keys
+
+    def _rotor_bus_keys_for_dst_combo_row(self, row: int) -> set[str]:
+        """Welche cfg-Keys zur DST-Listenzeile `row` gehören (wie _refresh_dst_dropdown, inkl. gleiche ID)."""
+        rb = self.cfg.get("rotor_bus", {})
+        from collections import defaultdict
+
+        id_to_keys: dict[int, set[str]] = defaultdict(set)
+        for k in ("slave_az", "slave_el"):
+            v = self._int_rotor_bus_slave(rb.get(k))
+            if v is not None:
+                id_to_keys[v].add(k)
+        ordered: list[int] = []
+        for k in ("slave_az", "slave_el"):
+            v = self._int_rotor_bus_slave(rb.get(k))
+            if v is None:
+                continue
+            if v not in ordered:
+                ordered.append(v)
+        if not ordered:
+            return {"slave_az"}
+        r = max(0, min(int(row), len(ordered) - 1))
+        vid = ordered[r]
+        out = set(id_to_keys.get(vid, set()))
+        return out if out else {"slave_az"}
 
     def _master_id(self) -> int:
         try:
@@ -641,8 +751,179 @@ class CommandButtonsWindow(QDialog):
         if not ids:
             ids = [0]
         for v in ids:
-            self.cb_dst.addItem(f"ID {v}", v)
+            self.cb_dst.addItem(f"ID {v}")
+            self.cb_dst.setItemData(self.cb_dst.count() - 1, int(v), Qt.ItemDataRole.UserRole)
         self.cb_dst.blockSignals(False)
+
+    def _select_dst_data_id(self, slave_id: int) -> None:
+        self.cb_dst.blockSignals(True)
+        try:
+            sid = int(slave_id)
+            role = Qt.ItemDataRole.UserRole
+            for i in range(self.cb_dst.count()):
+                try:
+                    vd = self.cb_dst.itemData(i, role)
+                    if vd is None:
+                        vd = self.cb_dst.itemData(i)
+                    if int(vd) == sid:
+                        self.cb_dst.setCurrentIndex(i)
+                        break
+                except Exception:
+                    continue
+        finally:
+            self.cb_dst.blockSignals(False)
+
+    def _persist_slave_id_to_cfg_and_controller(self, old_slave_id: int, new_slave_id: int) -> None:
+        """cfg + Controller auf neue Slave-ID; ohne GET-Sturm (der kommt verzögert)."""
+        rb = self.cfg.setdefault("rotor_bus", {})
+        try:
+            oid = int(old_slave_id)
+            nid = int(new_slave_id)
+        except Exception:
+            return
+        if nid < 1 or nid > 254:
+            return
+        snap = getattr(self, "_slave_renumber_old_snap", None)
+        oid_eff = oid
+        if snap is not None:
+            try:
+                oid_eff = int(snap)
+            except Exception:
+                pass
+        self._slave_renumber_old_snap = None
+
+        keys: set[str] = set()
+        keys |= self._rotor_bus_keys_with_slave_id(oid_eff)
+        keys |= self._rotor_bus_keys_with_slave_id(oid)
+        if not keys:
+            keys = self._rotor_bus_keys_for_dst_combo_row(
+                int(getattr(self, "_id_change_combo_index", 0))
+            )
+        if not keys:
+            keys = {"slave_az"}
+        for k in keys:
+            rb[k] = int(nid)
+        try:
+            mid = int(rb.get("master_id", 0))
+        except Exception:
+            mid = 0
+        try:
+            self.ctrl.update_ids(
+                mid,
+                int(rb.get("slave_az", 0)),
+                int(rb.get("slave_el", 0)),
+                bool(rb.get("enable_az", True)),
+                bool(rb.get("enable_el", False)),
+            )
+        except Exception:
+            pass
+        try:
+            self.save_cfg_cb(self.cfg)
+        except Exception:
+            pass
+        self._refresh_dst_dropdown()
+        self._select_dst_data_id(nid)
+        self._update_frame()
+        cb = self._after_slave_ids_changed_cb
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                pass
+
+    def _commit_slave_id_renumber(self, old_slave_id: int, new_slave_id: int) -> None:
+        """Nach SETID / SETROTORID: sofort speichern, nach 2 s alle Parameter per GET neu einlesen (Bus stabil)."""
+        self._persist_slave_id_to_cfg_and_controller(old_slave_id, new_slave_id)
+        QTimer.singleShot(2000, self._reread_all_params_if_visible)
+
+    def _reread_all_params_if_visible(self) -> None:
+        """Alle Parameter-Zeilen per GET neu laden (DST wie Combo)."""
+        try:
+            if self.isVisible():
+                self._read_all_params()
+        except Exception:
+            pass
+
+    @Slot()
+    def _on_set_rotor_id_broadcast_clicked(self) -> None:
+        if self._set_rotor_id_broadcast_inflight:
+            return
+        raw = str(self.ed_set_rotor_id.text() or "").strip()
+        converted, err = self._validate_and_convert_param("SETID", raw)
+        if err or not converted:
+            QMessageBox.warning(
+                self, t("cmd.btn_set_rotor_id"), err or t("cmd.msgbox_set_empty")
+            )
+            return
+        try:
+            new_id = int(float(str(converted).replace(",", ".")))
+        except (ValueError, TypeError):
+            QMessageBox.warning(self, t("cmd.btn_set_rotor_id"), t("cmd.msgbox_set_empty"))
+            return
+
+        mb = QMessageBox(self)
+        mb.setIcon(QMessageBox.Icon.Warning)
+        mb.setWindowTitle(t("cmd.msgbox_setrotorid_title"))
+        mb.setText(t("cmd.msgbox_setrotorid_text"))
+        mb.setStandardButtons(
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
+        )
+        mb.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        ok_btn = mb.button(QMessageBox.StandardButton.Ok)
+        cancel_btn = mb.button(QMessageBox.StandardButton.Cancel)
+        if ok_btn is not None:
+            ok_btn.setText(t("cmd.msgbox_setrotorid_ok"))
+        if cancel_btn is not None:
+            cancel_btn.setText(t("cmd.msgbox_setrotorid_cancel"))
+        if mb.exec() != QMessageBox.StandardButton.Ok:
+            return
+
+        self._id_change_combo_index = max(0, self.cb_dst.currentIndex())
+        old_dst = self._current_dst()
+        try:
+            self._slave_renumber_old_snap = int(old_dst)
+        except Exception:
+            self._slave_renumber_old_snap = None
+
+        self._set_rotor_id_broadcast_inflight = True
+        self.btn_set_rotor_id.setEnabled(False)
+
+        def done(tel, err, nid=new_id, o_dst=old_dst):
+            self._set_rotor_id_broadcast_inflight = False
+            self.btn_set_rotor_id.setEnabled(True)
+            if err:
+                self.sig_send_result.emit("SETROTORID", "", "", str(err))
+                # Kein ACK (z. B. Timeout), Rotor kann trotzdem umgestellt sein → nach 2 s cfg/DST/GETs nachziehen
+                if str(err) == "timeout":
+                    self.sig_slave_id_renumbered.emit(int(o_dst), int(nid))
+                return
+            if tel is None:
+                self.sig_send_result.emit("SETROTORID", "", "", "")
+                self.sig_slave_id_renumbered.emit(int(o_dst), int(nid))
+                return
+            self.sig_send_result.emit(
+                "SETROTORID",
+                str(getattr(tel, "cmd", "") or ""),
+                str(getattr(tel, "params", "") or ""),
+                "",
+            )
+            self.sig_slave_id_renumbered.emit(int(o_dst), int(nid))
+
+        try:
+            self.ctrl.send_ui_command(
+                int(BROADCAST_DST),
+                "SETROTORID",
+                str(new_id),
+                expect_prefix="ACK_SETROTORID",
+                timeout_s=3.0,
+                priority=0,
+                on_done=done,
+                apply_local_state=False,
+            )
+        except Exception as e:
+            self._set_rotor_id_broadcast_inflight = False
+            self.btn_set_rotor_id.setEnabled(True)
+            QMessageBox.warning(self, t("cmd.btn_set_rotor_id"), t("cmd.msgbox_send_failed", err=e))
 
     def _on_param_round1_item_done(
         self, bid: int, success: bool, dst: int, get_cmd: str, params: str
@@ -931,6 +1212,10 @@ class CommandButtonsWindow(QDialog):
             return
         self._send_set_inflight.add(key)
 
+        if cmd == "SETID":
+            self._id_change_combo_index = max(0, self.cb_dst.currentIndex())
+            self._slave_renumber_old_snap = int(dst)
+
         def done(tel, err):
             self._send_set_inflight.discard(key)
             if err:
@@ -948,6 +1233,14 @@ class CommandButtonsWindow(QDialog):
                 str(getattr(tel, "params", "") or ""),
                 "",
             )
+            if cmd == "SETID":
+                try:
+                    nid = int(float(str(params).replace(",", ".")))
+                except (ValueError, TypeError):
+                    nid = None
+                if nid is not None:
+                    od = int(dst)
+                    self.sig_slave_id_renumbered.emit(int(od), int(nid))
             if cmd == "SETRAMP":
                 cal_key = (dst, "SETCALIGNDG")
                 if cal_key in self._send_set_inflight:

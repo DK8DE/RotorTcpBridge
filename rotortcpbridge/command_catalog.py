@@ -551,6 +551,17 @@ SPECS_DATA: list[dict] = [
         "help_text_en": "Read slave address. Return value 0..255.",
     },
     {
+        "name": "SETROTORID",
+        "kind": "int",
+        "min_value": 1.0,
+        "max_value": 254.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 20.0,
+        "help_text": "Neue Slave-Adresse per Broadcast (DST 255) an alle Teilnehmer senden. Nur anwenden, wenn genau ein Rotor am Bus hängt.",
+        "help_text_en": "Send new slave address via broadcast (DST 255). Use only when exactly one rotor is on the bus.",
+    },
+    {
         "name": "SETBEGINDG",
         "kind": "float",
         "min_value": 0.0,

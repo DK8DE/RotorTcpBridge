@@ -93,10 +93,37 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 saz = int(self.slave_az)
                 sel = int(self.slave_el)
                 if dst == saz or dst == sel:
+                    should_restrict = False
                     try:
-                        self.note_setposdg_poll_restrict()
+                        p = str(tel.params or "").strip()
+                        if ";" in p:
+                            p = p.split(";")[-1]
+                        # Serial-Mitschnitt kann zusätzliche Felder nach ":" enthalten.
+                        # Für SETPOSDG nur den ersten Winkelteil verwenden.
+                        if ":" in p:
+                            p = p.split(":", 1)[0]
+                        p = p.replace(" ", "")
+                        v = float(p.replace(",", "."))
+                        d10 = int(round(v * 10.0))
+                        axs = self.az if dst == saz else self.el
+                        cur_tgt = int(getattr(axs, "target_d10", 0))
+                        cur_pos = int(getattr(axs, "pos_d10", 0))
+                        should_restrict = True
+                        if bool(getattr(axs, "position_wrap_360", True)):
+                            err_tgt = abs(shortest_delta_deg(cur_tgt / 10.0, d10 / 10.0))
+                            err_pos = abs(shortest_delta_deg(cur_pos / 10.0, d10 / 10.0))
+                            if (err_tgt <= 0.2) and (err_pos <= 0.2):
+                                should_restrict = False
+                        else:
+                            if (abs(cur_tgt - d10) <= 2) and (abs(cur_pos - d10) <= 2):
+                                should_restrict = False
                     except Exception:
                         pass
+                    if should_restrict:
+                        try:
+                            self.note_setposdg_poll_restrict()
+                        except Exception:
+                            pass
                     self._apply_local_state_for_ui_command(
                         dst, "SETPOSDG", tel.params, from_bus_sniff=True
                     )
@@ -161,7 +188,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         pass
                     if not skip:
                         self._apply_local_state_for_ui_command(
-                            int(axis_dst), "SETPOSCC", tel.params
+                            int(axis_dst), "SETPOSCC", tel.params, from_bus_sniff=True
                         )
                     ax = self.az if int(axis_dst) == saz else self.el
                     ax.online = True
@@ -357,6 +384,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         else:
                             # Wenn wir eine nennenswerte Positionsänderung sehen, sind wir sicher in Bewegung.
                             if dpos > 1:
+                                axis_state.last_motion_ts = time.time()
                                 axis_state.moving = True
                             else:
                                 axis_state.moving = prev_moving

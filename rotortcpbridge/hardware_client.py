@@ -15,7 +15,7 @@ if __package__ is None:  # pragma: no cover
     if str(_repo_root) not in sys.path:
         sys.path.insert(0, str(_repo_root))
 
-from rotortcpbridge.rs485_protocol import parse, Telegram
+from rotortcpbridge.rs485_protocol import BROADCAST_DST, parse, Telegram
 from rotortcpbridge.logutil import LogBuffer
 
 try:
@@ -324,12 +324,26 @@ class HardwareClient:
             try:
                 tx_meta = parse(str(pending.line).strip())
                 if tx_meta is not None:
-                    if int(tel.src) != int(tx_meta.dst):
-                        return False
+                    tx_dst = int(tx_meta.dst)
+                    # Broadcast (DST 255): Slave antwortet mit SRC = eigener ID, nicht 255
+                    if tx_dst != int(BROADCAST_DST):
+                        if int(tel.src) != tx_dst:
+                            return False
             except Exception:
                 pass
 
             prefixes = {exp}
+
+            # SETROTORID (Broadcast): manche Firmware antwortet wie bei SETID (ACK_SETID/NAK_SETID)
+            try:
+                tx_cmd = parse(str(pending.line).strip())
+                if tx_cmd is not None and (tx_cmd.cmd or "").strip().upper() == "SETROTORID":
+                    prefixes.add("ACK_SETID")
+                    prefixes.add("NAK_SETID")
+                    prefixes.add("ACK_ROTORID")
+                    prefixes.add("NAK_ROTORID")
+            except Exception:
+                pass
 
             # ACK_GETFOO -> auch ACK_FOO akzeptieren
             if exp.startswith("ACK_GET"):

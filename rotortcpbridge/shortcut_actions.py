@@ -30,17 +30,31 @@ def set_antenna_azimuth_deg(cfg: dict, ctrl: "RotorController", antenna_deg: flo
     ctrl.set_az_deg(rotor, force=True)
 
 
-def effective_antenna_target_deg(cfg: dict, ctrl: "RotorController") -> float:
-    """Aktuelles AZ-Soll als Antennenpeilung (°) aus dem Motor-SETPOSDG-Soll + Versatz.
+def _az_rotor_deg_for_relative_steps(ctrl: "RotorController") -> float:
+    """Rotor-Istwinkel (°) als Bezug für Jog/Hotkey-Schritte.
 
-    Nur ``target_d10`` (kein ``compass_target_d10`` / SETPOSCC): sonst würden schnelle
-    Hotkey-Schritte relativ zum Encoder-Schnipsel rechnen und die Kette bricht.
+    Direkt nach Programmstart ist ``target_d10`` oft noch 0, während ``pos_d10`` schon
+    von GETPOSDG kommt — dann soll Jog von der aktuellen Peilung aus zählen, nicht von 0°.
+    Sobald ein Motor-Soll gesendet wurde (``last_set_sent_target_d10``), gilt weiter das Soll.
     """
     try:
-        td10 = int(getattr(ctrl.az, "target_d10", 0))
+        if getattr(ctrl.az, "last_set_sent_target_d10", None) is not None:
+            return int(getattr(ctrl.az, "target_d10", 0)) / 10.0
     except Exception:
-        td10 = 0
-    rotor_tgt = td10 / 10.0
+        pass
+    try:
+        return int(getattr(ctrl.az, "pos_d10", 0)) / 10.0
+    except Exception:
+        return 0.0
+
+
+def effective_antenna_target_deg(cfg: dict, ctrl: "RotorController") -> float:
+    """Aktuelle AZ-Bezugspeilung (Antenne, °) für relative Schritte: Rotor + Versatz.
+
+    Nur Rotor-Ist bzw. Motor-``target_d10`` (kein ``compass_target_d10`` / SETPOSCC), damit
+    schnelle Hotkey-Ketten nicht am Encoder-Schnipsel hängen.
+    """
+    rotor_tgt = _az_rotor_deg_for_relative_steps(ctrl)
     off = antenna_offset_for_compass_slot(cfg)
     return wrap_deg(rotor_tgt + off)
 
@@ -52,15 +66,24 @@ def bump_antenna_target_deg(cfg: dict, ctrl: "RotorController", delta_deg: float
     set_antenna_azimuth_deg(cfg, ctrl, new_ant)
 
 
-def effective_el_target_deg(ctrl: "RotorController") -> float:
-    """Aktuelles EL-Soll in Grad (0…90°) aus ``target_d10`` (Motor-Soll), analog AZ."""
+def _el_deg_for_relative_steps(ctrl: "RotorController") -> float:
+    """EL-Bezug (°) für Jog: Motor-Soll wenn schon gesendet, sonst Ist-Position."""
     if not getattr(ctrl, "enable_el", False):
         return 0.0
     try:
-        td10 = int(getattr(ctrl.el, "target_d10", 0))
+        if getattr(ctrl.el, "last_set_sent_target_d10", None) is not None:
+            return clamp_el(int(getattr(ctrl.el, "target_d10", 0)) / 10.0)
     except Exception:
-        td10 = 0
-    return clamp_el(td10 / 10.0)
+        pass
+    try:
+        return clamp_el(int(getattr(ctrl.el, "pos_d10", 0)) / 10.0)
+    except Exception:
+        return 0.0
+
+
+def effective_el_target_deg(ctrl: "RotorController") -> float:
+    """Aktuelles EL in Grad (0…90°) als Bezug für relative Schritte, analog AZ."""
+    return _el_deg_for_relative_steps(ctrl)
 
 
 def bump_el_target_deg(ctrl: "RotorController", delta_deg: float) -> None:

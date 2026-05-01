@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 import threading
 from functools import partial
 
@@ -601,6 +602,8 @@ class MainWindow(QMainWindow):
         self.t = QTimer(self)
         self.t.timeout.connect(self._tick)
         self.t.start(100)
+        self._weather_alert_tick = 0
+        self._weather_alert_last_ts: dict[str, float] = {}
 
         self._internet_online: bool | None = None
         self._internet_checking: bool = False  # Verhindert gleichzeitige Prüfungen
@@ -661,7 +664,11 @@ class MainWindow(QMainWindow):
         self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
         self._warnings_errors_win = WarningsErrorsWindow(self.ctrl, parent=None)
         self._commands_win = CommandButtonsWindow(
-            self.cfg, self.ctrl, self.save_cfg_cb, parent=None
+            self.cfg,
+            self.ctrl,
+            self.save_cfg_cb,
+            parent=None,
+            after_slave_ids_changed_cb=self._on_rotor_slave_ids_changed_from_commands,
         )
 
         self.btn_open_compass.clicked.connect(self._open_compass)
@@ -1098,6 +1105,8 @@ class MainWindow(QMainWindow):
             if sw is not None and hasattr(sw, "_shortcuts_tab"):
                 sw._shortcuts_tab.retranslate_hotkey_combo_texts()
                 sw._shortcuts_tab.refresh_antenna_shortcut_row_labels()
+            if sw is not None and hasattr(sw, "_weather_tab"):
+                sw._weather_tab.retranslate()
         except Exception:
             pass
 
@@ -1163,7 +1172,11 @@ class MainWindow(QMainWindow):
             self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
             self._warnings_errors_win = WarningsErrorsWindow(self.ctrl, parent=None)
             self._commands_win = CommandButtonsWindow(
-                self.cfg, self.ctrl, self.save_cfg_cb, parent=None
+                self.cfg,
+                self.ctrl,
+                self.save_cfg_cb,
+                parent=None,
+                after_slave_ids_changed_cb=self._on_rotor_slave_ids_changed_from_commands,
             )
         except Exception:
             pass
@@ -1576,6 +1589,22 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _on_rotor_slave_ids_changed_from_commands(self) -> None:
+        """Nach SETID / SETROTORID (Broadcast): Haupt- und Kompass-Titel an Config anpassen."""
+        self._update_groupbox_titles()
+        cw = getattr(self, "_compass_win", None)
+        if cw is not None and hasattr(cw, "_update_groupbox_titles"):
+            try:
+                cw._update_groupbox_titles()
+            except Exception:
+                pass
+        sw = getattr(self, "_settings_win", None)
+        if sw is not None and hasattr(sw, "sync_rotor_bus_ids_from_cfg"):
+            try:
+                sw.sync_rotor_bus_ids_from_cfg()
+            except Exception:
+                pass
+
     def _update_groupbox_titles(self):
         slave_az = self.cfg.get("rotor_bus", {}).get("slave_az", "?")
         slave_el = self.cfg.get("rotor_bus", {}).get("slave_el", "?")
@@ -1646,6 +1675,74 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         return wind_on
+
+    def _maybe_weather_threshold_alerts(self) -> None:
+        """Prüft gespeicherte Wetter-Schwellen (Einstellungen) und zeigt seltener Meldefenster."""
+        self._weather_alert_tick = int(getattr(self, "_weather_alert_tick", 0)) + 1
+        if self._weather_alert_tick % 50 != 0:
+            return
+        ui = self.cfg.get("ui") or {}
+        wa = ui.get("weather_alert_thresholds") or {}
+        if not isinstance(wa, dict):
+            return
+        now = time.time()
+        cool = 120.0
+        if not hasattr(self, "_weather_alert_last_ts"):
+            self._weather_alert_last_ts = {}
+        last = self._weather_alert_last_ts
+
+        def _show(key: str, title: str, text: str) -> None:
+            if now - float(last.get(key, 0.0)) < cool:
+                return
+            last[key] = now
+            try:
+                QMessageBox.warning(self, title, text)
+            except Exception:
+                pass
+
+        try:
+            tel = getattr(self.ctrl.az, "telemetry", None)
+        except Exception:
+            tel = None
+        if tel is None:
+            return
+
+        if bool(wa.get("temp_alert_enabled", False)):
+            ta = getattr(tel, "temp_ambient_c", None)
+            if ta is not None:
+                try:
+                    tmin = float(wa.get("temp_min_c", -15.0))
+                    tmax = float(wa.get("temp_max_c", 40.0))
+                    cur = float(ta)
+                    if cur < tmin:
+                        _show(
+                            "temp_low",
+                            t("main.weather_alert_title"),
+                            t("main.weather_alert_temp_below", cur=f"{cur:.1f}", limit=f"{tmin:.1f}"),
+                        )
+                    elif cur > tmax:
+                        _show(
+                            "temp_high",
+                            t("main.weather_alert_title"),
+                            t("main.weather_alert_temp_above", cur=f"{cur:.1f}", limit=f"{tmax:.1f}"),
+                        )
+                except Exception:
+                    pass
+
+        if bool(wa.get("wind_alert_enabled", False)):
+            wk = getattr(tel, "wind_kmh", None)
+            if wk is not None:
+                try:
+                    wmax = float(wa.get("wind_max_kmh", 72.0))
+                    cur = float(wk)
+                    if cur > wmax:
+                        _show(
+                            "wind",
+                            t("main.weather_alert_title"),
+                            t("main.weather_alert_wind_above", cur=f"{cur:.1f}", limit=f"{wmax:.1f}"),
+                        )
+                except Exception:
+                    pass
 
     def _refresh_active_rig_combo(self) -> None:
         """Fuellt die QComboBox fuer den aktiven Rig-Profil-Wechsel aus den
@@ -2335,6 +2432,8 @@ class MainWindow(QMainWindow):
         self._update_axis_visibility()
         self._refresh_main_antenna_dropdown_labels_if_needed()
         wind_on = self._update_wind_visibility()
+        if wind_on:
+            self._maybe_weather_threshold_alerts()
         axis_vis = (bool(self.gb_az.isVisible()), bool(self.gb_el.isVisible()))
         size_changed = False
         if self._last_axis_vis != axis_vis:

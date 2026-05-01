@@ -64,6 +64,7 @@ from ..rig_bridge.manager import RigBridgeManager
 from .settings_rig_bridge_tab import RigBridgeTab
 from .settings_com0com_tab import Com0ComTab
 from .settings_shortcuts_tab import ShortcutsTab
+from .settings_weather_tab import WeatherThresholdsTab
 from .led_widget import Led
 from .ui_utils import px_to_dip
 
@@ -1254,12 +1255,15 @@ class SettingsWindow(QDialog):
         self._settings_stack.addWidget(_scroll_page(self._com0com_tab))
         self._shortcuts_tab = ShortcutsTab(self.cfg, self)
         self._settings_stack.addWidget(_scroll_page(self._shortcuts_tab))
+        self._weather_tab = WeatherThresholdsTab(self.cfg, self)
+        self._settings_stack.addWidget(_scroll_page(self._weather_tab))
         self._tab_antenna_index = 4
         self._tab_statistics_index = 6
         self._tab_controller_index = 7
         self._tab_rig_bridge_index = 8
         self._tab_com0com_index = 9
         self._tab_shortcuts_index = 10
+        self._tab_weather_index = 11
         self._calvalid_timer = QTimer(self)
         self._calvalid_timer.setInterval(5000)
         self._calvalid_timer.timeout.connect(self._poll_getcalvalid_once)
@@ -1288,6 +1292,7 @@ class SettingsWindow(QDialog):
             "Rig-Bridge",
             t("com0com.tab_title"),
             t("settings.tab_shortcuts"),
+            t("settings.tab_weather"),
         ):
             self._settings_nav.addItem(_lbl)
         self._settings_nav.currentRowChanged.connect(self._on_settings_nav_changed)
@@ -1403,6 +1408,11 @@ class SettingsWindow(QDialog):
         self._antenna_giveup_done = False
         self._update_antenna_visibility()
         self._shortcuts_tab.refresh_el_visibility()
+        self._update_weather_tab_visibility()
+        try:
+            self._weather_tab.load_from_cfg()
+        except Exception:
+            pass
         self._update_antenna_offset_enabled()
         self._update_status_on_open()
         self._request_antenna_offsets_if_needed()
@@ -2265,6 +2275,35 @@ class SettingsWindow(QDialog):
         """Periodisch: Verbindungsabhängige Buttons + Antennennamen (HW-Controller)."""
         self._update_strom_cal_buttons_enabled()
         self._update_antenna_offset_enabled()
+        self._update_weather_tab_visibility()
+
+    def _wind_sensor_available_for_ui(self) -> bool:
+        """True wenn Wind-Anzeige/Sensor aktiv (gleiche Logik wie Hauptfenster-Wetterbutton)."""
+        wind_known = bool(getattr(self.ctrl, "wind_enabled_known", False))
+        wind_on = bool(getattr(self.ctrl, "wind_enabled", False)) if wind_known else False
+        if not wind_on and not wind_known and hasattr(self.ctrl, "az"):
+            tel = getattr(self.ctrl.az, "telemetry", None)
+            if tel is not None:
+                has_wind = (
+                    getattr(tel, "wind_kmh", None) is not None
+                    or getattr(tel, "wind_dir_deg", None) is not None
+                )
+                if has_wind:
+                    wind_on = True
+        return bool(wind_on)
+
+    def _update_weather_tab_visibility(self) -> None:
+        """Tab „Wetter“ nur bei angeschlossenem Windmesser (wie Karte/Kompass-Wind)."""
+        try:
+            show = self._wind_sensor_available_for_ui()
+            idx = getattr(self, "_tab_weather_index", -1)
+            item = self._settings_nav.item(idx)
+            if item is not None:
+                item.setHidden(not show)
+            if not show and self._settings_nav.currentRow() == idx:
+                self._settings_nav.setCurrentRow(0)
+        except Exception:
+            pass
 
     def _sync_pst_server_cfg_from_tcp_ui(self) -> None:
         """PST-TCP-Gruppe → ``cfg['pst_server']`` und ``ui.udp_pst_enabled`` (ohne vollständigen Speichern-Dialog)."""
@@ -2508,6 +2547,26 @@ class SettingsWindow(QDialog):
             bool(self.chk_enable_el.isChecked()),
         )
 
+    def sync_rotor_bus_ids_from_cfg(self) -> None:
+        """Nach externer cfg-Änderung (z. B. SETID/SETROTORID im Rotor-Konfigurationsfenster): Master/Slave/Enable aus cfg in die Spinboxen spiegeln."""
+        rb = self.cfg.get("rotor_bus") or {}
+
+        def _cl(v) -> int:
+            try:
+                x = int(v)
+            except (TypeError, ValueError):
+                x = 1
+            return max(1, min(254, x))
+
+        try:
+            self.sp_master.setValue(max(0, min(255, int(rb.get("master_id", 0)))))
+        except (TypeError, ValueError):
+            pass
+        self.sp_slave_az.setValue(_cl(rb.get("slave_az")))
+        self.sp_slave_el.setValue(_cl(rb.get("slave_el")))
+        self.chk_enable_az.setChecked(bool(rb.get("enable_az", True)))
+        self.chk_enable_el.setChecked(bool(rb.get("enable_el", False)))
+
     def _save_clicked(self) -> bool:
         self.lbl_status.setText(t("settings.status_saving"))
         QApplication.processEvents()
@@ -2638,6 +2697,11 @@ class SettingsWindow(QDialog):
             self._shortcuts_tab.apply_to_cfg(self.cfg)
         except Exception as exc:
             self.logbuf.write("WARN", f"Shortcuts-Konfiguration: {exc}")
+
+        try:
+            self._weather_tab.apply_to_cfg(self.cfg)
+        except Exception as exc:
+            self.logbuf.write("WARN", f"Wetter-Schwellen: {exc}")
 
         chw = self.cfg.setdefault("controller_hw", {})
         chw["enabled"] = bool(self.chk_hw_controller_enabled.isChecked())

@@ -53,7 +53,7 @@ Das Protokoll ist als **Frage/Antwort** aufgebaut:
 
 ### IDs (SRC/DST)
 
-- **Slave‑ID**: ist die Zieladresse (`DST`) und kann mit `SETID` geändert werden.
+- **Slave‑ID**: ist die Zieladresse (`DST`) und kann mit **`SETID`** gezielt an diese Adresse geändert werden. Zusätzlich gibt es **`SETROTORID`**: derselbe Parameter (neue ID 1…254), aber **`DST = 255` (Broadcast)** — damit kann ein Rotor seine Adresse setzen, **ohne** dass der Master die alte Slave-ID kennen muss (sinnvoll nur, wenn **genau ein** Rotor am Bus hängt, sonst erhalten alle dieselbe ID).
 - **Master‑ID**: ist immer die Quelladresse (`SRC`) der Anfrage. Der Slave antwortet an genau diese ID (die Antwort hat dann `SRC=Slave` und `DST=Master`).
 - Die Master‑ID muss also nicht `0` sein. Wenn mehrere Master existieren, antwortet der Slave jeweils an den Master, der die Anfrage geschickt hat.
 - **Zwei Master auf derselben RS485‑Leitung** (z.B. PC mit eigenem USB‑RS485‑Adapter am gleichen Bus wie der Display‑Controller — der Datenverkehr des PC muss dafür **nicht** „durch den Controller“ geroutet sein): Der PC soll eine **andere Master‑ID** nutzen als der Controller (`config.json` `master_id` am Display). Sonst sind `ACK_GETPOSDG`/`ACK_SETPOSDG` mit gleichem `DST` nicht dem richtigen Gerät zuordenbar — Pending und Ist‑Anzeige können stolpern, wenn beide viel abfragen.
@@ -194,6 +194,7 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 | `#2:1:SETPOSCC:<deg>;<rotor_id>:CS$` | (kein Slave-Pflicht-ACK; optional NAK je nach Gerät) | **[SETPOSCC](#cmd-SETPOSCC)** Encoder-Vorschau-Soll (Display-Controller): Payload ist `<deg>;<rotor_id>`, kein Fahrauftrag. Auf USB mitgespiegelt — PC kann den Sollzeiger des richtigen Rotors vor SETPOSDG nachführen. |
 | `#0:20:GETID:...:CS$` | `#20:0:ACK_GETID:...:<CS>$` oder: `#20:0:NAK_GETID:REASON:CS$` | **[GETID](#cmd-GETID)** Slave-ID lesen. |
 | `#0:20:SETID:...:CS$` | `#20:0:ACK_SETID:...:<CS>$` oder: `#20:0:NAK_SETID:REASON:CS$` | **[SETID](#cmd-SETID)** Slave-ID setzen und speichern. |
+| `#0:255:SETROTORID:<neue_id>:CS$` | z. B. `#<neue_id>:0:ACK_SETROTORID:...:<CS>$` oder: `#<neue_id>:0:NAK_SETROTORID:REASON:CS$` (je nach Firmware) | **[SETROTORID](#cmd-SETROTORID)** Neue Slave-ID per **Broadcast** setzen und speichern — gleiche NV‑Wirkung wie `SETID`, aber **ohne** die bisherige `DST` zu kennen. |
 | `#0:20:GETBEGINDG:...:CS$` | `#20:0:ACK_GETBEGINDG:...:<CS>$` oder: `#20:0:NAK_GETBEGINDG:REASON:CS$` | **[GETBEGINDG](#cmd-GETBEGINDG)** Min-Winkel (Achsenanfang) lesen. |
 | `#0:20:SETBEGINDG:...:CS$` | `#20:0:ACK_SETBEGINDG:...:<CS>$` oder: `#20:0:NAK_SETBEGINDG:REASON:CS$` | **[SETBEGINDG](#cmd-SETBEGINDG)** Min-Winkel setzen. |
 | `#0:20:GETMAXDG:...:CS$` | `#20:0:ACK_GETMAXDG:...:<CS>$` oder: `#20:0:NAK_GETMAXDG:REASON:CS$` | **[GETMAXDG](#cmd-GETMAXDG)** Max-Winkel lesen. |
@@ -320,6 +321,14 @@ Hier ist jeder Befehl in einem eigenen Absatz beschrieben: Was er macht, wie man
 **Was es macht:** Slave-ID setzen und speichern.
 
 **Details:** Achtung: danach neue Adresse verwenden.
+
+---
+
+#### `SETROTORID` {#cmd-SETROTORID}
+
+**Was es macht:** Neue RS485‑Slave‑ID **setzen und speichern** — Inhalt wie bei **`SETID`**, aber Anfrage an **`DST = 255` (Broadcast)**.
+
+**Details:** Derselbe NV‑Speicher wie bei `g_slaveId` / `SETID`. **Wofür:** Wenn der Master die **aktuelle** Slave‑ID nicht kennt, oder nur **ein** Rotor am Strang hängt, kann so trotzdem eine neue Adresse **1…254** vergeben werden (der Slave wertet den Broadcast wie ein normales ID‑Kommando aus). **Parameter:** eine ganze Zahl **1…254**. **Bus‑Sicherheit:** Sind **mehrere** Rotoren am Bus und alle führen den Befehl aus, erhalten **alle dieselbe** neue ID → schwerer Konflikt; praktisch nur mit **einem** angeschlossenen Rotor verwenden; danach alle Telegramme mit der **neuen** `DST` senden. **Antwort:** typisch `ACK_SETROTORID` / `NAK_SETROTORID` (je nach Firmware, vergleichbar `SETID`). PC‑Software (z. B. RotorTcpBridge) kann nach erfolgreichem ACK die lokale Konfiguration (`slave_az` / `slave_el`) an die neue ID anpassen. **Rahmen:** gezielt `#<master>:<alte_id>:SETID:<neu>:…$` vs. Broadcast `#<master>:255:SETROTORID:<neu>:…$`.
 
 ---
 
@@ -1505,7 +1514,7 @@ Diese Tabelle listet die wichtigsten Einstellungen aus der `.ino`. „Kurzname�
 
 | Variablenname | Kurzname | EEPROM | RS485 | Kurzbeschreibung |
 | --- | --- | --- | --- | --- |
-| `g_slaveId` | `id` | ja | SETID/GETID | Slave-Adresse (RS485) |
+| `g_slaveId` | `id` | ja | SETID/GETID, SETROTORID (Broadcast) | Slave-Adresse (RS485) |
 | `g_axisMinDeg01` | `amin` | ja | SETBEGINDG/GETBEGINDG | Min-Winkel (0,01°) |
 | `g_axisMaxDeg01` | `amax` | ja | SETMAXDG/GETMAXDG | Max-Winkel (0,01°) |
 | `g_dgOffsetDeg01` | `dgo` | ja | SETDGOFFSET/GETDGOFFSET | Offset in Grad (0,01°) |
@@ -1562,7 +1571,7 @@ Hier sind die Variablen in einfachen Worten erklärt. Wenn „gut“ genannt wir
 
 **Default:** `static uint8_t g_slaveId = 20;`
 
-**Speicherung:** Ja (Key `id`). Ändern über RS485: **SETID/GETID**.
+**Speicherung:** Ja (Key `id`). Ändern über RS485: **SETID** (gezielt) oder **SETROTORID** an **DST 255** (Broadcast, gleiche NV‑Wirkung). Lesen: **GETID**.
 
 ---
 

@@ -63,7 +63,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "spid": {"ph": 10, "pv": 10},
     "polling_ms": {
         "pos_fast": 200,
-        "pos_slow": 300,
+        "pos_slow": 2000,
         # User-Anforderung: diese Werte sollen laufend (~1s) aktualisiert werden
         "err": 1000,
         "warn": 1000,
@@ -403,6 +403,18 @@ def load_config() -> Dict[str, Any]:
         ui_m = cfg["ui"]
         if str(ui_m.get("udp_pst_send_host", "")).strip() == "0.0.0.0":
             ui_m["udp_pst_send_host"] = ""
+
+    # Migration: sehr alte Konfigurationen hatten ``polling_ms.pos_slow`` auf 300 ms.
+    # Das erzeugt auch im Stillstand dauerhaft schnelle GETPOSDG-Abfragen.
+    # Idle-Standard ist 2 s; nur Fahrt soll schneller pollen.
+    if "polling_ms" in cfg and isinstance(cfg["polling_ms"], dict):
+        pm = cfg["polling_ms"]
+        try:
+            ps = int(pm.get("pos_slow", 2000))
+        except Exception:
+            ps = 2000
+        if ps <= 500:
+            pm["pos_slow"] = 2000
 
     # Migration: pst_serial Listener um ``target`` erweitern.
     if "pst_serial" in cfg and isinstance(cfg["pst_serial"], dict):

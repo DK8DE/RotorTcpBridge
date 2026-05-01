@@ -538,6 +538,12 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             self._cfg_poll["pos_fast"] = int(max(50, min(pf, 2000)))
         except Exception:
             self._cfg_poll["pos_fast"] = 200
+        try:
+            ps = int(self._cfg_poll.get("pos_slow", 2000))
+            # Idle darf nicht im Fast-Bereich landen; verhindert Dauer-GETPOSDG im Stillstand.
+            self._cfg_poll["pos_slow"] = int(max(1000, min(ps, 60000)))
+        except Exception:
+            self._cfg_poll["pos_slow"] = 2000
         # Keine harte Obergrenze mehr erzwingen: je nach Setup sollen Warn/Err/Telemetrie
         # bewusst nur alle ~2s abgefragt werden (und während Fahrt teils gar nicht).
         for k in ("warn", "err", "telemetry", "pwm", "ref_idle", "offline_timeout"):
@@ -882,6 +888,28 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         d10 = int(round(float(v) * 10.0))
                 except Exception:
                     d10 = None
+                # Mitschnitt: veraltetes SETPOSCC (Encoder) nach Tastatur-SETPOSDG würde
+                # compass_target_d10 setzen und den Sollzeiger vorübergehend auf alte Werte ziehen
+                # (_effective_* bevorzugt compass_target). Gleiches 10s-Fenster wie bei PST vs. Manuell.
+                if d10 is not None and from_bus_sniff:
+                    try:
+                        if int(dst) == int(self.slave_az):
+                            man_ts = float(getattr(self, "_compass_manual_az_ts", 0.0) or 0.0)
+                        elif int(dst) == int(self.slave_el):
+                            man_ts = float(getattr(self, "_compass_manual_el_ts", 0.0) or 0.0)
+                        else:
+                            man_ts = 0.0
+                        if (time.time() - man_ts) < 10.0:
+                            td = int(getattr(axis, "target_d10", 0))
+                            di = int(d10)
+                            if bool(getattr(axis, "position_wrap_360", True)):
+                                if abs(shortest_delta_deg(di / 10.0, td / 10.0)) > 0.25:
+                                    return
+                            else:
+                                if abs(di - td) > 2:
+                                    return
+                    except Exception:
+                        pass
                 if d10 is not None:
                     axis.compass_target_d10 = d10
                 return
@@ -893,6 +921,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     p = str(params).strip()
                     if ";" in p:
                         p = p.split(";")[-1]
+                    # Manche Serial-Mitschnitte enthalten zusätzliche Felder mit ":".
+                    # Für SETPOSDG nur den ersten Winkelteil verwenden.
+                    if ":" in p:
+                        p = p.split(":", 1)[0]
                     p = p.replace(" ", "")
                     v = float(p.replace(",", "."))
                     d10 = int(round(v * 10.0))
@@ -925,7 +957,27 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         axis.setposcc_ignore_until_ts = time.time() + _SETPOSCC_SUPPRESS_S
                     except Exception:
                         pass
-                axis.moving = True
+                # Bus-Mitschnitt kann SETPOSDG zyklisch wiederholen, obwohl der Rotor
+                # bereits am Ziel steht. Dann "moving=True" nicht erneut erzwingen,
+                # sonst bleibt Polling unnötig im Schnellmodus.
+                if d10 is not None and from_bus_sniff:
+                    try:
+                        cur_d10 = int(getattr(axis, "pos_d10", 0))
+                        if bool(getattr(axis, "position_wrap_360", True)):
+                            err_deg = abs(shortest_delta_deg(cur_d10 / 10.0, d10 / 10.0))
+                            if err_deg <= 0.2:
+                                axis.moving = False
+                                return
+                        else:
+                            if abs(cur_d10 - int(d10)) <= 2:
+                                axis.moving = False
+                                return
+                    except Exception:
+                        pass
+                # Nur bei plausibel geparstem SETPOSDG als Bewegung markieren.
+                # Unklare Serial-Mitschnitt-Frames dürfen moving nicht dauerhaft festhalten.
+                if d10 is not None:
+                    axis.moving = True
                 return
 
         except Exception:

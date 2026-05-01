@@ -174,7 +174,7 @@
 
 <h3>IDs (SRC/DST)</h3>
 <ul>
-  <li><b>Slave‑ID</b>: ist die Zieladresse (<code>DST</code>) und kann mit <code>SETID</code> geändert werden.</li>
+  <li><b>Slave‑ID</b>: ist die Zieladresse (<code>DST</code>) und kann mit <b><code>SETID</code></b> gezielt an diese Adresse geändert werden. Zusätzlich gibt es <b><code>SETROTORID</code></b>: derselbe Parameter (neue ID 1…254), aber <b><code>DST = 255</code> (Broadcast)</b> — damit kann ein Rotor seine Adresse setzen, <b>ohne</b> dass der Master die alte Slave-ID kennen muss (sinnvoll nur, wenn <b>genau ein</b> Rotor am Bus hängt, sonst erhalten alle dieselbe ID).</li>
   <li><b>Master‑ID</b>: ist immer die Quelladresse (<code>SRC</code>) der Anfrage. Der Slave antwortet an genau diese ID (die Antwort hat dann <code>SRC=Slave</code> und <code>DST=Master</code>).</li>
   <li>Die Master‑ID muss also nicht <code>0</code> sein. Wenn mehrere Master existieren, antwortet der Slave jeweils an den Master, der die Anfrage geschickt hat.</li>
   <li><b>Zwei Master auf derselben RS485‑Leitung</b> (z.B. PC mit eigenem USB‑RS485‑Adapter am gleichen Bus wie der Display‑Controller — der Datenverkehr des PC muss dafür <b>nicht</b> „durch den Controller“ geroutet sein): Der PC soll eine <b>andere Master‑ID</b> nutzen als der Controller (<code>config.json</code> <code>master_id</code> am Display). Sonst sind <code>ACK_GETPOSDG</code>/<code>ACK_SETPOSDG</code> mit gleichem <code>DST</code> nicht dem richtigen Gerät zuordenbar — Pending und Ist‑Anzeige können stolpern, wenn beide viel abfragen.</li>
@@ -594,6 +594,11 @@
 <td><b><a href="#cmd-SETID">SETID</a></b><br>Slave-ID setzen und speichern.</td>
 </tr>
 <tr>
+<td><code>#0:255:SETROTORID:&lt;neue_id&gt;:CS$</code></td>
+<td>z. B. <code>#&lt;neue_id&gt;:0:ACK_SETROTORID:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#&lt;neue_id&gt;:0:NAK_SETROTORID:REASON:CS$</code> (je nach Firmware)</span></td>
+<td><b><a href="#cmd-SETROTORID">SETROTORID</a></b><br>Neue Slave-ID per <b>Broadcast</b> setzen und speichern — gleiche NV-Wirkung wie <code>SETID</code>, aber <b>ohne</b> die bisherige <code>DST</code> zu kennen.</td>
+</tr>
+<tr>
 <td><code>#0:20:GETBEGINDG:...:CS$</code></td>
 <td><code>#20:0:ACK_GETBEGINDG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETBEGINDG:REASON:CS$</code></span></td>
 <td><b><a href="#cmd-GETBEGINDG">GETBEGINDG</a></b><br>Min-Winkel (Achsenanfang) lesen.</td>
@@ -982,6 +987,10 @@
 <h4 id="cmd-SETID"><code>SETID</code></h4>
 <p><b>Was es macht:</b> Slave-ID setzen und speichern.</p>
 <p><b>Details:</b> Achtung: danach neue Adresse verwenden.</p>
+<hr>
+<h4 id="cmd-SETROTORID"><code>SETROTORID</code></h4>
+<p><b>Was es macht:</b> Neue RS485-Slave-ID <b>setzen und speichern</b> — Inhalt wie bei <b><code>SETID</code></b>, aber Anfrage an <b><code>DST = 255</code> (Broadcast)</b>.</p>
+<p><b>Details:</b> Derselbe NV-Speicher wie bei <code>g_slaveId</code> / <code>SETID</code>. <b>Wofür:</b> Wenn der Master die <b>aktuelle</b> Slave-ID nicht kennt, oder nur <b>ein</b> Rotor am Strang hängt, kann so trotzdem eine neue Adresse <b>1…254</b> vergeben werden (der Slave wertet den Broadcast wie ein normales ID-Kommando aus). <b>Parameter:</b> eine ganze Zahl <b>1…254</b>. <b>Bus-Sicherheit:</b> Sind <b>mehrere</b> Rotoren am Bus und alle führen den Befehl aus, erhalten <b>alle dieselbe</b> neue ID → schwerer Konflikt; praktisch nur mit <b>einem</b> angeschlossenen Rotor verwenden; danach alle Telegramme mit der <b>neuen</b> <code>DST</code> senden. <b>Antwort:</b> typisch <code>ACK_SETROTORID</code> / <code>NAK_SETROTORID</code> (je nach Firmware, vergleichbar <code>SETID</code>). PC-Software (z.&nbsp;B. RotorTcpBridge) kann nach erfolgreichem ACK die lokale Konfiguration (<code>slave_az</code> / <code>slave_el</code>) an die neue ID anpassen. <b>Rahmen:</b> gezielt <code>#&lt;master&gt;:&lt;alte_id&gt;:SETID:&lt;neu&gt;:…$</code> vs. Broadcast <code>#&lt;master&gt;:255:SETROTORID:&lt;neu&gt;:…$</code>.</p>
 <hr>
 <h4 id="cmd-GETREF"><code>GETREF</code></h4>
 <p><b>Was es macht:</b> Abfragen, ob Referenz (Homing) vorhanden ist.</p>
@@ -1581,7 +1590,7 @@
 <td><code>g_slaveId</code></td>
 <td><code>id</code></td>
 <td>ja</td>
-<td>SETID/GETID</td>
+<td>SETID/GETID, SETROTORID (Broadcast)</td>
 <td>Slave-Adresse (RS485)</td>
 </tr>
 <tr>
@@ -1894,7 +1903,7 @@
 <h3 id="var-g_slaveId"><code>g_slaveId</code></h3>
 <p><b>Kurz:</b> Slave-Adresse (RS485)</p>
 <p class="muted"><b>Default:</b> <code>static uint8_t g_slaveId = 20;</code></p>
-<p><b>Speicherung:</b> Ja (Key <code>id</code>). Ändern über RS485: <b>SETID/GETID</b>.</p>
+<p><b>Speicherung:</b> Ja (Key <code>id</code>). Ändern über RS485: <b>SETID</b> (gezielt) oder <b>SETROTORID</b> an <b>DST 255</b> (Broadcast, gleiche NV-Wirkung). Lesen: <b>GETID</b>.</p>
 <hr>
 <h3 id="var-g_axisMinDeg01"><code>g_axisMinDeg01</code></h3>
 <p><b>Kurz:</b> Min-Winkel (0,01°)</p>

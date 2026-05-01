@@ -326,12 +326,23 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         moving = bool(
             self.az.moving or self.el.moving or self.az.ref_poll_active or self.el.ref_poll_active
         )
+        # Fast-Poll nur bei realer, kürzlich beobachteter Positionsänderung.
+        # Verhindert dauerhaft schnelles GETPOSDG, wenn "moving" durch Bus-Echos hängen bleibt.
+        try:
+            motion_recent_s = max(float(pos_fast_s) * 3.0, 1.0)
+            az_motion_recent = (now - float(getattr(self.az, "last_motion_ts", 0.0) or 0.0)) < motion_recent_s
+            el_motion_recent = (now - float(getattr(self.el, "last_motion_ts", 0.0) or 0.0)) < motion_recent_s
+            moving_effective = bool(
+                self.az.ref_poll_active or self.el.ref_poll_active or az_motion_recent or el_motion_recent
+            )
+        except Exception:
+            moving_effective = bool(moving)
         try:
             grace_u = float(getattr(self, "_setposdg_poll_grace_until_ts", 0.0) or 0.0)
         except Exception:
             grace_u = 0.0
         # Wie „Fahrt“: nur GETPOSDG, solange Achse fährt/referenziert oder kurz nach SETPOSDG-Mitschnitt.
-        poll_restrict = bool(moving or (now < grace_u))
+        poll_restrict = bool(moving_effective or (now < grace_u))
 
         # GETACCBINS: Abschlussprüfung auch ohne hw_on (sonst hängt Inflight bei Disconnect).
         self._tick_acc_bins_finalize_rounds(now)

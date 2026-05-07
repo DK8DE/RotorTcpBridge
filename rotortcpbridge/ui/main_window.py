@@ -250,6 +250,7 @@ class MainWindow(QMainWindow):
         self._asnearest_summary_last: list = []
         self._actions_locked_while_moving: bool | None = None
         self._minimized_to_tray: bool = False
+        self._last_not_ready_hotkey_popup_ts: float = 0.0
 
         self._antenna_bridge = AntennaSelectionBridge(self)
 
@@ -786,10 +787,69 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    @staticmethod
+    def _is_global_motion_shortcut(action: str) -> bool:
+        return action in {
+            "rot_w",
+            "rot_d",
+            "rot_s",
+            "rot_a",
+            "target_plus",
+            "target_minus",
+            "el_target_plus",
+            "el_target_minus",
+        }
+
+    def _show_rotor_not_ready_popup(self) -> None:
+        """Meldung bei Bewegungs-Hotkey im Offline-Zustand."""
+        try:
+            if QApplication.activeModalWidget() is not None:
+                return
+            now = time.time()
+            if (now - float(self._last_not_ready_hotkey_popup_ts or 0.0)) < 1.0:
+                return
+            self._last_not_ready_hotkey_popup_ts = now
+            QMessageBox.information(self, t("app.title"), "Rotor nicht fahrbereit.")
+        except Exception:
+            pass
+
+    def _can_execute_global_motion_shortcut(self, action: str) -> bool:
+        """Bewegungs-Hotkeys nur bei verbundener und referenzierter Hardware zulassen."""
+        az_motion_actions = {"rot_w", "rot_d", "rot_s", "rot_a", "target_plus", "target_minus"}
+        el_motion_actions = {"el_target_plus", "el_target_minus"}
+        if action not in az_motion_actions and action not in el_motion_actions:
+            return True
+        try:
+            if not bool(self.hw.is_connected()):
+                return False
+        except Exception:
+            return False
+        if action in az_motion_actions:
+            try:
+                return bool(getattr(self.ctrl.az, "referenced", False))
+            except Exception:
+                return False
+        try:
+            if not bool(getattr(self.ctrl, "enable_el", False)):
+                return False
+            return bool(getattr(self.ctrl.el, "referenced", False))
+        except Exception:
+            return False
+
     def _apply_global_shortcut_action(self, action: str) -> None:
         try:
             gs = (self.cfg.get("ui") or {}).get("global_shortcuts") or {}
             if not bool(gs.get("enabled", True)):
+                return
+            if self._is_global_motion_shortcut(action):
+                try:
+                    offline = not bool(self.hw.is_connected())
+                except Exception:
+                    offline = True
+                if offline:
+                    self._show_rotor_not_ready_popup()
+                    return
+            if not self._can_execute_global_motion_shortcut(action):
                 return
             if action == "rot_w":
                 set_antenna_azimuth_deg(

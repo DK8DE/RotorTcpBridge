@@ -59,6 +59,8 @@ a = Analysis(
         # Sprachdateien
         ('rotortcpbridge\\locales\\de.json',         'rotortcpbridge\\locales'),
         ('rotortcpbridge\\locales\\en.json',         'rotortcpbridge\\locales'),
+        # Rig Bridge: Modellliste wenn rigctl nicht im PATH (PyInstaller-Bundle)
+        ('rotortcpbridge\\rig_bridge\\Supported-Radios-0.md', 'rotortcpbridge\\rig_bridge'),
         # Leaflet + Maidenhead + MarkerCluster (Offline-Karte, inline eingebettet;
         # ohne leaflet.markercluster.js kein User-Clustering auf der Karte)
         ('rotortcpbridge\\static\\leaflet.min.js',   'rotortcpbridge\\static'),

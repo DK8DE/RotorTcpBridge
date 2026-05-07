@@ -482,6 +482,12 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         GETLIVEBINS hier nicht parallel starten: sonst blockiert das Pending die CAL-Bin-ACKs,
         und der Async-Pfad verwirft sie fälschlich. LIVE startet nach GETCALBINS (Kettenende) oder per tick_polling.
         """
+        # Während Fahrt keine Statistik-Kommandos enqueuen (nur Positions-/Fehlerpfad aktiv lassen).
+        try:
+            if bool(self._motion_poll_restrict_active(time.time(), self._cfg_poll["pos_fast"] / 1000.0)):
+                return
+        except Exception:
+            pass
         self._last_cal_state_az = 0.0
         self._last_cal_state_el = 0.0
         now = time.time()

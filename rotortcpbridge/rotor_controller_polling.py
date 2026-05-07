@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Optional
 
+from .angle_utils import shortest_delta_deg
 from .rs485_protocol import build, Telegram
 from .hardware_client import HardwareClient, HwRequest
 from .rotor_model import AxisState
@@ -237,6 +238,44 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             or bool(getattr(self, "_compass_strom_heatmap_el", False))
         )
 
+    @staticmethod
+    def _axis_motion_by_target_gap(axis_state: AxisState) -> bool:
+        """Zusätzliche Bewegungserkennung über Soll-Ist-Abstand."""
+        try:
+            if not bool(getattr(axis_state, "referenced", False)):
+                return False
+            pos_d10 = int(getattr(axis_state, "pos_d10", 0))
+            tgt_d10 = int(getattr(axis_state, "target_d10", 0))
+            if bool(getattr(axis_state, "position_wrap_360", True)):
+                return abs(float(shortest_delta_deg(pos_d10 / 10.0, tgt_d10 / 10.0))) > 0.25
+            return abs(tgt_d10 - pos_d10) > 2
+        except Exception:
+            return False
+
+    def _motion_poll_restrict_active(self, now: float, pos_fast_s: float) -> bool:
+        """True, solange nur GETPOSDG erlaubt sein soll (Fahrt/Homing/SETPOSDG-Grace)."""
+        try:
+            grace_u = float(getattr(self, "_setposdg_poll_grace_until_ts", 0.0) or 0.0)
+        except Exception:
+            grace_u = 0.0
+        try:
+            motion_recent_s = max(float(pos_fast_s) * 5.0, 1.5)
+            az_motion_recent = (now - float(getattr(self.az, "last_motion_ts", 0.0) or 0.0)) < motion_recent_s
+            el_motion_recent = (now - float(getattr(self.el, "last_motion_ts", 0.0) or 0.0)) < motion_recent_s
+        except Exception:
+            az_motion_recent = False
+            el_motion_recent = False
+        moving_flags = bool(
+            getattr(self.az, "moving", False)
+            or getattr(self.el, "moving", False)
+            or getattr(self.az, "ref_poll_active", False)
+            or getattr(self.el, "ref_poll_active", False)
+        )
+        target_gap_motion = bool(
+            self._axis_motion_by_target_gap(self.az) or self._axis_motion_by_target_gap(self.el)
+        )
+        return bool(moving_flags or az_motion_recent or el_motion_recent or target_gap_motion or (now < grace_u))
+
     # -------------------- Polling --------------------
     def tick_polling(self: RotorControllerPollingMixin) -> None:
         now = time.time()
@@ -326,26 +365,15 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         moving = bool(
             self.az.moving or self.el.moving or self.az.ref_poll_active or self.el.ref_poll_active
         )
-        # Fast-Poll nur bei realer, kürzlich beobachteter Positionsänderung.
-        # Verhindert dauerhaft schnelles GETPOSDG, wenn "moving" durch Bus-Echos hängen bleibt.
-        try:
-            motion_recent_s = max(float(pos_fast_s) * 3.0, 1.0)
-            az_motion_recent = (now - float(getattr(self.az, "last_motion_ts", 0.0) or 0.0)) < motion_recent_s
-            el_motion_recent = (now - float(getattr(self.el, "last_motion_ts", 0.0) or 0.0)) < motion_recent_s
-            moving_effective = bool(
-                self.az.ref_poll_active or self.el.ref_poll_active or az_motion_recent or el_motion_recent
-            )
-        except Exception:
-            moving_effective = bool(moving)
-        try:
-            grace_u = float(getattr(self, "_setposdg_poll_grace_until_ts", 0.0) or 0.0)
-        except Exception:
-            grace_u = 0.0
-        # Wie „Fahrt“: nur GETPOSDG, solange Achse fährt/referenziert oder kurz nach SETPOSDG-Mitschnitt.
-        poll_restrict = bool(moving_effective or (now < grace_u))
+        # Wie „Fahrt“: nur GETPOSDG, solange Achse fährt/referenziert/nahe SET-Ziel in Bewegung
+        # oder kurz nach SETPOSDG-Mitschnitt.
+        poll_restrict = self._motion_poll_restrict_active(now, pos_fast_s)
 
         # GETACCBINS: Abschlussprüfung auch ohne hw_on (sonst hängt Inflight bei Disconnect).
         self._tick_acc_bins_finalize_rounds(now)
+        if poll_restrict:
+            # Harte Vorgabe: während Fahrt nur Positions-/Fehlerpfad; Strom-/Statistikketten sofort stoppen.
+            self._abort_acc_bins_fetch_only()
 
         if hw_on:
             # Inflight-Sperren nach Request-Timeout freigeben (verhindert dauerhaftes Blockieren).

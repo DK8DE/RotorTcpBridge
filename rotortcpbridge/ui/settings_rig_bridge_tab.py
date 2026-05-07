@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QDoubleValidator, QIntValidator
@@ -1146,6 +1147,11 @@ class RigBridgeTab(QWidget):
     def _read_hamlib_models_from_markdown() -> list[dict[str, str | int]]:
         """Hamlib-Modelle aus lokaler Supported-Radios-Markdown-Datei lesen."""
         candidates: list[Path] = []
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(
+                Path(meipass) / "rotortcpbridge" / "rig_bridge" / "Supported-Radios-0.md"
+            )
         repo_root = Path(__file__).resolve().parents[2]
         candidates.append(repo_root / "Supported-Radios-0.md")
         candidates.append(repo_root / "uploads" / "Supported-Radios-0.md")

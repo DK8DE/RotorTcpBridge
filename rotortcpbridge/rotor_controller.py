@@ -157,6 +157,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         # Callback: wird nach jedem erfolgreichen SETANTOFF-ACK aufgerufen (z.B. Kompassfenster-Refresh)
         self.on_antenna_offsets_changed: Optional[Callable[[], None]] = None
         self.on_antenna_angles_changed: Optional[Callable[[], None]] = None
+        self.on_antenna_dipoles_changed: Optional[Callable[[], None]] = None
+        # Antennen-Basiswerte (Offset/Winkel) nur einmal pro App-Start automatisch laden.
+        # Weitere Reads passieren explizit in den Einstellungen.
+        self._antenna_bootstrap_requested: bool = False
         # RS485-Broadcast SETASELECT (DST 255): arg = Antenne 1–3 (Hintergrund-Thread → UI per QTimer marshallen)
         self.on_setaselect_from_bus: Optional[Callable[[int], None]] = None
         # Callback: wird aufgerufen, wenn SETREF kein ACK erhält (Timeout/NAK). arg=Achsname "AZ"/"EL".
@@ -348,6 +352,34 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     )
                 )
 
+    def request_antenna_dipoles(self) -> None:
+        """AZ-Antennen-Dipolflags vom Rotor lesen (GETANTDP1–3)."""
+        if self.enable_az:
+            for cmd in ("GETANTDP1", "GETANTDP2", "GETANTDP3"):
+                self.hw.send_request(
+                    HwRequest(
+                        line=build(self.master_id, self.slave_az, cmd, "0"),
+                        expect_prefix=None,
+                        timeout_s=0.5,
+                        on_done=None,
+                        priority=4,
+                    )
+                )
+
+    def request_antenna_ranges(self) -> None:
+        """AZ-Antennen-Reichweiten vom Rotor lesen (GETANTDIS1–3)."""
+        if self.enable_az:
+            for cmd in ("GETANTDIS1", "GETANTDIS2", "GETANTDIS3"):
+                self.hw.send_request(
+                    HwRequest(
+                        line=build(self.master_id, self.slave_az, cmd, "0"),
+                        expect_prefix=None,
+                        timeout_s=0.5,
+                        on_done=None,
+                        priority=4,
+                    )
+                )
+
     def set_antenna_offset(
         self,
         axis: str,
@@ -412,6 +444,69 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             )
         )
 
+    def set_antenna_dipole(
+        self,
+        axis: str,
+        slot: int,
+        value_enabled: bool,
+        on_done: Optional[Callable[[bool], None]] = None,
+    ) -> None:
+        """Antennen-Dipolflag schreiben (SETANTDP1–3). Ruft on_done(success) nach ACK/NAK/Timeout."""
+        if slot not in (1, 2, 3):
+            if on_done:
+                on_done(False)
+            return
+        cmd = f"SETANTDP{slot}"
+        v = "1" if bool(value_enabled) else "0"
+        expect = f"ACK_SETANTDP{slot}"
+        dst = None
+        axis_state = None
+        if axis.lower() == "az" and self.enable_az:
+            dst = self.slave_az
+            axis_state = self.az
+        elif axis.lower() == "el" and self.enable_el:
+            dst = self.slave_el
+            axis_state = self.el
+        if dst is None or axis_state is None:
+            if on_done:
+                on_done(False)
+            return
+
+        line = build(self.master_id, dst, cmd, v)
+
+        def done(tel: Optional[Telegram], err: Optional[str]):
+            ok = False
+            if err:
+                self.log.write("WARN", f"{cmd} -> keine Antwort ({err})")
+            elif tel and tel.cmd.startswith("ACK_SETANTDP"):
+                ok = True
+                try:
+                    setattr(axis_state, f"antdp{slot}", bool(int(v) != 0))
+                except Exception:
+                    pass
+                try:
+                    if callable(self.on_antenna_dipoles_changed):
+                        self.on_antenna_dipoles_changed()
+                except Exception:
+                    pass
+            else:
+                if tel:
+                    self.log.write("WARN", f"{cmd} -> NAK oder ungültige Antwort: {tel.cmd}")
+                else:
+                    self.log.write("WARN", f"{cmd} -> keine gültige ACK-Antwort")
+            if on_done:
+                on_done(ok)
+
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix=expect,
+                timeout_s=1.2,
+                on_done=done,
+                priority=2,
+            )
+        )
+
     def set_antenna_angle(
         self,
         axis: str,
@@ -456,6 +551,65 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 try:
                     if callable(self.on_antenna_angles_changed):
                         self.on_antenna_angles_changed()
+                except Exception:
+                    pass
+            else:
+                if tel:
+                    self.log.write("WARN", f"{cmd} -> NAK oder ungültige Antwort: {tel.cmd}")
+                else:
+                    self.log.write("WARN", f"{cmd} -> keine gültige ACK-Antwort")
+            if on_done:
+                on_done(ok)
+
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix=expect,
+                timeout_s=1.2,
+                on_done=done,
+                priority=2,
+            )
+        )
+
+    def set_antenna_range(
+        self,
+        axis: str,
+        slot: int,
+        value_km: int,
+        on_done: Optional[Callable[[bool], None]] = None,
+    ) -> None:
+        """Antennen-Reichweite schreiben (SETANTDIS1–3). Ruft on_done(success) nach ACK/NAK/Timeout."""
+        if slot not in (1, 2, 3):
+            if on_done:
+                on_done(False)
+            return
+        cmd = f"SETANTDIS{slot}"
+        val_i = int(max(0, min(99999, int(value_km))))
+        v = str(val_i)
+        expect = f"ACK_SETANTDIS{slot}"
+        dst = None
+        axis_state = None
+        if axis.lower() == "az" and self.enable_az:
+            dst = self.slave_az
+            axis_state = self.az
+        elif axis.lower() == "el" and self.enable_el:
+            dst = self.slave_el
+            axis_state = self.el
+        if dst is None or axis_state is None:
+            if on_done:
+                on_done(False)
+            return
+
+        line = build(self.master_id, dst, cmd, v)
+
+        def done(tel: Optional[Telegram], err: Optional[str]):
+            ok = False
+            if err:
+                self.log.write("WARN", f"{cmd} -> keine Antwort ({err})")
+            elif tel and tel.cmd.startswith("ACK_SETANTDIS"):
+                ok = True
+                try:
+                    setattr(axis_state, f"antdis{slot}", int(val_i))
                 except Exception:
                     pass
             else:

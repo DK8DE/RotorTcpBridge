@@ -71,7 +71,7 @@ class LogBuffer:
 
     def write(self, level: str, msg: str):
         self._maybe_rotate()
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         line = f"{ts} [{level}] {msg}"
         self._buf.append(line)
         try:

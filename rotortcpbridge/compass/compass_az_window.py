@@ -86,6 +86,7 @@ class CompassWidget(QWidget):
         self._soll_overlay: Optional[QWidget] = None
         self._overlay_ist: str = ""
         self._overlay_soll: str = ""
+        self._dipole_active: bool = False
 
         self._led_d = px_to_dip(self, 13)
         lbl_style = "font-size: 16px; font-weight: bold;"
@@ -144,6 +145,9 @@ class CompassWidget(QWidget):
 
     def set_ref_led_state(self, on: bool) -> None:
         self._ref_led.set_state(bool(on))
+
+    def set_ref_led_homing(self, active: bool) -> None:
+        self._ref_led.set_blinking_red_green(bool(active))
 
     def set_moving_led_state(self, on: bool) -> None:
         self._moving_led.set_state(bool(on))
@@ -269,6 +273,13 @@ class CompassWidget(QWidget):
         self._overlay_ist = str(ist or "")
         self._overlay_soll = str(soll or "")
         self.update()
+
+    def set_dipole_active(self, active: bool) -> None:
+        """Dipol-Modus: zweiter, um 180° versetzter gestrichelter Pfeil für Ist/Soll."""
+        on = bool(active)
+        if self._dipole_active != on:
+            self._dipole_active = on
+            self.update()
 
     def set_bins(self, cw: Optional[List[int]], ccw: Optional[List[int]]) -> None:
         """ACCBINS für 5px Heatmap-Ring. 72 Werte je Richtung."""
@@ -563,15 +574,25 @@ class CompassWidget(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
 
-            # SOLL (gestrichelt)
+            # SOLL (durchgezogen)
             if self._target_deg is not None:
-                painter.setPen(QPen(QColor(160, 0, 0), 3, Qt.PenStyle.DashLine))
+                target_color = QColor(160, 0, 0)
+                target_width = 3
+                painter.setPen(QPen(target_color, target_width, Qt.PenStyle.SolidLine))
                 self._draw_arrow(painter, cx, cy, r * 0.85, self._target_deg)
+                if self._dipole_active:
+                    painter.setPen(QPen(target_color, target_width, Qt.PenStyle.DashLine))
+                    self._draw_arrow(painter, cx, cy, r * 0.85, wrap_deg(self._target_deg + 180.0))
 
             # IST (durchgezogen)
             if self._current_deg is not None:
-                painter.setPen(QPen(QColor(0, 120, 0), 4, Qt.PenStyle.SolidLine))
+                current_color = QColor(0, 120, 0)
+                current_width = 4
+                painter.setPen(QPen(current_color, current_width, Qt.PenStyle.SolidLine))
                 self._draw_arrow(painter, cx, cy, r * 0.92, self._current_deg)
+                if self._dipole_active:
+                    painter.setPen(QPen(current_color, current_width, Qt.PenStyle.DashLine))
+                    self._draw_arrow(painter, cx, cy, r * 0.92, wrap_deg(self._current_deg + 180.0))
 
             # WIND Richtung (blau, halb so lang wie der grüne IST-Pfeil)
             if self._wind_visible and self._wind_dir_draw_deg is not None:

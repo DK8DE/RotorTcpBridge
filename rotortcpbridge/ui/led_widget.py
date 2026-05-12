@@ -21,6 +21,7 @@ class Led(QWidget):
         self._d = d
         self._on = False
         self._blink_green = False
+        self._blink_red_green = False
         self._blink_phase = True
         self._blink_timer = QTimer(self)
         self._blink_timer.setInterval(400)
@@ -41,6 +42,21 @@ class Led(QWidget):
             return
         self._blink_green = active
         if active:
+            self._blink_red_green = False
+            self._blink_phase = True
+            self._blink_timer.start()
+        else:
+            self._blink_timer.stop()
+        self.update()
+
+    def set_blinking_red_green(self, active: bool) -> None:
+        """Rot/Grün blinkend (z. B. laufendes Homing)."""
+        active = bool(active)
+        if active == self._blink_red_green:
+            return
+        self._blink_red_green = active
+        if active:
+            self._blink_green = False
             self._blink_phase = True
             self._blink_timer.start()
         else:
@@ -49,6 +65,7 @@ class Led(QWidget):
 
     def set_state(self, on: bool):
         self._blink_green = False
+        self._blink_red_green = False
         self._blink_timer.stop()
         self._on = bool(on)
         self.update()
@@ -63,6 +80,8 @@ class Led(QWidget):
                     if self._blink_phase
                     else QColor(28, 110, 66)
                 )
+            elif self._blink_red_green:
+                color = QColor(46, 204, 113) if self._blink_phase else QColor(231, 76, 60)
             else:
                 color = QColor(46, 204, 113) if self._on else QColor(231, 76, 60)
             border = QColor(30, 30, 30)

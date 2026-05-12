@@ -172,8 +172,10 @@ class _RotorPollingHost:
     _acc_bins_finalize_pending_el: bool
     _acc_bins_finalize_until_az: float
     _acc_bins_finalize_until_el: float
+    _antenna_bootstrap_requested: bool
     request_antenna_offsets: Callable[[], None]
     request_antenna_angles: Callable[[], None]
+    request_antenna_ranges: Callable[[], None]
     # Von ``RotorController`` / Polling-Mixin; für ``RotorControllerAsyncMixin`` (gleicher Host-Stub)
     _apply_local_state_for_ui_command: Callable[..., None]
     set_az_from_spid: Callable[[int], None]
@@ -239,10 +241,18 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         )
 
     @staticmethod
-    def _axis_motion_by_target_gap(axis_state: AxisState) -> bool:
-        """Zusätzliche Bewegungserkennung über Soll-Ist-Abstand."""
+    def _axis_motion_by_target_gap(axis_state: AxisState, now: float) -> bool:
+        """Zusätzliche Bewegungserkennung über Soll-Ist-Abstand.
+
+        Wichtig: Nur kurz nach einem frischen SET-Befehl verwenden.
+        Ein alter Soll-Ist-Versatz (z. B. nach Neustart/Reconnect) darf nicht
+        dauerhaft den Fast-Polling-Modus erzwingen.
+        """
         try:
             if not bool(getattr(axis_state, "referenced", False)):
+                return False
+            last_set_ts = float(getattr(axis_state, "last_set_sent_ts", 0.0) or 0.0)
+            if (now - last_set_ts) > 3.0:
                 return False
             pos_d10 = int(getattr(axis_state, "pos_d10", 0))
             tgt_d10 = int(getattr(axis_state, "target_d10", 0))
@@ -272,7 +282,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             or getattr(self.el, "ref_poll_active", False)
         )
         target_gap_motion = bool(
-            self._axis_motion_by_target_gap(self.az) or self._axis_motion_by_target_gap(self.el)
+            self._axis_motion_by_target_gap(self.az, now)
+            or self._axis_motion_by_target_gap(self.el, now)
         )
         return bool(moving_flags or az_motion_recent or el_motion_recent or target_gap_motion or (now < grace_u))
 
@@ -315,14 +326,6 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             self.wind_enabled_known = False
             self._wind_enable_inflight = False
             self._wind_enable_sent_ts = 0.0
-            # Antennenwerte zurücksetzen → Kompassfenster-Timer erkennt fehlende Werte
-            self.az.antoff1 = None
-            self.az.antoff2 = None
-            self.az.antoff3 = None
-            self.az.angle1 = None
-            self.az.angle2 = None
-            self.az.angle3 = None
-
             # Sofortige Erstabfrage (damit UI direkt gefüllt wird):
             # Position + PWM + MINPWM + REF + Warn + Temp (Fehler: Broadcast ERR, kein GETERR)
             # GETWINDENABLE wird vom Idle-Polling-Block übernommen (Inflight-Guard verhindert Doppelabfrage)
@@ -342,8 +345,11 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     self._poll_ref(self.slave_el, self.el, "EL")
                     self._poll_warn(self.slave_el, self.el, "EL")
                     self._poll_idle_telemetry(self.slave_el, self.el, "EL")
-                self.request_antenna_offsets()
-                self.request_antenna_angles()
+                if (not bool(getattr(self, "_antenna_bootstrap_requested", False))) and self.enable_az:
+                    self.request_antenna_offsets()
+                    self.request_antenna_angles()
+                    self.request_antenna_ranges()
+                    self._antenna_bootstrap_requested = True
             except Exception:
                 pass
         self._hw_prev_connected = hw_on
@@ -394,11 +400,16 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             # In den ersten Sekunden nach Connect einmal schneller pollen, damit Werte "schnappen"
             if now < float(self._startup_burst_until or 0.0):
                 pos_period = min(pos_period, pos_fast_s)
+            # Während aktivem Homing (GETREF-Polling) keine GETPOSDG-Flut:
+            # nur Referenzstatus pollen; Positionsabfrage erst nach Homing-Ende einmalig.
+            homing_active = bool(self.az.ref_poll_active or self.el.ref_poll_active)
             # Im Stand: während SETPOSCC-Strom kein GETPOSDG (sonst Bus-Kollisionen mit Encoder).
             _defer_u = float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
             skip_pos_for_cc = (not moving) and (now < _defer_u)
             acc_chain = self._acc_bins_chain_in_progress()
             if (
+                (not homing_active)
+                and
                 (not skip_pos_for_cc)
                 and (now - self._last_poll >= pos_period)
                 and (not acc_chain)

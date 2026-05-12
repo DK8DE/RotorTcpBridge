@@ -538,14 +538,23 @@ def fill_axis_panel(fields: dict, axis_state) -> None:
     now = float(_time_mod.time())
     p = float(axis_state.get_smoothed_pos_d10f(now))
     pos_deg = p / 10.0
+    pos_raw_d10 = int(round(p))
     wrap_az = bool(getattr(axis_state, "position_wrap_360", False))
     if wrap_az:
         pos_deg = wrap_deg(pos_deg)
+        # Echte 360.0° nicht als 0.0° anzeigen (sonst wirkt es wie "nicht abgefragt").
+        if abs(pos_deg) < 0.05 and abs(pos_raw_d10) >= 3599:
+            pos_deg = 360.0
     fields["pos"].setText(f"{pos_deg:.1f}")
     if bool(getattr(axis_state, "referenced", False)):
         tgt_deg = axis_state.target_d10 / 10.0
         if wrap_az:
             tgt_deg = wrap_deg(tgt_deg)
+            try:
+                if abs(tgt_deg) < 0.05 and abs(int(getattr(axis_state, "target_d10", 0))) >= 3599:
+                    tgt_deg = 360.0
+            except Exception:
+                pass
         fields["target"].setText(f"{tgt_deg:.1f}")
     else:
         fields["target"].setText("–")
@@ -553,7 +562,17 @@ def fill_axis_panel(fields: dict, axis_state) -> None:
     offline = not bool(getattr(axis_state, "online", False))
     try:
         if fields.get("ref_led") is not None:
-            fields["ref_led"].set_state(False if offline else bool(axis_state.referenced))
+            # Nur bei echter laufender Referenzfahrt blinken:
+            # ref_poll_active allein kann in Randfällen gesetzt sein.
+            ref_homing = bool(getattr(axis_state, "ref_poll_active", False)) and bool(
+                getattr(axis_state, "moving", False)
+            )
+            if offline:
+                fields["ref_led"].set_state(False)
+            elif ref_homing:
+                fields["ref_led"].set_blinking_red_green(True)
+            else:
+                fields["ref_led"].set_state(bool(axis_state.referenced))
     except Exception:
         pass
     try:

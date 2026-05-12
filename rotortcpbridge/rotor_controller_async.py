@@ -43,6 +43,12 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
             d = int(tel.dst)
             s = int(tel.src)
             mid = int(self.master_id)
+            cmd_u = str(tel.cmd or "").strip().upper()
+            # SETPOSCC kann je nach Setup an unterschiedliche DST laufen (z. B. Controller-/PC-Master).
+            # Die eigentliche Achszuordnung erfolgt später in _on_async_tel über dst/rotor_id-Parameter.
+            # Deshalb hier nicht hart auf DST filtern, sonst gehen valide TCP-Mitschnitte verloren.
+            if cmd_u == "SETPOSCC":
+                return True
             if d == mid:
                 return True
             saz = int(self.slave_az)
@@ -51,10 +57,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 return True
             # SETPOSDG an unseren Rotor (Mitschnitt; auch bei gleicher Master-ID wie wir,
             # z. B. zweiter Rechner / Echo auf dem Bus – Ziel muss trotzdem ins UI)
-            cmd_u = str(tel.cmd or "").strip().upper()
             if cmd_u == "SETPOSDG" and (d == saz or d == sel):
-                return True
-            if cmd_u == "SETPOSCC" and (d == saz or d == sel):
                 return True
             # Broadcast: gewählte Antenne (alle Teilnehmer)
             if cmd_u == "SETASELECT" and d == int(BROADCAST_DST):
@@ -427,12 +430,34 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 # Referenz-Status (GETREF Polling ohne pending)
                 if tel.cmd.startswith("ACK_GETREF") or tel.cmd.startswith("ACK_REF"):
                     axis_state.last_rx_ts = time.time()
+                    try:
+                        if int(tel.dst) != int(self.master_id):
+                            axis_state.last_external_getref_ts = time.time()
+                    except Exception:
+                        pass
                     v = parse_int(tel.params.strip())
+                    was_ref_active = bool(getattr(axis_state, "ref_poll_active", False))
+                    was_referenced = bool(getattr(axis_state, "referenced", False))
                     if v == 1:
                         axis_state.referenced = True
                         axis_state.ref_poll_active = False
                         # Homing beendet (oder war bereits fertig)
                         axis_state.moving = False
+                        # Nach Homing-Ende genau einmal Position nachziehen.
+                        if was_ref_active or (not was_referenced):
+                            try:
+                                axis_state.pos_poll_inflight = False
+                                dst = int(self.slave_az) if axis_name == "AZ" else int(self.slave_el)
+                                self._poll_pos(
+                                    dst,
+                                    axis_state,
+                                    axis_name,
+                                    time.time(),
+                                    expected_period_s=0.2,
+                                    high_priority=True,
+                                )
+                            except Exception:
+                                pass
                         self.log.write("INFO", f"{axis_name} referenziert")
                         # Falls Ziel bereits gesetzt ist, erneut anstoßen
                         if abs(axis_state.target_d10) > 0:
@@ -449,11 +474,16 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     return
                 if tel.cmd.startswith("NAK_GETREF") or tel.cmd.startswith("NAK_REF"):
                     axis_state.last_rx_ts = time.time()
+                    try:
+                        if int(tel.dst) != int(self.master_id):
+                            axis_state.last_external_getref_ts = time.time()
+                    except Exception:
+                        pass
                     self.log.write("WARN", f"{axis_name} GETREF NAK: {tel.params}")
                     return
 
                 # Warnungen
-                if tel.cmd.startswith("ACK_GETWARN") or tel.cmd.startswith("ACK_WARN"):
+                if tel.cmd.startswith("ACK_GETWARN"):
                     p = tel.params.strip()
                     axis_state.warnings.clear()
                     if p and p != "0":
@@ -462,7 +492,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             if n is not None:
                                 axis_state.warnings.add(n)
                     return
-                if tel.cmd.startswith("NAK_GETWARN") or tel.cmd.startswith("NAK_WARN"):
+                if tel.cmd.startswith("NAK_GETWARN"):
                     self.log.write("WARN", f"{axis_name} GETWARN NAK: {tel.params}")
                     return
 
@@ -521,6 +551,38 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     v = parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.angle3 = max(0.0, min(360.0, v))
+                    return
+                # Antennen-Dipol-Flags (GETANTDP1–3)
+                if tel.cmd.startswith("ACK_GETANTDP1"):
+                    v = parse_int(tel.params.strip())
+                    if v is not None:
+                        axis_state.antdp1 = bool(int(v) != 0)
+                    return
+                if tel.cmd.startswith("ACK_GETANTDP2"):
+                    v = parse_int(tel.params.strip())
+                    if v is not None:
+                        axis_state.antdp2 = bool(int(v) != 0)
+                    return
+                if tel.cmd.startswith("ACK_GETANTDP3"):
+                    v = parse_int(tel.params.strip())
+                    if v is not None:
+                        axis_state.antdp3 = bool(int(v) != 0)
+                    return
+                # Antennen-Reichweite (GETANTDIS1–3)
+                if tel.cmd.startswith("ACK_GETANTDIS1"):
+                    v = parse_int(tel.params.strip())
+                    if v is not None:
+                        axis_state.antdis1 = max(0, min(99999, int(v)))
+                    return
+                if tel.cmd.startswith("ACK_GETANTDIS2"):
+                    v = parse_int(tel.params.strip())
+                    if v is not None:
+                        axis_state.antdis2 = max(0, min(99999, int(v)))
+                    return
+                if tel.cmd.startswith("ACK_GETANTDIS3"):
+                    v = parse_int(tel.params.strip())
+                    if v is not None:
+                        axis_state.antdis3 = max(0, min(99999, int(v)))
                     return
                 if tel.cmd.startswith("ACK_GETANEMO") or tel.cmd.startswith("ACK_ANEMO"):
                     v = parse_float_any(tel.params)

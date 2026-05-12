@@ -267,6 +267,14 @@ class AxisState:
     angle1: Optional[float] = None
     angle2: Optional[float] = None
     angle3: Optional[float] = None
+    # Dipol-Flags (GETANTDP1–3): 0/1 pro Antenne
+    antdp1: Optional[bool] = None
+    antdp2: Optional[bool] = None
+    antdp3: Optional[bool] = None
+    # Antennen-Reichweite (GETANTDIS1–3): 0..99999 pro Antenne
+    antdis1: Optional[int] = None
+    antdis2: Optional[int] = None
+    antdis3: Optional[int] = None
 
     def update_position_sample(
         self, new_pos_d10: int, sample_ts: Optional[float] = None, expected_period_s: float = 0.2

@@ -961,6 +961,7 @@ class SettingsWindow(QDialog):
             sp_off: QSpinBox,
             sp_angle: QSpinBox,
             sp_range: QSpinBox,
+            chk_dipole: QCheckBox,
         ) -> tuple[QWidget, QLineEdit]:
             """Titel über dem Namen; dann Name; darunter Versatz/Öffnung/Reichweite."""
             lbl_title = QLabel(title)
@@ -981,11 +982,11 @@ class SettingsWindow(QDialog):
             sp_angle.setValue(0)
             sp_angle.setMinimumWidth(50)
             sp_angle.setMaximumWidth(64)
-            sp_range.setRange(1, 4000)
+            sp_range.setRange(0, 99999)
             sp_range.setValue(100)
             sp_range.setSuffix(" km")
             # Bis 4 Stellen + Suffix — war bei 60px abgeschnitten
-            sp_range.setMinimumWidth(px_to_dip(self, 82))
+            sp_range.setMinimumWidth(px_to_dip(self, 98))
             lbl_rng = QLabel(t("settings.antenna_range_label"))
             lbl_rng.setToolTip(tt("settings.tooltip_antenna_range"))
             row_vals = QHBoxLayout()
@@ -997,6 +998,9 @@ class SettingsWindow(QDialog):
             row_vals.addWidget(sp_angle)
             row_vals.addWidget(lbl_rng)
             row_vals.addWidget(sp_range)
+            chk_dipole.setText(t("settings.antenna_dipole_label"))
+            chk_dipole.setToolTip(tt("settings.tooltip_antenna_dipole"))
+            row_vals.addWidget(chk_dipole)
             row_vals.addStretch(1)
             row_name = QHBoxLayout()
             row_name.setContentsMargins(0, 0, 0, 0)
@@ -1041,12 +1045,16 @@ class SettingsWindow(QDialog):
         self.sp_az_range_1 = QSpinBox()
         self.sp_az_range_2 = QSpinBox()
         self.sp_az_range_3 = QSpinBox()
+        self.chk_az_dipole_1 = QCheckBox()
+        self.chk_az_dipole_2 = QCheckBox()
+        self.chk_az_dipole_3 = QCheckBox()
         w1, self.ed_antenna_name_1 = _antenna_row(
             t("settings.antenna_1"),
             antenna_names[0],
             self.sp_az_antoff_1,
             self.sp_az_angle_1,
             self.sp_az_range_1,
+            self.chk_az_dipole_1,
         )
         w2, self.ed_antenna_name_2 = _antenna_row(
             t("settings.antenna_2"),
@@ -1054,6 +1062,7 @@ class SettingsWindow(QDialog):
             self.sp_az_antoff_2,
             self.sp_az_angle_2,
             self.sp_az_range_2,
+            self.chk_az_dipole_2,
         )
         w3, self.ed_antenna_name_3 = _antenna_row(
             t("settings.antenna_3"),
@@ -1061,6 +1070,7 @@ class SettingsWindow(QDialog):
             self.sp_az_antoff_3,
             self.sp_az_angle_3,
             self.sp_az_range_3,
+            self.chk_az_dipole_3,
         )
         _tt_an = tt("settings.tooltip_antenna_name")
         _tt_off = tt("settings.tooltip_antenna_offset")
@@ -1074,6 +1084,8 @@ class SettingsWindow(QDialog):
             sp.setToolTip(_tt_ang)
         for sp in (self.sp_az_range_1, self.sp_az_range_2, self.sp_az_range_3):
             sp.setToolTip(_tt_rng)
+        for chk in (self.chk_az_dipole_1, self.chk_az_dipole_2, self.chk_az_dipole_3):
+            chk.setToolTip(tt("settings.tooltip_antenna_dipole"))
         form_az.addRow(w1)
         form_az.addRow(w2)
         form_az.addRow(w3)
@@ -1115,6 +1127,13 @@ class SettingsWindow(QDialog):
                     sp.setValue(int(round(float(ranges[i]))))
             except Exception:
                 pass
+        for i, chk in enumerate([self.chk_az_dipole_1, self.chk_az_dipole_2, self.chk_az_dipole_3]):
+            try:
+                dipoles = cfg.get("ui", {}).get("antenna_dipoles_az", [False, False, False])
+                if i < len(dipoles):
+                    chk.setChecked(bool(dipoles[i]))
+            except Exception:
+                pass
 
         self._antenna_offset_spinboxes_az = [
             self.sp_az_antoff_1,
@@ -1130,6 +1149,11 @@ class SettingsWindow(QDialog):
             self.sp_az_range_1,
             self.sp_az_range_2,
             self.sp_az_range_3,
+        ]
+        self._antenna_dipole_checkboxes_az = [
+            self.chk_az_dipole_1,
+            self.chk_az_dipole_2,
+            self.chk_az_dipole_3,
         ]
         self._antenna_name_edits_az = [
             self.ed_antenna_name_1,
@@ -1333,6 +1357,8 @@ class SettingsWindow(QDialog):
             sp.valueChanged.connect(self._push_antenna_angles_to_config)
         for sp in [self.sp_az_range_1, self.sp_az_range_2, self.sp_az_range_3]:
             sp.valueChanged.connect(self._push_antenna_ranges_to_config)
+        for chk in [self.chk_az_dipole_1, self.chk_az_dipole_2, self.chk_az_dipole_3]:
+            chk.toggled.connect(self._push_antenna_dipoles_to_config)
 
         # Versatz-Felder live aktualisieren, solange Fenster offen ist
         self._antenna_refresh_timer = QTimer(self)
@@ -1435,6 +1461,16 @@ class SettingsWindow(QDialog):
             self.sp_az_angle_1.value(),
             self.sp_az_angle_2.value(),
             self.sp_az_angle_3.value(),
+        ]
+        self._snapshot_antdp = [
+            bool(self.chk_az_dipole_1.isChecked()),
+            bool(self.chk_az_dipole_2.isChecked()),
+            bool(self.chk_az_dipole_3.isChecked()),
+        ]
+        self._snapshot_range = [
+            self.sp_az_range_1.value(),
+            self.sp_az_range_2.value(),
+            self.sp_az_range_3.value(),
         ]
         # Vergleichsbasis für SETCON* beim Speichern (sonst snap=None → kein Schreiben)
         self._snapshot_controller = self._controller_snapshot_from_ui()
@@ -2051,6 +2087,10 @@ class SettingsWindow(QDialog):
                 self.ctrl.request_antenna_offsets()
             if hasattr(self.ctrl, "request_antenna_angles"):
                 self.ctrl.request_antenna_angles()
+            if hasattr(self.ctrl, "request_antenna_dipoles"):
+                self.ctrl.request_antenna_dipoles()
+            if hasattr(self.ctrl, "request_antenna_ranges"):
+                self.ctrl.request_antenna_ranges()
 
     def _set_antenna_offset_and_wait(self, axis: str, slot: int, value_deg: float) -> bool:
         """SETANTOFF senden und auf ACK warten. Gibt True nur bei gültigem ACK zurück."""
@@ -2086,6 +2126,44 @@ class SettingsWindow(QDialog):
         safety_timer.timeout.connect(event_loop.quit)
         safety_timer.start(2500)
         self.ctrl.set_antenna_angle(axis, slot, value_deg, on_done=on_done)
+        event_loop.exec()
+        safety_timer.stop()
+        return result[0] is True
+
+    def _set_antenna_dipole_and_wait(self, axis: str, slot: int, value_enabled: bool) -> bool:
+        """SETANTDP senden und auf ACK warten. Gibt True nur bei gültigem ACK zurück."""
+        result: list[bool | None] = [None]
+
+        event_loop = QEventLoop(self)
+
+        def on_done(ok: bool):
+            result[0] = ok
+            QMetaObject.invokeMethod(event_loop, b"quit", Qt.ConnectionType.QueuedConnection)
+
+        safety_timer = QTimer(self)
+        safety_timer.setSingleShot(True)
+        safety_timer.timeout.connect(event_loop.quit)
+        safety_timer.start(2500)
+        self.ctrl.set_antenna_dipole(axis, slot, value_enabled, on_done=on_done)
+        event_loop.exec()
+        safety_timer.stop()
+        return result[0] is True
+
+    def _set_antenna_range_and_wait(self, axis: str, slot: int, value_km: int) -> bool:
+        """SETANTDIS senden und auf ACK warten. Gibt True nur bei gültigem ACK zurück."""
+        result: list[bool | None] = [None]
+
+        event_loop = QEventLoop(self)
+
+        def on_done(ok: bool):
+            result[0] = ok
+            QMetaObject.invokeMethod(event_loop, b"quit", Qt.ConnectionType.QueuedConnection)
+
+        safety_timer = QTimer(self)
+        safety_timer.setSingleShot(True)
+        safety_timer.timeout.connect(event_loop.quit)
+        safety_timer.start(2500)
+        self.ctrl.set_antenna_range(axis, slot, int(value_km), on_done=on_done)
         event_loop.exec()
         safety_timer.stop()
         return result[0] is True
@@ -2245,7 +2323,14 @@ class SettingsWindow(QDialog):
                 az = self.ctrl.az
                 az_ready = all(
                     getattr(az, a, None) is not None
-                    for a in ("antoff1", "antoff2", "antoff3", "angle1", "angle2", "angle3")
+                    for a in (
+                        "antoff1",
+                        "antoff2",
+                        "antoff3",
+                        "angle1",
+                        "angle2",
+                        "angle3",
+                    )
                 )
                 az_online = bool(getattr(az, "online", False))
         except Exception:
@@ -2259,6 +2344,8 @@ class SettingsWindow(QDialog):
             sp.setEnabled(az_enabled)
         for sp in self._antenna_range_spinboxes_az:
             sp.setEnabled(az_enabled)
+        for chk in getattr(self, "_antenna_dipole_checkboxes_az", []):
+            chk.setEnabled(az_enabled)
         if self._controller_hw_enabled():
             names_en = (
                 self.chk_enable_az.isChecked()
@@ -2384,6 +2471,17 @@ class SettingsWindow(QDialog):
         except Exception:
             pass
 
+    def _push_antenna_dipoles_to_config(self) -> None:
+        """Dipol-Checkboxen sofort in Config schreiben."""
+        try:
+            self.cfg.setdefault("ui", {})["antenna_dipoles_az"] = [
+                bool(self.chk_az_dipole_1.isChecked()),
+                bool(self.chk_az_dipole_2.isChecked()),
+                bool(self.chk_az_dipole_3.isChecked()),
+            ]
+        except Exception:
+            pass
+
     def _push_antenna_names_to_config(self) -> None:
         """Antennennamen (Kompass/Karte) — gleiche Quelle wie Hardware-Controller."""
         try:
@@ -2419,6 +2517,7 @@ class SettingsWindow(QDialog):
             for s in self._antenna_offset_spinboxes_az
             + self._antenna_angle_spinboxes_az
             + self._antenna_range_spinboxes_az
+            + self._antenna_dipole_checkboxes_az
         ):
             return
         all_loaded = True
@@ -2449,9 +2548,32 @@ class SettingsWindow(QDialog):
                         sp.blockSignals(True)
                         sp.setValue(int(round(v)))
                         sp.blockSignals(False)
+                for attr, chk in [
+                    ("antdp1", self.chk_az_dipole_1),
+                    ("antdp2", self.chk_az_dipole_2),
+                    ("antdp3", self.chk_az_dipole_3),
+                ]:
+                    v = getattr(az, attr, None)
+                    if v is not None:
+                        chk.blockSignals(True)
+                        chk.setChecked(bool(v))
+                        chk.blockSignals(False)
+                for attr, sp in [
+                    ("antdis1", self.sp_az_range_1),
+                    ("antdis2", self.sp_az_range_2),
+                    ("antdis3", self.sp_az_range_3),
+                ]:
+                    v = getattr(az, attr, None)
+                    if v is None:
+                        all_loaded = False
+                    else:
+                        sp.blockSignals(True)
+                        sp.setValue(int(v))
+                        sp.blockSignals(False)
                 self._push_antenna_offsets_to_config()
                 self._push_antenna_angles_to_config()
                 self._push_antenna_ranges_to_config()
+                self._push_antenna_dipoles_to_config()
             if all_loaded:
                 self._antenna_refresh_timer.stop()
                 self._antenna_request_timer.stop()
@@ -2465,6 +2587,16 @@ class SettingsWindow(QDialog):
                     self.sp_az_angle_1.value(),
                     self.sp_az_angle_2.value(),
                     self.sp_az_angle_3.value(),
+                ]
+                self._snapshot_antdp = [
+                    bool(self.chk_az_dipole_1.isChecked()),
+                    bool(self.chk_az_dipole_2.isChecked()),
+                    bool(self.chk_az_dipole_3.isChecked()),
+                ]
+                self._snapshot_range = [
+                    self.sp_az_range_1.value(),
+                    self.sp_az_range_2.value(),
+                    self.sp_az_range_3.value(),
                 ]
             self._update_antenna_offset_enabled()
         except Exception:
@@ -2669,6 +2801,11 @@ class SettingsWindow(QDialog):
             float(self.sp_az_range_2.value()),
             float(self.sp_az_range_3.value()),
         ]
+        self.cfg.setdefault("ui", {})["antenna_dipoles_az"] = [
+            bool(self.chk_az_dipole_1.isChecked()),
+            bool(self.chk_az_dipole_2.isChecked()),
+            bool(self.chk_az_dipole_3.isChecked()),
+        ]
         uih = self.cfg.setdefault("ui", {})
         uih["heatmap_custom_az"] = bool(self.chk_heatmap_custom_az.isChecked())
         uih["heatmap_thr_blue_az"] = int(self.sp_thr_blue_az.value())
@@ -2719,10 +2856,13 @@ class SettingsWindow(QDialog):
         chw["encoder_delta"] = int(self.cb_cont_encoder_delta.currentData())
         chw["antenna_realign_on_switch"] = bool(self.chk_cont_antenna_realign.isChecked())
 
-        # AZ-Versatz und Öffnungswinkel in den Rotor schreiben (SETANTOFF1–3, SETANGLE1–3)
+        # AZ-Versatz, Öffnungswinkel, Dipol und Reichweite in den Rotor schreiben
+        # (SETANTOFF1–3, SETANGLE1–3, SETANTDP1–3, SETANTDIS1–3).
         # Nur übertragen wenn Wert sich gegenüber dem Snapshot beim Öffnen tatsächlich geändert hat
         snapshot_antoff = getattr(self, "_snapshot_antoff", [None, None, None])
         snapshot_angle = getattr(self, "_snapshot_angle", [None, None, None])
+        snapshot_antdp = getattr(self, "_snapshot_antdp", [None, None, None])
+        snapshot_range = getattr(self, "_snapshot_range", [None, None, None])
         if self.hw.is_connected() and hasattr(self.ctrl, "set_antenna_offset"):
             all_ok = True
             if self.chk_enable_az.isChecked():
@@ -2756,10 +2896,44 @@ class SettingsWindow(QDialog):
                             all_ok = False
                         else:
                             snapshot_angle[slot - 1] = new_val
+                for slot, chk in [
+                    (1, self.chk_az_dipole_1),
+                    (2, self.chk_az_dipole_2),
+                    (3, self.chk_az_dipole_3),
+                ]:
+                    new_val = bool(chk.isChecked())
+                    old_val = snapshot_antdp[slot - 1]
+                    if old_val is None or bool(old_val) != new_val:
+                        self.lbl_status.setText(t("settings.status_dipole_saving", slot=slot))
+                        QApplication.processEvents()
+                        if hasattr(
+                            self.ctrl, "set_antenna_dipole"
+                        ) and not self._set_antenna_dipole_and_wait("az", slot, new_val):
+                            all_ok = False
+                        else:
+                            snapshot_antdp[slot - 1] = new_val
+                for slot, sp in [
+                    (1, self.sp_az_range_1),
+                    (2, self.sp_az_range_2),
+                    (3, self.sp_az_range_3),
+                ]:
+                    new_val = int(sp.value())
+                    old_val = snapshot_range[slot - 1]
+                    if old_val is None or new_val != int(old_val):
+                        self.lbl_status.setText(t("settings.status_range_saving", slot=slot))
+                        QApplication.processEvents()
+                        if hasattr(
+                            self.ctrl, "set_antenna_range"
+                        ) and not self._set_antenna_range_and_wait("az", slot, int(new_val)):
+                            all_ok = False
+                        else:
+                            snapshot_range[slot - 1] = new_val
             self.lbl_status.setText(
                 t("settings.status_az_saved") if all_ok else t("settings.status_az_error")
             )
             QApplication.processEvents()
+            self._snapshot_antdp = list(snapshot_antdp)
+            self._snapshot_range = list(snapshot_range)
             if not all_ok:
                 QMessageBox.warning(
                     self,
@@ -2903,7 +3077,7 @@ class SettingsWindow(QDialog):
 
     def _controller_snapshot_from_ui(
         self,
-    ) -> tuple[int, str, str, str, int, int, int, int, int, int, int, int]:
+    ) -> tuple[int, str, str, str, int, int, int, int, int, int, int, int, int, int, int]:
         return (
             int(self.sp_controller_id.value()),
             self._antenna_display_name(0),
@@ -2917,6 +3091,9 @@ class SettingsWindow(QDialog):
             1 if self.chk_cont_wind_anemo.isChecked() else 0,
             self._controller_encoder_delta_value(),
             1 if self.chk_cont_antenna_realign.isChecked() else 0,
+            1 if self.chk_az_dipole_1.isChecked() else 0,
+            1 if self.chk_az_dipole_2.isChecked() else 0,
+            1 if self.chk_az_dipole_3.isChecked() else 0,
         )
 
     def _apply_controller_from_cfg_only(self) -> None:
@@ -2968,6 +3145,12 @@ class SettingsWindow(QDialog):
                 _ed = 10
             self.cb_cont_encoder_delta.setCurrentIndex(0 if _ed == 1 else 1)
             self.chk_cont_antenna_realign.setChecked(bool(ch.get("antenna_realign_on_switch", False)))
+            ui_dips = list((self.cfg.get("ui") or {}).get("antenna_dipoles_az", [False, False, False]))
+            while len(ui_dips) < 3:
+                ui_dips.append(False)
+            self.chk_az_dipole_1.setChecked(bool(ui_dips[0]))
+            self.chk_az_dipole_2.setChecked(bool(ui_dips[1]))
+            self.chk_az_dipole_3.setChecked(bool(ui_dips[2]))
             self._snapshot_controller = self._controller_snapshot_from_ui()
             self._set_controller_led_ok(False)
             self._update_wind_dir_display_row_visibility()
@@ -3074,7 +3257,7 @@ class SettingsWindow(QDialog):
         return acks
 
     def _merge_snapshot_controller_antenna_names(self) -> None:
-        """Nach Namens-Lesezugriff: Snapshot der drei Namen an UI anpassen (Speichern ohne Phantom-SET)."""
+        """Nach Antennen-Lesezugriff: Snapshot der Controller-Namen an UI anpassen."""
         cur = self._controller_snapshot_from_ui()
         snap = getattr(self, "_snapshot_controller", None)
         if snap is None or len(snap) < len(cur):
@@ -3217,7 +3400,7 @@ class SettingsWindow(QDialog):
                     if w is not None:
                         self.chk_cont_antenna_realign.setChecked(bool(int(w)))
             # LED: alle Kern-Abfragen mit ACK; Piep/LED-Ring (GETCONFRQ/GETLSL/GETCONLEDP): NAK NOTIMPL zählt als Bus-OK.
-            # Anzahl = 1 + 3 Namen + 5 PWM/Beep/LED-Ring + GETCONANO + GETCONDELTA + GETCONCHA
+            # Anzahl = 1 (GETCONTID) + 3 Namen + 5 PWM/Beep/LED-Ring + GETCONANO + GETCONDELTA + GETCONCHA
             _n_ctrl_reads = 1 + 3 + 5 + 1 + 1 + 1
             all_ok = len(acks) == _n_ctrl_reads and all(acks)
             self.lbl_status.setText(t("settings.controller_status_saved"))

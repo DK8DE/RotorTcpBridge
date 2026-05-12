@@ -901,7 +901,13 @@ class MapWindow(QDialog):
         self._lbl_soll_value.setText(fmt_deg(tgt) if tgt is not None else "–")
         self._led_moving.set_state(bool(getattr(az_axis, "moving", False)))
         self._led_online.set_state(bool(getattr(az_axis, "online", False)))
-        self._led_ref.set_state(bool(getattr(az_axis, "referenced", False)))
+        ref_homing = bool(getattr(az_axis, "ref_poll_active", False)) and bool(
+            getattr(az_axis, "moving", False)
+        )
+        if ref_homing:
+            self._led_ref.set_blinking_red_green(True)
+        else:
+            self._led_ref.set_state(bool(getattr(az_axis, "referenced", False)))
         try:
             tel = getattr(az_axis, "telemetry", None)
             ta = getattr(tel, "temp_ambient_c", None) if tel else None

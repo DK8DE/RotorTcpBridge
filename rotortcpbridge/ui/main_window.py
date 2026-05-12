@@ -602,7 +602,7 @@ class MainWindow(QMainWindow):
 
         self.t = QTimer(self)
         self.t.timeout.connect(self._tick)
-        self.t.start(100)
+        self._polling_started = False
         self._weather_alert_tick = 0
         self._weather_alert_last_ts: dict[str, float] = {}
 
@@ -1946,6 +1946,9 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if not self._polling_started:
+            self._polling_started = True
+            QTimer.singleShot(50, lambda: self.t.start(100))
         self._refresh_global_hotkeys()
         self._update_axis_visibility()
         self._apply_fixed_mainwindow_size()

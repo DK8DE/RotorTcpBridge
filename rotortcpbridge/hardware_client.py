@@ -82,6 +82,11 @@ class HardwareClient:
         self._last_rx_any_ts: float = 0.0
         self._last_tx_any_ts: float = 0.0
         self._connected_since_ts: float = 0.0
+        self._safe_reconnect_until_ts: float = 0.0
+        # TX-Pacing: Controller reagiert unzuverlässig auf eng gebündelte Telegramme.
+        # UI-Befehle bleiben etwas schneller, Polling wird klar begrenzt.
+        self._tx_min_gap_ui_s: float = 0.05
+        self._tx_min_gap_poll_s: float = 0.09
         # Bei COM-Modus ohne RS485-Bus kommen keine RX-Daten, auch wenn COM offen ist.
         # Daher für COM einen deutlich großzügigeren no-rx-Timeout nutzen,
         # damit nicht ständig dis/reconnect getriggert wird.
@@ -129,6 +134,24 @@ class HardwareClient:
         except Exception:
             self._pending_reply_dst = 0
 
+    def _in_safe_reconnect_mode(self) -> bool:
+        try:
+            return time.time() < float(self._safe_reconnect_until_ts or 0.0)
+        except Exception:
+            return False
+
+    def _activate_safe_reconnect_mode(self, holdoff_s: float = 0.9) -> None:
+        """Kurzes Schutzfenster beim Transportwechsel (TCP<->COM).
+
+        Währenddessen werden TX/RX nicht weiterverarbeitet, damit alte Pending-Requests
+        nicht in den neuen Transport hineinlaufen.
+        """
+        try:
+            until = time.time() + max(0.2, float(holdoff_s))
+        except Exception:
+            until = time.time() + 0.9
+        self._safe_reconnect_until_ts = max(float(self._safe_reconnect_until_ts or 0.0), until)
+
     def update_cfg(self, cfg: dict):
         old = dict(self._applied_cfg or {})
         new = dict(cfg or {})
@@ -140,10 +163,14 @@ class HardwareClient:
         # aktiv trennen, damit der Worker sofort mit den neuen Werten reconnectet.
         relevant_keys = ("mode", "tcp_ip", "tcp_port", "com_port", "baudrate")
         changed = any(old.get(k) != new.get(k) for k in relevant_keys)
-        if changed and self.is_connected():
-            self._disconnect("cfg_changed")
+        if changed:
+            self._activate_safe_reconnect_mode()
+            self._disconnect("cfg_changed", keep_priority_le=-1)
+            self.log.write("INFO", "Safe-Reconnect aktiv (Transportwechsel)")
 
     def send_request(self, req: HwRequest):
+        if self._in_safe_reconnect_mode():
+            return
         # Wenn keine Verbindung steht, Polling-Requests nicht aufstauen.
         # Sie würden beim Reconnect sonst in einem Burst gesendet und den Serial-Server
         # überfluten; außerdem sind alte Polls wertlos, da sofort neue erzeugt werden.
@@ -209,7 +236,26 @@ class HardwareClient:
             self._last_tx_any_ts = time.time()
 
     def _write(self, data: bytes):
+        self._write_with_pacing(data, priority=5)
+
+    def _tx_gap_for_priority(self, priority: int) -> float:
+        try:
+            p = int(priority)
+        except Exception:
+            p = 5
+        if p <= 1:
+            return float(self._tx_min_gap_ui_s)
+        return float(self._tx_min_gap_poll_s)
+
+    def _write_with_pacing(self, data: bytes, priority: int = 5) -> None:
+        """Seriell schreiben mit Mindestabstand zwischen Telegrammen."""
         with self._serial_write_lock:
+            now = time.time()
+            last_tx = float(self._last_tx_any_ts or 0.0)
+            gap_s = max(0.0, self._tx_gap_for_priority(priority))
+            wait_s = (last_tx + gap_s) - now
+            if wait_s > 0.0:
+                time.sleep(wait_s)
             self._write_unlocked(data)
 
     def send_line_fire_and_forget(self, line: str) -> None:
@@ -218,7 +264,7 @@ class HardwareClient:
         Nötig z. B. für Broadcasts ohne Antwort: sonst blockiert die TX-Schleife
         bei ausstehendem Poll-ACK und das Telegramm bleibt in der Queue.
         """
-        if not self.is_connected():
+        if self._in_safe_reconnect_mode() or (not self.is_connected()):
             return
         s = str(line).strip()
         if not s:
@@ -226,8 +272,7 @@ class HardwareClient:
         try:
             data = s.encode("ascii")
             self.log.write("TX", s)
-            with self._serial_write_lock:
-                self._write_unlocked(data)
+            self._write_with_pacing(data, priority=1)
         except Exception:
             pass
 
@@ -255,8 +300,9 @@ class HardwareClient:
                 raise
         return b""
 
-    def _disconnect(self, reason: str = "disconnected"):
+    def _disconnect(self, reason: str = "disconnected", keep_priority_le: int = 1):
         """Verbindung hart schließen + pending freigeben."""
+        pending: Optional[HwRequest] = None
         try:
             if self._sock:
                 self._sock.close()
@@ -270,6 +316,7 @@ class HardwareClient:
         self._sock = None
         self._ser = None
         self._connected_since_ts = 0.0
+        self._rxbuf = b""
         # TX-Queue entschärfen: nur UI-Requests behalten (prio 0/1), Polling verwerfen
         try:
             kept: list[tuple[int, int, HwRequest]] = []
@@ -279,7 +326,7 @@ class HardwareClient:
                         pr, seq, req = self._txq.get_nowait()
                     except queue.Empty:
                         break
-                    if int(pr) <= 1:
+                    if int(pr) <= int(keep_priority_le):
                         kept.append((int(pr), int(seq), req))
                 self._txq = queue.PriorityQueue()
                 for item in kept:
@@ -287,9 +334,13 @@ class HardwareClient:
         except Exception:
             pass
         with self._lock:
-            if self._pending and self._pending.on_done:
-                self._pending.on_done(None, reason)
+            pending = self._pending
             self._pending = None
+        if pending and pending.on_done:
+            try:
+                pending.on_done(None, reason)
+            except Exception:
+                pass
 
     # ------------------ RX loop: parse '#...$' ------------------
     def _reader_loop(self):
@@ -450,7 +501,9 @@ class HardwareClient:
                                     )
                                     try:
                                         data = pending.line.encode("ascii")
-                                        self._write(data)
+                                        self._write_with_pacing(
+                                            data, priority=int(getattr(pending, "priority", 5))
+                                        )
                                         pending.sent_ts = time.time()
                                     except Exception:
                                         with self._lock:
@@ -501,6 +554,9 @@ class HardwareClient:
         last_connect_try = 0.0
         connect_retry_s = 1.0
         while self._running:
+            if self._in_safe_reconnect_mode():
+                time.sleep(0.02)
+                continue
             # Verbindung aufbauen (periodisch)
             if not self.is_connected():
                 now = time.time()
@@ -567,14 +623,17 @@ class HardwareClient:
                 req.checksum_retries_done = 0
                 data = req.line.encode("ascii")
                 self.log.write("TX", req.line)
-                self._write(data)
+                self._write_with_pacing(data, priority=int(getattr(req, "priority", 5)))
                 req.sent_ts = time.time()
                 if req.expect_prefix:
                     with self._lock:
                         self._pending = req
                 else:
                     if req.on_done:
-                        req.on_done(None, None)
+                        try:
+                            req.on_done(None, None)
+                        except Exception:
+                            pass
             except Exception:
                 try:
                     if self._sock:
@@ -589,4 +648,7 @@ class HardwareClient:
                 self._sock = None
                 self._ser = None
                 if req.on_done:
-                    req.on_done(None, "send_error")
+                    try:
+                        req.on_done(None, "send_error")
+                    except Exception:
+                        pass

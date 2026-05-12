@@ -160,6 +160,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "antenna_offsets_az": [0.0, 0.0, 0.0],
         "antenna_angles_az": [0.0, 0.0, 0.0],
         "antenna_ranges_az": [100.0, 100.0, 100.0],
+        "antenna_dipoles_az": [False, False, False],
         # Lokal gespeicherte Antennen-Namen (3 Stück) für Einstellungen.
         "antenna_names": ["Antenne 1", "Antenne 2", "Antenne 3"],
         # Sprache der Benutzeroberfläche: "de" oder "en"

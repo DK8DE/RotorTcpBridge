@@ -215,7 +215,7 @@
 
 <section class="section" id="cmd-table">
 <h2>3. RS485‑Befehle – Tabelle</h2>
-<p>Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische Antwort vom Slave. Spalte 3 ist eine Kurzbeschreibung. <b>Antennenversatz</b> (<code>SETANTOFF1..3</code>/<code>GET…</code>) und <b>Öffnungswinkel</b> (<code>SETANGLE1..3</code>/<code>GET…</code>) werden im Controller dauerhaft gespeichert (NVS) – dieselben Befehle stehen im Bridge‑Befehlsfenster zur Verfügung.</p>
+<p>Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische Antwort vom Slave. Spalte 3 ist eine Kurzbeschreibung. <b>Antennenversatz</b> (<code>SETANTOFF1..3</code>/<code>GET…</code>), <b>Öffnungswinkel</b> (<code>SETANGLE1..3</code>/<code>GET…</code>), <b>Dipol-Flag</b> (<code>SETANTDP1..3</code>/<code>GET…</code>) und <b>Reichweite</b> (<code>SETANTDIS1..3</code>/<code>GET…</code>) werden im Rotor dauerhaft gespeichert (NVS) – dieselben Befehle stehen im Bridge‑Befehlsfenster zur Verfügung.</p>
 <table>
 <tr><th>Master → Slave</th><th>Slave → Master</th><th>Kurzbeschreibung</th></tr>
 <tr>
@@ -362,6 +362,66 @@
 <td><code>#0:20:SETANTOFF3:45,0:20,45$</code></td>
 <td><code>#20:0:ACK_SETANTOFF3:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANTOFF3:REASON:CS$</code></span></td>
 <td><b><a href="#cmd-SETANTOFF3">SETANTOFF3</a></b><br>Winkelversatz der Antenne 3 speichern.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANTDP1:1:20,01$</code></td>
+<td><code>#20:0:ACK_GETANTDP1:&lt;0/1&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANTDP1:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANTDP1">GETANTDP1</a></b><br>Dipol-Flag der Antenne 1 lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETANTDP1:1:20,01$</code></td>
+<td><code>#20:0:ACK_SETANTDP1:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANTDP1:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETANTDP1">SETANTDP1</a></b><br>Dipol-Flag der Antenne 1 speichern.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANTDP2:1:20,01$</code></td>
+<td><code>#20:0:ACK_GETANTDP2:&lt;0/1&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANTDP2:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANTDP2">GETANTDP2</a></b><br>Dipol-Flag der Antenne 2 lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETANTDP2:1:20,01$</code></td>
+<td><code>#20:0:ACK_SETANTDP2:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANTDP2:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETANTDP2">SETANTDP2</a></b><br>Dipol-Flag der Antenne 2 speichern.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANTDP3:1:20,01$</code></td>
+<td><code>#20:0:ACK_GETANTDP3:&lt;0/1&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANTDP3:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANTDP3">GETANTDP3</a></b><br>Dipol-Flag der Antenne 3 lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETANTDP3:1:20,01$</code></td>
+<td><code>#20:0:ACK_SETANTDP3:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANTDP3:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETANTDP3">SETANTDP3</a></b><br>Dipol-Flag der Antenne 3 speichern.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANTDIS1:1:20,01$</code></td>
+<td><code>#20:0:ACK_GETANTDIS1:&lt;WERT&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANTDIS1:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANTDIS1">GETANTDIS1</a></b><br>Reichweite der Antenne 1 lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETANTDIS1:500:20,500$</code></td>
+<td><code>#20:0:ACK_SETANTDIS1:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANTDIS1:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETANTDIS1">SETANTDIS1</a></b><br>Reichweite der Antenne 1 speichern.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANTDIS2:1:20,01$</code></td>
+<td><code>#20:0:ACK_GETANTDIS2:&lt;WERT&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANTDIS2:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANTDIS2">GETANTDIS2</a></b><br>Reichweite der Antenne 2 lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETANTDIS2:500:20,500$</code></td>
+<td><code>#20:0:ACK_SETANTDIS2:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANTDIS2:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETANTDIS2">SETANTDIS2</a></b><br>Reichweite der Antenne 2 speichern.</td>
+</tr>
+<tr>
+<td><code>#0:20:GETANTDIS3:1:20,01$</code></td>
+<td><code>#20:0:ACK_GETANTDIS3:&lt;WERT&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETANTDIS3:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETANTDIS3">GETANTDIS3</a></b><br>Reichweite der Antenne 3 lesen.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETANTDIS3:500:20,500$</code></td>
+<td><code>#20:0:ACK_SETANTDIS3:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETANTDIS3:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETANTDIS3">SETANTDIS3</a></b><br>Reichweite der Antenne 3 speichern.</td>
 </tr>
 <tr>
 <td><code>#0:20:GETTEMPAW:...:CS$</code></td>
@@ -550,7 +610,7 @@
 </tr>
 <tr>
 <td><code>#0:20:GETWARN:...:CS$</code></td>
-<td><code>#20:0:ACK_WARN:0:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETWARN:REASON:CS$</code></span></td>
+<td><code>#20:0:ACK_GETWARN:0:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETWARN:REASON:CS$</code></span></td>
 <td><b><a href="#cmd-GETWARN">GETWARN</a></b><br>Warnungen abfragen (können mehrere sein).</td>
 </tr>
 <tr>
@@ -1033,7 +1093,7 @@
 <hr>
 <h4 id="cmd-GETWARN"><code>GETWARN</code></h4>
 <p><b>Was es macht:</b> Warnungen abfragen (können mehrere sein).</p>
-<p><b>Details:</b> Antwort ist ACK_WARN mit Liste: &quot;0&quot; oder &quot;id;id;...&quot;.</p>
+<p><b>Details:</b> Antwort ist ACK_GETWARN mit Liste: &quot;0&quot; oder &quot;id;id;...&quot;.</p>
 <hr>
 <h4 id="cmd-DELWARN"><code>DELWARN</code></h4>
 <p><b>Was es macht:</b> Warnungen löschen.</p>
@@ -1204,6 +1264,78 @@
 <p><b>Telegramm:</b> <code>#0:20:SETANTOFF3:45,0:20,45$</code></p>
 <p><b>Antwort:</b> <code>#20:0:ACK_SETANTOFF3:1:&lt;CS&gt;$</code></p>
 <p><b>Details:</b> Persistent gespeichert, Bereich <code>0,0</code> bis <code>360,0</code> Grad, Standardwert <code>0,0</code>.</p>
+<hr>
+<h4 id="cmd-GETANTDP1"><code>GETANTDP1</code></h4>
+<p><b>Was es macht:</b> Liest das Dipol-Flag der Antenne 1.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETANTDP1:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETANTDP1:&lt;0|1&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> <code>0</code> = normale Einzelsrichtung, <code>1</code> = Dipol (zwei Richtungen). Wert wird im Rotor gespeichert.</p>
+<hr>
+<h4 id="cmd-SETANTDP1"><code>SETANTDP1</code></h4>
+<p><b>Was es macht:</b> Speichert das Dipol-Flag der Antenne 1 im Rotor.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETANTDP1:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETANTDP1:1:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Zulässig sind nur <code>0</code> oder <code>1</code>.</p>
+<hr>
+<h4 id="cmd-GETANTDP2"><code>GETANTDP2</code></h4>
+<p><b>Was es macht:</b> Liest das Dipol-Flag der Antenne 2.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETANTDP2:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETANTDP2:&lt;0|1&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Verhalten wie bei <code>GETANTDP1</code>.</p>
+<hr>
+<h4 id="cmd-SETANTDP2"><code>SETANTDP2</code></h4>
+<p><b>Was es macht:</b> Speichert das Dipol-Flag der Antenne 2 im Rotor.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETANTDP2:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETANTDP2:1:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Zulässig sind nur <code>0</code> oder <code>1</code>.</p>
+<hr>
+<h4 id="cmd-GETANTDP3"><code>GETANTDP3</code></h4>
+<p><b>Was es macht:</b> Liest das Dipol-Flag der Antenne 3.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETANTDP3:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETANTDP3:&lt;0|1&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Verhalten wie bei <code>GETANTDP1</code>.</p>
+<hr>
+<h4 id="cmd-SETANTDP3"><code>SETANTDP3</code></h4>
+<p><b>Was es macht:</b> Speichert das Dipol-Flag der Antenne 3 im Rotor.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETANTDP3:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETANTDP3:1:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Zulässig sind nur <code>0</code> oder <code>1</code>.</p>
+<hr>
+<h4 id="cmd-GETANTDIS1"><code>GETANTDIS1</code></h4>
+<p><b>Was es macht:</b> Liest die im Rotor gespeicherte Reichweite der Antenne 1.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETANTDIS1:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETANTDIS1:&lt;WERT&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Integer in km, Bereich <code>0</code> bis <code>99999</code>.</p>
+<hr>
+<h4 id="cmd-SETANTDIS1"><code>SETANTDIS1</code></h4>
+<p><b>Was es macht:</b> Speichert die Reichweite der Antenne 1 im Rotor.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETANTDIS1:500:20,500$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETANTDIS1:1:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Zulässiger Bereich <code>0</code> bis <code>99999</code> (km, Integer).</p>
+<hr>
+<h4 id="cmd-GETANTDIS2"><code>GETANTDIS2</code></h4>
+<p><b>Was es macht:</b> Liest die im Rotor gespeicherte Reichweite der Antenne 2.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETANTDIS2:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETANTDIS2:&lt;WERT&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Integer in km, Bereich <code>0</code> bis <code>99999</code>.</p>
+<hr>
+<h4 id="cmd-SETANTDIS2"><code>SETANTDIS2</code></h4>
+<p><b>Was es macht:</b> Speichert die Reichweite der Antenne 2 im Rotor.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETANTDIS2:500:20,500$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETANTDIS2:1:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Zulässiger Bereich <code>0</code> bis <code>99999</code> (km, Integer).</p>
+<hr>
+<h4 id="cmd-GETANTDIS3"><code>GETANTDIS3</code></h4>
+<p><b>Was es macht:</b> Liest die im Rotor gespeicherte Reichweite der Antenne 3.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETANTDIS3:1:20,01$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETANTDIS3:&lt;WERT&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Integer in km, Bereich <code>0</code> bis <code>99999</code>.</p>
+<hr>
+<h4 id="cmd-SETANTDIS3"><code>SETANTDIS3</code></h4>
+<p><b>Was es macht:</b> Speichert die Reichweite der Antenne 3 im Rotor.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETANTDIS3:500:20,500$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETANTDIS3:1:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Zulässiger Bereich <code>0</code> bis <code>99999</code> (km, Integer).</p>
 <hr>
 <h4 id="cmd-SETCAL"><code>SETCAL</code></h4>
 <p><b>Was es macht:</b> Kalibrierfahrt starten (0→360→0) und Stromprofil lernen.</p>
@@ -2169,7 +2301,7 @@
 <section class="section" id="warns">
 <h2>8. Warnungen</h2>
 <p>Warnungen stoppen den Motor <b>nicht</b>. Sie werden gesammelt (mehrere möglich) und müssen bewusst gelöscht werden.</p>
-<p><b>Abfragen:</b> <code>GETWARN</code> → Antwort <code>ACK_WARN</code> mit <code>0</code> oder <code>id;id;...</code></p>
+<p><b>Abfragen:</b> <code>GETWARN</code> → Antwort <code>ACK_GETWARN</code> mit <code>0</code> oder <code>id;id;...</code></p>
 <p><b>Löschen:</b> <code>DELWARN</code> (Antwort <code>ACK_DELWARN:1</code>)</p>
 <table>
 <tr><th>ID</th><th>Name</th><th>Bedeutung</th><th>Was tun?</th></tr>

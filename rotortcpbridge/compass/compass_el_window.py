@@ -100,6 +100,9 @@ class ElevationCompassWidget(QWidget):
     def set_ref_led_state(self, on: bool) -> None:
         self._ref_led.set_state(bool(on))
 
+    def set_ref_led_homing(self, active: bool) -> None:
+        self._ref_led.set_blinking_red_green(bool(active))
+
     def set_moving_led_state(self, on: bool) -> None:
         self._moving_led.set_state(bool(on))
 
@@ -361,9 +364,9 @@ class ElevationCompassWidget(QWidget):
                     else None,
                 )
 
-            # SOLL (gestrichelt)
+            # SOLL (durchgezogen)
             if self._target_deg is not None:
-                painter.setPen(QPen(QColor(160, 0, 0), 3, Qt.PenStyle.DashLine))
+                painter.setPen(QPen(QColor(160, 0, 0), 3, Qt.PenStyle.SolidLine))
                 self._draw_arrow(painter, cx, cy, r * 0.85, self._target_deg)
 
             # IST (durchgezogen)

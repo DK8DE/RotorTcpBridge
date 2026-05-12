@@ -4,12 +4,11 @@ import sys
 # Scheme-Registrierung VOR allen anderen Imports (sonst ignoriert Qt sie)
 import rotortcpbridge.webengine_schemes  # noqa: F401
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QTimer
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
 from .app_config import load_config, save_config
-from .net_utils import check_internet
 
 from .ui.map_tiles import install_rotortiles_handler
 from .ui.wheel_guard import install_wheel_guard
@@ -110,11 +109,6 @@ def main():
 
     single_server.newConnection.connect(_on_single_instance_request)
 
-    # Ohne Internet: Offline-Karte aktivieren (je nach Dark/Light), Live-SWPC deaktivieren
-    if not check_internet():
-        cfg.setdefault("ui", {})["map_offline"] = True
-        cfg["ui"]["elevation_live_swpc"] = False
-        save_config(cfg)
     load_lang(cfg.get("ui", {}).get("language", "de"))
     log = LogBuffer()
     rig_bridge_manager = RigBridgeManager(cfg.get("rig_bridge", {}), log.write)
@@ -186,9 +180,6 @@ def main():
         listen_host=str(ui_cfg.get("udp_pst_listen_host", "127.0.0.1")),
     )
 
-    # Beim Start einmal prüfen, ob die Rotoren bereits referenziert sind
-    ctrl.check_ref_once()
-
     def save_cfg_cb(new_cfg):
         save_config(new_cfg)
         ctrl.update_polling(new_cfg.get("polling_ms", {}))
@@ -239,6 +230,8 @@ def main():
     main_window_holder["window"] = w
     w.resize(1100, 650)
     _focus_main_window(w)
+    # Erst wenn das Hauptfenster sichtbar ist mit Bus-Abfragen beginnen.
+    QTimer.singleShot(250, ctrl.check_ref_once)
 
     rc = app.exec()
     try:

@@ -115,7 +115,7 @@ Bei einem Encoder‑Wechsel müss einige andere Werte angepasst werden.
 
 ## 3. RS485‑Befehle – Tabelle {#cmd-table}
 
-Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische Antwort vom Slave. Spalte 3 ist eine Kurzbeschreibung. **Antennenversatz** (`SETANTOFF1..3`/`GET…`) und **Öffnungswinkel** (`SETANGLE1..3`/`GET…`) werden im Controller dauerhaft gespeichert (NVS) – dieselben Befehle stehen im Bridge‑Befehlsfenster zur Verfügung.
+Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische Antwort vom Slave. Spalte 3 ist eine Kurzbeschreibung. **Antennenversatz** (`SETANTOFF1..3`/`GET…`), **Öffnungswinkel** (`SETANGLE1..3`/`GET…`), **Dipol-Flag** (`SETANTDP1..3`/`GET…`) und **Reichweite** (`SETANTDIS1..3`/`GET…`) werden im Rotor dauerhaft gespeichert (NVS) – dieselben Befehle stehen im Bridge‑Befehlsfenster zur Verfügung.
 
 | Master → Slave | Slave → Master | Kurzbeschreibung |
 | --- | --- | --- |
@@ -148,6 +148,18 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 | `#0:20:SETANTOFF2:45,0:20,45$` | `#20:0:ACK_SETANTOFF2:1:<CS>$` oder: `#20:0:NAK_SETANTOFF2:REASON:CS$` | **[SETANTOFF2](#cmd-SETANTOFF2)** Winkelversatz der Antenne 2 speichern. |
 | `#0:20:GETANTOFF3:1:20,01$` | `#20:0:ACK_GETANTOFF3:<WERT>:<CS>$` oder: `#20:0:NAK_GETANTOFF3:REASON:CS$` | **[GETANTOFF3](#cmd-GETANTOFF3)** Winkelversatz der Antenne 3 lesen. |
 | `#0:20:SETANTOFF3:45,0:20,45$` | `#20:0:ACK_SETANTOFF3:1:<CS>$` oder: `#20:0:NAK_SETANTOFF3:REASON:CS$` | **[SETANTOFF3](#cmd-SETANTOFF3)** Winkelversatz der Antenne 3 speichern. |
+| `#0:20:GETANTDP1:1:20,01$` | `#20:0:ACK_GETANTDP1:<0/1>:<CS>$` oder: `#20:0:NAK_GETANTDP1:REASON:CS$` | **[GETANTDP1](#cmd-GETANTDP1)** Dipol-Flag der Antenne 1 lesen. |
+| `#0:20:SETANTDP1:1:20,01$` | `#20:0:ACK_SETANTDP1:1:<CS>$` oder: `#20:0:NAK_SETANTDP1:REASON:CS$` | **[SETANTDP1](#cmd-SETANTDP1)** Dipol-Flag der Antenne 1 speichern. |
+| `#0:20:GETANTDP2:1:20,01$` | `#20:0:ACK_GETANTDP2:<0/1>:<CS>$` oder: `#20:0:NAK_GETANTDP2:REASON:CS$` | **[GETANTDP2](#cmd-GETANTDP2)** Dipol-Flag der Antenne 2 lesen. |
+| `#0:20:SETANTDP2:1:20,01$` | `#20:0:ACK_SETANTDP2:1:<CS>$` oder: `#20:0:NAK_SETANTDP2:REASON:CS$` | **[SETANTDP2](#cmd-SETANTDP2)** Dipol-Flag der Antenne 2 speichern. |
+| `#0:20:GETANTDP3:1:20,01$` | `#20:0:ACK_GETANTDP3:<0/1>:<CS>$` oder: `#20:0:NAK_GETANTDP3:REASON:CS$` | **[GETANTDP3](#cmd-GETANTDP3)** Dipol-Flag der Antenne 3 lesen. |
+| `#0:20:SETANTDP3:1:20,01$` | `#20:0:ACK_SETANTDP3:1:<CS>$` oder: `#20:0:NAK_SETANTDP3:REASON:CS$` | **[SETANTDP3](#cmd-SETANTDP3)** Dipol-Flag der Antenne 3 speichern. |
+| `#0:20:GETANTDIS1:1:20,01$` | `#20:0:ACK_GETANTDIS1:<WERT>:<CS>$` oder: `#20:0:NAK_GETANTDIS1:REASON:CS$` | **[GETANTDIS1](#cmd-GETANTDIS1)** Reichweite der Antenne 1 lesen. |
+| `#0:20:SETANTDIS1:500:20,500$` | `#20:0:ACK_SETANTDIS1:1:<CS>$` oder: `#20:0:NAK_SETANTDIS1:REASON:CS$` | **[SETANTDIS1](#cmd-SETANTDIS1)** Reichweite der Antenne 1 speichern. |
+| `#0:20:GETANTDIS2:1:20,01$` | `#20:0:ACK_GETANTDIS2:<WERT>:<CS>$` oder: `#20:0:NAK_GETANTDIS2:REASON:CS$` | **[GETANTDIS2](#cmd-GETANTDIS2)** Reichweite der Antenne 2 lesen. |
+| `#0:20:SETANTDIS2:500:20,500$` | `#20:0:ACK_SETANTDIS2:1:<CS>$` oder: `#20:0:NAK_SETANTDIS2:REASON:CS$` | **[SETANTDIS2](#cmd-SETANTDIS2)** Reichweite der Antenne 2 speichern. |
+| `#0:20:GETANTDIS3:1:20,01$` | `#20:0:ACK_GETANTDIS3:<WERT>:<CS>$` oder: `#20:0:NAK_GETANTDIS3:REASON:CS$` | **[GETANTDIS3](#cmd-GETANTDIS3)** Reichweite der Antenne 3 lesen. |
+| `#0:20:SETANTDIS3:500:20,500$` | `#20:0:ACK_SETANTDIS3:1:<CS>$` oder: `#20:0:NAK_SETANTDIS3:REASON:CS$` | **[SETANTDIS3](#cmd-SETANTDIS3)** Reichweite der Antenne 3 speichern. |
 | `#0:20:GETTEMPAW:...:CS$` | `#20:0:ACK_GETTEMPAW:...:<CS>$` oder: `#20:0:NAK_GETTEMPAW:REASON:CS$` | **[GETTEMPAW](#cmd-GETTEMPAW)** Warnschwelle Umgebungstemperatur lesen. |
 | `#0:20:GETTEMPMW:...:CS$` | `#20:0:ACK_GETTEMPMW:...:<CS>$` oder: `#20:0:NAK_GETTEMPMW:REASON:CS$` | **[GETTEMPMW](#cmd-GETTEMPMW)** Warnschwelle Motortemperatur lesen. |
 | `#0:20:SETTEMPA:...:CS$` | `#20:0:ACK_SETTEMPA:...:<CS>$` oder: `#20:0:NAK_SETTEMPA:REASON:CS$` | **[SETTEMPA](#cmd-SETTEMPA)** Warnschwelle Umgebungstemperatur setzen. |
@@ -185,7 +197,7 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 | `#0:20:GETACCBINS:1;0;12:20,12$` | `#20:0:ACK_GETACCBINS:DIR;START;COUNT;V1;V2;...:<CS>$` oder: `#20:0:NAK_GETACCBINS:REASON:CS$` | **[GETACCBINS](#cmd-GETACCBINS)** Schnelle aktuelle Last-Bins lesen (72 Bins, auch ohne Kalibrierung). |
 | `#0:20:SETACCBINSRST:1:20,01$` | `#20:0:ACK_SETACCBINSRST:1:<CS>$` oder: `#20:0:NAK_SETACCBINSRST:REASON:CS$` | **[SETACCBINSRST](#cmd-SETACCBINSRST)** Nur die schnelle ACC-Bin-Statistik löschen. |
 | `#0:20:GETDELTABINS:...:CS$` | `#20:0:ACK_GETDELTABINS:...:<CS>$` oder: `#20:0:NAK_GETDELTABINS:REASON:CS$` | **[GETDELTABINS](#cmd-GETDELTABINS)** Delta-Bins (Live minus Cal) in % lesen. |
-| `#0:20:GETWARN:...:CS$` | `#20:0:ACK_WARN:0:<CS>$` oder: `#20:0:NAK_GETWARN:REASON:CS$` | **[GETWARN](#cmd-GETWARN)** Warnungen abfragen (können mehrere sein). |
+| `#0:20:GETWARN:...:CS$` | `#20:0:ACK_GETWARN:0:<CS>$` oder: `#20:0:NAK_GETWARN:REASON:CS$` | **[GETWARN](#cmd-GETWARN)** Warnungen abfragen (können mehrere sein). |
 | `#0:20:DELWARN:...:CS$` | `#20:0:ACK_DELWARN:...:<CS>$` oder: `#20:0:NAK_DELWARN:REASON:CS$` | **[DELWARN](#cmd-DELWARN)** Warnungen löschen. |
 | `#0:20:GETERR:...:CS$` optional, nicht mehr für zyklisches Polling empfohlen | `#20:0:ACK_ERR:0:<CS>$` oder: `#20:0:NAK_GETERR:REASON:CS$` | **[GETERR](#cmd-GETERR)** Aktuellen Fehlercode manuell abfragen (Fehlerfluss läuft primär über asynchrones `ERR`). |
 | `#0:20:SETREF:...:CS$` | `#20:0:ACK_SETREF:...:<CS>$` oder: `#20:0:NAK_SETREF:REASON:CS$` | **[SETREF](#cmd-SETREF)** Homing starten und Fehler quittieren. |
@@ -414,7 +426,7 @@ Hier ist jeder Befehl in einem eigenen Absatz beschrieben: Was er macht, wie man
 
 **Was es macht:** Warnungen abfragen (können mehrere sein).
 
-**Details:** Antwort ist ACK\_WARN mit Liste: "0" oder "id;id;...".
+**Details:** Antwort ist ACK\_GETWARN mit Liste: "0" oder "id;id;...".
 
 ---
 
@@ -755,6 +767,150 @@ Hier ist jeder Befehl in einem eigenen Absatz beschrieben: Was er macht, wie man
 **Antwort:** `#20:0:ACK_SETANTOFF3:1:<CS>$`
 
 **Details:** Persistent gespeichert, Bereich `0,0` bis `360,0` Grad, Standardwert `0,0`.
+
+---
+
+#### `GETANTDP1` {#cmd-GETANTDP1}
+
+**Was es macht:** Liest das Dipol-Flag der Antenne 1.
+
+**Telegramm:** `#0:20:GETANTDP1:1:20,01$`
+
+**Antwort:** `#20:0:ACK_GETANTDP1:<0|1>:<CS>$`
+
+**Details:** `0` = normale Einzelsrichtung, `1` = Dipol (zwei Richtungen). Wert wird im Rotor gespeichert.
+
+---
+
+#### `SETANTDP1` {#cmd-SETANTDP1}
+
+**Was es macht:** Speichert das Dipol-Flag der Antenne 1 im Rotor.
+
+**Telegramm:** `#0:20:SETANTDP1:1:20,01$`
+
+**Antwort:** `#20:0:ACK_SETANTDP1:1:<CS>$`
+
+**Details:** Zulässig sind nur `0` oder `1`.
+
+---
+
+#### `GETANTDP2` {#cmd-GETANTDP2}
+
+**Was es macht:** Liest das Dipol-Flag der Antenne 2.
+
+**Telegramm:** `#0:20:GETANTDP2:1:20,01$`
+
+**Antwort:** `#20:0:ACK_GETANTDP2:<0|1>:<CS>$`
+
+**Details:** Verhalten wie bei `GETANTDP1`.
+
+---
+
+#### `SETANTDP2` {#cmd-SETANTDP2}
+
+**Was es macht:** Speichert das Dipol-Flag der Antenne 2 im Rotor.
+
+**Telegramm:** `#0:20:SETANTDP2:1:20,01$`
+
+**Antwort:** `#20:0:ACK_SETANTDP2:1:<CS>$`
+
+**Details:** Zulässig sind nur `0` oder `1`.
+
+---
+
+#### `GETANTDP3` {#cmd-GETANTDP3}
+
+**Was es macht:** Liest das Dipol-Flag der Antenne 3.
+
+**Telegramm:** `#0:20:GETANTDP3:1:20,01$`
+
+**Antwort:** `#20:0:ACK_GETANTDP3:<0|1>:<CS>$`
+
+**Details:** Verhalten wie bei `GETANTDP1`.
+
+---
+
+#### `SETANTDP3` {#cmd-SETANTDP3}
+
+**Was es macht:** Speichert das Dipol-Flag der Antenne 3 im Rotor.
+
+**Telegramm:** `#0:20:SETANTDP3:1:20,01$`
+
+**Antwort:** `#20:0:ACK_SETANTDP3:1:<CS>$`
+
+**Details:** Zulässig sind nur `0` oder `1`.
+
+---
+
+#### `GETANTDIS1` {#cmd-GETANTDIS1}
+
+**Was es macht:** Liest die im Rotor gespeicherte Reichweite der Antenne 1.
+
+**Telegramm:** `#0:20:GETANTDIS1:1:20,01$`
+
+**Antwort:** `#20:0:ACK_GETANTDIS1:<WERT>:<CS>$`
+
+**Details:** Integer in km, Bereich `0` bis `99999`.
+
+---
+
+#### `SETANTDIS1` {#cmd-SETANTDIS1}
+
+**Was es macht:** Speichert die Reichweite der Antenne 1 im Rotor.
+
+**Telegramm:** `#0:20:SETANTDIS1:500:20,500$`
+
+**Antwort:** `#20:0:ACK_SETANTDIS1:1:<CS>$`
+
+**Details:** Zulässiger Bereich `0` bis `99999` (km, Integer).
+
+---
+
+#### `GETANTDIS2` {#cmd-GETANTDIS2}
+
+**Was es macht:** Liest die im Rotor gespeicherte Reichweite der Antenne 2.
+
+**Telegramm:** `#0:20:GETANTDIS2:1:20,01$`
+
+**Antwort:** `#20:0:ACK_GETANTDIS2:<WERT>:<CS>$`
+
+**Details:** Integer in km, Bereich `0` bis `99999`.
+
+---
+
+#### `SETANTDIS2` {#cmd-SETANTDIS2}
+
+**Was es macht:** Speichert die Reichweite der Antenne 2 im Rotor.
+
+**Telegramm:** `#0:20:SETANTDIS2:500:20,500$`
+
+**Antwort:** `#20:0:ACK_SETANTDIS2:1:<CS>$`
+
+**Details:** Zulässiger Bereich `0` bis `99999` (km, Integer).
+
+---
+
+#### `GETANTDIS3` {#cmd-GETANTDIS3}
+
+**Was es macht:** Liest die im Rotor gespeicherte Reichweite der Antenne 3.
+
+**Telegramm:** `#0:20:GETANTDIS3:1:20,01$`
+
+**Antwort:** `#20:0:ACK_GETANTDIS3:<WERT>:<CS>$`
+
+**Details:** Integer in km, Bereich `0` bis `99999`.
+
+---
+
+#### `SETANTDIS3` {#cmd-SETANTDIS3}
+
+**Was es macht:** Speichert die Reichweite der Antenne 3 im Rotor.
+
+**Telegramm:** `#0:20:SETANTDIS3:500:20,500$`
+
+**Antwort:** `#20:0:ACK_SETANTDIS3:1:<CS>$`
+
+**Details:** Zulässiger Bereich `0` bis `99999` (km, Integer).
 
 ---
 
@@ -2065,7 +2221,7 @@ Das Profil ist in **72 Winkel‑Bins** aufgeteilt. Ein Bin entspricht also **5°
 
 Warnungen stoppen den Motor **nicht**. Sie werden gesammelt (mehrere möglich) und müssen bewusst gelöscht werden.
 
-**Abfragen:** `GETWARN` → Antwort `ACK_WARN` mit `0` oder `id;id;...`
+**Abfragen:** `GETWARN` → Antwort `ACK_GETWARN` mit `0` oder `id;id;...`
 
 **Löschen:** `DELWARN` (Antwort `ACK_DELWARN:1`)
 

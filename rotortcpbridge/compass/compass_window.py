@@ -317,14 +317,9 @@ class CompassWindow(QDialog):
         self._refresh_antenna_dropdown()
 
     def _request_antenna_offsets(self) -> None:
-        """Antennenwerte abfragen – nur wenn noch nicht alle drei bekannt sind.
-        Timer stoppt sich selbst, sobald alle Werte vorhanden sind."""
-        all_known = all(getattr(self.ctrl.az, f"antoff{i}", None) is not None for i in (1, 2, 3))
-        if all_known:
-            self._antenna_request_timer.stop()
-        else:
-            if hasattr(self.ctrl, "request_antenna_offsets"):
-                self.ctrl.request_antenna_offsets()
+        """Antennenwerte einmalig anfordern (kein periodisches Nachpolling im Kompass)."""
+        if hasattr(self.ctrl, "request_antenna_offsets"):
+            self.ctrl.request_antenna_offsets()
         self._refresh_antenna_dropdown()
 
     def _refresh_antenna_dropdown(self) -> None:
@@ -388,11 +383,8 @@ class CompassWindow(QDialog):
             self.ctrl.request_immediate_pos()
         all_known = all(getattr(self.ctrl.az, f"antoff{i}", None) is not None for i in (1, 2, 3))
         if not all_known:
-            # Noch nicht alle Versätze bekannt → einmalig anfordern und Retry-Timer starten
-            if hasattr(self.ctrl, "request_antenna_offsets"):
-                self.ctrl.request_antenna_offsets()
-            self._antenna_request_timer.start()
-        # Wenn alle Versätze bereits bekannt: kein Request, kein Timer nötig
+            # Noch nicht bekannt: einmalig anfordern (kein periodischer Retry beim Fahren).
+            self._request_antenna_offsets()
         QTimer.singleShot(300, self._request_immediate_stats_delayed)
         self._tick()
         # Beim Oeffnen des Fensters soll kein Eingabefeld Fokus haben (v. a.
@@ -788,6 +780,27 @@ class CompassWindow(QDialog):
 
     def _selected_antenna_idx(self) -> int:
         return max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
+
+    def _selected_antenna_dipole_enabled(self) -> bool:
+        """Dipol-Flag der gewählten AZ-Antenne: Controller-Zustand bevorzugt, sonst Config."""
+        slot = self._selected_antenna_idx() + 1
+        hw_v = getattr(self.ctrl.az, f"antdp{slot}", None)
+        if hw_v is not None:
+            try:
+                ui = self.cfg.setdefault("ui", {})
+                dips = list(ui.get("antenna_dipoles_az", [False, False, False]))
+                while len(dips) < 3:
+                    dips.append(False)
+                dips[slot - 1] = bool(hw_v)
+                ui["antenna_dipoles_az"] = dips[:3]
+            except Exception:
+                pass
+            return bool(hw_v)
+        dips_cfg = self.cfg.get("ui", {}).get("antenna_dipoles_az", [False, False, False])
+        try:
+            return bool(dips_cfg[slot - 1])
+        except (IndexError, TypeError):
+            return False
 
     def _ensure_dwell_arrays(self, n_d: int) -> None:
         """Drei parallele Listen à n_d Sektoren; bei Sektorzahl-Wechsel neu mit 0 füllen."""
@@ -1328,6 +1341,7 @@ class CompassWindow(QDialog):
         if cur is not None:
             cur_display = wrap_deg(cur + off_az)
             self.az_compass.set_current_deg(cur_display)
+        self.az_compass.set_dipole_active(self._selected_antenna_dipole_enabled())
 
         try:
             acc_cw = getattr(self.ctrl.az, "acc_bins_cw", None)
@@ -1407,7 +1421,13 @@ class CompassWindow(QDialog):
         self.az_compass.set_wind_dir_mode(wd_mode)
         self.az_compass.set_wind_visible(wind_on)
         try:
-            self.az_compass.set_ref_led_state(bool(self.ctrl.az.referenced))
+            az_ref_homing = bool(getattr(self.ctrl.az, "ref_poll_active", False)) and bool(
+                getattr(self.ctrl.az, "moving", False)
+            )
+            if az_ref_homing:
+                self.az_compass.set_ref_led_homing(True)
+            else:
+                self.az_compass.set_ref_led_state(bool(self.ctrl.az.referenced))
             self.az_compass.set_moving_led_state(bool(self.ctrl.az.moving))
             self.az_compass.set_online_led_state(bool(self.ctrl.az.online))
         except Exception:
@@ -1560,7 +1580,13 @@ class CompassWindow(QDialog):
                 self.ed_el_soll.clear()
             self._compass_last_bus_target_d10_el = None
         try:
-            self.el_compass.set_ref_led_state(bool(self.ctrl.el.referenced))
+            el_ref_homing = bool(getattr(self.ctrl.el, "ref_poll_active", False)) and bool(
+                getattr(self.ctrl.el, "moving", False)
+            )
+            if el_ref_homing:
+                self.el_compass.set_ref_led_homing(True)
+            else:
+                self.el_compass.set_ref_led_state(bool(self.ctrl.el.referenced))
             self.el_compass.set_moving_led_state(bool(self.ctrl.el.moving))
             self.el_compass.set_online_led_state(bool(self.ctrl.el.online))
         except Exception:

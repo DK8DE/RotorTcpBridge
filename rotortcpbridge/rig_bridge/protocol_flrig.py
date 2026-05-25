@@ -343,6 +343,7 @@ class FlrigBridgeServer:
         self._sock = None
         self._running = False
         self._clients: Set[socket.socket] = set()
+        self._clients_lock = threading.Lock()
         self._listen_host: str = ""
         self._listen_port: int = 0
         self._accept_thread: threading.Thread | None = None
@@ -376,7 +377,9 @@ class FlrigBridgeServer:
 
     def _stop_unlocked(self) -> None:
         self._running = False
-        for c in list(self._clients):
+        with self._clients_lock:
+            clients_snapshot = list(self._clients)
+        for c in clients_snapshot:
             try:
                 c.shutdown(socket.SHUT_RDWR)
             except Exception:
@@ -385,7 +388,8 @@ class FlrigBridgeServer:
                 c.close()
             except Exception:
                 pass
-        self._clients.clear()
+        with self._clients_lock:
+            self._clients.clear()
         ls = self._sock
         self._sock = None
         self._listen_host = ""
@@ -408,7 +412,9 @@ class FlrigBridgeServer:
     def _emit_client_peer_count(self) -> None:
         """Callback mit Anzahl logischer Gegenstellen (eindeutige Remote-IPs), nicht TCP-Sockets."""
         keys: set[str] = set()
-        for c in self._clients:
+        with self._clients_lock:
+            clients_snapshot = list(self._clients)
+        for c in clients_snapshot:
             keys.add(_peer_host_key_for_count(c))
         try:
             self._on_clients_changed(len(keys))
@@ -431,7 +437,8 @@ class FlrigBridgeServer:
                 except Exception:
                     pass
                 break
-            self._clients.add(c)
+            with self._clients_lock:
+                self._clients.add(c)
             self._emit_client_peer_count()
             threading.Thread(target=self._client_loop, args=(c, addr), daemon=True).start()
 
@@ -481,7 +488,8 @@ class FlrigBridgeServer:
         except Exception:
             pass
         finally:
-            self._clients.discard(client)
+            with self._clients_lock:
+                self._clients.discard(client)
             self._emit_client_peer_count()
             if self._log_client_traffic:
                 self._log_write("INFO", f"Flrig TCP: Client-Sitzung beendet ({peer_s})")

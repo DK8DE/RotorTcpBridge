@@ -997,10 +997,10 @@ class MainWindow(QMainWindow):
             self._log_win.refresh()
 
     def _update_title_bar(self) -> None:
-        """Titelleiste: App-Name, Version und konfigurierte HW-Art (TCP/COM)."""
+        """Titelleiste: App-Name, Version und konfigurierte HW-Art (TCP/UDP/COM)."""
         hl = self.cfg.get("hardware_link", {})
         mode = str(hl.get("mode", "tcp")).strip().lower()
-        link = "COM" if mode == "com" else "TCP"
+        link = "COM" if mode == "com" else ("UDP" if mode == "udp" else "TCP")
         title = f"{t('app.title')} v{APP_VERSION} {link}"
         if title != self._last_title:
             self._last_title = title
@@ -2456,17 +2456,17 @@ class MainWindow(QMainWindow):
             _pel = 4002
         self.lbl_pst.setText(f"{_h}:{_paz}:{_pel}")
         hl = self.cfg["hardware_link"]
-        mode = hl.get("mode", "tcp")
+        mode = str(hl.get("mode", "tcp") or "tcp").strip().lower()
         ip = str(hl.get("tcp_ip", "") or "")
         port = str(hl.get("tcp_port", "") or "")
-        if mode == "tcp":
+        if mode in ("tcp", "udp"):
             detail = f"{ip}:{port}"
             com_disp = ""
         else:
             com_disp = normalize_com_port(str(hl.get("com_port", "") or "")).upper()
             detail = com_disp
         if hw_on and pst_on:
-            if mode == "tcp":
+            if mode in ("tcp", "udp"):
                 self.lbl_hw.setText(f"{ip}:{port}")
             else:
                 self.lbl_hw.setText(com_disp)

@@ -146,6 +146,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 # ``dst`` maßgeblich für den Zeiger, nicht ``;rotor_id`` (kann CS-Teil / anderes Gerät sein).
                 # Nur wenn ``dst`` nicht unser AZ/EL-Slave ist: Achse aus ``Winkel;Rotor-ID`` oder Bridge (master_id).
                 axis_dst: int | None = None
+                axis_from_payload_rid = False
                 if dst == saz:
                     axis_dst = saz
                 elif dst == sel:
@@ -158,8 +159,10 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     if rid is not None:
                         if rid == saz and self.enable_az:
                             axis_dst = saz
+                            axis_from_payload_rid = True
                         elif rid == sel and self.enable_el:
                             axis_dst = sel
+                            axis_from_payload_rid = True
                         else:
                             return
                     if axis_dst is None and dst == mid:
@@ -174,7 +177,16 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         )
                     except Exception:
                         csrc = 0
-                    if csrc > 0 and int(tel.src) != csrc:
+                    # Direkt an AZ/EL-Slave (#1:20:…): ``dst`` eindeutig.
+                    # Software-ID (#1:0:…;20): Achse aus ``;rotor_id`` — SRC oft Master, nicht cont_id.
+                    # Nur Bridge ohne ``;rotor_id`` (#2:1:SETPOSCC:…) → cont_id-Filter.
+                    direct_to_slave = int(dst) in (saz, sel)
+                    if (
+                        csrc > 0
+                        and int(tel.src) != csrc
+                        and not direct_to_slave
+                        and not axis_from_payload_rid
+                    ):
                         return
                     try:
                         self.note_setposcc_bus_activity()

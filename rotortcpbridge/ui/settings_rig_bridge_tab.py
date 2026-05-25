@@ -6,10 +6,11 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QStringListModel, QTimer, Qt
 from PySide6.QtGui import QDoubleValidator, QIntValidator
 from PySide6.QtWidgets import (
     QCheckBox,
+    QCompleter,
     QComboBox,
     QFormLayout,
     QGridLayout,
@@ -172,9 +173,29 @@ class RigBridgeTab(QWidget):
         self.cb_rig_brand.setToolTip(format_tooltip(t("rig.radio_brand_tooltip")))
         self.cb_rig_model = QComboBox()
         self.cb_rig_model.setToolTip(format_tooltip(t("rig.radio_model_tooltip")))
+        self.ed_rig_model_search = QLineEdit()
+        self.ed_rig_model_search.setPlaceholderText(t("rig.radio_model_search_placeholder"))
+        self.ed_rig_model_search.setToolTip(format_tooltip(t("rig.radio_model_search_tooltip")))
+        self.btn_rig_model_search_apply = QPushButton(t("rig.radio_model_search_apply"))
+        self.btn_rig_model_search_apply.setToolTip(
+            format_tooltip(t("rig.radio_model_search_apply_tooltip"))
+        )
+        self.btn_rig_model_search_apply.setAutoDefault(False)
+        self.btn_rig_model_search_apply.setDefault(False)
         self.lbl_rig_info = QLabel("-")
         self.lbl_rig_info.setToolTip(format_tooltip(t("rig.hamlib_model_id_tooltip")))
         self._hamlib_models: list[dict[str, str | int]] = []
+        self._hamlib_search_map: dict[str, tuple[str, str, int]] = {}
+        self._hamlib_search_texts: list[str] = []
+        self._last_valid_rig_model: str = "CAT (generisch)"
+        self._last_valid_rig_id: int = 0
+        self._rig_model_completer = QCompleter(self)
+        self._rig_model_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._rig_model_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        # Wichtig: internes Prefix-Filtering deaktivieren, damit ausschließlich
+        # unsere eigene Blocksuche (Leerzeichen = Trenner) die Treffer bestimmt.
+        self._rig_model_completer.setCompletionMode(QCompleter.CompletionMode.UnfilteredPopupCompletion)
+        self.ed_rig_model_search.setCompleter(self._rig_model_completer)
         btn_row_general = QWidget()
         hl_general = QHBoxLayout(btn_row_general)
         hl_general.setContentsMargins(0, 0, 0, 0)
@@ -187,6 +208,13 @@ class RigBridgeTab(QWidget):
         fl_general.addRow(self.chk_enabled)
         fl_general.addRow(t("rig.radio_brand"), self.cb_rig_brand)
         fl_general.addRow(t("rig.radio_model"), self.cb_rig_model)
+        row_model_search = QWidget()
+        hl_model_search = QHBoxLayout(row_model_search)
+        hl_model_search.setContentsMargins(0, 0, 0, 0)
+        hl_model_search.setSpacing(8)
+        hl_model_search.addWidget(self.ed_rig_model_search, 1)
+        hl_model_search.addWidget(self.btn_rig_model_search_apply, 0)
+        fl_general.addRow(t("rig.radio_model_search"), row_model_search)
         fl_general.addRow(t("rig.hamlib_model_id"), self.lbl_rig_info)
         fl_general.addRow(btn_row_general)
 
@@ -411,6 +439,11 @@ class RigBridgeTab(QWidget):
         self.btn_test.clicked.connect(self._on_test)
         self.cb_rig_brand.currentIndexChanged.connect(self._on_brand_changed)
         self.cb_rig_model.currentIndexChanged.connect(self._update_rig_info_label)
+        self.ed_rig_model_search.textEdited.connect(self._on_rig_model_search_text_edited)
+        self.ed_rig_model_search.textChanged.connect(self._on_rig_model_search_text_edited)
+        self.ed_rig_model_search.returnPressed.connect(self._on_rig_model_search_return_pressed)
+        self.btn_rig_model_search_apply.clicked.connect(self._on_rig_model_search_return_pressed)
+        self._rig_model_completer.activated[str].connect(self._on_rig_model_search_activated)
         self.chk_enabled.stateChanged.connect(self.apply_to_manager)
         self.ed_cat_drain.editingFinished.connect(self.apply_to_manager)
         self.ed_setfreq_gap.editingFinished.connect(self.apply_to_manager)
@@ -846,6 +879,9 @@ class RigBridgeTab(QWidget):
         saved_brand = str(cfg.get("rig_brand", "")).strip()
         saved_model = str(cfg.get("rig_model", "")).strip()
         saved_rig_id = int(cfg.get("hamlib_rig_id", 0) or 0)
+        self.ed_rig_model_search.blockSignals(True)
+        self.ed_rig_model_search.clear()
+        self.ed_rig_model_search.blockSignals(False)
         if saved_brand:
             idx_brand = self.cb_rig_brand.findText(saved_brand)
             if idx_brand >= 0:
@@ -890,6 +926,13 @@ class RigBridgeTab(QWidget):
         rig_id = int(self.cb_rig_model.currentData() or 0)
         rig_brand = self.cb_rig_brand.currentText().strip()
         rig_model = self.cb_rig_model.currentText().strip()
+        if rig_id <= 0:
+            # Bei aktivem Suchfilter ohne Treffer den letzten validen Eintrag beibehalten.
+            if self._last_valid_rig_id > 0 and self._last_valid_rig_model:
+                rig_id = int(self._last_valid_rig_id)
+                rig_model = str(self._last_valid_rig_model)
+            elif not rig_model:
+                rig_model = "CAT (generisch)"
         selected_rig = f"{rig_brand} {rig_model}".strip()
         return {
             "enabled": True,
@@ -1084,26 +1127,115 @@ class RigBridgeTab(QWidget):
     def _on_brand_changed(self) -> None:
         """Bei Markenwechsel passende Modelle in die Modellliste laden."""
         brand = self.cb_rig_brand.currentText().strip()
+        prev_rig_id = int(self.cb_rig_model.currentData() or 0)
+        prev_model = self.cb_rig_model.currentText().strip()
         self.cb_rig_model.blockSignals(True)
         self.cb_rig_model.clear()
         model_rows: list[tuple[str, int]] = []
         for m in self._hamlib_models:
             if str(m.get("brand", "")) == brand:
-                model_rows.append(
-                    (str(m.get("model", "")), int(m.get("id", 0) or 0))
-                )
+                model = str(m.get("model", ""))
+                model_rows.append((model, int(m.get("id", 0) or 0)))
         model_rows.sort(key=lambda t: t[0].casefold())
         for model, rid in model_rows:
             self.cb_rig_model.addItem(model, rid)
         if self.cb_rig_model.count() == 0:
             self.cb_rig_model.addItem("CAT (generisch)", 0)
+        # Bestehende Auswahl nach Möglichkeit beibehalten.
+        idx_prev_rid = self.cb_rig_model.findData(prev_rig_id)
+        if idx_prev_rid >= 0:
+            self.cb_rig_model.setCurrentIndex(idx_prev_rid)
+        elif prev_model:
+            idx_prev_model = self.cb_rig_model.findText(prev_model)
+            if idx_prev_model >= 0:
+                self.cb_rig_model.setCurrentIndex(idx_prev_model)
         self.cb_rig_model.blockSignals(False)
         self._update_rig_info_label()
         self._rig_combo_apply_max_width()
 
+    def _on_rig_model_search_text_edited(self, text: str) -> None:
+        """Live-Suche über alle Marken/Modelle mit Popup unter dem Suchfeld."""
+        q = str(text or "").strip()
+        if not q:
+            try:
+                self._rig_model_completer.popup().hide()
+            except Exception:
+                pass
+            return
+        filtered = self._filter_hamlib_search_texts(q)
+        self._rig_model_completer.setModel(QStringListModel(filtered, self))
+        self._rig_model_completer.setCompletionPrefix("")
+        self._rig_model_completer.complete()
+
+    def _on_rig_model_search_activated(self, text: str) -> None:
+        self._apply_rig_model_search_selection(str(text or ""))
+
+    def _on_rig_model_search_return_pressed(self) -> None:
+        """Enter im Suchfeld: ersten passenden Treffer aus der globalen Suche auswählen."""
+        q = str(self.ed_rig_model_search.text() or "").strip()
+        if not q:
+            return
+        comp = str(self._rig_model_completer.currentCompletion() or "").strip()
+        if comp:
+            self._apply_rig_model_search_selection(comp)
+            return
+        filtered = self._filter_hamlib_search_texts(q)
+        if filtered:
+            self._apply_rig_model_search_selection(filtered[0])
+
+    def _apply_rig_model_search_selection(self, choice_text: str) -> None:
+        sel = self._hamlib_search_map.get(str(choice_text or "").strip())
+        if not sel:
+            return
+        brand, model, rig_id = sel
+        idx_brand = self.cb_rig_brand.findText(brand)
+        if idx_brand >= 0:
+            self.cb_rig_brand.setCurrentIndex(idx_brand)
+            self._on_brand_changed()
+        idx_rid = self.cb_rig_model.findData(int(rig_id))
+        if idx_rid >= 0:
+            self.cb_rig_model.setCurrentIndex(idx_rid)
+        else:
+            idx_model = self.cb_rig_model.findText(model)
+            if idx_model >= 0:
+                self.cb_rig_model.setCurrentIndex(idx_model)
+        self._update_rig_info_label()
+
+    @staticmethod
+    def _normalize_search_text(text: str) -> str:
+        """Suche robuster machen: Trenner vereinheitlichen und lower-case."""
+        return re.sub(r"[^a-z0-9]+", " ", str(text or "").casefold()).strip()
+
+    def _filter_hamlib_search_texts(self, query: str) -> list[str]:
+        """Block-Match: Leerzeichen trennen Suchblöcke; alle Blöcke müssen vorkommen."""
+        raw = str(query or "").strip()
+        if not raw:
+            return list(self._hamlib_search_texts)
+
+        # Leerzeichen sind nur Trenner, keine Suchzeichen.
+        # Jeder Block wird separat normalisiert (z. B. "IC-275" -> "ic275").
+        blocks: list[str] = []
+        for part in raw.split():
+            norm = re.sub(r"[^a-z0-9]+", "", str(part or "").casefold()).strip()
+            if norm:
+                blocks.append(norm)
+        if not blocks:
+            return list(self._hamlib_search_texts)
+
+        out: list[str] = []
+        for text in self._hamlib_search_texts:
+            # Kandidat ohne Trenner, damit Blöcke unabhängig von Leer-/Sonderzeichen matchen.
+            candidate = re.sub(r"[^a-z0-9]+", "", str(text or "").casefold()).strip()
+            if all(block in candidate for block in blocks):
+                out.append(text)
+        return out
+
     def _update_rig_info_label(self) -> None:
         """Aktuelle Hamlib-Modell-ID sichtbar machen."""
         rig_id = int(self.cb_rig_model.currentData() or 0)
+        if rig_id > 0:
+            self._last_valid_rig_id = int(rig_id)
+            self._last_valid_rig_model = self.cb_rig_model.currentText().strip()
         self.lbl_rig_info.setText(str(rig_id) if rig_id > 0 else "-")
 
     def _load_hamlib_models(self) -> None:
@@ -1111,22 +1243,45 @@ class RigBridgeTab(QWidget):
         loaded = self._read_hamlib_models_via_rigctl()
         if loaded:
             self._hamlib_models = loaded
-            return
-        loaded = self._read_hamlib_models_from_markdown()
-        if loaded:
-            self._hamlib_models = loaded
-            return
-        # Fallback, falls rigctl/hamlib nicht installiert oder nicht im PATH ist.
-        self._hamlib_models = [
-            {"id": 1, "brand": "Icom", "model": "IC-7300"},
-            {"id": 2, "brand": "Icom", "model": "IC-7610"},
-            {"id": 3, "brand": "Yaesu", "model": "FT-991A"},
-            {"id": 4, "brand": "Yaesu", "model": "FT-891"},
-            {"id": 5, "brand": "Kenwood", "model": "TS-590SG"},
-            {"id": 6, "brand": "Elecraft", "model": "K3"},
-            {"id": 7, "brand": "FlexRadio", "model": "6xxx"},
-            {"id": 8, "brand": "Generisch", "model": "CAT (generisch)"},
-        ]
+        else:
+            loaded = self._read_hamlib_models_from_markdown()
+            if loaded:
+                self._hamlib_models = loaded
+            else:
+                # Fallback, falls rigctl/hamlib nicht installiert oder nicht im PATH ist.
+                self._hamlib_models = [
+                    {"id": 1, "brand": "Icom", "model": "IC-7300"},
+                    {"id": 2, "brand": "Icom", "model": "IC-7610"},
+                    {"id": 3, "brand": "Yaesu", "model": "FT-991A"},
+                    {"id": 4, "brand": "Yaesu", "model": "FT-891"},
+                    {"id": 5, "brand": "Kenwood", "model": "TS-590SG"},
+                    {"id": 6, "brand": "Elecraft", "model": "K3"},
+                    {"id": 7, "brand": "FlexRadio", "model": "6xxx"},
+                    {"id": 8, "brand": "Generisch", "model": "CAT (generisch)"},
+                ]
+        self._rebuild_rig_model_search_index()
+
+    def _rebuild_rig_model_search_index(self) -> None:
+        """Globale Suchliste (markenübergreifend) für das Modell-Suchfeld aufbauen."""
+        items: list[tuple[str, str, str, int]] = []
+        for m in self._hamlib_models:
+            brand = str(m.get("brand", "") or "").strip()
+            model = str(m.get("model", "") or "").strip()
+            try:
+                rig_id = int(m.get("id", 0) or 0)
+            except Exception:
+                rig_id = 0
+            if not brand or not model:
+                continue
+            label = f"{brand} - {model} ({rig_id})" if rig_id > 0 else f"{brand} - {model}"
+            items.append((label, brand, model, rig_id))
+        items.sort(key=lambda row: row[0].casefold())
+        self._hamlib_search_texts = [row[0] for row in items]
+        self._hamlib_search_map = {
+            row[0]: (row[1], row[2], int(row[3]))
+            for row in items
+        }
+        self._rig_model_completer.setModel(QStringListModel(self._hamlib_search_texts, self))
 
     @staticmethod
     def _read_hamlib_models_via_rigctl() -> list[dict[str, str | int]]:

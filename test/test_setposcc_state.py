@@ -6,7 +6,7 @@ import time
 from typing import cast
 
 from rotortcpbridge.hardware_client import HardwareClient
-from rotortcpbridge.rs485_protocol import Telegram
+from rotortcpbridge.rs485_protocol import Telegram, parse
 from rotortcpbridge.rotor_controller import RotorController
 
 
@@ -229,6 +229,40 @@ def test_setposcc_unknown_rotor_id_in_payload_dropped() -> None:
     tel = Telegram(src=2, dst=1, cmd="SETPOSCC", params="99,0;99", cs=0.0, ok=True)
     c._on_async_tel(tel)
     assert c.az.compass_target_d10 == 111
+
+
+def test_setposcc_software_id_with_rotor_id_ignores_controller_src_filter() -> None:
+    """#1:0:SETPOSCC:230,00;20 — an Software-ID, Achse aus ;20, SRC != cont_id."""
+    c = RotorController(
+        _hw_stub(),
+        master_id=0,
+        slave_az=20,
+        slave_el=21,
+        log=_Log(),
+        setposcc_controller_src_id=2,
+    )
+    c.az.moving = False
+    tel = parse("#1:0:SETPOSCC:230,00;20:21$")
+    assert tel is not None
+    c._on_async_tel(tel)
+    assert c.az.compass_target_d10 == 2300
+
+
+def test_setposcc_direct_to_slave_ignores_controller_src_filter() -> None:
+    """#1:20:SETPOSCC mit cont_id=2: direktes Rotor-Ziel, SRC darf Master/Bridge sein."""
+    c = RotorController(
+        _hw_stub(),
+        master_id=1,
+        slave_az=20,
+        slave_el=21,
+        log=_Log(),
+        setposcc_controller_src_id=2,
+    )
+    c.az.moving = False
+    tel = parse("#1:20:SETPOSCC:99,40;20:41$")
+    assert tel is not None
+    c._on_async_tel(tel)
+    assert c.az.compass_target_d10 == 994
 
 
 def test_setposcc_to_slave_from_controller_still_applies() -> None:

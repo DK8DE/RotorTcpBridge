@@ -43,6 +43,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "mode": "com",
         "tcp_ip": "192.168.0.246",
         "tcp_port": 8886,
+        "udp_bind_port": 0,
         "com_port": "COM1",
         "baudrate": 115200,
     },

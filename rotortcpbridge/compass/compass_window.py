@@ -1273,20 +1273,19 @@ class CompassWindow(QDialog):
                 except Exception:
                     pass
 
-        # _target_az hat Vorrang (Eingabefeld/Klick): verhindert Zurückspringen durch PST/anderes.
-        # Während Fahrt: SETPOSCC live; Lücken zwischen CC → zuletzt gesehenen CC halten (Latch),
-        # sonst Motorziel — nie kurz auf altes target_d10 flackern, wenn der Encoder schon geführt hat.
+        # _target_az hat Vorrang (Eingabefeld/Klick), außer SETPOSCC (Encoder) liefert ein Soll.
+        # CC live auch ohne Motor-moving (Vorschau vor SETPOSDG); Lücken → Latch, sonst Motorziel.
         if self._target_az is not None:
             moving_az = bool(getattr(self.ctrl.az, "moving", False))
             try:
                 cc_d10 = getattr(self.ctrl.az, "compass_target_d10", None)
             except Exception:
                 cc_d10 = None
-            if moving_az:
-                if cc_d10 is not None:
-                    self._cc_display_latch_az_d10 = int(cc_d10)
-                    tgt = wrap_deg(float(int(cc_d10)) / 10.0)
-                elif self._cc_display_latch_az_d10 is not None:
+            if cc_d10 is not None:
+                self._cc_display_latch_az_d10 = int(cc_d10)
+                tgt = wrap_deg(float(int(cc_d10)) / 10.0)
+            elif moving_az:
+                if self._cc_display_latch_az_d10 is not None:
                     tgt = wrap_deg(float(self._cc_display_latch_az_d10) / 10.0)
                 else:
                     try:
@@ -1475,18 +1474,18 @@ class CompassWindow(QDialog):
                 except Exception:
                     pass
 
-        # _target_el hat Vorrang (Eingabefeld/Klick); während Fahrt CC + Latch wie bei AZ.
+        # _target_el hat Vorrang (Eingabefeld/Klick), außer SETPOSCC — wie bei AZ.
         if self._target_el is not None:
             moving_el = bool(getattr(self.ctrl.el, "moving", False))
             try:
                 cc_el = getattr(self.ctrl.el, "compass_target_d10", None)
             except Exception:
                 cc_el = None
-            if moving_el:
-                if cc_el is not None:
-                    self._cc_display_latch_el_d10 = int(cc_el)
-                    tgt = clamp_el(float(int(cc_el)) / 10.0)
-                elif self._cc_display_latch_el_d10 is not None:
+            if cc_el is not None:
+                self._cc_display_latch_el_d10 = int(cc_el)
+                tgt = clamp_el(float(int(cc_el)) / 10.0)
+            elif moving_el:
+                if self._cc_display_latch_el_d10 is not None:
                     tgt = clamp_el(float(self._cc_display_latch_el_d10) / 10.0)
                 else:
                     try:
@@ -1500,7 +1499,10 @@ class CompassWindow(QDialog):
         elif tgt is None:
             try:
                 axis = self.ctrl.el
-                axis_target_d10 = int(getattr(axis, "target_d10"))
+                cc_el = getattr(axis, "compass_target_d10", None)
+                axis_target_d10 = (
+                    int(cc_el) if cc_el is not None else int(getattr(axis, "target_d10"))
+                )
                 axis_last_set_ts = float(getattr(axis, "last_set_sent_ts", 0.0) or 0.0)
                 axis_last_set_target_d10 = getattr(axis, "last_set_sent_target_d10", None)
                 tgt = float(axis_target_d10) / 10.0
@@ -1742,7 +1744,10 @@ class CompassWindow(QDialog):
         except Exception:
             pass
         try:
-            self.ctrl.stop_az()
+            # Im Kompassfenster kein STOP mehr senden:
+            # Soll explizit auf aktuelle Ist-Position schreiben (SETPOSDG),
+            # damit der Sollzeiger genau auf der Stop-Position stehen bleibt.
+            self.ctrl.hold_az_at_current_pos()
         except Exception:
             pass
 
@@ -1760,7 +1765,10 @@ class CompassWindow(QDialog):
         except Exception:
             pass
         try:
-            self.ctrl.stop_el()
+            # Im Kompassfenster kein STOP mehr senden:
+            # Soll explizit auf aktuelle Ist-Position schreiben (SETPOSDG),
+            # damit der Sollzeiger genau auf der Stop-Position stehen bleibt.
+            self.ctrl.hold_el_at_current_pos()
         except Exception:
             pass
 

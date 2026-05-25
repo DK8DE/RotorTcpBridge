@@ -146,18 +146,48 @@ def build_read_vfo_frequency_query(brand: str) -> tuple[bytes, str]:
 
 
 def _normalize_hamlib_mode_name(mode: str) -> str:
-    """Hamlib-/Rigctld-Modusbezeichner vereinheitlichen (Großschreibung, gängige Aliase)."""
+    """Hamlib-/Rigctld-/FLRig-Modusbezeichner vereinheitlichen.
+
+    FLRig liefert u. a. Namen wie ``USB-D1``, ``DATA-USB``, ``PKT-U``, ``RTTY-L``
+    (siehe ``protocol_flrig._FLRIG_MODES_PIPE``). Diese werden auf die internen
+    Schlüssel gemappt, die :func:`_yaesu_newcat_mode_char` erwartet (``PKTUSB`` =
+    DATA-USB / ``MD0C;`` am Yaesu newcat, u. a. FT-991).
+    """
     m = (mode or "").strip().upper().replace("-", "_")
     if not m:
         return "USB"
     aliases = {
+        # Digital / Daten am SSB-Träger (Yaesu MD „C“ / „8“)
         "DIGU": "PKTUSB",
         "DIGL": "PKTLSB",
+        "DIG": "PKTUSB",
+        "DATA": "PKTUSB",
         "DATA_U": "PKTUSB",
         "DATA_L": "PKTLSB",
+        "DATA_USB": "PKTUSB",
+        "DATA_LSB": "PKTLSB",
         "USB_D": "PKTUSB",
         "LSB_D": "PKTLSB",
+        "USB_D1": "PKTUSB",
+        "LSB_D1": "PKTLSB",
+        "USB_D2": "PKTUSB",
+        "LSB_D2": "PKTLSB",
+        "PKT": "PKTUSB",
+        "PKT_U": "PKTUSB",
+        "PKT_L": "PKTLSB",
+        # RTTY
         "RTTY_R": "RTTYR",
+        "RTTY_U": "RTTYR",
+        "RTTY_L": "RTTY",
+        # CW (FLRig CWU/CWL)
+        "CWU": "CW",
+        "CWL": "CWR",
+        # FM
+        "NFM": "FMN",
+        "WFM": "FM",
+        # Nicht direkt als MD am FT-991 — sinnvolle Fallbacks für Client-Kompatibilität
+        "SPEC": "USB",
+        "DV": "C4FM",
     }
     return aliases.get(m, m)
 

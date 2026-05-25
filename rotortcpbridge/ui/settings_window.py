@@ -224,6 +224,7 @@ class SettingsWindow(QDialog):
 
         self.cb_hw_mode = QComboBox()
         self.cb_hw_mode.addItem("TCP", "tcp")
+        self.cb_hw_mode.addItem("UDP", "udp")
         self.cb_hw_mode.addItem("COM", "com")
         _mode_cfg = str(cfg["hardware_link"]["mode"]).strip().lower() or "tcp"
         _mi = self.cb_hw_mode.findData(_mode_cfg)
@@ -233,6 +234,9 @@ class SettingsWindow(QDialog):
         self.sp_hw_port = QSpinBox()
         self.sp_hw_port.setRange(1, 65535)
         self.sp_hw_port.setValue(int(cfg["hardware_link"]["tcp_port"]))
+        self.sp_hw_udp_bind_port = QSpinBox()
+        self.sp_hw_udp_bind_port.setRange(0, 65535)
+        self.sp_hw_udp_bind_port.setValue(int(cfg["hardware_link"].get("udp_bind_port", 0)))
 
         self.cb_hw_com = QComboBox()
         self.btn_com_refresh = QPushButton("↻")
@@ -248,19 +252,23 @@ class SettingsWindow(QDialog):
         self.sp_hw_port.setToolTip(tt("settings.hw_port_tooltip"))
         self.cb_hw_com.setToolTip(tt("settings.hw_com_tooltip"))
         self.btn_com_refresh.setToolTip(tt("settings.btn_com_refresh_tooltip"))
+        self.sp_hw_udp_bind_port.setToolTip(tt("settings.hw_udp_bind_port_tooltip"))
 
         form_bus_connection.addRow(t("settings.hw_mode"), self.cb_hw_mode)
         form_bus_connection.addRow(t("settings.hw_ip"), self.ed_hw_ip)
         form_bus_connection.addRow(t("settings.hw_port"), self.sp_hw_port)
+        form_bus_connection.addRow(t("settings.hw_udp_bind_port"), self.sp_hw_udp_bind_port)
         form_bus_connection.addRow(t("settings.hw_com"), com_row_widget)
 
         def _sync_bus_mode_rows() -> None:
             mode = str(self.cb_hw_mode.currentData() or "tcp").strip().lower()
-            show_tcp = mode == "tcp"
+            show_tcp = mode in ("tcp", "udp")
             show_com = mode == "com"
+            show_udp = mode == "udp"
             for field, show in (
                 (self.ed_hw_ip, show_tcp),
                 (self.sp_hw_port, show_tcp),
+                (self.sp_hw_udp_bind_port, show_udp),
                 (com_row_widget, show_com),
             ):
                 field.setVisible(show)
@@ -2732,6 +2740,7 @@ class SettingsWindow(QDialog):
         ).strip().lower()
         self.cfg["hardware_link"]["tcp_ip"] = self.ed_hw_ip.text().strip()
         self.cfg["hardware_link"]["tcp_port"] = int(self.sp_hw_port.value())
+        self.cfg["hardware_link"]["udp_bind_port"] = int(self.sp_hw_udp_bind_port.value())
         self.cfg["hardware_link"]["com_port"] = str(
             self.cb_hw_com.currentData() or self.cb_hw_com.currentText()
         ).strip()

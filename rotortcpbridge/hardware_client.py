@@ -66,6 +66,7 @@ class HardwareClient:
 
         self._running = False
         self._sock: Optional[socket.socket] = None
+        self._udp_sock: Optional[socket.socket] = None
         self._ser = None
         self._reader_thread = None
         self._worker_thread = None
@@ -108,15 +109,21 @@ class HardwareClient:
         except Exception:
             pass
         try:
+            if self._udp_sock:
+                self._udp_sock.close()
+        except Exception:
+            pass
+        try:
             if self._ser:
                 self._ser.close()
         except Exception:
             pass
         self._sock = None
+        self._udp_sock = None
         self._ser = None
 
     def is_connected(self) -> bool:
-        return self._sock is not None or self._ser is not None
+        return self._sock is not None or self._udp_sock is not None or self._ser is not None
 
     def _update_no_rx_timeout(self) -> None:
         """no-rx-Timeout abhängig vom Verbindungstyp setzen.
@@ -161,7 +168,7 @@ class HardwareClient:
 
         # Bei relevanter Änderung (Mode/Endpoint/Baud) bestehende Verbindung
         # aktiv trennen, damit der Worker sofort mit den neuen Werten reconnectet.
-        relevant_keys = ("mode", "tcp_ip", "tcp_port", "com_port", "baudrate")
+        relevant_keys = ("mode", "tcp_ip", "tcp_port", "udp_bind_port", "com_port", "baudrate")
         changed = any(old.get(k) != new.get(k) for k in relevant_keys)
         if changed:
             self._activate_safe_reconnect_mode()
@@ -213,6 +220,29 @@ class HardwareClient:
                 self.log.write("INFO", f"Hardware TCP verbunden {ip}:{port}")
             except Exception:
                 self._sock = None
+        elif mode == "udp":
+            ip = str(self.cfg.get("tcp_ip", "127.0.0.1") or "127.0.0.1").strip() or "127.0.0.1"
+            port = int(self.cfg.get("tcp_port", 23))
+            try:
+                bind_port = int(self.cfg.get("udp_bind_port", 0))
+            except Exception:
+                bind_port = 0
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.bind(("0.0.0.0", max(0, min(65535, bind_port))))
+                s.settimeout(0.2)
+                self._udp_sock = s
+                self._last_rx_any_ts = time.time()
+                self._last_tx_any_ts = 0.0
+                self._connected_since_ts = time.time()
+                local_port = 0
+                try:
+                    local_port = int(s.getsockname()[1])
+                except Exception:
+                    local_port = bind_port
+                self.log.write("INFO", f"Hardware UDP aktiv {ip}:{port} (lokal:{local_port})")
+            except Exception:
+                self._udp_sock = None
         else:
             if serial is None:
                 return
@@ -230,6 +260,11 @@ class HardwareClient:
     def _write_unlocked(self, data: bytes) -> None:
         if self._sock:
             self._sock.sendall(data)
+            self._last_tx_any_ts = time.time()
+        elif self._udp_sock:
+            ip = str(self.cfg.get("tcp_ip", "127.0.0.1") or "127.0.0.1").strip() or "127.0.0.1"
+            port = int(self.cfg.get("tcp_port", 23))
+            self._udp_sock.sendto(data, (ip, port))
             self._last_tx_any_ts = time.time()
         elif self._ser:
             self._ser.write(data)
@@ -289,6 +324,14 @@ class HardwareClient:
                 return data
             except socket.timeout:
                 return b""
+        elif self._udp_sock:
+            try:
+                data, _ = self._udp_sock.recvfrom(4096)
+                if data:
+                    self._last_rx_any_ts = time.time()
+                return data
+            except socket.timeout:
+                return b""
         elif self._ser:
             try:
                 data = self._ser.read(4096)
@@ -309,11 +352,17 @@ class HardwareClient:
         except Exception:
             pass
         try:
+            if self._udp_sock:
+                self._udp_sock.close()
+        except Exception:
+            pass
+        try:
             if self._ser:
                 self._ser.close()
         except Exception:
             pass
         self._sock = None
+        self._udp_sock = None
         self._ser = None
         self._connected_since_ts = 0.0
         self._rxbuf = b""
@@ -641,11 +690,17 @@ class HardwareClient:
                 except Exception:
                     pass
                 try:
+                    if self._udp_sock:
+                        self._udp_sock.close()
+                except Exception:
+                    pass
+                try:
                     if self._ser:
                         self._ser.close()
                 except Exception:
                     pass
                 self._sock = None
+                self._udp_sock = None
                 self._ser = None
                 if req.on_done:
                     try:

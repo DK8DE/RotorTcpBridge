@@ -240,6 +240,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "key_ctrl_alt_minus": "NEXT",
             "target_step_deg": 3.0,
             "el_target_step_deg": 5.0,
+            "jog_repeat_delay_ms": 350,
             "key_el_target_plus": "PRIOR",
             "key_el_target_minus": "NEXT",
             "key_antenna_1": "1",

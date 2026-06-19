@@ -88,6 +88,14 @@ def _mode_pb_width_hz(mode: str) -> int:
     return 0
 
 
+def _strip_erp_cmd_prefix(cmd: str) -> str:
+    """Extended Response Protocol: führendes ``+;|,`` entfernen (``+F 14…`` → ``F 14…``)."""
+    c = (cmd or "").strip()
+    if len(c) >= 2 and c[0] in "+;|,":
+        return c[1:].strip()
+    return c
+
+
 def _parse_frequency_token_to_hz(token: str) -> int | None:
     """Ein Token als Frequenz in Hz (Hamlib nutzt oft ``double``, z. B. ``144300055.000000``)."""
     s = (token or "").strip().replace(",", ".")
@@ -104,15 +112,22 @@ def _parse_frequency_token_to_hz(token: str) -> int | None:
 
 
 def _parse_set_freq_hz(cmd: str) -> int | None:
-    """``F …`` / ``\\set_freq …`` → Hz (Hamlib: letztes numerisches Token, Fließkomma erlaubt)."""
-    parts = (cmd or "").strip().split()
-    if len(parts) < 2:
+    """``F …`` / ``\\set_freq …`` / ``F28829600`` → Hz (letztes numerisches Token)."""
+    c = _strip_erp_cmd_prefix(cmd)
+    if not c:
         return None
-    key = parts[0]
-    if key == "F":
-        toks = parts[1:]
-    elif key.lower() == "\\set_freq":
-        toks = parts[1:]
+    low = c.lower()
+    if low.startswith("\\set_freq"):
+        rest = c[len("\\set_freq") :].lstrip(" \t")
+        toks = rest.split() if rest else []
+    elif c.upper().startswith("F"):
+        rest = c[1:].lstrip(" \t")
+        if not rest:
+            return None
+        if rest[0].isdigit() or rest[0] in "+-":
+            hz = _parse_frequency_token_to_hz(rest.split()[0])
+            return hz
+        toks = rest.split()
     else:
         return None
     if not toks:
@@ -122,6 +137,45 @@ def _parse_set_freq_hz(cmd: str) -> int | None:
         if hz is not None:
             return hz
     return None
+
+
+def _hz_from_pending_freq_line(line: str) -> int | None:
+    """Zweite Zeile nach alleinstehendem ``F`` (manche Clients: MHz in Dezimalform)."""
+    s = _strip_erp_cmd_prefix(line)
+    hz = _parse_set_freq_hz(s) if s.upper().startswith("F") else None
+    if hz is not None:
+        return hz
+    hz = _parse_frequency_token_to_hz(s)
+    if hz is None:
+        return None
+    try:
+        val = float(s.replace(",", "."))
+    except ValueError:
+        return hz
+    if hz < 10_000 and ("." in s or "," in s) and 0.1 < val < 5000.0:
+        return int(round(val * 1_000_000.0))
+    return hz
+
+
+def _looks_like_set_freq_awaiting_value(cmd: str) -> bool:
+    """``F`` / ``F VFOA`` ohne Frequenz — nächste Zeile enthält den Wert."""
+    c = _strip_erp_cmd_prefix(cmd)
+    if c in ("F", "\\set_freq"):
+        return True
+    if _parse_set_freq_hz(c) is not None:
+        return False
+    parts = c.split()
+    if not parts:
+        return False
+    if parts[0] == "F" and len(parts) >= 2 and all(
+        _looks_like_rigctld_vfo_token(t) for t in parts[1:]
+    ):
+        return True
+    if parts[0].lower() == "\\set_freq" and len(parts) >= 2 and all(
+        _looks_like_rigctld_vfo_token(t) for t in parts[1:]
+    ):
+        return True
+    return False
 
 
 def _looks_like_rigctld_vfo_token(tok: str) -> bool:
@@ -164,6 +218,16 @@ def _parse_set_ptt_int(cmd: str) -> int | None:
         return None
 
 
+def _wire_ascii_preview(data: bytes, *, max_len: int = 120) -> str:
+    if not data:
+        return ""
+    s = data.decode("ascii", errors="replace")
+    s = s.replace("\r", "\\r").replace("\n", "\\n")
+    if len(s) > max_len:
+        return s[: max_len - 3] + "..."
+    return s
+
+
 def _strip_cmd_vfo_prefix(cmd: str, letter: str) -> bool:
     """True, wenn ``letter`` oder ``letter <vfo>`` (z. B. ``f VFOA``)."""
     c = (cmd or "").strip()
@@ -185,6 +249,7 @@ class HamlibNetRigctlServer:
         debug_traffic: bool = False,
         log_serial_traffic: bool = True,
         log_tcp_traffic: bool = False,
+        log_immediate_rx: bool = True,
         log_label: str = "",
         on_tcp_activity: Callable[[], None] | None = None,
         refresh_frequency_for_read: Callable[[], bool] | None = None,
@@ -199,6 +264,7 @@ class HamlibNetRigctlServer:
         self._debug_traffic = bool(debug_traffic)
         self._log_serial_traffic = bool(log_serial_traffic)
         self._log_tcp_traffic = bool(log_tcp_traffic)
+        self._log_immediate_rx = bool(log_immediate_rx)
         self._log_label = str(log_label or "").strip()
         self._sock = None
         self._running = False
@@ -224,6 +290,31 @@ class HamlibNetRigctlServer:
     def set_log_tcp_traffic(self, enabled: bool) -> None:
         """Nur Hamlib-TCP (rigctl-Zeilen) ins Hauptlog, ohne volles COM-Protokoll."""
         self._log_tcp_traffic = bool(enabled)
+
+    def set_log_immediate_rx(self, enabled: bool) -> None:
+        """Jedes TCP-``recv``/``send`` sofort ins Log (Wire-Level, unabhängig von Zeilenparser)."""
+        self._log_immediate_rx = bool(enabled)
+
+    def _log_wire_rx(self, peer: str, chunk: bytes, *, dt_ms: float, buf_total: int) -> None:
+        self._log_write(
+            "INFO",
+            f"{self._log_pfx()}Hamlib NET ◀ SOFORT {peer} (+{dt_ms:.1f} ms) "
+            f"{len(chunk)} B ascii={_wire_ascii_preview(chunk)!r} buf={buf_total} B",
+        )
+
+    def _log_wire_pending(self, peer: str, buf: bytes) -> None:
+        self._log_write(
+            "INFO",
+            f"{self._log_pfx()}Hamlib NET ◀ Puffer {peer} {len(buf)} B "
+            f"(noch keine vollständige Zeile): {_wire_ascii_preview(buf)!r}",
+        )
+
+    def _log_wire_tx(self, peer: str, payload: bytes) -> None:
+        self._log_write(
+            "INFO",
+            f"{self._log_pfx()}Hamlib NET ▶ SOFORT {peer} {len(payload)} B "
+            f"ascii={_wire_ascii_preview(payload)!r}",
+        )
 
     def _net_log_enabled(self) -> bool:
         return bool(
@@ -319,16 +410,22 @@ class HamlibNetRigctlServer:
             pass
         try:
             with client:
-                if self._net_log_enabled():
+                if self._log_immediate_rx or self._net_log_enabled():
                     self._log_write(
                         "INFO",
-                        f"{self._log_pfx()}Hamlib NET Sitzung von {peer} (rigctld)",
+                        f"{self._log_pfx()}Hamlib NET Sitzung von {peer} (rigctld)"
+                        + (
+                            ", Sofort-Wire-Log aktiv"
+                            if self._log_immediate_rx
+                            else ""
+                        ),
                     )
                 try:
                     client.settimeout(180.0)
                 except Exception:
                     pass
                 dbg_last_rx = time.monotonic()
+                wire_last_mono = time.monotonic()
                 buf = b""
                 last_partial_log_mono = 0.0
                 warned_semicolon_framing = False
@@ -339,6 +436,8 @@ class HamlibNetRigctlServer:
                     try:
                         chunk = client.recv(1024)
                     except socket.timeout:
+                        if self._log_immediate_rx and buf:
+                            self._log_wire_pending(peer, buf)
                         if self._net_log_enabled():
                             self._log_write(
                                 "WARN",
@@ -348,6 +447,13 @@ class HamlibNetRigctlServer:
                         break
                     if not chunk:
                         break
+                    now_wire = time.monotonic()
+                    wire_dt_ms = (now_wire - wire_last_mono) * 1000.0
+                    wire_last_mono = now_wire
+                    if self._log_immediate_rx:
+                        self._log_wire_rx(
+                            peer, chunk, dt_ms=wire_dt_ms, buf_total=len(buf) + len(chunk)
+                        )
                     buf += chunk
                     while True:
                         if not self._running:
@@ -376,30 +482,32 @@ class HamlibNetRigctlServer:
                             self._on_tcp_activity()
                         except Exception:
                             pass
-                        if self._net_log_enabled():
+                        if self._log_immediate_rx or self._net_log_enabled():
                             now = time.monotonic()
                             dt_ms = (now - dbg_last_rx) * 1000.0
                             dbg_last_rx = now
                             if "dump_state" in cmd.lower():
                                 self._log_write(
                                     "INFO",
-                                    f"{self._log_pfx()}Hamlib NET RX (+{dt_ms:.1f} ms): dump_state",
-                                )
-                            elif self._debug_traffic:
-                                self._log_write(
-                                    "INFO",
-                                    f"{self._log_pfx()}Hamlib NET RX (+{dt_ms:.1f} ms): {cmd!r}",
+                                    f"{self._log_pfx()}Hamlib NET ZEILE (+{dt_ms:.1f} ms): dump_state",
                                 )
                             else:
                                 self._log_write(
                                     "INFO",
-                                    f"{self._log_pfx()}Hamlib NET RX: {cmd!r}",
+                                    f"{self._log_pfx()}Hamlib NET ZEILE (+{dt_ms:.1f} ms): {cmd!r}",
                                 )
                         if not self._running:
                             break
-                        out = self._handle_cmd(cmd, quiet_unknown=used_semicolon_framing)
+                        out = self._handle_cmd_line(
+                            client, cmd, quiet_unknown=used_semicolon_framing
+                        )
                         if out and self._running:
-                            if self._net_log_enabled():
+                            payload = out.encode("ascii", errors="ignore")
+                            if not payload.endswith(b"\n"):
+                                payload += b"\n"
+                            if self._log_immediate_rx:
+                                self._log_wire_tx(peer, payload)
+                            elif self._net_log_enabled():
                                 if len(out) > 400 or "dump_state" in cmd.lower():
                                     self._log_write(
                                         "INFO",
@@ -410,9 +518,6 @@ class HamlibNetRigctlServer:
                                     if len(pv) > 200:
                                         pv = pv[:197] + "..."
                                     self._log_write("INFO", f"{self._log_pfx()}Hamlib NET TX: {pv!r}")
-                            payload = out.encode("ascii", errors="ignore")
-                            if not payload.endswith(b"\n"):
-                                payload += b"\n"
                             try:
                                 client.sendall(payload)
                             except socket.timeout:
@@ -428,6 +533,8 @@ class HamlibNetRigctlServer:
                                 break
                     if abort_session:
                         break
+                    if self._log_immediate_rx and buf:
+                        self._log_wire_pending(peer, buf)
                     if len(buf) > 8192:
                         if self._net_log_enabled():
                             hx = buf[:64].hex()
@@ -473,12 +580,40 @@ class HamlibNetRigctlServer:
         hz = int(st.get("frequency_hz", 0) or 0)
         return str(max(0, hz))
 
+    def _apply_set_freq_hz(self, hz: int, *, rx_cmd: str = "") -> str:
+        if self._net_log_enabled():
+            self._log_write(
+                "INFO",
+                f"{self._log_pfx()}Hamlib NET SETFREQ {hz} Hz"
+                + (f" ({rx_cmd!r})" if rx_cmd else ""),
+            )
+        if self._on_state_patch is not None:
+            self._on_state_patch({"frequency_hz": hz})
+        self._enqueue_write(f"SETFREQ {hz}", "Hamlib NET rigctld → TRX")
+        return "RPRT 0"
+
+    def _handle_cmd_line(
+        self, client: socket.socket, cmd: str, *, quiet_unknown: bool = False
+    ) -> str:
+        """Eine empfangene Zeile inkl. Pending-Zweizeiler für ``F``."""
+        if getattr(client, "_rigctld_pending_set_freq", False):
+            client._rigctld_pending_set_freq = False  # type: ignore[attr-defined]
+            hz = _hz_from_pending_freq_line(cmd)
+            if hz is None:
+                return "RPRT -8"
+            return self._apply_set_freq_hz(hz, rx_cmd=cmd)
+        norm = _strip_erp_cmd_prefix((cmd or "").strip())
+        if _looks_like_set_freq_awaiting_value(norm):
+            client._rigctld_pending_set_freq = True  # type: ignore[attr-defined]
+            return "RPRT 0"
+        return self._handle_cmd(cmd, quiet_unknown=quiet_unknown)
+
     def _handle_cmd(self, cmd: str, *, quiet_unknown: bool = False) -> str:
         """rigctld-Zeilenprotokoll; unbekannte Befehle mit RPRT -11."""
         if not self._running:
             return ""
         st = self._get_state()
-        cmd = (cmd or "").strip()
+        cmd = _strip_erp_cmd_prefix((cmd or "").strip())
         if not cmd or cmd.startswith("#"):
             return ""
 
@@ -506,14 +641,25 @@ class HamlibNetRigctlServer:
                     pass
                 st = self._get_state()
             return self._freq_hz_line(st)
-        if cmd.startswith("F ") or (parts0 and parts0[0].lower() == "\\set_freq"):
+        if (
+            cmd.startswith("F")
+            and (len(cmd) == 1 or cmd[1] in " \t" or cmd[1].isdigit())
+        ) or (parts0 and parts0[0].lower() == "\\set_freq"):
             hz = _parse_set_freq_hz(cmd)
             if hz is None:
                 return "RPRT -8"
-            # Sofort gleiche Ziel-Frequenz für ``f``-Abfragen (Hamlib/UI), COM folgt asynchron.
-            if self._on_state_patch is not None:
-                self._on_state_patch({"frequency_hz": hz})
-            self._enqueue_write(f"SETFREQ {hz}", "Hamlib NET rigctld → TRX")
+            return self._apply_set_freq_hz(hz, rx_cmd=cmd)
+
+        if cmd.startswith("I") and (len(cmd) == 1 or cmd[1] in " \t" or cmd[1].isdigit()):
+            hz = _parse_set_freq_hz("F" + cmd[1:])
+            if hz is None:
+                return "RPRT -8"
+            return self._apply_set_freq_hz(hz, rx_cmd=cmd)
+
+        if cmd.startswith("l ") or cmd == "l" or _strip_cmd_vfo_prefix(cmd, "l"):
+            return "0"
+
+        if cmd.upper().startswith("L "):
             return "RPRT 0"
 
         # --- get_mode: zwei Zeilen (Modus, dann Passband) ---

@@ -344,6 +344,8 @@
   "settings.shortcuts_group_antenna": "Antennenwahl",
   "settings.shortcuts_group_target_step": "Jog Rotor",
   "settings.shortcuts_target_step_deg": "Schrittweite (± gleich)",
+  "settings.shortcuts_jog_repeat_delay_ms": "Wiederholung nach (ms)",
+  "settings.shortcuts_jog_repeat_delay_ms_tooltip": "Wartezeit in ms bis sich der Jog-Schritt beim Halten der Tastenkombination wiederholt. 0 = kein Auto-Repeat.",
   "settings.shortcuts_target_plus": "Ziel erhöhen (Taste)",
   "settings.shortcuts_target_minus": "Ziel verringern (Taste)",
   "settings.shortcuts_group_el_target_step": "EL: Ziel relativ fahren",

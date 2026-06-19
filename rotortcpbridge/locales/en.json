@@ -344,6 +344,8 @@
   "settings.shortcuts_group_antenna": "Antenna selection",
   "settings.shortcuts_group_target_step": "Jog Rotor",
   "settings.shortcuts_target_step_deg": "Step size (same for + and −)",
+  "settings.shortcuts_jog_repeat_delay_ms": "Repeat after (ms)",
+  "settings.shortcuts_jog_repeat_delay_ms_tooltip": "Delay in ms before the jog step repeats while the key combination is held. 0 = no auto-repeat.",
   "settings.shortcuts_target_plus": "Increase target (key)",
   "settings.shortcuts_target_minus": "Decrease target (key)",
   "settings.shortcuts_group_el_target_step": "EL: nudge target",

@@ -96,6 +96,7 @@ class RigBridgeConfig:
             "autostart": False,
             "debug_traffic": False,
             "log_tcp_traffic": False,
+            "log_immediate_rx": True,
         }
     )
 
@@ -169,6 +170,7 @@ class RigBridgeConfig:
         _normalize_hamlib_listeners_dict(self.hamlib)
         self.hamlib["debug_traffic"] = bool(self.hamlib.get("debug_traffic", False))
         self.hamlib["log_tcp_traffic"] = bool(self.hamlib.get("log_tcp_traffic", False))
+        self.hamlib["log_immediate_rx"] = bool(self.hamlib.get("log_immediate_rx", True))
         self.log_serial_traffic = bool(self.log_serial_traffic)
         self.cat_post_write_drain_ms = max(20, min(500, int(self.cat_post_write_drain_ms)))
         self.setfreq_gap_ms = max(0, min(200, int(self.setfreq_gap_ms)))

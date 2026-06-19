@@ -114,6 +114,7 @@ class GlobalHotkeyController:
         self._on_hotkey = on_hotkey
         self._registered_ids: List[int] = []
         self._id_to_action: Dict[int, str] = {}
+        self._id_to_vk: Dict[int, int] = {}
         if sys.platform == "win32":
             self._user32 = ctypes.WinDLL("user32", use_last_error=True)
             self._RegisterHotKey = self._user32.RegisterHotKey
@@ -148,6 +149,7 @@ class GlobalHotkeyController:
                 pass
         self._registered_ids.clear()
         self._id_to_action.clear()
+        self._id_to_vk.clear()
 
     def apply_config(self, cfg: dict) -> None:
         """Konfiguration ``ui.global_shortcuts`` lesen und Hotkeys neu anlegen."""
@@ -206,6 +208,23 @@ class GlobalHotkeyController:
             if ok:
                 self._registered_ids.append(hid)
                 self._id_to_action[hid] = action
+                self._id_to_vk[hid] = vk
+
+    def get_action_vk(self, action: str) -> Optional[int]:
+        """VK-Code für eine registrierte Action, oder None falls nicht gefunden."""
+        for hid, a in self._id_to_action.items():
+            if a == action:
+                return self._id_to_vk.get(hid)
+        return None
+
+    def is_key_down(self, vk: int) -> bool:
+        """Prüft per GetAsyncKeyState ob eine Taste physisch gedrückt ist."""
+        if sys.platform != "win32" or not self._user32:
+            return False
+        try:
+            return bool(self._user32.GetAsyncKeyState(int(vk)) & 0x8000)
+        except Exception:
+            return False
 
     def process_native_event(self, event_type: Any, message: Any) -> Optional[Tuple[bool, int]]:
         """Für ``QWidget.nativeEvent`` / Event-Filter: ``(True, 0)`` wenn WM_HOTKEY verarbeitet."""

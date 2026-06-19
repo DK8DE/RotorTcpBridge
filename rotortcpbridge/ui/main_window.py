@@ -28,6 +28,94 @@ from PySide6.QtCore import QEvent, Qt, QTimer
 
 from .antenna_sync import AntennaSelectionBridge
 
+# Jog-Aktionen die Auto-Repeat unterstützen (Taste halten → Schritt wiederholen)
+_JOG_REPEAT_ACTIONS: frozenset[str] = frozenset(
+    {"target_plus", "target_minus", "el_target_plus", "el_target_minus"}
+)
+
+
+class _JogRepeatController:
+    """Auto-Wiederholung für Jog-Hotkeys.
+
+    Erste Ausführung: sofort beim Tastendruck (durch den Aufrufer).
+    Nach ``delay_ms`` wird der Schritt wiederholt solange die Taste physisch
+    gedrückt bleibt (geprüft per ``GetAsyncKeyState``).
+    Bei ``delay_ms == 0`` ist der Auto-Repeat deaktiviert.
+    """
+
+    def __init__(self) -> None:
+        self._timer = QTimer()
+        self._timer.setSingleShot(False)
+        self._timer.timeout.connect(self._on_tick)
+        self._current_action: str | None = None
+        self._current_vk: int | None = None
+        self._execute_cb = None
+        self._vk_getter = None
+        self._delay_getter = None
+        if sys.platform == "win32":
+            try:
+                import ctypes as _ct
+                self._user32 = _ct.WinDLL("user32", use_last_error=True)
+            except Exception:
+                self._user32 = None
+        else:
+            self._user32 = None
+
+    def setup(self, execute_cb, vk_getter, delay_getter) -> None:
+        """Bindung: execute_cb(action), vk_getter(action)→int|None, delay_getter()→int."""
+        self._execute_cb = execute_cb
+        self._vk_getter = vk_getter
+        self._delay_getter = delay_getter
+
+    def arm(self, action: str) -> None:
+        """Nach dem ersten Tastendruck aufrufen: startet den Repeat-Timer.
+
+        Die erste Ausführung muss der Aufrufer selbst vornehmen.
+        """
+        delay = 0
+        try:
+            delay = max(0, int(self._delay_getter()))
+        except Exception:
+            delay = 0
+        if delay == 0:
+            return
+        vk = None
+        try:
+            vk = self._vk_getter(action)
+        except Exception:
+            pass
+        self._current_action = action
+        self._current_vk = vk
+        self._timer.stop()
+        self._timer.setInterval(delay)
+        self._timer.start()
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self._current_action = None
+        self._current_vk = None
+
+    def _on_tick(self) -> None:
+        if self._current_action is None:
+            self._timer.stop()
+            return
+        if self._current_vk is not None and not self._is_key_down(self._current_vk):
+            self.stop()
+            return
+        try:
+            if self._execute_cb:
+                self._execute_cb(self._current_action)
+        except Exception:
+            pass
+
+    def _is_key_down(self, vk: int) -> bool:
+        if self._user32 is None:
+            return False
+        try:
+            return bool(self._user32.GetAsyncKeyState(int(vk)) & 0x8000)
+        except Exception:
+            return False
+
 from ..app_icon import get_app_icon
 from ..i18n import t
 from ..shortcut_actions import (
@@ -700,6 +788,21 @@ class MainWindow(QMainWindow):
                 lambda a: QTimer.singleShot(0, partial(self._apply_global_shortcut_action, a)),
             )
 
+        self._jog_repeat = _JogRepeatController()
+        self._jog_repeat.setup(
+            execute_cb=self._do_jog_action,
+            vk_getter=lambda a: (
+                hc.get_action_vk(a)
+                if (hc := getattr(self, "_global_hotkey_controller", None)) is not None
+                else None
+            ),
+            delay_getter=lambda: int(
+                (self.cfg.get("ui") or {})
+                .get("global_shortcuts", {})
+                .get("jog_repeat_delay_ms", 350)
+            ),
+        )
+
     def _install_system_theme_change_hooks(self) -> None:
         """Bei OS-Theme-Wechsel native Menüleiste nachziehen (nur ohne force_dark)."""
         app = QApplication.instance()
@@ -873,7 +976,26 @@ class MainWindow(QMainWindow):
                 self._open_map()
             elif action == "open_elevation":
                 self._open_elevation_from_shortcut()
-            elif action == "target_plus":
+            elif action in _JOG_REPEAT_ACTIONS:
+                self._do_jog_action(action)
+                self._jog_repeat.arm(action)
+            elif action == "select_antenna_1":
+                self._select_antenna_by_shortcut(0)
+            elif action == "select_antenna_2":
+                self._select_antenna_by_shortcut(1)
+            elif action == "select_antenna_3":
+                self._select_antenna_by_shortcut(2)
+        except Exception:
+            pass
+
+    def _do_jog_action(self, action: str) -> None:
+        """Führt einen einzelnen Jog-Schritt aus (auch vom Repeat-Timer aufgerufen)."""
+        if not self._can_execute_global_motion_shortcut(action):
+            self._jog_repeat.stop()
+            return
+        gs = (self.cfg.get("ui") or {}).get("global_shortcuts") or {}
+        try:
+            if action == "target_plus":
                 bump_antenna_target_deg(
                     self.cfg, self.ctrl, float(gs.get("target_step_deg", 3.0))
                 )
@@ -889,12 +1011,6 @@ class MainWindow(QMainWindow):
                 bump_el_target_deg(
                     self.ctrl, -float(gs.get("el_target_step_deg", 5.0))
                 )
-            elif action == "select_antenna_1":
-                self._select_antenna_by_shortcut(0)
-            elif action == "select_antenna_2":
-                self._select_antenna_by_shortcut(1)
-            elif action == "select_antenna_3":
-                self._select_antenna_by_shortcut(2)
         except Exception:
             pass
 

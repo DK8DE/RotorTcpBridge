@@ -31,6 +31,7 @@ _DEFAULT_HAMLIB: dict[str, Any] = {
     "autostart": False,
     "debug_traffic": False,
     "log_tcp_traffic": False,
+    "log_immediate_rx": True,
 }
 
 
@@ -427,6 +428,7 @@ class RigBridgeManager:
                 srv.set_debug_traffic(bool(self._cfg.hamlib.get("debug_traffic", False)))
                 srv.set_log_serial_traffic(bool(self._cfg.log_serial_traffic))
                 srv.set_log_tcp_traffic(bool(self._cfg.hamlib.get("log_tcp_traffic", False)))
+                srv.set_log_immediate_rx(bool(self._cfg.hamlib.get("log_immediate_rx", True)))
             self._flrig.set_log_client_traffic(
                 bool(self._cfg.log_serial_traffic or self._cfg.flrig.get("log_tcp_traffic", True))
             )
@@ -802,6 +804,7 @@ class RigBridgeManager:
             debug_traffic=bool(self._cfg.hamlib.get("debug_traffic", False)),
             log_serial_traffic=bool(self._cfg.log_serial_traffic),
             log_tcp_traffic=bool(self._cfg.hamlib.get("log_tcp_traffic", False)),
+            log_immediate_rx=bool(self._cfg.hamlib.get("log_immediate_rx", True)),
             log_label=log_label,
             on_tcp_activity=lambda pp=port: self._pulse_rig_hamlib_activity(pp),
             refresh_frequency_for_read=self.request_cat_refresh_async,

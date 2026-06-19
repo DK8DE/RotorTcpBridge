@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -187,6 +188,13 @@ class ShortcutsTab(QWidget):
         self.sp_step.setSingleStep(1.0)
         self.sp_step.setSuffix("°")
         f3.addRow(t("settings.shortcuts_target_step_deg"), self.sp_step)
+        self.sp_jog_repeat_ms = QSpinBox()
+        self.sp_jog_repeat_ms.setRange(0, 10000)
+        self.sp_jog_repeat_ms.setSingleStep(100)
+        self.sp_jog_repeat_ms.setSuffix(" ms")
+        self.sp_jog_repeat_ms.setSpecialValueText("–")
+        self.sp_jog_repeat_ms.setToolTip(tt("settings.shortcuts_jog_repeat_delay_ms_tooltip"))
+        f3.addRow(t("settings.shortcuts_jog_repeat_delay_ms"), self.sp_jog_repeat_ms)
         self.cb_e = _hotkey_key_combo(self, "PRIOR")
         self.cb_q = _hotkey_key_combo(self, "NEXT")
         f3.addRow(t("settings.shortcuts_target_plus"), self.cb_e)
@@ -422,6 +430,10 @@ class ShortcutsTab(QWidget):
             _select_hotkey_combo(cb, str(gs.get(key, default)), default)
         self.sp_step.setValue(float(gs.get("target_step_deg", 3.0)))
         self.sp_el_step.setValue(float(gs.get("el_target_step_deg", 5.0)))
+        try:
+            self.sp_jog_repeat_ms.setValue(int(gs.get("jog_repeat_delay_ms", 350)))
+        except (TypeError, ValueError):
+            self.sp_jog_repeat_ms.setValue(1000)
         for cb, key, default in (
             (self.cb_el_plus, "key_el_target_plus", "R"),
             (self.cb_el_minus, "key_el_target_minus", "F"),
@@ -454,6 +466,7 @@ class ShortcutsTab(QWidget):
         gs["key_ctrl_alt_minus"] = self.cb_q.currentData()
         gs["target_step_deg"] = float(self.sp_step.value())
         gs["el_target_step_deg"] = float(self.sp_el_step.value())
+        gs["jog_repeat_delay_ms"] = int(self.sp_jog_repeat_ms.value())
         gs["key_el_target_plus"] = self.cb_el_plus.currentData()
         gs["key_el_target_minus"] = self.cb_el_minus.currentData()
         gs["key_antenna_1"] = self.cb_ant1.currentData()

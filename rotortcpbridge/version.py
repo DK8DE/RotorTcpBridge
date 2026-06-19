@@ -1,7 +1,7 @@
 """Versions- und Metadaten für RotorTcpBridge."""
 
 APP_NAME = "RotorTcpBridge"
-APP_VERSION = "1.9.3"
-APP_DATE = "14.03.2026"
+APP_VERSION = "1.9.4"
+APP_DATE = "19.06.2026"
 APP_AUTHOR = "Jörg Körner DK8DE"
 APP_COPYRIGHT = "2026 Jörg Körner DK8DE"

@@ -893,11 +893,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             expect_prefix = None
         self.hw.send_request(
             HwRequest(
-                line=line,
-                expect_prefix=expect_prefix,
-                timeout_s=float(timeout_s),
-                on_done=on_done,
-                priority=int(priority),
+            line=line,
+            expect_prefix=expect_prefix,
+            timeout_s=float(timeout_s),
+            on_done=on_done,
+            priority=int(priority),
             )
         )
 
@@ -1430,7 +1430,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         Bei Timeout oder NAK wird on_ref_start_failed aufgerufen (aus Hintergrundthread!).
         """
         if not self.enable_el:
-            return
+                return
         v = "1" if start_homing else "0"
         try:
             self.el.compass_target_d10 = None
@@ -1506,7 +1506,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
     def set_pwm_az(self, pwm_pct: float):
         if not self.enable_az:
-            return
+                return
         self._set_pwm(self.slave_az, self.az, pwm_pct, "AZ")
 
     def set_pwm_el(self, pwm_pct: float):

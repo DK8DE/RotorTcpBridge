@@ -26,6 +26,18 @@ class RadioStateCache:
     ptt: bool = False
     vfo: str = "A"
     split: bool = False
+    #: TX-Leistungseinstellung 0–100 (PC-Befehl).
+    power: int = 100
+    #: AF-Lautstärke 0–255 (AG-Befehl).
+    volume: int = 128
+    #: RF-Gain 0–255 (RG-Befehl).
+    rfgain: int = 255
+    #: Mikrofon-Gain 0–100 (MG-Befehl).
+    micgain: int = 50
+    #: S-Meter-Rohwert vom TRX (SM0-Antwort, 0–30 bei Yaesu).
+    smeter: int = 0
+    #: TX-Leistungs-Meter Rohwert (RM1-Antwort, 0–100).
+    pwrmeter: int = 0
     last_error: str = ""
     last_success_ts: float = 0.0
     protocol_active: dict[str, bool] = field(
@@ -52,6 +64,12 @@ class RadioStateCache:
                 "ptt": bool(self.ptt),
                 "vfo": str(self.vfo),
                 "split": bool(self.split),
+                "power": int(self.power),
+                "volume": int(self.volume),
+                "rfgain": int(self.rfgain),
+                "micgain": int(self.micgain),
+                "smeter": int(self.smeter),
+                "pwrmeter": int(self.pwrmeter),
                 "last_error": str(self.last_error),
                 "last_success_ts": float(self.last_success_ts),
                 "protocol_active": dict(self.protocol_active),

@@ -27,14 +27,14 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
+class SerialException(Exception):
+    """Fallback, falls pyserial nicht verfügbar ist."""
+
 try:
     import serial  # pyserial
-    from serial import SerialException
+    SerialException = serial.SerialException  # type: ignore[misc, assignment]
 except Exception:  # pragma: no cover - pyserial ist eine harte Abhängigkeit
     serial = None  # type: ignore[assignment]
-
-    class SerialException(Exception):  # type: ignore[no-redef]
-        pass
 
 from . import verbose_cat_log
 from .logutil import LogBuffer

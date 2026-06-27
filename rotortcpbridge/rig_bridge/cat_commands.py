@@ -380,3 +380,223 @@ def _icom_set_freq_frame(freq_hz: int) -> bytes:
     bcd = _icom_bcd_5_from_hz(freq_hz)
     # FE FE 94 E0 05 [bcd5] FD
     return bytes([0xFE, 0xFE, 0x94, 0xE0, 0x05, *bcd, 0xFD])
+
+
+# ── TX-Leistung ───────────────────────────────────────────────────────────────
+
+def build_set_power_payload(
+    brand: str,
+    watts_0_100: int,
+    _rig_model: str = "",
+    _hamlib_rig_id: int = 0,
+) -> tuple[bytes, str]:
+    """TX-Leistung per CAT setzen (0–100, ``PC<nnn>;``)."""
+    b = (brand or "").strip().lower()
+    n = max(0, min(100, int(watts_0_100)))
+    if "icom" in b:
+        return b"", "Icom CI-V: Leistung-CAT nicht implementiert"
+    s = f"PC{n:03d};"
+    return s.encode("ascii"), f"Leistung-CAT: {s!r}"
+
+
+def build_read_power_query(brand: str) -> tuple[bytes, str]:
+    """TX-Leistungs-Einstellung lesen (``PC;``)."""
+    b = (brand or "").strip().lower()
+    if "icom" in b:
+        return b"", "Icom CI-V: Leistung-Lesebefehl nicht implementiert"
+    q = "PC;"
+    return q.encode("ascii"), f"Leistung lesen: {q!r}"
+
+
+# ── AF-Lautstärke ─────────────────────────────────────────────────────────────
+
+def build_set_volume_payload(
+    brand: str,
+    vol_0_255: int,
+    _rig_model: str = "",
+    _hamlib_rig_id: int = 0,
+) -> tuple[bytes, str]:
+    """AF-Lautstärke per CAT setzen (``AG0<nnn>;``, 0–255)."""
+    b = (brand or "").strip().lower()
+    n = max(0, min(255, int(vol_0_255)))
+    if "icom" in b:
+        return b"", "Icom CI-V: Lautstärke-CAT nicht implementiert"
+    s = f"AG0{n:03d};"
+    return s.encode("ascii"), f"Lautstärke-CAT: {s!r}"
+
+
+def build_read_volume_query(brand: str) -> tuple[bytes, str]:
+    """AF-Lautstärke lesen (``AG0;``)."""
+    b = (brand or "").strip().lower()
+    if "icom" in b:
+        return b"", "Icom CI-V: Lautstärke-Lesebefehl nicht implementiert"
+    q = "AG0;"
+    return q.encode("ascii"), f"Lautstärke lesen: {q!r}"
+
+
+# ── RF-Gain ───────────────────────────────────────────────────────────────────
+
+def build_set_rfgain_payload(
+    brand: str,
+    gain_0_255: int,
+    _rig_model: str = "",
+    _hamlib_rig_id: int = 0,
+) -> tuple[bytes, str]:
+    """RF-Gain per CAT setzen (``RG0<nnn>;``, 0–255)."""
+    b = (brand or "").strip().lower()
+    n = max(0, min(255, int(gain_0_255)))
+    if "icom" in b:
+        return b"", "Icom CI-V: RF-Gain-CAT nicht implementiert"
+    s = f"RG0{n:03d};"
+    return s.encode("ascii"), f"RF-Gain-CAT: {s!r}"
+
+
+def build_read_rfgain_query(brand: str) -> tuple[bytes, str]:
+    """RF-Gain lesen (``RG0;``)."""
+    b = (brand or "").strip().lower()
+    if "icom" in b:
+        return b"", "Icom CI-V: RF-Gain-Lesebefehl nicht implementiert"
+    q = "RG0;"
+    return q.encode("ascii"), f"RF-Gain lesen: {q!r}"
+
+
+# ── Mikrofon-Gain ─────────────────────────────────────────────────────────────
+
+def build_set_micgain_payload(
+    brand: str,
+    gain_0_100: int,
+    _rig_model: str = "",
+    _hamlib_rig_id: int = 0,
+) -> tuple[bytes, str]:
+    """Mikrofon-Gain per CAT setzen (``MG<nnn>;``, 0–100)."""
+    b = (brand or "").strip().lower()
+    n = max(0, min(100, int(gain_0_100)))
+    if "icom" in b:
+        return b"", "Icom CI-V: Mic-Gain-CAT nicht implementiert"
+    s = f"MG{n:03d};"
+    return s.encode("ascii"), f"Mic-Gain-CAT: {s!r}"
+
+
+def build_read_micgain_query(brand: str) -> tuple[bytes, str]:
+    """Mikrofon-Gain lesen (``MG;``)."""
+    b = (brand or "").strip().lower()
+    if "icom" in b:
+        return b"", "Icom CI-V: Mic-Gain-Lesebefehl nicht implementiert"
+    q = "MG;"
+    return q.encode("ascii"), f"Mic-Gain lesen: {q!r}"
+
+
+# ── Split / VFO-Auswahl / Swap ───────────────────────────────────────────────
+
+def build_set_split_payload(
+    brand: str,
+    on: bool,
+    _rig_model: str = "",
+    _hamlib_rig_id: int = 0,
+) -> tuple[bytes, str]:
+    """Split-Betrieb ein-/ausschalten (``SP0;`` / ``SP1;``)."""
+    b = (brand or "").strip().lower()
+    if "icom" in b:
+        return b"", "Icom CI-V: Split-CAT nicht implementiert"
+    s = "SP1;" if on else "SP0;"
+    return s.encode("ascii"), f"Split-CAT: {s!r}"
+
+
+def build_set_vfo_payload(
+    brand: str,
+    vfo: str,
+    _rig_model: str = "",
+    _hamlib_rig_id: int = 0,
+) -> tuple[bytes, str]:
+    """Aktives VFO umschalten (Yaesu: ``VS0;``/``VS1;``, Kenwood: ``VFA;``/``VFB;``)."""
+    b = (brand or "").strip().lower()
+    vfo_b = vfo.strip().upper() == "B"
+    if "icom" in b:
+        return b"", "Icom CI-V: VFO-Select-CAT nicht implementiert"
+    if "kenwood" in b or "elecraft" in b:
+        s = "VFB;" if vfo_b else "VFA;"
+        return s.encode("ascii"), f"VFO-Select-CAT (Kenwood): {s!r}"
+    s = "VS1;" if vfo_b else "VS0;"
+    return s.encode("ascii"), f"VFO-Select-CAT (Yaesu): {s!r}"
+
+
+def build_swap_vfo_payload(
+    brand: str,
+    _rig_model: str = "",
+    _hamlib_rig_id: int = 0,
+) -> tuple[bytes, str]:
+    """VFO A↔B tauschen (``SV;``)."""
+    b = (brand or "").strip().lower()
+    if "icom" in b:
+        return b"", "Icom CI-V: VFO-Swap-CAT nicht implementiert"
+    s = "SV;"
+    return s.encode("ascii"), f"VFO-Swap-CAT: {s!r}"
+
+
+def build_copy_a_to_b_payload(
+    brand: str,
+    _rig_model: str = "",
+    _hamlib_rig_id: int = 0,
+) -> tuple[bytes, str]:
+    """VFO-A-Frequenz nach VFO-B kopieren (Yaesu ``AB;``)."""
+    b = (brand or "").strip().lower()
+    if "icom" in b:
+        return b"", "Icom CI-V: VFO-Kopie-CAT nicht implementiert"
+    s = "AB;"
+    return s.encode("ascii"), f"VFO A→B-CAT: {s!r}"
+
+
+# ── Meter-Abfragen ────────────────────────────────────────────────────────────
+
+def build_read_smeter_query(brand: str) -> tuple[bytes, str]:
+    """S-Meter lesen (Yaesu/Kenwood: ``SM0;``)."""
+    b = (brand or "").strip().lower()
+    if "icom" in b:
+        return b"", "Icom CI-V: S-Meter-Lesebefehl nicht implementiert"
+    q = "SM0;"
+    return q.encode("ascii"), f"S-Meter lesen: {q!r}"
+
+
+def build_read_pwrmeter_query(brand: str) -> tuple[bytes, str]:
+    """TX-Ausgangsleistungs-Meter lesen (nur während TX sinnvoll; ``RM1;``)."""
+    b = (brand or "").strip().lower()
+    if "icom" in b:
+        return b"", "Icom CI-V: TX-Meter-Lesebefehl nicht implementiert"
+    q = "RM1;"
+    return q.encode("ascii"), f"TX-Meter lesen: {q!r}"
+
+
+def parse_prefixed_int_response(raw: bytes, prefix: str) -> int | None:
+    """CAT-Antwort ``PREFIX<digits>;`` → int (letztes Vorkommen).
+
+    Beispiele::
+
+        SM0015;  prefix="SM0"  →  15
+        PC050;   prefix="PC"   →  50
+        AG0200;  prefix="AG0"  →  200
+    """
+    if not raw:
+        return None
+    try:
+        s = raw.decode("ascii", errors="replace").upper()
+    except Exception:
+        return None
+    p = prefix.upper()
+    best: int | None = None
+    idx = 0
+    while True:
+        pos = s.find(p, idx)
+        if pos < 0:
+            break
+        j = pos + len(p)
+        digits: list[str] = []
+        while j < len(s) and s[j].isdigit():
+            digits.append(s[j])
+            j += 1
+        if digits:
+            try:
+                best = int("".join(digits))
+            except ValueError:
+                pass
+        idx = pos + len(p)
+    return best

@@ -10,12 +10,27 @@ from typing import Callable, Optional
 
 from .. import verbose_cat_log
 from .cat_commands import (
+    build_copy_a_to_b_payload,
     build_ptt_payload,
+    build_read_micgain_query,
+    build_read_power_query,
+    build_read_pwrmeter_query,
+    build_read_rfgain_query,
+    build_read_smeter_query,
     build_read_vfo_frequency_query,
+    build_read_volume_query,
     build_set_frequency_payload,
+    build_set_micgain_payload,
     build_set_mode_payload,
+    build_set_power_payload,
+    build_set_rfgain_payload,
+    build_set_split_payload,
+    build_set_vfo_payload,
+    build_set_volume_payload,
+    build_swap_vfo_payload,
     normalize_com_port,
     parse_fa_style_frequency_hz,
+    parse_prefixed_int_response,
 )
 from .config import RigBridgeConfig
 from .exceptions import RigConnectionError
@@ -129,6 +144,11 @@ class RadioConnectionManager:
         self._last_setfreq_target_hz = 0
         self._last_setfreq_target_mono = 0.0
         self._setfreq_target_match_window_s = 5.0
+        #: S-Meter und TX-Meter: Rate-Limiting (max. ~10 Hz, kein Überlauf auf CAT-Leitung).
+        self._readsmeter_min_interval_s = 0.10
+        self._last_readsmeter_cat_mono = 0.0
+        self._readpwrmeter_min_interval_s = 0.10
+        self._last_readpwrmeter_cat_mono = 0.0
 
     @staticmethod
     def _is_fatal_link_error(exc: BaseException) -> bool:
@@ -777,6 +797,315 @@ class RadioConnectionManager:
         if self._debug_traffic or self._log_serial:
             self._log_write("INFO", f"Rig-Bridge: SETMODE erledigt: {desc}")
 
+    # ── Neue SET-Methoden (Power / Volume / RF-Gain / Mic-Gain / Split / VFO / Swap) ──
+
+    def _write_set_power_cat_unlocked(self, watts: int) -> None:
+        """TX-Leistung per CAT (``PC<nnn>;``)."""
+        ser = self._ser
+        if ser is None:
+            raise RigConnectionError("Keine aktive Funkgeräteverbindung")
+        n = max(0, min(100, int(watts)))
+        payload, desc = build_set_power_payload(
+            self._cfg.rig_brand, n, self._cfg.rig_model, self._cfg.hamlib_rig_id
+        )
+        if not payload:
+            self._state.update(power=n)
+            self._log_write("WARN", f"Rig-Bridge: SETPOWER ohne CAT: {desc}")
+            return
+        is_icom = "icom" in (self._cfg.rig_brand or "").lower()
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+        self._log_serial_io("TX", payload, f"({desc})")
+        ser.write(payload)
+        ser.flush()
+        if not is_icom:
+            self._read_cat_response_logged(ser, is_icom=False, note="(SETPOWER)", quick_drain=True)
+        self._state.update(power=n)
+        if self._log_serial:
+            self._log_write("INFO", f"Rig-Bridge: SETPOWER erledigt: {desc}")
+
+    def _write_set_volume_cat_unlocked(self, vol: int) -> None:
+        """AF-Lautstärke per CAT (``AG0<nnn>;``)."""
+        ser = self._ser
+        if ser is None:
+            raise RigConnectionError("Keine aktive Funkgeräteverbindung")
+        n = max(0, min(255, int(vol)))
+        payload, desc = build_set_volume_payload(
+            self._cfg.rig_brand, n, self._cfg.rig_model, self._cfg.hamlib_rig_id
+        )
+        if not payload:
+            self._state.update(volume=n)
+            self._log_write("WARN", f"Rig-Bridge: SETVOLUME ohne CAT: {desc}")
+            return
+        is_icom = "icom" in (self._cfg.rig_brand or "").lower()
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+        self._log_serial_io("TX", payload, f"({desc})")
+        ser.write(payload)
+        ser.flush()
+        if not is_icom:
+            self._read_cat_response_logged(ser, is_icom=False, note="(SETVOLUME)", quick_drain=True)
+        self._state.update(volume=n)
+        if self._log_serial:
+            self._log_write("INFO", f"Rig-Bridge: SETVOLUME erledigt: {desc}")
+
+    def _write_set_rfgain_cat_unlocked(self, gain: int) -> None:
+        """RF-Gain per CAT (``RG0<nnn>;``)."""
+        ser = self._ser
+        if ser is None:
+            raise RigConnectionError("Keine aktive Funkgeräteverbindung")
+        n = max(0, min(255, int(gain)))
+        payload, desc = build_set_rfgain_payload(
+            self._cfg.rig_brand, n, self._cfg.rig_model, self._cfg.hamlib_rig_id
+        )
+        if not payload:
+            self._state.update(rfgain=n)
+            self._log_write("WARN", f"Rig-Bridge: SETRFGAIN ohne CAT: {desc}")
+            return
+        is_icom = "icom" in (self._cfg.rig_brand or "").lower()
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+        self._log_serial_io("TX", payload, f"({desc})")
+        ser.write(payload)
+        ser.flush()
+        if not is_icom:
+            self._read_cat_response_logged(ser, is_icom=False, note="(SETRFGAIN)", quick_drain=True)
+        self._state.update(rfgain=n)
+        if self._log_serial:
+            self._log_write("INFO", f"Rig-Bridge: SETRFGAIN erledigt: {desc}")
+
+    def _write_set_micgain_cat_unlocked(self, gain: int) -> None:
+        """Mikrofon-Gain per CAT (``MG<nnn>;``)."""
+        ser = self._ser
+        if ser is None:
+            raise RigConnectionError("Keine aktive Funkgeräteverbindung")
+        n = max(0, min(100, int(gain)))
+        payload, desc = build_set_micgain_payload(
+            self._cfg.rig_brand, n, self._cfg.rig_model, self._cfg.hamlib_rig_id
+        )
+        if not payload:
+            self._state.update(micgain=n)
+            self._log_write("WARN", f"Rig-Bridge: SETMICGAIN ohne CAT: {desc}")
+            return
+        is_icom = "icom" in (self._cfg.rig_brand or "").lower()
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+        self._log_serial_io("TX", payload, f"({desc})")
+        ser.write(payload)
+        ser.flush()
+        if not is_icom:
+            self._read_cat_response_logged(ser, is_icom=False, note="(SETMICGAIN)", quick_drain=True)
+        self._state.update(micgain=n)
+        if self._log_serial:
+            self._log_write("INFO", f"Rig-Bridge: SETMICGAIN erledigt: {desc}")
+
+    def _write_set_split_cat_unlocked(self, on: bool) -> None:
+        """Split-Betrieb per CAT (``SP0;`` / ``SP1;``)."""
+        ser = self._ser
+        if ser is None:
+            raise RigConnectionError("Keine aktive Funkgeräteverbindung")
+        payload, desc = build_set_split_payload(
+            self._cfg.rig_brand, on, self._cfg.rig_model, self._cfg.hamlib_rig_id
+        )
+        if not payload:
+            self._state.update(split=on)
+            self._log_write("WARN", f"Rig-Bridge: SETSPLIT ohne CAT: {desc}")
+            return
+        is_icom = "icom" in (self._cfg.rig_brand or "").lower()
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+        self._log_serial_io("TX", payload, f"({desc})")
+        ser.write(payload)
+        ser.flush()
+        if not is_icom:
+            self._read_cat_response_logged(ser, is_icom=False, note="(SETSPLIT)", quick_drain=True)
+        self._state.update(split=on)
+        if self._log_serial:
+            self._log_write("INFO", f"Rig-Bridge: SETSPLIT erledigt: {desc}")
+
+    def _write_set_vfo_cat_unlocked(self, vfo: str) -> None:
+        """VFO-Auswahl per CAT (Yaesu ``VS0;``/``VS1;``, Kenwood ``VFA;``/``VFB;``)."""
+        ser = self._ser
+        if ser is None:
+            raise RigConnectionError("Keine aktive Funkgeräteverbindung")
+        v = (vfo or "A").strip().upper()
+        payload, desc = build_set_vfo_payload(
+            self._cfg.rig_brand, v, self._cfg.rig_model, self._cfg.hamlib_rig_id
+        )
+        if not payload:
+            self._state.update(vfo=v)
+            self._log_write("WARN", f"Rig-Bridge: SETVFO ohne CAT: {desc}")
+            return
+        is_icom = "icom" in (self._cfg.rig_brand or "").lower()
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+        self._log_serial_io("TX", payload, f"({desc})")
+        ser.write(payload)
+        ser.flush()
+        if not is_icom:
+            self._read_cat_response_logged(ser, is_icom=False, note="(SETVFO)", quick_drain=True)
+        self._state.update(vfo=v)
+        if self._log_serial:
+            self._log_write("INFO", f"Rig-Bridge: SETVFO erledigt: {desc}")
+
+    def _write_swap_vfo_cat_unlocked(self) -> None:
+        """VFO A↔B tauschen per CAT (``SV;``)."""
+        ser = self._ser
+        if ser is None:
+            raise RigConnectionError("Keine aktive Funkgeräteverbindung")
+        payload, desc = build_swap_vfo_payload(
+            self._cfg.rig_brand, self._cfg.rig_model, self._cfg.hamlib_rig_id
+        )
+        if not payload:
+            self._log_write("WARN", f"Rig-Bridge: SWAPVFO ohne CAT: {desc}")
+            return
+        is_icom = "icom" in (self._cfg.rig_brand or "").lower()
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+        self._log_serial_io("TX", payload, f"({desc})")
+        ser.write(payload)
+        ser.flush()
+        if not is_icom:
+            self._read_cat_response_logged(ser, is_icom=False, note="(SWAPVFO)", quick_drain=True)
+        if self._log_serial:
+            self._log_write("INFO", f"Rig-Bridge: SWAPVFO erledigt: {desc}")
+
+    def _write_copy_a_to_b_cat_unlocked(self) -> None:
+        """VFO-A-Frequenz nach VFO-B kopieren per CAT (``AB;``)."""
+        ser = self._ser
+        if ser is None:
+            raise RigConnectionError("Keine aktive Funkgeräteverbindung")
+        payload, desc = build_copy_a_to_b_payload(
+            self._cfg.rig_brand, self._cfg.rig_model, self._cfg.hamlib_rig_id
+        )
+        if not payload:
+            self._log_write("WARN", f"Rig-Bridge: COPYVFO ohne CAT: {desc}")
+            return
+        is_icom = "icom" in (self._cfg.rig_brand or "").lower()
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+        self._log_serial_io("TX", payload, f"({desc})")
+        ser.write(payload)
+        ser.flush()
+        if not is_icom:
+            self._read_cat_response_logged(ser, is_icom=False, note="(COPYVFO)", quick_drain=True)
+        if self._log_serial:
+            self._log_write("INFO", f"Rig-Bridge: COPYVFO erledigt: {desc}")
+
+    # ── Neue READ-Methoden (S-Meter / TX-Meter / Power / Volume / RF-Gain / MicGain) ──
+
+    def _read_numeric_param_unlocked(
+        self,
+        query_fn,
+        prefix: str,
+        state_key: str,
+        note_label: str,
+        log_ctx: str,
+        *,
+        min_interval_attr: str,
+        last_mono_attr: str,
+    ) -> str:
+        """Generischer CAT-Lesebefehl für numerische Parameter (SM0/PC/AG0/RG0/MG/RM1).
+
+        Sendet den per ``query_fn(brand)`` erzeugten Befehl, parst die Antwort mit
+        ``parse_prefixed_int_response(raw, prefix)`` und schreibt den Wert in den
+        State-Cache unter ``state_key``.
+        """
+        ser = self._ser
+        if ser is None:
+            raise RigConnectionError("Keine aktive Funkgeräteverbindung")
+        now = time.monotonic()
+        gap = float(getattr(self, min_interval_attr, 0.0))
+        last = float(getattr(self, last_mono_attr, 0.0))
+        if gap > 0.0 and (now - last) < gap:
+            return ""
+        setattr(self, last_mono_attr, now)
+        cfg = self._cfg
+        read_payload, _ = query_fn(cfg.rig_brand)
+        if not read_payload:
+            return ""
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+        note = f"({note_label})"
+        if log_ctx:
+            note = f"{note} [{log_ctx}]"
+        self._log_serial_io("TX", read_payload, note)
+        ser.write(read_payload)
+        ser.flush()
+        rx = self._read_cat_quick(ser, is_icom=False, max_wait_s=0.3)
+        rx = rx.lstrip(b"\x00")
+        self._log_serial_io("RX", rx, note)
+        parsed = parse_prefixed_int_response(rx, prefix)
+        if parsed is not None:
+            self._state.update(**{state_key: int(parsed)})
+            if self._log_serial:
+                tail = f" [{log_ctx}]" if log_ctx else ""
+                self._log_write(
+                    "INFO",
+                    f"Rig-Bridge: {note_label} aus TRX (CAT): {parsed}{tail}",
+                )
+        return ""
+
+    def _read_smeter_unlocked(self, log_ctx: str = "") -> str:
+        return self._read_numeric_param_unlocked(
+            build_read_smeter_query, "SM0", "smeter", "READSMETER", log_ctx,
+            min_interval_attr="_readsmeter_min_interval_s",
+            last_mono_attr="_last_readsmeter_cat_mono",
+        )
+
+    def _read_pwrmeter_unlocked(self, log_ctx: str = "") -> str:
+        return self._read_numeric_param_unlocked(
+            build_read_pwrmeter_query, "RM1", "pwrmeter", "READPWRMETER", log_ctx,
+            min_interval_attr="_readpwrmeter_min_interval_s",
+            last_mono_attr="_last_readpwrmeter_cat_mono",
+        )
+
+    def _read_power_unlocked(self, log_ctx: str = "") -> str:
+        return self._read_numeric_param_unlocked(
+            build_read_power_query, "PC", "power", "READPOWER", log_ctx,
+            min_interval_attr="_readsmeter_min_interval_s",
+            last_mono_attr="_last_readsmeter_cat_mono",
+        )
+
+    def _read_volume_unlocked(self, log_ctx: str = "") -> str:
+        return self._read_numeric_param_unlocked(
+            build_read_volume_query, "AG0", "volume", "READVOLUME", log_ctx,
+            min_interval_attr="_readsmeter_min_interval_s",
+            last_mono_attr="_last_readsmeter_cat_mono",
+        )
+
+    def _read_rfgain_unlocked(self, log_ctx: str = "") -> str:
+        return self._read_numeric_param_unlocked(
+            build_read_rfgain_query, "RG0", "rfgain", "READRFGAIN", log_ctx,
+            min_interval_attr="_readsmeter_min_interval_s",
+            last_mono_attr="_last_readsmeter_cat_mono",
+        )
+
+    def _read_micgain_unlocked(self, log_ctx: str = "") -> str:
+        return self._read_numeric_param_unlocked(
+            build_read_micgain_query, "MG", "micgain", "READMICGAIN", log_ctx,
+            min_interval_attr="_readsmeter_min_interval_s",
+            last_mono_attr="_last_readsmeter_cat_mono",
+        )
+
     def _send_and_read_unlocked(self, item: _WriteCommand) -> str:
         """Nur mit ``self._io_lock`` aufrufen."""
         ser = self._ser
@@ -814,6 +1143,65 @@ class RadioConnectionManager:
             return ""
         if up == "READFREQ":
             return self._read_vfo_frequency_unlocked(ctx)
+
+        # ── Neue SET-Befehle ──────────────────────────────────────────────────
+        if up.startswith("SETPOWER "):
+            try:
+                n = int(float(c.split(None, 1)[1].strip().replace(",", ".")))
+            except (IndexError, ValueError) as exc:
+                raise RigConnectionError("SETPOWER: ungültiger Wert") from exc
+            self._write_set_power_cat_unlocked(n)
+            return ""
+        if up.startswith("SETVOLUME "):
+            try:
+                n = int(float(c.split(None, 1)[1].strip().replace(",", ".")))
+            except (IndexError, ValueError) as exc:
+                raise RigConnectionError("SETVOLUME: ungültiger Wert") from exc
+            self._write_set_volume_cat_unlocked(n)
+            return ""
+        if up.startswith("SETRFGAIN "):
+            try:
+                n = int(float(c.split(None, 1)[1].strip().replace(",", ".")))
+            except (IndexError, ValueError) as exc:
+                raise RigConnectionError("SETRFGAIN: ungültiger Wert") from exc
+            self._write_set_rfgain_cat_unlocked(n)
+            return ""
+        if up.startswith("SETMICGAIN "):
+            try:
+                n = int(float(c.split(None, 1)[1].strip().replace(",", ".")))
+            except (IndexError, ValueError) as exc:
+                raise RigConnectionError("SETMICGAIN: ungültiger Wert") from exc
+            self._write_set_micgain_cat_unlocked(n)
+            return ""
+        if up.startswith("SETSPLIT "):
+            tail = c.split(None, 1)[1].strip().lower() if " " in c else "0"
+            on = tail not in ("0", "off", "false", "no")
+            self._write_set_split_cat_unlocked(on)
+            return ""
+        if up.startswith("SETVFO "):
+            vfo_arg = c.split(None, 1)[1].strip().upper() if " " in c else "A"
+            self._write_set_vfo_cat_unlocked(vfo_arg)
+            return ""
+        if up == "SWAPVFO":
+            self._write_swap_vfo_cat_unlocked()
+            return ""
+        if up == "COPYVFO_A_TO_B":
+            self._write_copy_a_to_b_cat_unlocked()
+            return ""
+
+        # ── Neue READ-Befehle ─────────────────────────────────────────────────
+        if up == "READSMETER":
+            return self._read_smeter_unlocked(ctx)
+        if up == "READPWRMETER":
+            return self._read_pwrmeter_unlocked(ctx)
+        if up == "READPOWER":
+            return self._read_power_unlocked(ctx)
+        if up == "READVOLUME":
+            return self._read_volume_unlocked(ctx)
+        if up == "READRFGAIN":
+            return self._read_rfgain_unlocked(ctx)
+        if up == "READMICGAIN":
+            return self._read_micgain_unlocked(ctx)
 
         payload = (str(c).strip() + "\n").encode("ascii", errors="ignore")
         self._log_serial_io("TX", payload, "(Rohbefehl)")

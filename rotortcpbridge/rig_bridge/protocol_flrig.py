@@ -318,6 +318,24 @@ def _body_first_frequency_hz(body: bytes) -> int | None:
         return None
 
 
+def _parse_int_param(params: list, default: int) -> int:
+    """Ersten numerischen Parameter aus XML-RPC-Parameterliste als int.
+
+    Fallback: ``default``.
+    """
+    for p in params:
+        if isinstance(p, int):
+            return int(p)
+        if isinstance(p, float):
+            return int(round(p))
+        if isinstance(p, str):
+            try:
+                return int(round(float(p.strip().replace(",", "."))))
+            except (ValueError, TypeError):
+                pass
+    return int(default)
+
+
 class FlrigBridgeServer:
     """Flrig-Bridge: XML-RPC (fldigi/WSJT-X) und kompakter Textmodus."""
 
@@ -652,23 +670,31 @@ class FlrigBridgeServer:
         if m == "rig.get_ptt":
             return sval(f"<i4>{1 if ptt else 0}</i4>")
 
-        # S-Meter / Pegel (WSJT-X / Hamlib können diese nach dem Öffnen abfragen)
-        if m in (
-            "rig.get_DBM",
-            "rig.get_smeter",
-            "rig.get_swrmeter",
-            "rig.get_SWR",
-            "rig.get_Sunits",
-        ):
-            return sval("<string>0</string>")
+        # S-Meter / Pegel — async CAT-Lesebefehl + cached Wert
+        if m in ("rig.get_smeter", "rig.get_DBM", "rig.get_swrmeter", "rig.get_SWR", "rig.get_Sunits"):
+            try:
+                self._enqueue_write("READSMETER", "Flrig rig.get_smeter → async CAT")
+            except Exception:
+                pass
+            raw_sm = int(st.get("smeter", 0) or 0)
+            # SM0-Rohwert 0–30 (Yaesu) → FLRig-Skala 0–255
+            sm_norm = max(0, min(255, int(round(raw_sm * 8.5))))
+            return sval(f"<string>{sm_norm}</string>")
         if m == "rig.get_pwrmeter":
-            # flrig ``s:n`` — Ausgangsleistung (String); reine „0“ wirkt in Loggern oft wie leer.
-            return sval("<string>25</string>")
-        if m in ("rig.get_volume", "rig.get_rfgain", "rig.get_micgain"):
-            return _method_response_i4(0)
+            try:
+                self._enqueue_write("READPWRMETER", "Flrig rig.get_pwrmeter → async CAT")
+            except Exception:
+                pass
+            raw_pwr = int(st.get("pwrmeter", 0) or 0)
+            return sval(f"<string>{max(0, min(100, raw_pwr))}</string>")
+        if m == "rig.get_volume":
+            return _method_response_i4(max(0, min(255, int(st.get("volume", 128) or 128))))
+        if m == "rig.get_rfgain":
+            return _method_response_i4(max(0, min(255, int(st.get("rfgain", 255) or 255))))
+        if m == "rig.get_micgain":
+            return _method_response_i4(max(0, min(100, int(st.get("micgain", 50) or 50))))
         if m == "rig.get_power":
-            # flrig ``i:n`` — **Regel**-Leistungspegel (Skala), nicht Messwatt; 0 = oft unbenutzt/leer.
-            return _method_response_i4(100)
+            return _method_response_i4(max(0, min(100, int(st.get("power", 100) or 100))))
         if m == "rig.get_agc":
             return sval("<i4>0</i4>")
 
@@ -771,6 +797,7 @@ class FlrigBridgeServer:
                     ab = s
             if ab:
                 self._patch_state({"vfo": ab})
+                self._enqueue_write(f"SETVFO {ab}", f"Software (Flrig {m}) → TRX")
             return _method_response_void()
 
         if m in ("rig.set_split", "rig.set_verify_split"):
@@ -786,6 +813,7 @@ class FlrigBridgeServer:
                     v = int(p.strip())
                     break
             self._patch_state({"split": bool(v)})
+            self._enqueue_write(f"SETSPLIT {v}", f"Software (Flrig {m}) → TRX")
             return _method_response_void()
 
         if m.startswith("rig.set_bw") or m in (
@@ -797,36 +825,70 @@ class FlrigBridgeServer:
         ):
             return _method_response_void()
 
+        if m in ("rig.set_power", "rig.set_verify_power"):
+            v = _parse_int_param(params, 100)
+            self._patch_state({"power": max(0, min(100, v))})
+            self._enqueue_write(f"SETPOWER {max(0, min(100, v))}", f"Software (Flrig {m}) → TRX")
+            return _method_response_void()
+        if m == "rig.mod_pwr":
+            delta = _parse_int_param(params, 0)
+            cur = max(0, min(100, int(st.get("power", 100) or 100)))
+            new_v = max(0, min(100, cur + delta))
+            self._patch_state({"power": new_v})
+            self._enqueue_write(f"SETPOWER {new_v}", f"Software (Flrig {m}) → TRX")
+            return _method_response_void()
+        if m in ("rig.set_volume", "rig.set_verify_volume"):
+            v = _parse_int_param(params, 128)
+            self._patch_state({"volume": max(0, min(255, v))})
+            self._enqueue_write(f"SETVOLUME {max(0, min(255, v))}", f"Software (Flrig {m}) → TRX")
+            return _method_response_void()
+        if m == "rig.mod_vol":
+            delta = _parse_int_param(params, 0)
+            cur = max(0, min(255, int(st.get("volume", 128) or 128)))
+            new_v = max(0, min(255, cur + delta))
+            self._patch_state({"volume": new_v})
+            self._enqueue_write(f"SETVOLUME {new_v}", f"Software (Flrig {m}) → TRX")
+            return _method_response_void()
+        if m in ("rig.set_rfgain", "rig.set_verify_rfgain"):
+            v = _parse_int_param(params, 255)
+            self._patch_state({"rfgain": max(0, min(255, v))})
+            self._enqueue_write(f"SETRFGAIN {max(0, min(255, v))}", f"Software (Flrig {m}) → TRX")
+            return _method_response_void()
+        if m == "rig.mod_rfg":
+            delta = _parse_int_param(params, 0)
+            cur = max(0, min(255, int(st.get("rfgain", 255) or 255)))
+            new_v = max(0, min(255, cur + delta))
+            self._patch_state({"rfgain": new_v})
+            self._enqueue_write(f"SETRFGAIN {new_v}", f"Software (Flrig {m}) → TRX")
+            return _method_response_void()
+        if m in ("rig.set_micgain", "rig.set_verify_micgain"):
+            v = _parse_int_param(params, 50)
+            self._patch_state({"micgain": max(0, min(100, v))})
+            self._enqueue_write(f"SETMICGAIN {max(0, min(100, v))}", f"Software (Flrig {m}) → TRX")
+            return _method_response_void()
         if m in (
             "rig.set_pbt",
             "rig.set_pbt_inner",
             "rig.set_pbt_outer",
             "rig.set_notch",
             "rig.set_verify_notch",
-            "rig.set_power",
-            "rig.set_verify_power",
-            "rig.set_volume",
-            "rig.set_verify_volume",
-            "rig.set_rfgain",
-            "rig.set_verify_rfgain",
-            "rig.set_micgain",
-            "rig.set_verify_micgain",
-            "rig.mod_vol",
-            "rig.mod_pwr",
-            "rig.mod_rfg",
             "rig.mod_bw",
         ):
             return _method_response_void()
 
-        if m in (
-            "rig.swap",
-            "rig.vfoA2B",
-            "rig.freqA2B",
-            "rig.modeA2B",
-            "rig.tune",
-            "rig.cmd",
-            "rig.shutdown",
-        ):
+        if m == "rig.swap":
+            # VFO A↔B tauschen: State spiegeln + CAT
+            cur_vfo = str(st.get("vfo", "A") or "A").upper()
+            new_vfo = "B" if cur_vfo == "A" else "A"
+            self._patch_state({"vfo": new_vfo})
+            self._enqueue_write("SWAPVFO", f"Software (Flrig {m}) → TRX")
+            return _method_response_void()
+        if m in ("rig.vfoA2B", "rig.freqA2B"):
+            # VFO-A-Frequenz nach VFO-B kopieren
+            self._patch_state({"frequency_hz": hz})
+            self._enqueue_write("COPYVFO_A_TO_B", f"Software (Flrig {m}) → TRX")
+            return _method_response_void()
+        if m in ("rig.modeA2B", "rig.tune", "rig.cmd", "rig.shutdown"):
             return _method_response_void()
 
         # CWIO / FSKIO: QLog u. a. rufen rig.cwio_send auf; die Bridge hat keinen

@@ -53,6 +53,9 @@ _SET_TO_GET_SPECIAL_MAP = {
 # Block 1: (label_key, SET-CMD, GET-CMD) – GETTEMPMW für SETTEMPM
 _BLOCK1_DEFS = [
     ("cmd.label_rotor_id", "SETID", "GETID"),
+    ("cmd.label_enc_type", "SETENCTYPE", "GETENCTYPE"),
+    ("cmd.label_enc_counts_ring", "SETENCCRI", "GETENCCRI"),
+    ("cmd.label_enc_counts_axis", "SETENCCAX", "GETENCCAX"),
     ("cmd.label_wind_sensor", "SETWINDENABLE", "GETWINDENABLE"),
     ("cmd.label_wind_offset", "SETWINDDIROF", "GETWINDDIROF"),
     ("cmd.label_max_motor_temp", "SETTEMPM", "GETTEMPMW"),
@@ -89,6 +92,9 @@ def _BLOCK2():
 # is_timeout_s  : Eingabe Sekunden, Senden/Empfangen ms
 _PARAM_SPEC = {
     "SETID": (1, 254, "ID", False, False),
+    "SETENCTYPE": (1, 3, "1…3", False, False),
+    "SETENCCRI": (None, None, "Cnt.", False, False),
+    "SETENCCAX": (None, None, "Cnt.", False, False),
     "SETWINDENABLE": (0, 1, "0/1", False, False),
     "SETWINDDIROF": (0, 360, "°", False, False),
     "SETTEMPM": (0, 90, "°C", False, False),
@@ -128,6 +134,7 @@ _PARAM_BTN_WIDTH = 55
 _PARAM_UNIT_WIDTH = 28
 _PARAM_EDIT_LEFT_MARGIN = 5
 _PARAM_LABEL_MIN_WIDTH = 170
+
 
 
 class _GuiCallEvent(QEvent):

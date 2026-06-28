@@ -297,6 +297,9 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
   <script>
     const lat = {lat};
     const lon = {lon};
+    let stationLat = lat;
+    let stationLon = lon;
+    let rangeKm = {range_km};
     const beamsInitial = {beams_json};
     const targetBearingLineInitial = {target_bearing_line_json};
     const targetBearingColorInitial = {target_bearing_color_json};
@@ -317,10 +320,14 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
 
     const TILE_URL_DARK = "https://{{s}}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}{{r}}.png";
     const TILE_URL_LIGHT = "https://{{s}}.basemaps.cartocdn.com/rastertiles/voyager/{{z}}/{{x}}/{{y}}{{r}}.png";
+    const TILE_URL_SATELLITE = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}";
     const OFFLINE_ATTRIBUTION = "© OpenStreetMap-Mitwirkende";
     const ONLINE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
+    const SATELLITE_ATTRIBUTION = 'Tiles &copy; <a href="https://www.esri.com/">Esri</a>';
     const isOffline = {str(offline).lower()};
     let _currentOffline = isOffline;
+    let _mapDark = {str(dark).lower()};
+    let _mapSatellite = false;
     const offlineMinZ = {offline_min_z};
     const offlineMaxZ = {offline_max_z};
     const tileOpts = isOffline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION,
@@ -763,7 +770,6 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     }}
 
     let marker = L.marker([lat, lon], antennaIcon ? {{ icon: antennaIcon }} : {{}}).addTo(map);
-    marker.bindPopup(popupAntenna).openPopup();
 
     let horizonCircle = null;
     if (horizonDistKm > 0.5) {{
@@ -814,6 +820,49 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         color: color, weight: 2, dashArray: '8, 8', interactive: false
       }}).addTo(map);
     }}
+    let previewBearingLineLayer = null;
+    function clearPreviewBearingLine() {{
+      if (previewBearingLineLayer) {{
+        map.removeLayer(previewBearingLineLayer);
+        previewBearingLineLayer = null;
+      }}
+    }}
+    function bearingDegSpherical(lat1, lon1, lat2, lon2) {{
+      const toRad = Math.PI / 180;
+      const phi1 = lat1 * toRad;
+      const phi2 = lat2 * toRad;
+      const dLon = (lon2 - lon1) * toRad;
+      const y = Math.sin(dLon) * Math.cos(phi2);
+      const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLon);
+      return (Math.atan2(y, x) / toRad + 360) % 360;
+    }}
+    function destinationPoint(latDeg, lonDeg, bearingDeg, distKm) {{
+      const R = 6371.0;
+      const delta = distKm / R;
+      const theta = bearingDeg * Math.PI / 180;
+      const phi1 = latDeg * Math.PI / 180;
+      const lam1 = lonDeg * Math.PI / 180;
+      const sinPhi1 = Math.sin(phi1);
+      const cosPhi1 = Math.cos(phi1);
+      const sinDelta = Math.sin(delta);
+      const cosDelta = Math.cos(delta);
+      const phi2 = Math.asin(sinPhi1 * cosDelta + cosPhi1 * sinDelta * Math.cos(theta));
+      const lam2 = lam1 + Math.atan2(Math.sin(theta) * sinDelta * cosPhi1, cosDelta - sinPhi1 * Math.sin(phi2));
+      return [phi2 * 180 / Math.PI, ((lam2 * 180 / Math.PI) + 540) % 360 - 180];
+    }}
+    function drawPreviewBearingLine(lat2, lon2) {{
+      const bearing = bearingDegSpherical(stationLat, stationLon, lat2, lon2);
+      const end = destinationPoint(stationLat, stationLon, bearing, rangeKm);
+      const coords = [[stationLat, stationLon], end];
+      if (previewBearingLineLayer) {{
+        previewBearingLineLayer.setLatLngs(coords);
+      }} else {{
+        previewBearingLineLayer = L.polyline(coords, {{
+          color: '#ff6b6b', weight: 2, dashArray: '6, 5', opacity: 0.9, interactive: false
+        }}).addTo(map);
+      }}
+    }}
+    window.clearPreviewBearingLine = clearPreviewBearingLine;
     drawBeamLayers(beamsInitial);
     drawTargetBearingLine(targetBearingLineInitial, targetBearingColorInitial);
 
@@ -840,7 +889,24 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       if (clickMarker) {{ map.removeLayer(clickMarker); clickMarker = null; }}
     }};
 
+    let _lastHoverNotify = 0;
+    map.on('mousemove', function(e) {{
+      if (map.dragging && map.dragging.moving()) return;
+      const lat2 = e.latlng.lat;
+      const lon2 = e.latlng.lng;
+      drawPreviewBearingLine(lat2, lon2);
+      const now = Date.now();
+      if (now - _lastHoverNotify < 40) return;
+      _lastHoverNotify = now;
+      console.log('ROTOR_HOVERAZ:' + lat2 + ',' + lon2);
+    }});
+    map.getContainer().addEventListener('mouseleave', function() {{
+      clearPreviewBearingLine();
+      console.log('ROTOR_HOVERAZ:');
+    }});
+
     map.on('click', function(e) {{
+      clearPreviewBearingLine();
       const lat2 = e.latlng.lat;
       const lon2 = e.latlng.lng;
       window.setClickMarker(lat2, lon2);
@@ -849,11 +915,18 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
 
     window.updateBeam = function(data) {{
       if (!data) return;
-      map.removeLayer(marker);
+      stationLat = data.lat;
+      stationLon = data.lon;
+      rangeKm = data.range_km;
+      const posChanged = !marker
+        || Math.abs(marker.getLatLng().lat - data.lat) > 1e-8
+        || Math.abs(marker.getLatLng().lng - data.lon) > 1e-8;
+      if (posChanged) {{
+        if (marker) map.removeLayer(marker);
+        marker = L.marker([data.lat, data.lon], antennaIcon ? {{ icon: antennaIcon }} : {{}}).addTo(map);
+      }}
       clearBeamLayers();
       if (horizonCircle) {{ map.removeLayer(horizonCircle); horizonCircle = null; }}
-      marker = L.marker([data.lat, data.lon], antennaIcon ? {{ icon: antennaIcon }} : {{}}).addTo(map);
-      marker.bindPopup(data.popup_antenna || popupAntenna);
       drawBeamLayers(data.beams || []);
       drawTargetBearingLine(data.target_bearing_line, data.target_bearing_color);
       const hKm = data.horizon_dist_km || 0;
@@ -877,16 +950,32 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
 
     const OFFLINE_TILE_URL_LIGHT = {json.dumps(tile_url_light)};
     const OFFLINE_TILE_URL_DARK = {json.dumps(tile_url_dark)};
-    window.setMapOfflineMode = function(offline, tileUrl) {{
-      _currentOffline = offline;
-      if (tileLayer) map.removeLayer(tileLayer);
-      const opts = offline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION }}
-        : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }};
-      tileLayer = L.tileLayer(tileUrl, opts).addTo(map);
-      if (!offline) {{
-        tileLayer.on('tileerror', function(e) {{ if (!_currentOffline) console.error('ROTOR_TILEERROR'); }});
+    let _currentTileUrl = null;
+    function _replaceBaseTileLayer() {{
+      let url, opts;
+      if (_mapSatellite && !_currentOffline) {{
+        url = TILE_URL_SATELLITE;
+        opts = {{ maxZoom: 19, minZoom: 3, attribution: SATELLITE_ATTRIBUTION,
+          fadeAnimation: false, keepBuffer: 1, updateWhenIdle: true }};
+      }} else if (_currentOffline) {{
+        url = _mapDark ? OFFLINE_TILE_URL_DARK : OFFLINE_TILE_URL_LIGHT;
+        opts = {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION,
+          fadeAnimation: false, keepBuffer: 1, updateWhenIdle: true }};
+      }} else {{
+        url = _mapDark ? TILE_URL_DARK : TILE_URL_LIGHT;
+        opts = {{ subdomains: 'abcd', maxZoom: 19, minZoom: 3, attribution: ONLINE_ATTRIBUTION,
+          fadeAnimation: false, keepBuffer: 1, updateWhenIdle: true }};
       }}
-      if (offline) {{
+      if (tileLayer && _currentTileUrl === url) return;
+      _currentTileUrl = url;
+      if (tileLayer) map.removeLayer(tileLayer);
+      tileLayer = L.tileLayer(url, opts).addTo(map);
+      if (!_currentOffline && !_mapSatellite) {{
+        tileLayer.on('tileerror', function(e) {{
+          if (!_currentOffline) console.error('ROTOR_TILEERROR');
+        }});
+      }}
+      if (_currentOffline) {{
         map.setMinZoom(offlineMaxZ);
         map.setMaxZoom(offlineMaxZ);
         map.setView(map.getCenter(), offlineMaxZ, {{ animate: false }});
@@ -894,18 +983,35 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         map.setMinZoom(3);
         map.setMaxZoom(19);
       }}
+    }}
+    window.setMapSatelliteMode = function(on) {{
+      if (_currentOffline && on) {{
+        _mapSatellite = false;
+        return false;
+      }}
+      const want = !!on;
+      if (_mapSatellite === want) return _mapSatellite;
+      _mapSatellite = want;
+      _replaceBaseTileLayer();
+      return _mapSatellite;
+    }};
+    window.setMapOfflineMode = function(offline, tileUrl) {{
+      const wasOffline = _currentOffline;
+      const hadSatellite = _mapSatellite;
+      _currentOffline = !!offline;
+      if (_currentOffline && _mapSatellite) {{
+        _mapSatellite = false;
+      }}
+      if (wasOffline !== _currentOffline || hadSatellite !== _mapSatellite) {{
+        _replaceBaseTileLayer();
+      }}
     }};
 
     window.setMapDarkMode = function(dark) {{
-      const url = _currentOffline ? (dark ? OFFLINE_TILE_URL_DARK : OFFLINE_TILE_URL_LIGHT) : (dark ? TILE_URL_DARK : TILE_URL_LIGHT);
-      const opts = _currentOffline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION }}
-        : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION }};
-      if (tileLayer) map.removeLayer(tileLayer);
-      tileLayer = L.tileLayer(url, opts).addTo(map);
-      if (_currentOffline) {{
-        map.setMinZoom(offlineMaxZ);
-        map.setMaxZoom(offlineMaxZ);
-        map.setView(map.getCenter(), offlineMaxZ, {{ animate: false }});
+      const wasDark = _mapDark;
+      _mapDark = !!dark;
+      if (wasDark !== _mapDark) {{
+        _replaceBaseTileLayer();
       }}
       document.body.style.background = dark ? '#1c1c1c' : 'inherit';
       const info = document.getElementById('info');
@@ -934,7 +1040,6 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     let locatorLayer = null;      // Maidenhead-Gitternetz (Polygone)
     let locatorLabelLayer = null; // Beschriftungen – dynamisch positioniert
     let locatorVisible = false;
-    let _mapDark = {str(dark).lower()};
     let _locPrec = 2, _locDispLen = 2;
     // Präzision je nach Zoom (2/4/6/8 Zeichen Maidenhead).
     // Ab maxZoom−3 (eine Stufe früher als „drittletzte“) … 8: Raster inkl. Ziffernpaar

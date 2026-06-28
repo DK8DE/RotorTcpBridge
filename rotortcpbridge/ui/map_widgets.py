@@ -212,14 +212,29 @@ class MapWindOverlay(QFrame):
 class MapWebPage(QWebEnginePage):
     """WebEnginePage die rotorapp://-Navigations abfängt."""
 
-    def __init__(self, on_click_cb, on_tile_error_cb=None, parent=None):
+    def __init__(self, on_click_cb, on_hover_cb=None, on_tile_error_cb=None, parent=None):
         super().__init__(parent)
         self._on_click_cb = on_click_cb
+        self._on_hover_cb = on_hover_cb
         self._on_tile_error_cb = on_tile_error_cb
 
     def javaScriptConsoleMessage(self, level, message, _line_number, _source_id):
         if message == "ROTOR_TILEERROR" and self._on_tile_error_cb:
             self._on_tile_error_cb()
+            return
+        if message.startswith("ROTOR_HOVERAZ:") and self._on_hover_cb:
+            payload = message[len("ROTOR_HOVERAZ:") :]
+            if not payload.strip():
+                self._on_hover_cb(None, None)
+            else:
+                try:
+                    parts = payload.split(",", 1)
+                    lat = float(parts[0])
+                    lon = float(parts[1])
+                    self._on_hover_cb(lat, lon)
+                except Exception:
+                    self._on_hover_cb(None, None)
+            return
 
     def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
         u = url.toString()
@@ -237,5 +252,21 @@ class MapWebPage(QWebEnginePage):
                     self._on_click_cb(lat, lon, asnearest_dest=asnearest_dest)
             except Exception:
                 pass
+            return False
+        if u.startswith("rotorapp://hoveraz"):
+            try:
+                parsed = urlparse(u)
+                qs = parse_qs(parsed.query or "")
+                lat_raw = qs.get("lat", [None])[0]
+                if self._on_hover_cb:
+                    if lat_raw is None or str(lat_raw).strip() == "":
+                        self._on_hover_cb(None, None)
+                    else:
+                        lat = float(lat_raw)
+                        lon = float(qs.get("lon", [0])[0])
+                        self._on_hover_cb(lat, lon)
+            except Exception:
+                if self._on_hover_cb:
+                    self._on_hover_cb(None, None)
             return False
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)

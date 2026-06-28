@@ -29,6 +29,35 @@ def shortest_delta_deg(current: float, target: float) -> float:
     return (float(target) - float(current) + 180.0) % 360.0 - 180.0
 
 
+def rotor_az_for_display_bearing(
+    display_bearing_deg: float,
+    offset_az_deg: float,
+    current_rotor_az: float | None = None,
+    *,
+    dipole: bool = False,
+) -> float:
+    """Rotor-Azimut für Ziel-Peilung (Anzeige-Azimut, 0°=Nord).
+
+    Normale Antenne: Hauptkeule zeigt auf ``display_bearing_deg``.
+    Dipol: Haupt- oder Gegenkeule (+180° Rotor) — die Keule, die winkelnäher
+    am Ziel liegt (kürzester Drehweg).
+    """
+    primary = wrap_deg(float(display_bearing_deg) - float(offset_az_deg))
+    if not dipole:
+        return primary
+    alternate = wrap_deg(primary - 180.0)
+    if current_rotor_az is None:
+        return primary
+    off = float(offset_az_deg)
+    cur = wrap_deg(float(current_rotor_az))
+    main_lobe = wrap_deg(cur + off)
+    opp_lobe = wrap_deg(main_lobe + 180.0)
+    tgt = wrap_deg(float(display_bearing_deg))
+    if abs(shortest_delta_deg(opp_lobe, tgt)) < abs(shortest_delta_deg(main_lobe, tgt)):
+        return alternate
+    return primary
+
+
 def fmt_deg(v: float) -> str:
     """Winkel als String mit 1 Nachkommastelle und °-Symbol."""
     try:

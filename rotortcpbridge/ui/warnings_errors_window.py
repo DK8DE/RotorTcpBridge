@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
 )
 
@@ -49,17 +50,20 @@ class WarningsErrorsWindow(QDialog):
         self._lbl_warnings = QLabel(t("warn_err.lbl_warnings"))
         self._txt_warnings = QPlainTextEdit()
         self._txt_warnings.setReadOnly(True)
+        self._txt_warnings.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self._txt_warnings.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         try:
             fm = self._txt_warnings.fontMetrics()
-            # Höhe für ca. 2 Textzeilen (sehr kompaktes Fenster)
             _lh = max(1, fm.lineSpacing())
-            self._txt_warnings.setFixedHeight(int(_lh * 2 + px_to_dip(self, 6)))
+            self._txt_warnings.setMinimumHeight(int(_lh * 6 + px_to_dip(self, 12)))
         except Exception:
-            self._txt_warnings.setFixedHeight(px_to_dip(self, 40))
+            self._txt_warnings.setMinimumHeight(px_to_dip(self, 120))
 
         root.addWidget(self._txt_errors)
         root.addWidget(self._lbl_warnings)
-        root.addWidget(self._txt_warnings)
+        root.addWidget(self._txt_warnings, 1)
 
         btn_row = QHBoxLayout()
         self._btn_clear = QPushButton(t("main.menu_delwarn"))
@@ -71,19 +75,20 @@ class WarningsErrorsWindow(QDialog):
         btn_row.addWidget(self._btn_close, 0)
         root.addLayout(btn_row)
 
-        self._apply_fixed_size()
+        self._apply_window_size()
         self.retranslate_ui()
         self._refresh()
 
-    def _apply_fixed_size(self) -> None:
-        # Breite: zwei Drittel der bisherigen 480 dip
-        # Höhe: fest 120 dip (nicht „120 weniger“, sondern Zielhöhe 120)
+    def _apply_window_size(self) -> None:
         try:
             w = int(px_to_dip(self, 480) * 2 / 3)
-            h = px_to_dip(self, 150)
-            self.setFixedSize(w, h)
+            min_h = px_to_dip(self, 220)
+            default_h = px_to_dip(self, 420)
+            self.setMinimumSize(w, min_h)
+            self.resize(w, default_h)
         except Exception:
-            self.setFixedSize(320, 10)
+            self.setMinimumSize(320, 220)
+            self.resize(320, 400)
 
     def retranslate_ui(self) -> None:
         self.setWindowTitle(t("warn_err.title"))
@@ -167,7 +172,18 @@ class WarningsErrorsWindow(QDialog):
     def _refresh(self) -> None:
         try:
             self._txt_errors.setText(self._format_errors())
-            self._txt_warnings.setPlainText(self._format_warnings())
+            new_warn = self._format_warnings()
+            if new_warn == self._txt_warnings.toPlainText():
+                return
+            sb = self._txt_warnings.verticalScrollBar()
+            prev_scroll = sb.value() if sb is not None else 0
+            at_bottom = sb is not None and prev_scroll >= sb.maximum() - 2
+            self._txt_warnings.setPlainText(new_warn)
+            if sb is not None:
+                if at_bottom:
+                    sb.setValue(sb.maximum())
+                else:
+                    sb.setValue(min(prev_scroll, sb.maximum()))
         except Exception:
             pass
 

@@ -1454,6 +1454,8 @@ class MainWindow(QMainWindow):
             self._compass_win._update_groupbox_titles()
             if hasattr(self._compass_win, "_apply_label_colors_from_palette"):
                 self._compass_win._apply_label_colors_from_palette()
+            if hasattr(self._compass_win, "_apply_compass_control_theme"):
+                self._compass_win._apply_compass_control_theme()
         if hasattr(self, "_compass_win") and hasattr(self._compass_win, "sync_heatmap_controls_from_cfg"):
             self._compass_win.sync_heatmap_controls_from_cfg()
         self._refresh_global_hotkeys()

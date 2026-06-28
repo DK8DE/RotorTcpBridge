@@ -16,11 +16,24 @@ Unterschiede zur RS485-GUI:
 """
 
 import math
+import os
+import sys
 import time
+from pathlib import Path
 from typing import Optional, List
 
 from PySide6.QtCore import Qt, QTimer, Signal, QPointF, QRectF
-from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPalette, QPen, QPolygonF
+from PySide6.QtGui import (
+    QColor,
+    QFontMetrics,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
 from PySide6.QtWidgets import QLabel, QWidget
 
 from ..angle_utils import shortest_delta_deg, wrap_deg
@@ -43,6 +56,68 @@ _AZ_RING_ORDER = {"strom": 0, "om_radar": 1, "dwell": 2}
 _SOLL_OVERLAY_Y_SHIFT_PX = 60
 # Kompass-Mitte vertikal (px nach oben); Platz für Ringe/Beschriftung, bei Bedarf anpassen
 _COMPASS_CENTER_Y_SHIFT_PX = 0
+# Gleiches Blau wie Windgeschwindigkeit im Kompass-Panel (#5eb8ff)
+_WIND_SPEED_LABEL_COLOR = QColor(0x5E, 0xB8, 0xFF)
+_ARROW_SHAFT_WIDTH = 7.0
+# Windrose-Hintergrund: 85 % transparent (= 15 % deckend)
+_WINDROSE_BG_OPACITY = 0.15
+
+_CACHED_WINDROSE: Optional[QPixmap] = None
+
+
+def _load_windrose_pixmap() -> QPixmap:
+    """Windrose-Hintergrundbild (Windrose.png) aus Paket oder Projektroot."""
+    global _CACHED_WINDROSE
+    if _CACHED_WINDROSE is not None:
+        return _CACHED_WINDROSE
+
+    names = ("Windrose.png", "windrose.png", "WINDROSE.png")
+    roots: list[Path] = []
+    try:
+        roots.append(Path(sys._MEIPASS))  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
+    try:
+        roots.append(Path(__file__).resolve().parent)  # compass/
+    except Exception:
+        pass
+    try:
+        roots.append(Path(__file__).resolve().parents[1])  # rotortcpbridge/
+    except Exception:
+        pass
+    try:
+        roots.append(Path(__file__).resolve().parents[2])  # project root
+    except Exception:
+        pass
+    try:
+        roots.append(Path.cwd())
+    except Exception:
+        pass
+
+    seen: set[str] = set()
+    for root in roots:
+        key = os.path.normcase(str(root))
+        if key in seen:
+            continue
+        seen.add(key)
+        for name in names:
+            p = root / name
+            if p.is_file():
+                pm = QPixmap(str(p))
+                if not pm.isNull():
+                    _CACHED_WINDROSE = pm
+                    return pm
+        pkg = root / "rotortcpbridge"
+        for name in names:
+            p = pkg / name
+            if p.is_file():
+                pm = QPixmap(str(p))
+                if not pm.isNull():
+                    _CACHED_WINDROSE = pm
+                    return pm
+
+    _CACHED_WINDROSE = QPixmap()
+    return _CACHED_WINDROSE
 
 
 class CompassWidget(QWidget):
@@ -86,7 +161,11 @@ class CompassWidget(QWidget):
         self._soll_overlay: Optional[QWidget] = None
         self._overlay_ist: str = ""
         self._overlay_soll: str = ""
+        self._text_overlay_visible: bool = True
         self._dipole_active: bool = False
+        self._windrose_pixmap = _load_windrose_pixmap()
+        self._windrose_scaled_px: int = 0
+        self._windrose_scaled_pm: Optional[QPixmap] = None
 
         self._led_d = px_to_dip(self, 13)
         lbl_style = "font-size: 16px; font-weight: bold;"
@@ -111,7 +190,7 @@ class CompassWidget(QWidget):
             self._ref_led,
             self._ref_lbl,
         ):
-            w.setVisible(True)
+            w.setVisible(False)
 
         self.setMinimumSize(280, 280)
 
@@ -143,6 +222,23 @@ class CompassWidget(QWidget):
         self._layout_corner_controls()
         self.update()
 
+    def set_text_overlay_visible(self, visible: bool) -> None:
+        """Text-Overlay (Ist/Wind-Zeile auf dem Kompass) ein-/ausblenden."""
+        self._text_overlay_visible = bool(visible)
+        self.update()
+
+    def set_led_overlay_visible(self, visible: bool) -> None:
+        """Interne LED-Zeilen ein-/ausblenden (wenn externe Statusanzeige verwendet wird)."""
+        for w in (
+            self._moving_led,
+            self._moving_lbl,
+            self._online_led,
+            self._online_lbl,
+            self._ref_led,
+            self._ref_lbl,
+        ):
+            w.setVisible(bool(visible))
+
     def set_ref_led_state(self, on: bool) -> None:
         self._ref_led.set_state(bool(on))
 
@@ -164,6 +260,8 @@ class CompassWidget(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._windrose_scaled_px = 0
+        self._windrose_scaled_pm = None
         self._layout_corner_controls()
 
     def _layout_corner_controls(self) -> None:
@@ -415,6 +513,43 @@ class CompassWidget(QWidget):
         r = float(min(rect.width(), rect.height())) / 2.0
         return cx, cy, r
 
+    def _windrose_pixmap_scaled(self, side: float) -> QPixmap:
+        """Windrose mit glatter Interpolation auf Zielgröße skalieren (Cache pro Größe)."""
+        pm = self._windrose_pixmap
+        if pm is None or pm.isNull():
+            return QPixmap()
+        px = max(1, int(round(side)))
+        if self._windrose_scaled_px == px and self._windrose_scaled_pm is not None:
+            return self._windrose_scaled_pm
+        scaled = pm.scaled(
+            px,
+            px,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._windrose_scaled_px = px
+        self._windrose_scaled_pm = scaled
+        return scaled
+
+    def _draw_windrose_background(
+        self, painter: QPainter, cx: float, cy: float, r: float
+    ) -> None:
+        """Windrose als Hintergrund: Durchmesser = Außenkreis minus 100 px, skaliert mit."""
+        inset = float(px_to_dip(self, 300))
+        side = max(8.0, 2.0 * r - inset)
+        scaled = self._windrose_pixmap_scaled(side)
+        if scaled.isNull():
+            return
+        dest = QRectF(cx - side / 2.0, cy - side / 2.0, side, side)
+        painter.save()
+        painter.setOpacity(_WINDROSE_BG_OPACITY)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        clip = QPainterPath()
+        clip.addEllipse(QRectF(cx - r, cy - r, 2.0 * r, 2.0 * r))
+        painter.setClipPath(clip)
+        painter.drawPixmap(dest, scaled, scaled.rect())
+        painter.restore()
+
     def mousePressEvent(self, event):
         """Klick auf den Außenring setzt SOLL."""
         if event.button() != Qt.MouseButton.LeftButton:
@@ -451,16 +586,20 @@ class CompassWidget(QWidget):
     def paintEvent(self, _event):
         with QPainter(self) as painter:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
             cx, cy, r = self._geom()
 
-            # Hauptkreis zuerst (darunter)
+            self._draw_windrose_background(painter, cx, cy, r)
+
+            # Hauptkreis zuerst (darüber der Windrose)
             painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
 
             # Teilstriche
-            tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
+            tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 2)
+            tick_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(tick_pen)
             for a in range(0, 360, 10):
                 rad = math.radians(a)
@@ -496,12 +635,13 @@ class CompassWidget(QWidget):
                 painter.drawText(QPointF(tx - w / 2.0, ty + h / 3.0), txt)
             painter.restore()
 
-            # Himmelsrichtungen
+            # Himmelsrichtungen (Blau wie Windgeschwindigkeit; DE: N/O/S/W, EN: N/E/S/W)
             font = painter.font()
             font.setBold(True)
             font.setPointSize(max(font.pointSize(), int(r * 0.12)))
             painter.setFont(font)
             fm = QFontMetrics(font)
+            painter.setPen(QPen(_WIND_SPEED_LABEL_COLOR, 1))
 
             def draw_label(text: str, angle: float) -> None:
                 rad = math.radians(angle)
@@ -511,10 +651,13 @@ class CompassWidget(QWidget):
                 h = fm.height()
                 painter.drawText(QPointF(tx - w / 2.0, ty + h / 4.0), text)
 
-            draw_label("N", 0)
-            draw_label("O", 90)
-            draw_label("S", 180)
-            draw_label("W", 270)
+            for label, angle in (
+                (t("compass.cardinal_n"), 0),
+                (t("compass.cardinal_e"), 90),
+                (t("compass.cardinal_s"), 180),
+                (t("compass.cardinal_w"), 270),
+            ):
+                draw_label(label, angle)
 
             # Heatmap-Ringe: Farbring 7px, dazwischen 1px schwarz; innen nach außen = Strom → OM-Radar → Standzeit
             ring_w = 7.0
@@ -577,30 +720,47 @@ class CompassWidget(QWidget):
             # SOLL (durchgezogen)
             if self._target_deg is not None:
                 target_color = QColor(160, 0, 0)
-                target_width = 3
-                painter.setPen(QPen(target_color, target_width, Qt.PenStyle.SolidLine))
-                self._draw_arrow(painter, cx, cy, r * 0.85, self._target_deg)
+                self._draw_arrow_3d(
+                    painter, cx, cy, r * 0.85, self._target_deg, target_color, _ARROW_SHAFT_WIDTH
+                )
                 if self._dipole_active:
-                    painter.setPen(QPen(target_color, target_width, Qt.PenStyle.DashLine))
-                    self._draw_arrow(painter, cx, cy, r * 0.85, wrap_deg(self._target_deg + 180.0))
+                    self._draw_arrow_3d(
+                        painter,
+                        cx,
+                        cy,
+                        r * 0.85,
+                        wrap_deg(self._target_deg + 180.0),
+                        target_color,
+                        _ARROW_SHAFT_WIDTH,
+                        dashed=True,
+                    )
 
             # IST (durchgezogen)
             if self._current_deg is not None:
                 current_color = QColor(0, 120, 0)
-                current_width = 4
-                painter.setPen(QPen(current_color, current_width, Qt.PenStyle.SolidLine))
-                self._draw_arrow(painter, cx, cy, r * 0.92, self._current_deg)
+                self._draw_arrow_3d(
+                    painter, cx, cy, r * 0.92, self._current_deg, current_color, _ARROW_SHAFT_WIDTH
+                )
                 if self._dipole_active:
-                    painter.setPen(QPen(current_color, current_width, Qt.PenStyle.DashLine))
-                    self._draw_arrow(painter, cx, cy, r * 0.92, wrap_deg(self._current_deg + 180.0))
+                    self._draw_arrow_3d(
+                        painter,
+                        cx,
+                        cy,
+                        r * 0.92,
+                        wrap_deg(self._current_deg + 180.0),
+                        current_color,
+                        _ARROW_SHAFT_WIDTH,
+                        dashed=True,
+                    )
 
             # WIND Richtung (blau, halb so lang wie der grüne IST-Pfeil)
             if self._wind_visible and self._wind_dir_draw_deg is not None:
-                painter.setPen(QPen(QColor(0, 90, 220), 3, Qt.PenStyle.SolidLine))
                 wd = float(self._wind_dir_draw_deg)
                 if self._wind_dir_mode == "to":
                     wd = wrap_deg(wd + 180.0)
-                self._draw_arrow(painter, cx, cy, r * 0.46, wd)
+                self._draw_arrow_3d(
+                    painter, cx, cy, r * 0.46, wd, QColor(0, 90, 220), _ARROW_SHAFT_WIDTH
+                )
 
             # Wind (links) Zeile 1; Ist-Text Zeile 2. Ziel-Eingabe liegt als Widget oben rechts (Zeile 1).
             margin = 7
@@ -612,18 +772,19 @@ class CompassWidget(QWidget):
             painter.setFont(txt_font)
             painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
 
-            ist_txt = self._overlay_ist or ""
+            if self._text_overlay_visible:
+                ist_txt = self._overlay_ist or ""
 
-            if self._wind_visible:
-                speed_txt = "Wind: --.- km/h"
-                if self._wind_kmh is not None:
-                    speed_txt = f"Wind: {self._wind_kmh:.1f} km/h"
-                painter.drawText(QPointF(float(margin), float(top_y)), speed_txt)
+                if self._wind_visible:
+                    speed_txt = "Wind: --.- km/h"
+                    if self._wind_kmh is not None:
+                        speed_txt = f"Wind: {self._wind_kmh:.1f} km/h"
+                    painter.drawText(QPointF(float(margin), float(top_y)), speed_txt)
 
-                row2_y = float(top_y + line_gap)
-                painter.drawText(QPointF(float(margin), row2_y), ist_txt)
-            else:
-                painter.drawText(QPointF(float(margin), float(top_y)), ist_txt)
+                    row2_y = float(top_y + line_gap)
+                    painter.drawText(QPointF(float(margin), row2_y), ist_txt)
+                else:
+                    painter.drawText(QPointF(float(margin), float(top_y)), ist_txt)
 
             # Mittelpunkt
             painter.setPen(Qt.PenStyle.NoPen)
@@ -653,19 +814,83 @@ class CompassWidget(QWidget):
         painter.drawPolygon(poly)
 
     @staticmethod
-    def _draw_arrow(painter: QPainter, cx: float, cy: float, length: float, deg: float) -> None:
-        rad = math.radians(deg)
-        x2 = cx + math.sin(rad) * length
-        y2 = cy - math.cos(rad) * length
-        painter.drawLine(QPointF(cx, cy), QPointF(x2, y2))
+    def _arrow_gradient(
+        cx: float, cy: float, rx: float, ry: float, color: QColor
+    ) -> QLinearGradient:
+        """Leichter 3D-Verlauf quer zur Pfeilrichtung (hell → mittel → dunkel)."""
+        grad = QLinearGradient(cx - rx, cy - ry, cx + rx, cy + ry)
+        grad.setColorAt(0.0, color.lighter(135))
+        grad.setColorAt(0.5, color)
+        grad.setColorAt(1.0, color.darker(135))
+        return grad
 
-        # Pfeilspitze
-        head_len = max(10.0, length * 0.08)
-        left = math.radians(deg + 150)
-        right = math.radians(deg - 150)
-        xl = x2 + math.sin(left) * head_len
-        yl = y2 - math.cos(left) * head_len
-        xr = x2 + math.sin(right) * head_len
-        yr = y2 - math.cos(right) * head_len
-        painter.drawLine(QPointF(x2, y2), QPointF(xl, yl))
-        painter.drawLine(QPointF(x2, y2), QPointF(xr, yr))
+    @classmethod
+    def _draw_arrow_3d(
+        cls,
+        painter: QPainter,
+        cx: float,
+        cy: float,
+        length: float,
+        deg: float,
+        color: QColor,
+        width: float,
+        *,
+        dashed: bool = False,
+    ) -> None:
+        """Pfeil mit leichtem 3D-Verlauf und gefüllter Dreiecksspitze."""
+        rad = math.radians(deg)
+        fx, fy = math.sin(rad), -math.cos(rad)
+        rx, ry = math.cos(rad), math.sin(rad)
+        half_w = max(2.0, float(width) / 2.0)
+        head_len = max(11.0, float(length) * 0.13)
+        shaft_len = max(half_w * 1.2, float(length) - head_len)
+
+        tip_x = cx + fx * length
+        tip_y = cy + fy * length
+        base_x = cx + fx * shaft_len
+        base_y = cy + fy * shaft_len
+
+        head_half = half_w * 1.4
+        tip = QPointF(tip_x, tip_y)
+        head_l = QPointF(base_x - rx * head_half, base_y - ry * head_half)
+        head_r = QPointF(base_x + rx * head_half, base_y + ry * head_half)
+        head_poly = QPolygonF([tip, head_l, head_r])
+
+        tail_half = half_w * 0.22
+        shaft_poly = QPolygonF(
+            [
+                QPointF(cx - rx * tail_half, cy - ry * tail_half),
+                QPointF(cx + rx * tail_half, cy + ry * tail_half),
+                head_r,
+                head_l,
+            ]
+        )
+
+        mid_x = (cx + base_x) / 2.0
+        mid_y = (cy + base_y) / 2.0
+        lo = color.darker(140)
+
+        # Leichter Schatten für Tiefe
+        painter.save()
+        painter.translate(0.9, 1.1)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 55))
+        if not dashed:
+            painter.drawPolygon(shaft_poly)
+        painter.drawPolygon(head_poly)
+        painter.restore()
+
+        if dashed:
+            dash_pen = QPen(color, width, Qt.PenStyle.DashLine, Qt.PenCapStyle.RoundCap)
+            dash_pen.setDashPattern([6.0, 4.0])
+            painter.setPen(dash_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawLine(QPointF(cx, cy), QPointF(base_x, base_y))
+        else:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(cls._arrow_gradient(mid_x, mid_y, rx, ry, color))
+            painter.drawPolygon(shaft_poly)
+
+        painter.setPen(QPen(lo, 1.0))
+        painter.setBrush(cls._arrow_gradient(tip_x, tip_y, rx, ry, color))
+        painter.drawPolygon(head_poly)

@@ -64,6 +64,8 @@ class ElevationCompassWidget(QWidget):
         self._ref_lbl = QLabel(t("compass.ref_led_label_el"), self)
         self._ref_lbl.setStyleSheet(lbl_style)
 
+        self._text_overlay_visible: bool = True
+
         for w in (
             self._moving_led,
             self._moving_lbl,
@@ -72,7 +74,7 @@ class ElevationCompassWidget(QWidget):
             self._ref_led,
             self._ref_lbl,
         ):
-            w.setVisible(True)
+            w.setVisible(False)
 
         self.setMinimumSize(280, 280)
 
@@ -108,6 +110,22 @@ class ElevationCompassWidget(QWidget):
 
     def set_online_led_state(self, on: bool) -> None:
         self._online_led.set_state(bool(on))
+
+    def set_led_overlay_visible(self, visible: bool) -> None:
+        """Interne LED-Zeilen ein-/ausblenden (wenn externe Statusanzeige verwendet wird)."""
+        for w in (
+            self._moving_led,
+            self._moving_lbl,
+            self._online_led,
+            self._online_lbl,
+            self._ref_led,
+            self._ref_lbl,
+        ):
+            w.setVisible(bool(visible))
+
+    def set_text_overlay_visible(self, visible: bool) -> None:
+        self._text_overlay_visible = bool(visible)
+        self.update()
 
     def apply_label_text_color(self, color: QColor) -> None:
         """Textfarbe aus Palette setzen (palette() in Stylesheet funktioniert unzuverlässig)."""
@@ -228,28 +246,24 @@ class ElevationCompassWidget(QWidget):
     def _geom(self) -> tuple[float, float, float]:
         """Hilfsgeometrie: (cx, cy, r)
 
-        Für EL wählen wir den Kreismittelpunkt unten links, damit ein Viertelkreis entsteht.
+        Viertelkreis mit Anker unten links (cx, cy); gesamte Anzeige mittig im Widget.
         """
-        # Damit die Grad-Zahlen *außerhalb* des Viertelkreises liegen können (und nicht
-        # von den 0°/90°-Linien zerschnitten werden), brauchen wir rundherum genügend
-        # Rand. Zusätzlich verkleinern wir den Radius leicht, damit noch Platz für die
-        # Beschriftung bleibt.
         w = max(1, int(self.width()))
         h = max(1, int(self.height()))
 
-        # Dynamischer Rand: mindestens 48px, bei großen Widgets etwas mehr.
         margin = int(max(48, min(w, h) * 0.10))
+        inner_w = float(w - 2 * margin)
+        inner_h = float(h - 2 * margin)
 
-        rect = self.rect().adjusted(margin, margin, -margin, -margin)
+        base = min(inner_w, inner_h)
+        r = base * 0.82
 
-        # Mittelpunkt unten links innerhalb des Randes
-        cx = float(rect.left())
-        cy = float(rect.bottom())
+        label_pad = r * 0.10
+        bbox_w = r + label_pad
+        bbox_h = r + label_pad
 
-        # Radius bewusst etwas kleiner wählen, damit die Beschriftung außerhalb (label_r > r)
-        # noch vollständig im Widget bleibt.
-        base = float(min(rect.width(), rect.height()))
-        r = base * 0.92
+        cx = (w - bbox_w) / 2.0
+        cy = (h + bbox_h) / 2.0
         return cx, cy, r
 
     def mousePressEvent(self, event):
@@ -374,16 +388,16 @@ class ElevationCompassWidget(QWidget):
                 painter.setPen(QPen(QColor(0, 120, 0), 4, Qt.PenStyle.SolidLine))
                 self._draw_arrow(painter, cx, cy, r * 0.92, self._current_deg)
 
-            # Ist/Soll oben links/rechts (wie AZ zweite Zeile, hier eine Zeile)
-            margin_txt = 7
-            text_top = 13
-            txt_font = painter.font()
-            txt_font.setBold(True)
-            txt_font.setPixelSize(16)
-            painter.setFont(txt_font)
-            painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
-            ist_s = self._overlay_ist
-            painter.drawText(QPointF(float(margin_txt), float(text_top)), ist_s)
+            if self._text_overlay_visible:
+                margin_txt = 7
+                text_top = 13
+                txt_font = painter.font()
+                txt_font.setBold(True)
+                txt_font.setPixelSize(16)
+                painter.setFont(txt_font)
+                painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
+                ist_s = self._overlay_ist
+                painter.drawText(QPointF(float(margin_txt), float(text_top)), ist_s)
 
             # Mittelpunkt
             painter.setPen(Qt.PenStyle.NoPen)

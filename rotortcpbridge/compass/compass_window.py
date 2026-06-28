@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -17,13 +18,20 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from ..app_icon import get_app_icon
-from ..angle_utils import clamp_el, fmt_deg, om_beam_contributions_per_sector, wrap_deg
+from ..angle_utils import (
+    clamp_el,
+    fmt_deg,
+    om_beam_contributions_per_sector,
+    rotor_az_for_display_bearing,
+    wrap_deg,
+)
 from ..geo_utils import bearing_deg, effective_station_lat_lon, haversine_km, maidenhead_to_lat_lon
 from ..i18n import t, tt
 from ..ui.rig_freq_utils import (
@@ -44,6 +52,29 @@ from .statistic_compass_widget import parse_heatmap_scale
 
 class CompassWindow(QDialog):
     """Gemeinsames Kompass-Fenster für AZ/EL."""
+
+    _MIN_WIDTH = 870
+    _VAL_COLOR_SOLL = "#ff6b6b"
+    _VAL_COLOR_IST = "#5ee07a"
+    _VAL_COLOR_WIND = "#5eb8ff"
+    _COMPASS_CARD_OBJECT_NAME = "compassCard"
+    _CARD_STYLE = (
+        "QFrame#compassCard { background: rgba(50,50,50,120); border-radius: 8px;"
+        " border: 1px solid #2d2d2d; }"
+    )
+    _VAL_ROW_STYLE = (
+        "QFrame { background: rgba(30,30,30,160); border-radius: 5px; border: none; }"
+    )
+    _CONN_ROW_STYLE = (
+        "QFrame { background: rgba(30,30,30,160); border-radius: 5px; border: none; }"
+    )
+
+    @classmethod
+    def _apply_compass_card_style(cls, frame: QFrame) -> None:
+        """Rahmen nur um äußere Karten — nicht auf innere QFrame-Widgets vererben."""
+        frame.setObjectName(cls._COMPASS_CARD_OBJECT_NAME)
+        frame.setFrameShape(QFrame.Shape.NoFrame)
+        frame.setStyleSheet(cls._CARD_STYLE)
 
     def __init__(
         self,
@@ -69,6 +100,8 @@ class CompassWindow(QDialog):
 
         self._target_az: Optional[float] = None
         self._target_el: Optional[float] = None
+        # Dipol: Anzeige-Soll = Peilung zum Ziel (nicht Hauptkeule des Rotorwinkels)
+        self._az_soll_display_bearing: Optional[float] = None
         self._last_axes_vis: tuple[bool, bool] | None = None
         self._aswatch_marker_fn: Optional[Callable[[], list]] = None
         # Nach STOP: Soll springt auf STOP-Position und bleibt fix; nach ~3s einmal nachziehen
@@ -89,22 +122,10 @@ class CompassWindow(QDialog):
         self._last_strom_notify_key: tuple[bool, bool] | None = None
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(4)
 
-        row = QHBoxLayout()
-        root.addLayout(row, 1)
-
-        # ---------------- AZ ----------------
-        slave_az = cfg.get("rotor_bus", {}).get("slave_az", "?")
-        slave_el = cfg.get("rotor_bus", {}).get("slave_el", "?")
-        self.gb_az = QGroupBox(f"AZ ID:{slave_az}")
-        az_l = QVBoxLayout(self.gb_az)
-
-        antenna_idx = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
-        self.cb_antenna = QComboBox()
-        self.cb_antenna.addItems(self._get_antenna_dropdown_items())
-        self.cb_antenna.setMinimumWidth(160)
-        self.cb_antenna.setCurrentIndex(antenna_idx)
-        self.cb_antenna.currentIndexChanged.connect(self._on_antenna_changed)
+        # ── RIG-Frequenz-Zeile (optional) ──────────────────────────────────────
         self._w_rig_freq_row: QWidget | None = None
         self._ed_rig_freq: QLineEdit | None = None
         self._lbl_rig_freq_suffix: QLabel | None = None
@@ -129,11 +150,14 @@ class CompassWindow(QDialog):
             _app = QApplication.instance()
             if _app is not None:
                 _app.installEventFilter(self)
-        az_antenna_row = QHBoxLayout()
-        if self._w_rig_freq_row is not None:
-            az_antenna_row.addWidget(self._w_rig_freq_row, 0)
-        az_antenna_row.addStretch(1)
-        az_antenna_row.addWidget(self.cb_antenna)
+
+        # ── TOP-BAR: Antenne · Karte · Status-LEDs ────────────────────────────
+        antenna_idx = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
+        self.cb_antenna = QComboBox()
+        self.cb_antenna.addItems(self._get_antenna_dropdown_items())
+        self.cb_antenna.setCurrentIndex(antenna_idx)
+        self.cb_antenna.currentIndexChanged.connect(self._on_antenna_changed)
+
         self._btn_open_map: Optional[QPushButton] = None
         if open_map_cb is not None:
             self._btn_open_map = QPushButton(t("main.btn_map"))
@@ -141,48 +165,298 @@ class CompassWindow(QDialog):
             self._btn_open_map.setDefault(False)
             self._btn_open_map.setToolTip(tt("compass.open_map_tooltip"))
             self._btn_open_map.clicked.connect(open_map_cb)
-            az_antenna_row.addWidget(self._btn_open_map)
-        az_antenna_row.addStretch(1)
-        az_l.addLayout(az_antenna_row)
 
+        from ..ui.led_widget import Led  # lokaler Import zur Vermeidung des Zirkel-Imports
+
+        # Top-Bar: nur noch RIG-Frequenz (wenn vorhanden)
+        if self._w_rig_freq_row is not None:
+            top_bar = QHBoxLayout()
+            top_bar.setContentsMargins(0, 0, 0, 0)
+            top_bar.setSpacing(6)
+            top_bar.addWidget(self._w_rig_freq_row, 0)
+            top_bar.addStretch(1)
+            root.addLayout(top_bar, 0)
+
+        # ── HAUPTBEREICH: Links-Panel | Kompass-Bereich | Rechts-Panel ─────────
+        main_row = QHBoxLayout()
+        main_row.setSpacing(6)
+        root.addLayout(main_row, 1)
+
+        # --- Links-Panel: Soll / Ist / Wind / Locator-Karten ---
+        left_panel = QWidget()
+        left_panel.setFixedWidth(px_to_dip(self, 158))
+        left_vbox = QVBoxLayout(left_panel)
+        left_vbox.setContentsMargins(0, 0, 0, 0)
+        left_vbox.setSpacing(6)
+
+        _HDR_STYLE = (
+            "font-size: 11px; color: #aaa; font-weight: bold;"
+            " letter-spacing: 1px; background: transparent; border: none;"
+        )
+        _VAL_ROW_STYLE = self._VAL_ROW_STYLE
+        _VAL_STYLE = (
+            "font-size: 26px; font-weight: bold; background: transparent;"
+        )
+        _val_row_h = px_to_dip(self, 36)
+
+        def _val_row(widget: QWidget) -> QFrame:
+            row = QFrame()
+            row.setStyleSheet(_VAL_ROW_STYLE)
+            rh = QHBoxLayout(row)
+            rh.setContentsMargins(5, 4, 5, 4)
+            rh.setSpacing(0)
+            if isinstance(widget, QLabel):
+                widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            rh.addWidget(widget, 1)
+            row.setFixedHeight(_val_row_h + 8)
+            return row
+
+        # ── Soll-Karte (mit Eingabefeld darunter) ──────────────────────────
         self.lbl_az_soll = QLabel(t("compass.soll_label"))
         self.ed_az_soll = QLineEdit()
         self.ed_az_soll.setPlaceholderText("–")
         self.ed_az_soll.setMaxLength(7)
-        self._style_compass_info_label(self.lbl_az_soll)
-        self.lbl_az_locator = QLabel(t("compass.locator_label"))
+
+        _c_soll = QFrame()
+        self._apply_compass_card_style(_c_soll)
+        _vl_soll = QVBoxLayout(_c_soll)
+        _vl_soll.setContentsMargins(8, 8, 8, 10)
+        _vl_soll.setSpacing(4)
+        self._lbl_soll_h = QLabel(t("compass.soll_label").upper())
+        self._lbl_soll_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_soll_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_left_soll_val = QLabel("–")
+        self._lbl_left_soll_val.setStyleSheet(_VAL_STYLE)
+        self._lbl_left_soll_val.setFixedHeight(_val_row_h)
+        _vl_soll.addWidget(self._lbl_soll_h)
+        _vl_soll.addWidget(_val_row(self._lbl_left_soll_val))
+        _vl_soll.addWidget(self.ed_az_soll)
+
+        # ── Ist-Karte ──────────────────────────────────────────────────────
+        _c_ist = QFrame()
+        self._apply_compass_card_style(_c_ist)
+        _vl_ist = QVBoxLayout(_c_ist)
+        _vl_ist.setContentsMargins(8, 8, 8, 10)
+        _vl_ist.setSpacing(4)
+        self._lbl_ist_h = QLabel(t("compass.ist_label").upper())
+        self._lbl_ist_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_ist_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_left_ist_val = QLabel("–")
+        self._lbl_left_ist_val.setStyleSheet(_VAL_STYLE)
+        self._lbl_left_ist_val.setFixedHeight(_val_row_h)
+        _vl_ist.addWidget(self._lbl_ist_h)
+        _vl_ist.addWidget(_val_row(self._lbl_left_ist_val))
+
+        # ── Wind-Karte (Zahl + Einheit einzeilig) ─────────────────────────
+        self._c_wind = QFrame()
+        self._apply_compass_card_style(self._c_wind)
+        _vl_wind = QVBoxLayout(self._c_wind)
+        _vl_wind.setContentsMargins(8, 8, 8, 10)
+        _vl_wind.setSpacing(4)
+        self._lbl_wind_h = QLabel(t("compass.wind_label").upper())
+        self._lbl_wind_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_wind_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _wind_val_row = QFrame()
+        _wind_val_row.setStyleSheet(_VAL_ROW_STYLE)
+        _wind_val_row.setFixedHeight(_val_row_h + 8)
+        _rh_wind = QHBoxLayout(_wind_val_row)
+        _rh_wind.setContentsMargins(5, 4, 5, 4)
+        _rh_wind.setSpacing(0)
+        _wind_val_inner = QWidget()
+        _wind_val_inner.setStyleSheet("background: transparent;")
+        _rh_wind_inner = QHBoxLayout(_wind_val_inner)
+        _rh_wind_inner.setContentsMargins(0, 0, 0, 0)
+        _rh_wind_inner.setSpacing(4)
+        self._lbl_left_wind_val = QLabel("–")
+        self._lbl_left_wind_val.setStyleSheet(_VAL_STYLE)
+        self._lbl_left_wind_val.setFixedHeight(_val_row_h)
+        self._lbl_left_wind_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_wind_unit = QLabel("km/h")
+        self._lbl_wind_unit.setStyleSheet("font-size: 13px; color: #aaa; background: transparent;")
+        self._lbl_wind_unit.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom
+        )
+        _rh_wind_inner.addWidget(self._lbl_left_wind_val)
+        _rh_wind_inner.addWidget(self._lbl_wind_unit)
+        _rh_wind.addStretch(1)
+        _rh_wind.addWidget(_wind_val_inner)
+        _rh_wind.addStretch(1)
+        _vl_wind.addWidget(self._lbl_wind_h)
+        _vl_wind.addWidget(_wind_val_row)
+
+        # ── Locator-Eingabe-Karte ──────────────────────────────────────────
+        _c_loc = QFrame()
+        self._apply_compass_card_style(_c_loc)
+        _vl_loc = QVBoxLayout(_c_loc)
+        _vl_loc.setContentsMargins(8, 8, 8, 10)
+        _vl_loc.setSpacing(4)
+        self.lbl_az_locator = QLabel(t("compass.locator_label").upper())
+        self.lbl_az_locator.setStyleSheet(_HDR_STYLE)
+        self.lbl_az_locator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.ed_az_locator = QLineEdit()
         self.ed_az_locator.setPlaceholderText(t("compass.locator_placeholder"))
         self.ed_az_locator.setMaxLength(10)
         self.ed_az_locator.setToolTip(tt("compass.locator_tooltip"))
-        self._style_compass_info_label(self.lbl_az_locator)
-        _az_overlay_col_w = px_to_dip(self, 100)
-        self.ed_az_soll.setFixedWidth(_az_overlay_col_w)
-        self.ed_az_locator.setFixedWidth(_az_overlay_col_w)
-        self.w_az_soll = QWidget()
-        _gr_az_soll = QGridLayout(self.w_az_soll)
-        _gr_az_soll.setContentsMargins(0, 0, 0, 0)
-        _gr_az_soll.setHorizontalSpacing(px_to_dip(self, 4))
-        _gr_az_soll.setVerticalSpacing(px_to_dip(self, 4))
-        _lbl_align = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        _gr_az_soll.addWidget(self.lbl_az_soll, 0, 0, alignment=_lbl_align)
-        _gr_az_soll.addWidget(self.ed_az_soll, 0, 1)
-        _gr_az_soll.addWidget(self.lbl_az_locator, 1, 0, alignment=_lbl_align)
-        _gr_az_soll.addWidget(self.ed_az_locator, 1, 1)
+        _vl_loc.addWidget(self.lbl_az_locator)
+        _vl_loc.addWidget(self.ed_az_locator)
+
+        # ── Antennen-Karte ────────────────────────────────────────────────
+        _c_ant = QFrame()
+        self._apply_compass_card_style(_c_ant)
+        _vl_ant = QVBoxLayout(_c_ant)
+        _vl_ant.setContentsMargins(8, 8, 8, 10)
+        _vl_ant.setSpacing(4)
+        self._lbl_antenna_h = QLabel(t("compass.antenna_header").upper())
+        self._lbl_antenna_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_antenna_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cb_antenna.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        _vl_ant.addWidget(self._lbl_antenna_h)
+        _vl_ant.addWidget(self.cb_antenna)
+
+        left_vbox.addWidget(_c_soll)
+        left_vbox.addWidget(_c_ist)
+        left_vbox.addWidget(self._c_wind)
+        left_vbox.addWidget(_c_loc)
+        left_vbox.addWidget(_c_ant)
+        left_vbox.addStretch(1)
+        main_row.addWidget(left_panel, 0)
+
+        # --- Kompass-Bereich: AZ-Spalte | AZ-Steuerung | EL-Spalte | EL-Steuerung ---
+        self._az_column = QWidget()
+        _az_col_layout = QVBoxLayout(self._az_column)
+        _az_col_layout.setContentsMargins(0, 0, 0, 0)
+        _az_col_layout.setSpacing(4)
+
+        self.gb_az = QGroupBox()
+        az_l = QVBoxLayout(self.gb_az)
+        az_l.setContentsMargins(4, 4, 4, 4)
+
+        # Soll-Eingabe jetzt in der linken Karte — kein Overlay mehr nötig
+        self._style_compass_info_label(self.lbl_az_soll)
+        self.w_az_soll = None  # kein Overlay im Kompass
 
         self.az_compass = CompassWidget(self.gb_az)
         self.az_compass.set_top_center_widget(None)
-        self.az_compass.set_soll_overlay_widget(self.w_az_soll)
+        self.az_compass.set_soll_overlay_widget(None)
+        self.az_compass.set_led_overlay_visible(False)
+        self.az_compass.set_text_overlay_visible(False)
         az_l.addWidget(self.az_compass, 1)
+        self.ed_az_soll.returnPressed.connect(self._on_az_soll_entered)
+        self.ed_az_locator.returnPressed.connect(self._on_az_locator_entered)
+        _az_col_layout.addWidget(self.gb_az, 1)
 
-        az_info = QHBoxLayout()
-        az_info.setContentsMargins(7, 0, 7, 0)
+        self._el_column = QWidget()
+        _el_col_layout = QVBoxLayout(self._el_column)
+        _el_col_layout.setContentsMargins(0, 0, 0, 0)
+        _el_col_layout.setSpacing(4)
+
+        self.gb_el = QGroupBox()
+        el_l = QVBoxLayout(self.gb_el)
+        el_l.setContentsMargins(4, 4, 4, 4)
+        self.el_compass = ElevationCompassWidget(self.gb_el)
+        self.el_compass.set_soll_overlay_widget(None)
+        self.el_compass.set_led_overlay_visible(False)
+        self.el_compass.set_text_overlay_visible(False)
+        el_l.addWidget(self.el_compass, 1)
+        _el_col_layout.addWidget(self.gb_el, 1)
+
+        self.ed_el_soll = QLineEdit()
+        self.ed_el_soll.setPlaceholderText("–")
+        self.ed_el_soll.setMaxLength(6)
+        self.ed_el_soll.returnPressed.connect(self._on_el_soll_entered)
+
+        self.btn_stop_el = QPushButton(t("compass.btn_stop_el"))
+        self.btn_stop_el.setAutoDefault(False)
+        self.btn_stop_el.setDefault(False)
+        self.btn_stop_el.setMinimumHeight(px_to_dip(self, 32))
+
+        self.btn_ref_el = QPushButton(t("compass.btn_ref_el"))
+        self.btn_ref_el.setAutoDefault(False)
+        self.btn_ref_el.setDefault(False)
+        self.btn_ref_el.setMinimumHeight(px_to_dip(self, 32))
+
+        self.cb_heatmap_el = QComboBox()
+        self.cb_heatmap_el.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.cb_heatmap_el.setMinimumHeight(px_to_dip(self, 28))
+
+        main_row.addWidget(self._az_column, 1)
+
+        # --- Rechts-Panel AZ: VERBINDUNG + STEUERUNG + FAVORITEN ---
+        self._az_right_panel = QWidget()
+        self._az_right_panel.setFixedWidth(px_to_dip(self, 168))
+        right_vbox = QVBoxLayout(self._az_right_panel)
+        right_vbox.setContentsMargins(0, 0, 0, 0)
+        right_vbox.setSpacing(6)
+
+        # ── VERBINDUNG-Card ───────────────────────────────────────────────
+        _conn_card = QFrame()
+        self._apply_compass_card_style(_conn_card)
+        _conn_vbox = QVBoxLayout(_conn_card)
+        _conn_vbox.setContentsMargins(8, 6, 8, 6)
+        _conn_vbox.setSpacing(4)
+
+        self._lbl_conn_h = QLabel(t("compass.status_verbindung").upper())
+        self._lbl_conn_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_conn_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _conn_vbox.addWidget(self._lbl_conn_h)
+
+        _led_d = px_to_dip(self, 12)
+        _CONN_ROW_STYLE = self._CONN_ROW_STYLE
+        _lbl_style = (
+            "font-size: 13px; font-weight: bold; background: transparent; border: none;"
+        )
+
+        def _status_row(led: Led, lbl: QLabel) -> QFrame:
+            row = QFrame()
+            row.setStyleSheet(_CONN_ROW_STYLE)
+            rh = QHBoxLayout(row)
+            rh.setContentsMargins(6, 4, 6, 4)
+            rh.setSpacing(6)
+            rh.addWidget(led)
+            rh.addWidget(lbl)
+            rh.addStretch(1)
+            return row
+
+        self._top_moving_led = Led(_led_d)
+        self._top_moving_lbl = QLabel(t("axis.moving_label"))
+        self._top_moving_lbl.setStyleSheet(_lbl_style)
+        _conn_vbox.addWidget(_status_row(self._top_moving_led, self._top_moving_lbl))
+
+        self._top_ref_led = Led(_led_d)
+        self._top_ref_lbl = QLabel(t("axis.ref_label"))
+        self._top_ref_lbl.setStyleSheet(_lbl_style)
+        _conn_vbox.addWidget(_status_row(self._top_ref_led, self._top_ref_lbl))
+
+        self._top_online_led = Led(_led_d)
+        self._top_online_lbl = QLabel(t("axis.online_label"))
+        self._top_online_lbl.setStyleSheet(_lbl_style)
+        _conn_vbox.addWidget(_status_row(self._top_online_led, self._top_online_lbl))
+
+        right_vbox.addWidget(_conn_card)
+
+        # ── STEUERUNG-Card ────────────────────────────────────────────────
+        _ctrl_card = QFrame()
+        self._apply_compass_card_style(_ctrl_card)
+        _ctrl_vbox = QVBoxLayout(_ctrl_card)
+        _ctrl_vbox.setContentsMargins(8, 8, 8, 8)
+        _ctrl_vbox.setSpacing(5)
+
+        self._lbl_ctrl = QLabel(t("compass.steuerung_label"))
+        self._lbl_ctrl.setStyleSheet(_HDR_STYLE)
+        self._lbl_ctrl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _ctrl_vbox.addWidget(self._lbl_ctrl)
+
         self.btn_stop_az = QPushButton(t("compass.btn_stop_az"))
         self.btn_stop_az.setAutoDefault(False)
         self.btn_stop_az.setDefault(False)
+        self.btn_stop_az.setMinimumHeight(px_to_dip(self, 32))
+
         self.btn_ref_az = QPushButton(t("compass.btn_ref_az"))
         self.btn_ref_az.setAutoDefault(False)
         self.btn_ref_az.setDefault(False)
+        self.btn_ref_az.setMinimumHeight(px_to_dip(self, 32))
+
         self.menu_heatmap_az = QMenu(self)
         self._act_heatmap_strom = QAction(t("compass.heatmap_strom"), self)
         self._act_heatmap_strom.setCheckable(True)
@@ -195,7 +469,6 @@ class CompassWindow(QDialog):
         self._act_heatmap_dwell.setCheckable(True)
         self._act_heatmap_dwell.setData("dwell")
         self.menu_heatmap_az.addAction(self._act_heatmap_strom)
-        # OM-Radar wird nur eingehaengt, wenn AirScout/KST aktiv ist (siehe _fill_heatmap_az_list)
         self.menu_heatmap_az.addAction(self._act_heatmap_dwell)
         for _a in (self._act_heatmap_strom, self._act_heatmap_om, self._act_heatmap_dwell):
             _a.toggled.connect(self._on_heatmap_az_action_toggled)
@@ -203,91 +476,155 @@ class CompassWindow(QDialog):
         self.btn_heatmap_az.setToolTip(tt("compass.heatmap_az_rings_tooltip"))
         self.btn_heatmap_az.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.btn_heatmap_az.setMenu(self.menu_heatmap_az)
-        self.btn_heatmap_az.setMinimumWidth(px_to_dip(self, 120))
+        self.btn_heatmap_az.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.btn_heatmap_az.setMinimumHeight(px_to_dip(self, 28))
         self._update_heatmap_az_button_text()
+
         self.btn_reset_dwell_az = QPushButton(t("compass.btn_reset_dwell"))
         self.btn_reset_dwell_az.setToolTip(tt("compass.btn_reset_dwell_tooltip"))
         self.btn_reset_dwell_az.setAutoDefault(False)
         self.btn_reset_dwell_az.setDefault(False)
-        self.btn_reset_dwell_az.clicked.connect(self._on_reset_dwell_az)
-        az_info.addStretch(1)
-        az_info.addWidget(self.btn_stop_az)
-        az_info.addWidget(self.btn_ref_az)
-        az_info.addWidget(self.btn_heatmap_az)
-        az_info.addWidget(self.btn_reset_dwell_az)
-        az_info.addStretch(1)
-        self.ed_az_soll.returnPressed.connect(self._on_az_soll_entered)
-        self.ed_az_locator.returnPressed.connect(self._on_az_locator_entered)
-        az_l.addLayout(az_info)
+        self.btn_reset_dwell_az.setMinimumHeight(px_to_dip(self, 28))
 
-        row.addWidget(self.gb_az, 1)
+        _ctrl_vbox.addWidget(self.btn_stop_az)
+        _ctrl_vbox.addWidget(self.btn_ref_az)
+        _ctrl_vbox.addWidget(self.btn_heatmap_az)
+        _ctrl_vbox.addWidget(self.btn_reset_dwell_az)
 
-        # ---------------- EL ----------------
-        self.gb_el = QGroupBox(f"EL ID:{slave_el}")
-        el_l = QVBoxLayout(self.gb_el)
-        self.lbl_el_soll = QLabel(t("compass.soll_label"))
-        self.ed_el_soll = QLineEdit()
-        self.ed_el_soll.setPlaceholderText("–")
-        self.ed_el_soll.setFixedWidth(70)
-        self.ed_el_soll.setMaxLength(6)
-        self._style_compass_info_label(self.lbl_el_soll)
-        self.w_el_soll = QWidget()
-        _h_el_soll = QHBoxLayout(self.w_el_soll)
-        _h_el_soll.setContentsMargins(0, 0, 0, 0)
-        _h_el_soll.setSpacing(4)
-        _h_el_soll.addWidget(self.lbl_el_soll)
-        _h_el_soll.addWidget(self.ed_el_soll)
+        if self._btn_open_map is not None:
+            self._btn_open_map.setMinimumHeight(px_to_dip(self, 28))
+            _ctrl_vbox.addWidget(self._btn_open_map)
 
-        self.el_compass = ElevationCompassWidget(self.gb_el)
-        self.el_compass.set_soll_overlay_widget(self.w_el_soll)
-        el_l.addWidget(self.el_compass, 1)
+        right_vbox.addWidget(_ctrl_card)
 
-        el_info = QHBoxLayout()
-        el_info.setContentsMargins(7, 0, 7, 0)
-        self.btn_stop_el = QPushButton(t("compass.btn_stop_el"))
-        self.btn_stop_el.setAutoDefault(False)
-        self.btn_stop_el.setDefault(False)
-        self.btn_ref_el = QPushButton(t("compass.btn_ref_el"))
-        self.btn_ref_el.setAutoDefault(False)
-        self.btn_ref_el.setDefault(False)
-        self.cb_heatmap_el = QComboBox()
-        self.cb_heatmap_el.setMinimumWidth(140)
-        el_info.addStretch(1)
-        el_info.addWidget(self.btn_stop_el)
-        el_info.addWidget(self.btn_ref_el)
-        el_info.addWidget(self.cb_heatmap_el)
-        el_info.addStretch(1)
-        self.ed_el_soll.returnPressed.connect(self._on_el_soll_entered)
-        el_l.addLayout(el_info)
+        # ── FAVORITEN-Card ────────────────────────────────────────────────
+        _fav_card = QFrame()
+        self._apply_compass_card_style(_fav_card)
+        _fav_vbox = QVBoxLayout(_fav_card)
+        _fav_vbox.setContentsMargins(8, 8, 8, 8)
+        _fav_vbox.setSpacing(5)
 
-        row.addWidget(self.gb_el, 1)
+        self._lbl_fav_h = QLabel(t("compass.fav_header").upper())
+        self._lbl_fav_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_fav_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _fav_vbox.addWidget(self._lbl_fav_h)
 
-        # Favoriten-Zeile unter der POS-Zeile
-        fav_row = QHBoxLayout()
-        fav_row.setContentsMargins(7, 6, 7, 4)
         self.cb_fav = QComboBox()
-        self.cb_fav.setMinimumWidth(180)
         self.cb_fav.setEditable(False)
+        _fav_vbox.addWidget(self.cb_fav)
+
         self.ed_fav_name = QLineEdit()
         self.ed_fav_name.setPlaceholderText(t("compass.fav_name_placeholder"))
         self.ed_fav_name.setMaxLength(15)
-        self.ed_fav_name.setFixedWidth(110)
+        _fav_vbox.addWidget(self.ed_fav_name)
+
+        _fav_btn_row = QHBoxLayout()
+        _fav_btn_row.setSpacing(4)
         self.btn_fav_save = QPushButton(t("compass.fav_btn_save"))
         self.btn_fav_save.setAutoDefault(False)
         self.btn_fav_save.setDefault(False)
         self.btn_fav_delete = QPushButton(t("compass.fav_btn_delete"))
         self.btn_fav_delete.setAutoDefault(False)
         self.btn_fav_delete.setDefault(False)
-        fav_row.addWidget(self.cb_fav)
-        fav_row.addWidget(self.ed_fav_name)
-        fav_row.addWidget(self.btn_fav_save)
-        fav_row.addWidget(self.btn_fav_delete)
-        root.addLayout(fav_row, 0)
+        _fav_btn_row.addWidget(self.btn_fav_save)
+        _fav_btn_row.addWidget(self.btn_fav_delete)
+        _fav_vbox.addLayout(_fav_btn_row)
 
+        right_vbox.addWidget(_fav_card)
+        right_vbox.addStretch(1)
+
+        # --- Rechts-Panel EL: VERBINDUNG + SOLL + IST + STEUERUNG ---
+        self._el_right_panel = QWidget()
+        self._el_right_panel.setFixedWidth(px_to_dip(self, 168))
+        _el_right_vbox = QVBoxLayout(self._el_right_panel)
+        _el_right_vbox.setContentsMargins(0, 0, 0, 0)
+        _el_right_vbox.setSpacing(6)
+
+        _conn_el_card = QFrame()
+        self._apply_compass_card_style(_conn_el_card)
+        _conn_el_vbox = QVBoxLayout(_conn_el_card)
+        _conn_el_vbox.setContentsMargins(8, 6, 8, 6)
+        _conn_el_vbox.setSpacing(4)
+
+        self._lbl_conn_el_h = QLabel(t("compass.status_verbindung").upper())
+        self._lbl_conn_el_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_conn_el_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _conn_el_vbox.addWidget(self._lbl_conn_el_h)
+
+        self._top_el_moving_led = Led(_led_d)
+        self._top_el_moving_lbl = QLabel(t("axis.moving_label"))
+        self._top_el_moving_lbl.setStyleSheet(_lbl_style)
+        _conn_el_vbox.addWidget(_status_row(self._top_el_moving_led, self._top_el_moving_lbl))
+
+        self._top_el_ref_led = Led(_led_d)
+        self._top_el_ref_lbl = QLabel(t("axis.ref_label"))
+        self._top_el_ref_lbl.setStyleSheet(_lbl_style)
+        _conn_el_vbox.addWidget(_status_row(self._top_el_ref_led, self._top_el_ref_lbl))
+
+        self._top_el_online_led = Led(_led_d)
+        self._top_el_online_lbl = QLabel(t("axis.online_label"))
+        self._top_el_online_lbl.setStyleSheet(_lbl_style)
+        _conn_el_vbox.addWidget(_status_row(self._top_el_online_led, self._top_el_online_lbl))
+
+        _c_el_soll = QFrame()
+        self._apply_compass_card_style(_c_el_soll)
+        _vl_el_soll = QVBoxLayout(_c_el_soll)
+        _vl_el_soll.setContentsMargins(8, 8, 8, 10)
+        _vl_el_soll.setSpacing(4)
+        self._lbl_el_soll_h = QLabel(t("compass.soll_label").upper())
+        self._lbl_el_soll_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_el_soll_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_left_el_soll_val = QLabel("–")
+        self._lbl_left_el_soll_val.setStyleSheet(_VAL_STYLE)
+        self._lbl_left_el_soll_val.setFixedHeight(_val_row_h)
+        _vl_el_soll.addWidget(self._lbl_el_soll_h)
+        _vl_el_soll.addWidget(_val_row(self._lbl_left_el_soll_val))
+        _vl_el_soll.addWidget(self.ed_el_soll)
+
+        _c_el_ist = QFrame()
+        self._apply_compass_card_style(_c_el_ist)
+        _vl_el_ist = QVBoxLayout(_c_el_ist)
+        _vl_el_ist.setContentsMargins(8, 8, 8, 10)
+        _vl_el_ist.setSpacing(4)
+        self._lbl_el_ist_h = QLabel(t("compass.ist_label").upper())
+        self._lbl_el_ist_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_el_ist_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_left_el_ist_val = QLabel("–")
+        self._lbl_left_el_ist_val.setStyleSheet(_VAL_STYLE)
+        self._lbl_left_el_ist_val.setFixedHeight(_val_row_h)
+        _vl_el_ist.addWidget(self._lbl_el_ist_h)
+        _vl_el_ist.addWidget(_val_row(self._lbl_left_el_ist_val))
+
+        _ctrl_el_card = QFrame()
+        self._apply_compass_card_style(_ctrl_el_card)
+        _ctrl_el_vbox = QVBoxLayout(_ctrl_el_card)
+        _ctrl_el_vbox.setContentsMargins(8, 8, 8, 8)
+        _ctrl_el_vbox.setSpacing(5)
+
+        self._lbl_ctrl_el = QLabel(t("compass.steuerung_label").upper())
+        self._lbl_ctrl_el.setStyleSheet(_HDR_STYLE)
+        self._lbl_ctrl_el.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _ctrl_el_vbox.addWidget(self._lbl_ctrl_el)
+        _ctrl_el_vbox.addWidget(self.btn_stop_el)
+        _ctrl_el_vbox.addWidget(self.btn_ref_el)
+        _ctrl_el_vbox.addWidget(self.cb_heatmap_el)
+
+        _el_right_vbox.addWidget(_conn_el_card)
+        _el_right_vbox.addWidget(_c_el_soll)
+        _el_right_vbox.addWidget(_c_el_ist)
+        _el_right_vbox.addWidget(_ctrl_el_card)
+        _el_right_vbox.addStretch(1)
+
+        main_row.addWidget(self._az_right_panel, 0)
+        main_row.addWidget(self._el_column, 1)
+        main_row.addWidget(self._el_right_panel, 0)
+
+        # ── Signal-Verbindungen ───────────────────────────────────────────────
         self.btn_stop_az.clicked.connect(self._on_stop_az)
         self.btn_stop_el.clicked.connect(self._on_stop_el)
         self.btn_ref_az.clicked.connect(lambda: self.ctrl.reference_az(True))
         self.btn_ref_el.clicked.connect(lambda: self.ctrl.reference_el(True))
+        self.btn_reset_dwell_az.clicked.connect(self._on_reset_dwell_az)
         self._migrate_heatmap_ui_keys()
         self._fill_heatmap_az_list()
         self._fill_heatmap_el_combo()
@@ -307,9 +644,9 @@ class CompassWindow(QDialog):
         self._antenna_request_timer = QTimer(self)
         self._antenna_request_timer.setInterval(2000)
         self._antenna_request_timer.timeout.connect(self._request_antenna_offsets)
-        # Callback: sofort Dropdown aktualisieren wenn Antennenwerte via Einstellungen geändert wurden
         if hasattr(self.ctrl, "on_antenna_offsets_changed"):
             self.ctrl.on_antenna_offsets_changed = self._on_antenna_offsets_changed
+        self._apply_compass_control_theme()
         self._tick()
 
     def _on_antenna_offsets_changed(self) -> None:
@@ -373,6 +710,7 @@ class CompassWindow(QDialog):
         super().showEvent(event)
         self._last_strom_notify_key = None
         self._apply_label_colors_from_palette()
+        self._apply_compass_control_theme()
         self._refresh_antenna_dropdown()
         self._refresh_favorites_dropdown()
         if hasattr(self.ctrl, "set_compass_window_open"):
@@ -435,8 +773,12 @@ class CompassWindow(QDialog):
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
-        if event.type() == QEvent.Type.PaletteChange:
+        if event.type() in (
+            QEvent.Type.PaletteChange,
+            QEvent.Type.ApplicationPaletteChange,
+        ):
             self._apply_label_colors_from_palette()
+            self._apply_compass_control_theme()
         elif event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
             self._antenna_request_timer.stop()
             if hasattr(self.ctrl, "set_compass_window_open"):
@@ -600,7 +942,7 @@ class CompassWindow(QDialog):
     def _fill_heatmap_el_combo(self) -> None:
         self.cb_heatmap_el.blockSignals(True)
         self.cb_heatmap_el.clear()
-        self.cb_heatmap_el.addItem(t("compass.heatmap_off"), "off")
+        self.cb_heatmap_el.addItem(t("compass.heatmap_az_rings_none"), "off")
         self.cb_heatmap_el.addItem(t("compass.heatmap_strom"), "strom")
         self.cb_heatmap_el.blockSignals(False)
 
@@ -781,9 +1123,10 @@ class CompassWindow(QDialog):
     def _selected_antenna_idx(self) -> int:
         return max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
 
-    def _selected_antenna_dipole_enabled(self) -> bool:
-        """Dipol-Flag der gewählten AZ-Antenne: Controller-Zustand bevorzugt, sonst Config."""
-        slot = self._selected_antenna_idx() + 1
+    def _antenna_dipole_enabled(self, ant_idx: int) -> bool:
+        """Dipol-Flag für Antenne ant_idx (0–2): Controller-Zustand bevorzugt, sonst Config."""
+        ant_idx = max(0, min(2, int(ant_idx)))
+        slot = ant_idx + 1
         hw_v = getattr(self.ctrl.az, f"antdp{slot}", None)
         if hw_v is not None:
             try:
@@ -791,16 +1134,34 @@ class CompassWindow(QDialog):
                 dips = list(ui.get("antenna_dipoles_az", [False, False, False]))
                 while len(dips) < 3:
                     dips.append(False)
-                dips[slot - 1] = bool(hw_v)
+                dips[ant_idx] = bool(hw_v)
                 ui["antenna_dipoles_az"] = dips[:3]
             except Exception:
                 pass
             return bool(hw_v)
         dips_cfg = self.cfg.get("ui", {}).get("antenna_dipoles_az", [False, False, False])
         try:
-            return bool(dips_cfg[slot - 1])
+            return bool(dips_cfg[ant_idx])
         except (IndexError, TypeError):
             return False
+
+    def _selected_antenna_dipole_enabled(self) -> bool:
+        return self._antenna_dipole_enabled(self._selected_antenna_idx())
+
+    @staticmethod
+    def _dwell_sector_index(deg: float, n_d: int) -> int:
+        step = 360.0 / float(n_d)
+        return int(wrap_deg(deg) / step) % n_d
+
+    def _dwell_sectors_to_accumulate(self, rotor_deg: float, n_d: int, ant_idx: int) -> list[int]:
+        """Sektoren für Standzeit-Zählung; Dipol: Haupt- und Gegenrichtung (+180°)."""
+        idx = self._dwell_sector_index(rotor_deg, n_d)
+        if not self._antenna_dipole_enabled(ant_idx):
+            return [idx]
+        opp = self._dwell_sector_index(wrap_deg(rotor_deg + 180.0), n_d)
+        if opp == idx:
+            return [idx]
+        return [idx, opp]
 
     def _ensure_dwell_arrays(self, n_d: int) -> None:
         """Drei parallele Listen à n_d Sektoren; bei Sektorzahl-Wechsel neu mit 0 füllen."""
@@ -992,29 +1353,138 @@ class CompassWindow(QDialog):
             pass
         self._refresh_favorites_dropdown()
 
+    @staticmethod
+    def _app_palette() -> QPalette:
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            return app.palette()
+        return QPalette()
+
+    @staticmethod
+    def _repolish_native_widget(w: QWidget | None) -> None:
+        """Stylesheet leeren und Fusion-Native-Look wie in der Main-GUI erzwingen."""
+        if w is None:
+            return
+        w.setStyleSheet("")
+        app = QApplication.instance()
+        st = app.style() if isinstance(app, QApplication) else w.style()
+        if st is not None:
+            try:
+                st.unpolish(w)
+                st.polish(w)
+            except RuntimeError:
+                pass
+        w.update()
+
+    def _apply_stop_button_palette(self, btn: QPushButton) -> None:
+        """STOP: gleicher Button-Rahmen wie Main-GUI, Text in BrightText (rot)."""
+        self._repolish_native_widget(btn)
+        app_pal = self._app_palette()
+        pal = QPalette(btn.palette())
+        pal.setColor(QPalette.ColorRole.Button, app_pal.color(QPalette.ColorRole.Button))
+        pal.setColor(QPalette.ColorRole.ButtonText, app_pal.color(QPalette.ColorRole.BrightText))
+        btn.setPalette(pal)
+
+    def _apply_compass_control_theme(self) -> None:
+        """Buttons und Dropdowns wie Main-GUI: kein QSS, native Fusion + App-Palette."""
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            self.setPalette(app.palette())
+
+        for btn in (
+            self.btn_ref_az,
+            self.btn_reset_dwell_az,
+            self.btn_fav_save,
+            self.btn_fav_delete,
+            self.btn_ref_el,
+            self.btn_heatmap_az,
+        ):
+            self._repolish_native_widget(btn)
+        if self._btn_open_map is not None:
+            self._repolish_native_widget(self._btn_open_map)
+        for cb in (self.cb_antenna, self.cb_fav, self.cb_heatmap_el):
+            self._repolish_native_widget(cb)
+
+        self._apply_stop_button_palette(self.btn_stop_az)
+        self._apply_stop_button_palette(self.btn_stop_el)
+
     _COMPASS_INFO_STYLE = "font-size: 12pt; font-weight: 700;"
 
     @staticmethod
     def _style_compass_info_label(lbl: QLabel) -> None:
         lbl.setStyleSheet(CompassWindow._COMPASS_INFO_STYLE)
 
+    @classmethod
+    def _value_label_style(cls, color: str) -> str:
+        return (
+            f"font-size: 26px; font-weight: bold; color: {color};"
+            " background: transparent; border: none;"
+        )
+
     def _apply_label_colors_from_palette(self) -> None:
-        """Textfarbe aus Palette des Kompass-Widgets setzen (gleiche Quelle wie Wind/Richtung)."""
+        """Header aus Palette; Soll/Ist/Wind-Werte in Testfarben."""
         color = self.az_compass.palette().color(QPalette.ColorRole.WindowText)
         self._last_label_color = color.name()
-        style = f"{self._COMPASS_INFO_STYLE} color: {self._last_label_color};"
-        for lbl in (self.lbl_az_soll, self.lbl_az_locator, self.lbl_el_soll):
-            lbl.setStyleSheet(style)
+        card_hdr_style = (
+            f"font-size: 11px; color: {self._last_label_color};"
+            " font-weight: bold; letter-spacing: 1px; background: transparent; border: none;"
+        )
+        for lbl in (
+            self._lbl_soll_h,
+            self._lbl_ist_h,
+            self._lbl_wind_h,
+            self.lbl_az_locator,
+            self._lbl_antenna_h,
+            self._lbl_conn_h,
+            self._lbl_ctrl,
+            self._lbl_fav_h,
+            self._lbl_conn_el_h,
+            self._lbl_el_soll_h,
+            self._lbl_el_ist_h,
+            self._lbl_ctrl_el,
+        ):
+            lbl.setStyleSheet(card_hdr_style)
+
+        self._lbl_left_soll_val.setStyleSheet(
+            self._value_label_style(self._VAL_COLOR_SOLL)
+        )
+        self._lbl_left_el_soll_val.setStyleSheet(
+            self._value_label_style(self._VAL_COLOR_SOLL)
+        )
+        self._lbl_left_ist_val.setStyleSheet(
+            self._value_label_style(self._VAL_COLOR_IST)
+        )
+        self._lbl_left_el_ist_val.setStyleSheet(
+            self._value_label_style(self._VAL_COLOR_IST)
+        )
+        self._lbl_left_wind_val.setStyleSheet(
+            self._value_label_style(self._VAL_COLOR_WIND)
+        )
+        self._lbl_wind_unit.setStyleSheet(
+            "font-size: 13px; color: #8cc8ff; background: transparent;"
+        )
+
+        led_style = (
+            f"font-size: 13px; font-weight: bold; color: {self._last_label_color};"
+            " background: transparent; border: none;"
+        )
+        for lbl in (
+            self._top_online_lbl,
+            self._top_moving_lbl,
+            self._top_ref_lbl,
+            self._top_el_online_lbl,
+            self._top_el_moving_lbl,
+            self._top_el_ref_lbl,
+        ):
+            lbl.setStyleSheet(led_style)
         if hasattr(self.az_compass, "apply_label_text_color"):
             self.az_compass.apply_label_text_color(color)
         if hasattr(self.el_compass, "apply_label_text_color"):
             self.el_compass.apply_label_text_color(color)
 
     def _update_groupbox_titles(self) -> None:
-        slave_az = self.cfg.get("rotor_bus", {}).get("slave_az", "?")
-        slave_el = self.cfg.get("rotor_bus", {}).get("slave_el", "?")
-        self.gb_az.setTitle(f"AZ ID:{slave_az}")
-        self.gb_el.setTitle(f"EL ID:{slave_el}")
+        self.gb_az.setTitle("")
+        self.gb_el.setTitle("")
 
     def retranslate_ui(self) -> None:
         """Sprachwechsel: Fenstertitel und Karten-Button."""
@@ -1022,17 +1492,29 @@ class CompassWindow(QDialog):
         if self._btn_open_map is not None:
             self._btn_open_map.setText(t("main.btn_map"))
             self._btn_open_map.setToolTip(tt("compass.open_map_tooltip"))
-        self.lbl_az_locator.setText(t("compass.locator_label"))
+        self.lbl_az_locator.setText(t("compass.locator_label").upper())
+        self._lbl_antenna_h.setText(t("compass.antenna_header").upper())
+        self._lbl_conn_h.setText(t("compass.status_verbindung").upper())
+        self._lbl_conn_el_h.setText(t("compass.status_verbindung").upper())
+        self._lbl_ctrl.setText(t("compass.steuerung_label").upper())
+        self._lbl_ctrl_el.setText(t("compass.steuerung_label").upper())
+        self._lbl_fav_h.setText(t("compass.fav_header").upper())
+        self._apply_label_colors_from_palette()
+        self._apply_compass_control_theme()
         self.ed_az_locator.setPlaceholderText(t("compass.locator_placeholder"))
         self.ed_az_locator.setToolTip(tt("compass.locator_tooltip"))
         if self._lbl_rig_freq_suffix is not None:
             self._lbl_rig_freq_suffix.setText(t("main.rig_freq_suffix"))
         if self._ed_rig_freq is not None:
             self._ed_rig_freq.setPlaceholderText(t("main.rig_freq_placeholder"))
+        self.az_compass.update()
 
     def refresh_visibility(self) -> None:
         az_on = bool(getattr(self.ctrl, "enable_az", True))
         el_on = bool(getattr(self.ctrl, "enable_el", True))
+        self._az_column.setVisible(az_on)
+        self._el_column.setVisible(el_on)
+        self._el_right_panel.setVisible(el_on)
         self.gb_az.setVisible(az_on)
         self.gb_el.setVisible(el_on)
 
@@ -1042,11 +1524,11 @@ class CompassWindow(QDialog):
         self._last_axes_vis = vis
 
         if az_on and el_on:
-            min_w, min_h = 835, 640
-            open_w = 1450
+            min_w, min_h = self._MIN_WIDTH, 640
+            open_w = 1680
         else:
-            min_w, min_h = 555, 570
-            open_w = min_w
+            min_w, min_h = self._MIN_WIDTH, 570
+            open_w = max(self._MIN_WIDTH, 940)
 
         self.setMinimumSize(min_w, min_h)
         # Bei Sichtbarkeitswechsel Fenster auf Öffnungsgröße setzen.
@@ -1256,6 +1738,7 @@ class CompassWindow(QDialog):
                 # Abbremsen vorbei: Soll einmal an Ist angleichen
                 if cur is not None:
                     self._target_az = wrap_deg(cur)
+                    self._az_soll_display_bearing = None
                 self._stop_az_ts = None
                 tgt = self._target_az  # diesen Tick noch die angeglichene Position zeigen
             elif self._target_az is not None:
@@ -1270,6 +1753,7 @@ class CompassWindow(QDialog):
                     manual_d10 = int(round(self._target_az * 10.0))
                     if pst_d10 != manual_d10:
                         self._target_az = None
+                        self._az_soll_display_bearing = None
                 except Exception:
                     pass
 
@@ -1364,11 +1848,11 @@ class CompassWindow(QDialog):
         if not moving and cur is not None:
             # Rotor-Sektor (ohne Antennenversatz); die Drehung zur Anzeige übernimmt
             # paint_dwell_ring(..., offset_deg) wie bei OM-Radar/Heatmap.
+            # Dipol: zusätzlich Gegenrichtung (+180°), da in beide Richtungen gestrahlt wird.
             rotor_deg = wrap_deg(cur)
-            step = 360.0 / float(n_d)
-            idx = int(rotor_deg / step) % n_d
             ant_i = self._selected_antenna_idx()
-            self._dwell_az_seconds_per_ant[ant_i][idx] += dt
+            for idx in self._dwell_sectors_to_accumulate(rotor_deg, n_d, ant_i):
+                self._dwell_az_seconds_per_ant[ant_i][idx] += dt
 
         try:
             mode_az_list = self._get_heatmap_az_modes_from_list()
@@ -1387,7 +1871,10 @@ class CompassWindow(QDialog):
             pass
 
         if tgt is not None:
-            tgt_display = wrap_deg(tgt + off_az)
+            if self._selected_antenna_dipole_enabled() and self._az_soll_display_bearing is not None:
+                tgt_display = wrap_deg(self._az_soll_display_bearing)
+            else:
+                tgt_display = wrap_deg(tgt + off_az)
             self.az_compass.set_target_deg(tgt_display)
             desired_txt = f"{tgt_display:.1f}"
             bus_d10 = self._effective_az_bus_target_d10()
@@ -1410,6 +1897,7 @@ class CompassWindow(QDialog):
             self._compass_last_bus_target_d10_az = bus_d10
         else:
             self.az_compass.set_target_deg(None)
+            self._az_soll_display_bearing = None
             if not self.ed_az_soll.hasFocus():
                 self.ed_az_soll.clear()
             self._compass_last_bus_target_d10_az = None
@@ -1419,18 +1907,45 @@ class CompassWindow(QDialog):
         self.az_compass.set_wind_dir_deg(wind_dir)
         self.az_compass.set_wind_dir_mode(wd_mode)
         self.az_compass.set_wind_visible(wind_on)
+        self._c_wind.setVisible(wind_on)
         try:
             az_ref_homing = bool(getattr(self.ctrl.az, "ref_poll_active", False)) and bool(
                 getattr(self.ctrl.az, "moving", False)
             )
+            _referenced = bool(self.ctrl.az.referenced)
+            _moving = bool(self.ctrl.az.moving)
+            _online = bool(self.ctrl.az.online)
             if az_ref_homing:
                 self.az_compass.set_ref_led_homing(True)
+                self._top_ref_led.set_blinking_red_green(True)
             else:
-                self.az_compass.set_ref_led_state(bool(self.ctrl.az.referenced))
-            self.az_compass.set_moving_led_state(bool(self.ctrl.az.moving))
-            self.az_compass.set_online_led_state(bool(self.ctrl.az.online))
+                self.az_compass.set_ref_led_state(_referenced)
+                self._top_ref_led.set_state(_referenced)
+            self.az_compass.set_moving_led_state(_moving)
+            self._top_moving_led.set_state(_moving)
+            self.az_compass.set_online_led_state(_online)
+            self._top_online_led.set_state(_online)
         except Exception:
             pass
+
+        # Linke Info-Karten aktualisieren
+        if cur is not None:
+            self._lbl_left_ist_val.setText(f"{wrap_deg(cur + off_az):.1f}°")
+        else:
+            self._lbl_left_ist_val.setText("–")
+        if tgt is not None:
+            self._lbl_left_soll_val.setText(f"{wrap_deg(tgt + off_az):.1f}°")
+        else:
+            self._lbl_left_soll_val.setText("–")
+        if wind_on and wind_kmh is not None:
+            self._lbl_left_wind_val.setText(f"{wind_kmh:.1f}")
+            self._lbl_wind_unit.setVisible(True)
+        elif wind_on:
+            self._lbl_left_wind_val.setText("–")
+            self._lbl_wind_unit.setVisible(True)
+        else:
+            self._lbl_left_wind_val.setText("–")
+            self._lbl_wind_unit.setVisible(False)
 
         # Ist-Text im Kompass (Soll = Eingabe oben rechts)
         if cur is not None:
@@ -1585,14 +2100,30 @@ class CompassWindow(QDialog):
             el_ref_homing = bool(getattr(self.ctrl.el, "ref_poll_active", False)) and bool(
                 getattr(self.ctrl.el, "moving", False)
             )
+            _referenced = bool(self.ctrl.el.referenced)
+            _moving = bool(self.ctrl.el.moving)
+            _online = bool(self.ctrl.el.online)
             if el_ref_homing:
                 self.el_compass.set_ref_led_homing(True)
+                self._top_el_ref_led.set_blinking_red_green(True)
             else:
-                self.el_compass.set_ref_led_state(bool(self.ctrl.el.referenced))
-            self.el_compass.set_moving_led_state(bool(self.ctrl.el.moving))
-            self.el_compass.set_online_led_state(bool(self.ctrl.el.online))
+                self.el_compass.set_ref_led_state(_referenced)
+                self._top_el_ref_led.set_state(_referenced)
+            self.el_compass.set_moving_led_state(_moving)
+            self._top_el_moving_led.set_state(_moving)
+            self.el_compass.set_online_led_state(_online)
+            self._top_el_online_led.set_state(_online)
         except Exception:
             pass
+
+        if cur is not None:
+            self._lbl_left_el_ist_val.setText(fmt_deg(clamp_el(cur)))
+        else:
+            self._lbl_left_el_ist_val.setText("–")
+        if tgt is not None:
+            self._lbl_left_el_soll_val.setText(fmt_deg(clamp_el(tgt)))
+        else:
+            self._lbl_left_el_soll_val.setText("–")
 
         if cur is not None:
             ist_txt = t("compass.ist_prefix") + fmt_deg(clamp_el(cur))
@@ -1675,16 +2206,32 @@ class CompassWindow(QDialog):
             return
         self.el_compass.pick_target(clamp_el(v))
 
+    def _current_rotor_az_deg(self) -> Optional[float]:
+        try:
+            pos_d10 = getattr(self.ctrl.az, "pos_d10", None)
+            if pos_d10 is not None:
+                return float(pos_d10) / 10.0
+        except Exception:
+            pass
+        return None
+
     @Slot(float)
     def _on_target_picked_az(self, deg: float) -> None:
         """deg = angezeigter Winkel (Antennenrichtung). Rotor-Ziel = deg - Versatz."""
         self._stop_az_ts = None
         self._cc_display_latch_az_d10 = None
         off_az = self._get_antenna_offset_az()
-        rotor_deg = wrap_deg(deg - off_az)
+        display_bearing = wrap_deg(deg)
+        self._az_soll_display_bearing = display_bearing
+        rotor_deg = rotor_az_for_display_bearing(
+            display_bearing,
+            off_az,
+            self._current_rotor_az_deg(),
+            dipole=self._selected_antenna_dipole_enabled(),
+        )
         self._target_az = rotor_deg
-        self.az_compass.set_target_deg(deg)  # Anzeige bleibt Antennenrichtung
-        self.ed_az_soll.setText(f"{deg:.1f}")
+        self.az_compass.set_target_deg(display_bearing)
+        self.ed_az_soll.setText(f"{display_bearing:.1f}")
         self.ed_az_soll.setFocus()
         self.ed_az_soll.selectAll()
         try:

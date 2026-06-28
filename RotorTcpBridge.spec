@@ -51,6 +51,7 @@ a = Analysis(
         # Bilder und Icons
         ('rotortcpbridge\\rotor.ico',               'rotortcpbridge'),
         ('rotortcpbridge\\windPfeil.png',            'rotortcpbridge'),
+        ('rotortcpbridge\\Windrose.png',             'rotortcpbridge'),
         ('rotortcpbridge\\Antenne.png',              'rotortcpbridge'),
         ('rotortcpbridge\\Antenne_T.png',            'rotortcpbridge'),
         ('rotortcpbridge\\User.PNG',                 'rotortcpbridge'),

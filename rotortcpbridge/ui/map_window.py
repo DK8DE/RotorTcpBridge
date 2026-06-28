@@ -7,7 +7,7 @@ import math
 import time
 from typing import Optional
 
-from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Slot
+from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -25,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from ..angle_utils import clamp_el, fmt_deg, shortest_delta_deg, wrap_deg
+from ..angle_utils import clamp_el, fmt_deg, rotor_az_for_display_bearing, shortest_delta_deg, wrap_deg
 from ..ui.led_widget import Led
 from ..ui.ui_utils import px_to_dip
 from ..app_icon import get_app_icon
@@ -38,7 +39,9 @@ from ..geo_utils import (
     lat_lon_to_maidenhead,
     maidenhead_to_lat_lon,
 )
+from ..geocode import geocode_places
 from ..i18n import t, tt
+from ..net_utils import check_internet
 from .favorite_selection_sync import (
     apply_saved_selection_to_favorites_combo,
     clear_selection_if_favorite_removed,
@@ -80,6 +83,25 @@ def _map_antenna_swatch_icon(antenna_index: int, size_px: int = 14) -> QIcon:
     p.drawRect(1, 1, size_px - 3, size_px - 3)
     p.end()
     return QIcon(pm)
+
+
+class _GeocodeThread(QThread):
+    results_ready = Signal(list)
+    error_occurred = Signal(str)
+
+    def __init__(self, query: str) -> None:
+        super().__init__()
+        self._query = query
+
+    def run(self) -> None:
+        try:
+            results = geocode_places(self._query)
+            payload = [
+                {"lat": r.lat, "lon": r.lon, "display_name": r.display_name} for r in results
+            ]
+            self.results_ready.emit(payload)
+        except Exception as exc:  # noqa: BLE001
+            self.error_occurred.emit(str(exc))
 
 
 class MapWindow(QDialog):
@@ -137,6 +159,11 @@ class MapWindow(QDialog):
         self._btn_fav_delete = QPushButton(t("compass.fav_btn_delete"))
         self._btn_fav_delete.setAutoDefault(False)
         self._btn_fav_delete.setDefault(False)
+        self._ed_place_search = QLineEdit()
+        self._ed_place_search.setPlaceholderText(t("map.search_placeholder"))
+        self._ed_place_search.setClearButtonEnabled(True)
+        self._ed_place_search.setMinimumWidth(px_to_dip(self, 180))
+        self._ed_place_search.setToolTip(tt("map.search_tooltip"))
         self._lbl_map_loc = QLabel(t("compass.locator_label"))
         self._ed_map_loc = QLineEdit()
         self._ed_map_loc.setPlaceholderText(t("compass.locator_placeholder"))
@@ -161,6 +188,7 @@ class MapWindow(QDialog):
         toolbar.addWidget(self._btn_fav_save)
         toolbar.addWidget(self._btn_fav_delete)
         toolbar.addStretch(1)
+        toolbar.addWidget(self._ed_place_search)
         toolbar.addWidget(self._w_map_loc)
         toolbar.addWidget(self._btn_elevation)
         self._cb_antenna.setToolTip(tt("map.tooltip_antenna"))
@@ -176,14 +204,19 @@ class MapWindow(QDialog):
         self._btn_fav_delete.clicked.connect(self._on_fav_delete)
         self._btn_elevation.clicked.connect(self._on_elevation_profile)
         self._ed_map_loc.returnPressed.connect(self._on_map_locator_entered)
+        self._ed_place_search.returnPressed.connect(self._on_place_search_entered)
         self._refresh_favorites_dropdown()
+        self._geocode_thread: Optional[_GeocodeThread] = None
 
         map_container = _MapContainer(self)
         map_layout = QVBoxLayout(map_container)
         map_layout.setContentsMargins(0, 0, 0, 0)
         self._view = QWebEngineView(map_container)
         self._page = MapWebPage(
-            self._on_map_page_nav, on_tile_error_cb=self._on_tile_error, parent=self._view
+            self._on_map_page_nav,
+            on_hover_cb=self._on_map_hover,
+            on_tile_error_cb=self._on_tile_error,
+            parent=self._view,
         )
         self._view.setPage(self._page)
         self._view.loadFinished.connect(self._on_map_load_finished)
@@ -225,6 +258,12 @@ class MapWindow(QDialog):
         self._chk_locator = QCheckBox(t("map.chk_locator"))
         self._chk_locator.setChecked(bool(self.cfg.get("ui", {}).get("map_locator_overlay", False)))
         self._chk_locator.stateChanged.connect(self._on_locator_changed)
+        self._btn_satellite = QPushButton(t("map.btn_satellite"))
+        self._btn_satellite.setCheckable(True)
+        self._btn_satellite.setAutoDefault(False)
+        self._btn_satellite.setDefault(False)
+        self._btn_satellite.toggled.connect(self._on_satellite_toggled)
+        self._btn_satellite.setToolTip(tt("map.tooltip_satellite"))
         self._btn_ref_az = QPushButton(t("compass.btn_ref_az"))
         self._btn_ref_az.setAutoDefault(False)
         self._btn_ref_az.setDefault(False)
@@ -248,6 +287,7 @@ class MapWindow(QDialog):
         status_bar.addWidget(self._lbl_temp_ambient)
         status_bar.addStretch(1)
         status_bar.addWidget(self._chk_offline)
+        status_bar.addWidget(self._btn_satellite)
         status_bar.addWidget(self._chk_locator)
         status_bar.addWidget(self._btn_ref_az)
         layout.addLayout(status_bar)
@@ -259,6 +299,7 @@ class MapWindow(QDialog):
         self._map_dark_mode: Optional[bool] = None
         self._map_offline: Optional[bool] = None
         self._map_locator_overlay: Optional[bool] = None
+        self._map_satellite = False
         self._smooth_rotor_az: Optional[float] = None
         self._SMOOTH_FACTOR = 0.25
         # Zuletzt per Kartenklick gewähltes Ziel (aus cfg wiederherstellen)
@@ -284,6 +325,9 @@ class MapWindow(QDialog):
         self._asnearest_summary_last: list = []
         # True erst nach loadFinished – sonst existiert setAswatchMarkers in JS noch nicht
         self._map_page_ready = False
+        # Live-Soll-Vorschau beim Maus-Hover über die Karte (Anzeige-Azimut)
+        self._hover_preview_display_az: Optional[float] = None
+        self._sync_satellite_controls()
 
     def _filter_aswatch_for_map(self, items: list) -> list:
         """Nur Marker, deren dest_key in der aktuellen ASNEAREST-Liste steht (optional)."""
@@ -456,6 +500,29 @@ class MapWindow(QDialog):
             "rig_freq_out_of_band": oob,
         }
 
+    def _antenna_dipole_enabled(self, ant_idx: int) -> bool:
+        """Dipol-Flag für Antenne ant_idx (0–2): Controller-Zustand bevorzugt, sonst Config."""
+        ant_idx = max(0, min(2, int(ant_idx)))
+        slot = ant_idx + 1
+        az_axis = getattr(self.ctrl, "az", None)
+        hw_v = getattr(az_axis, f"antdp{slot}", None) if az_axis is not None else None
+        if hw_v is not None:
+            try:
+                ui = self.cfg.setdefault("ui", {})
+                dips = list(ui.get("antenna_dipoles_az", [False, False, False]))
+                while len(dips) < 3:
+                    dips.append(False)
+                dips[ant_idx] = bool(hw_v)
+                ui["antenna_dipoles_az"] = dips[:3]
+            except Exception:
+                pass
+            return bool(hw_v)
+        dips_cfg = self.cfg.get("ui", {}).get("antenna_dipoles_az", [False, False, False])
+        try:
+            return bool(dips_cfg[ant_idx])
+        except (IndexError, TypeError):
+            return False
+
     def _compute_beams(self, rotor_az_deg: float, antenna_idx: int) -> list[dict]:
         """Nur der Beam der im Dropdown gewählten Antenne; Farbe je nach Slot 1–3; Richtung = Rotor + Offset."""
         i = max(0, min(2, antenna_idx))
@@ -473,17 +540,22 @@ class MapWindow(QDialog):
             range_km = 100.0
         range_km = min(4000.0, range_km)
         azimuth = wrap_deg(rotor_az_deg + offset)
-        polygon = beam_polygon_points(lat, lon, azimuth, opening, range_km)
-        center_line = beam_center_line_points(lat, lon, azimuth, range_km)
         stroke, fill = _MAP_ANTENNA_BEAM_COLORS[i]
-        return [
-            {
+
+        def _beam_at(bearing_deg: float) -> dict:
+            polygon = beam_polygon_points(lat, lon, bearing_deg, opening, range_km)
+            center_line = beam_center_line_points(lat, lon, bearing_deg, range_km)
+            return {
                 "polygon": [[p[0], p[1]] for p in polygon],
                 "centerLine": [[p[0], p[1]] for p in center_line],
                 "stroke": stroke,
                 "fill": fill,
             }
-        ]
+
+        beams = [_beam_at(azimuth)]
+        if self._antenna_dipole_enabled(i):
+            beams.append(_beam_at(wrap_deg(azimuth + 180.0)))
+        return beams
 
     def _compute_az_target_bearing_line(
         self, antenna_idx: int
@@ -527,7 +599,10 @@ class MapWindow(QDialog):
         if range_km <= 0:
             range_km = 100.0
         range_km = min(4000.0, range_km)
-        bearing_display = wrap_deg(target_rotor_az + offset)
+        if self._target_lat is not None and self._target_lon is not None:
+            bearing_display = bearing_deg(lat, lon, self._target_lat, self._target_lon)
+        else:
+            bearing_display = wrap_deg(target_rotor_az + offset)
         center_line = beam_center_line_points(lat, lon, bearing_display, range_km)
         stroke = _MAP_ANTENNA_BEAM_COLORS[i][0]
         darker = QColor(stroke).darker(150).name()
@@ -744,6 +819,53 @@ class MapWindow(QDialog):
             pass
         self._refresh_favorites_dropdown()
 
+    def _sync_satellite_controls(self) -> None:
+        """Satelliten-Button: nur online; bei Offline Satellit ausschalten."""
+        offline = bool(self._chk_offline.isChecked())
+        self._btn_satellite.setEnabled(not offline)
+        if offline and self._map_satellite:
+            self._map_satellite = False
+            self._btn_satellite.blockSignals(True)
+            self._btn_satellite.setChecked(False)
+            self._btn_satellite.blockSignals(False)
+            self._apply_satellite_mode_js()
+        self._update_satellite_button_label()
+
+    def _update_satellite_button_label(self) -> None:
+        """Beschriftung zeigt den Zielmodus: Straße → Satellit, Satellit → Straße."""
+        if self._map_satellite:
+            self._btn_satellite.setText(t("map.btn_street"))
+        else:
+            self._btn_satellite.setText(t("map.btn_satellite"))
+
+    def _apply_satellite_mode_js(self) -> None:
+        if not self._map_loaded or not self._view:
+            return
+        try:
+            on = json.dumps(bool(self._map_satellite))
+            self._view.page().runJavaScript(
+                f"if (typeof window.setMapSatelliteMode === 'function') "
+                f"window.setMapSatelliteMode({on});"
+            )
+        except Exception:
+            pass
+
+    def _on_satellite_toggled(self, checked: bool) -> None:
+        if checked and self._chk_offline.isChecked():
+            QMessageBox.information(
+                self,
+                t("map.satellite_offline_title"),
+                t("map.satellite_offline_body"),
+            )
+            self._btn_satellite.blockSignals(True)
+            self._btn_satellite.setChecked(False)
+            self._btn_satellite.blockSignals(False)
+            self._update_satellite_button_label()
+            return
+        self._map_satellite = bool(checked)
+        self._update_satellite_button_label()
+        self._apply_satellite_mode_js()
+
     def _on_offline_changed(self) -> None:
         """Offline-Karte ein/aus → Config speichern, Karte aktualisiert sich über cfg."""
         on = bool(self._chk_offline.isChecked())
@@ -762,6 +884,7 @@ class MapWindow(QDialog):
             self._last_tile_error_ts = 0.0  # Cooldown zurücksetzen
         else:
             self._internet_online = False
+        self._sync_satellite_controls()
         self._refresh_map()
 
     def _on_tile_error(self) -> None:
@@ -804,6 +927,7 @@ class MapWindow(QDialog):
                 self.save_cfg_cb(self.cfg)
         except Exception:
             pass
+        self._sync_satellite_controls()
         self._refresh_map()
         if self._elevation_win is not None:
             self._elevation_win.apply_internet_status(online)
@@ -869,7 +993,10 @@ class MapWindow(QDialog):
         az_axis = getattr(self.ctrl, "az", None)
         if az_axis is None:
             self._lbl_ist.setText(t("compass.ist_prefix") + "–")
-            self._lbl_soll_value.setText("–")
+            if self._hover_preview_display_az is not None:
+                self._lbl_soll_value.setText(fmt_deg(self._hover_preview_display_az))
+            else:
+                self._lbl_soll_value.setText("–")
             self._led_moving.set_state(False)
             self._led_online.set_state(False)
             self._led_ref.set_state(False)
@@ -898,7 +1025,10 @@ class MapWindow(QDialog):
         if not ref_ok:
             tgt = None
         self._lbl_ist.setText(t("compass.ist_prefix") + (fmt_deg(cur) if cur is not None else "–"))
-        self._lbl_soll_value.setText(fmt_deg(tgt) if tgt is not None else "–")
+        if self._hover_preview_display_az is not None:
+            self._lbl_soll_value.setText(fmt_deg(self._hover_preview_display_az))
+        else:
+            self._lbl_soll_value.setText(fmt_deg(tgt) if tgt is not None else "–")
         self._led_moving.set_state(bool(getattr(az_axis, "moving", False)))
         self._led_online.set_state(bool(getattr(az_axis, "online", False)))
         ref_homing = bool(getattr(az_axis, "ref_poll_active", False)) and bool(
@@ -939,6 +1069,94 @@ class MapWindow(QDialog):
         except Exception:
             pass
 
+    def _restore_map_locator_field(self) -> None:
+        """Locator nach Hover-Vorschau wieder auf gespeichertes Klick-Ziel setzen."""
+        if self._ed_map_loc.hasFocus():
+            return
+        if self._target_lat is not None and self._target_lon is not None:
+            self._set_map_locator_field_from_lat_lon(self._target_lat, self._target_lon)
+        else:
+            self._ed_map_loc.setText("")
+
+    def _pan_map_to(self, lat: float, lon: float) -> None:
+        """Karte auf Zielpunkt schwenken (z. B. nach Ortssuche)."""
+        if not self._map_loaded or not self._view:
+            return
+        try:
+            self._view.page().runJavaScript(
+                f"if (typeof map !== 'undefined') "
+                f"map.setView([{float(lat)}, {float(lon)}], Math.max(map.getZoom(), 8));"
+            )
+        except Exception:
+            pass
+
+    @Slot()
+    def _on_place_search_entered(self) -> None:
+        """Stadt/Ort suchen (Nominatim) und Rotor wie bei Kartenklick ausrichten."""
+        query = (self._ed_place_search.text() or "").strip()
+        if not query:
+            return
+        if not check_internet():
+            QMessageBox.warning(
+                self,
+                t("map.search_no_internet_title"),
+                t("map.search_no_internet_body"),
+            )
+            return
+        if self._geocode_thread is not None and self._geocode_thread.isRunning():
+            return
+        self._ed_place_search.setEnabled(False)
+        self._geocode_thread = _GeocodeThread(query)
+        self._geocode_thread.results_ready.connect(self._on_geocode_results)
+        self._geocode_thread.error_occurred.connect(self._on_geocode_error)
+        self._geocode_thread.finished.connect(self._on_geocode_finished)
+        self._geocode_thread.start()
+
+    def _on_geocode_finished(self) -> None:
+        self._ed_place_search.setEnabled(True)
+        self._geocode_thread = None
+
+    def _on_geocode_error(self, message: str) -> None:
+        QMessageBox.warning(
+            self,
+            t("map.search_error_title"),
+            message or t("map.search_not_found_body"),
+        )
+
+    def _on_geocode_results(self, results: list) -> None:
+        if not results:
+            QMessageBox.information(
+                self,
+                t("map.search_not_found_title"),
+                t("map.search_not_found_body"),
+            )
+            return
+        if len(results) == 1:
+            r = results[0]
+            self._apply_geocode_target(float(r["lat"]), float(r["lon"]))
+            return
+        labels = [str(r.get("display_name") or "") for r in results]
+        choice, ok = QInputDialog.getItem(
+            self,
+            t("map.search_pick_title"),
+            t("map.search_pick_body"),
+            labels,
+            0,
+            False,
+        )
+        if not ok or not choice:
+            return
+        try:
+            idx = labels.index(choice)
+        except ValueError:
+            return
+        r = results[idx]
+        self._apply_geocode_target(float(r["lat"]), float(r["lon"]))
+
+    def _apply_geocode_target(self, lat: float, lon: float) -> None:
+        self._on_map_click(lat, lon, asnearest_dest=None)
+        self._pan_map_to(lat, lon)
+
     @Slot()
     def _on_map_locator_entered(self) -> None:
         """Maidenhead-Locator → wie Kartenklick auf die Feldmittel (Kompass-Locator gleiche Logik)."""
@@ -958,8 +1176,40 @@ class MapWindow(QDialog):
         lat_d, lon_d = ll
         self._on_map_click(float(lat_d), float(lon_d), asnearest_dest=None)
 
+    def _on_map_hover(self, lat: Optional[float], lon: Optional[float]) -> None:
+        """Maus über Karte: Soll-Winkel und Locator live anzeigen (ohne Rotor zu bewegen)."""
+        if lat is None or lon is None:
+            self._hover_preview_display_az = None
+            self._restore_map_locator_field()
+        else:
+            try:
+                ui = self.cfg.get("ui", {}) or {}
+                lat0, lon0 = effective_station_lat_lon(ui)
+                self._hover_preview_display_az = wrap_deg(
+                    bearing_deg(lat0, lon0, float(lat), float(lon))
+                )
+            except Exception:
+                self._hover_preview_display_az = None
+            if not self._ed_map_loc.hasFocus():
+                self._set_map_locator_field_from_lat_lon(float(lat), float(lon))
+        self._update_status_bar()
+
+    def _clear_map_hover_preview(self, *, restore_locator: bool = True) -> None:
+        self._hover_preview_display_az = None
+        if restore_locator:
+            self._restore_map_locator_field()
+        if self._map_loaded and self._view:
+            try:
+                self._view.page().runJavaScript(
+                    "if (typeof window.clearPreviewBearingLine === 'function') "
+                    "window.clearPreviewBearingLine();"
+                )
+            except Exception:
+                pass
+
     def _on_map_click(self, lat: float, lon: float, asnearest_dest: str | None = None) -> None:
         """Klick auf Karte oder ASNEAREST-Link: Rotor auf Peilung zu diesem Punkt drehen."""
+        self._clear_map_hover_preview(restore_locator=False)
         if self._map_loaded and self._view:
             try:
                 self._view.page().runJavaScript(
@@ -988,7 +1238,21 @@ class MapWindow(QDialog):
         lat0, lon0 = effective_station_lat_lon(ui)
         bearing = bearing_deg(lat0, lon0, lat, lon)
         off = self._get_antenna_offset_az()
-        rotor_deg = wrap_deg(bearing - off)
+        antenna_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
+        cur_rotor: Optional[float] = None
+        try:
+            az_axis = getattr(self.ctrl, "az", None)
+            pos_d10 = getattr(az_axis, "pos_d10", None) if az_axis else None
+            if pos_d10 is not None:
+                cur_rotor = float(pos_d10) / 10.0
+        except Exception:
+            pass
+        rotor_deg = rotor_az_for_display_bearing(
+            bearing,
+            off,
+            cur_rotor,
+            dipole=self._antenna_dipole_enabled(antenna_idx),
+        )
         self._map_click_rotor_az = rotor_deg  # Kartenklick-Azimut merken
         try:
             self.ctrl.set_az_deg(rotor_deg, force=True)
@@ -1175,6 +1439,8 @@ class MapWindow(QDialog):
         if not ok or not self._map_loaded:
             return
         self._map_page_ready = True
+        if self._map_satellite:
+            self._apply_satellite_mode_js()
         if self._target_lat is not None and self._target_lon is not None:
             self._set_map_locator_field_from_lat_lon(self._target_lat, self._target_lon)
             js = (
@@ -1212,6 +1478,9 @@ class MapWindow(QDialog):
             self._elevation_win.apply_theme(dark)
 
     def closeEvent(self, event):
+        if self._geocode_thread is not None and self._geocode_thread.isRunning():
+            self._geocode_thread.requestInterruption()
+            self._geocode_thread.wait(2000)
         if self._elevation_win is not None:
             try:
                 self._elevation_win.close()
@@ -1236,6 +1505,11 @@ class MapWindow(QDialog):
         self._map_dark_mode = None
         self._map_offline = None
         self._map_locator_overlay = None
+        self._map_satellite = False
+        self._btn_satellite.blockSignals(True)
+        self._btn_satellite.setChecked(False)
+        self._btn_satellite.blockSignals(False)
+        self._sync_satellite_controls()
         self._smooth_rotor_az = None
         self._refresh_map()
         self._refresh_timer.start()
@@ -1267,4 +1541,5 @@ class MapWindow(QDialog):
 
     def hideEvent(self, event):
         self._refresh_timer.stop()
+        self._clear_map_hover_preview()
         super().hideEvent(event)

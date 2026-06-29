@@ -532,6 +532,27 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         axis_state.telemetry.temp_motor_c = v
                     return
 
+                # Encoder-Typ (GETENCTYPE, global am AZ-Slave)
+                if axis_name == "AZ" and tel.cmd.startswith("ACK_GETENCTYPE"):
+                    v = parse_int(tel.params.strip())
+                    if v is not None:
+                        new_type = int(v)
+                        changed = (not self.encoder_type_known) or (
+                            int(self.encoder_type or -1) != new_type
+                        )
+                        self.encoder_type = new_type
+                        self.encoder_type_known = True
+                        if new_type == 3:
+                            try:
+                                self._apply_abs_encoder_referenced()
+                            except Exception:
+                                pass
+                        if changed and callable(self.on_encoder_type_changed):
+                            try:
+                                self.on_encoder_type_changed()
+                            except Exception:
+                                pass
+                    return
                 # Antennen-Versätze (GETANTOFF1–3)
                 if tel.cmd.startswith("ACK_GETANTOFF1"):
                     v = parse_float(tel.params.strip())

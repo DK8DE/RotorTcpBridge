@@ -350,8 +350,21 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     self.request_antenna_angles()
                     self.request_antenna_ranges()
                     self._antenna_bootstrap_requested = True
+                if (not bool(getattr(self, "_encoder_type_requested", False))) and self.enable_az:
+                    self.request_encoder_type()
+                    self._encoder_type_requested = True
             except Exception:
                 pass
+        if (not hw_on) and self._hw_prev_connected:
+            self.encoder_type = None
+            self.encoder_type_known = False
+            self._encoder_type_requested = False
+            cb = getattr(self, "on_encoder_type_changed", None)
+            if callable(cb):
+                try:
+                    cb()
+                except Exception:
+                    pass
         self._hw_prev_connected = hw_on
 
         pos_slow_s = self._cfg_poll["pos_slow"] / 1000.0
@@ -367,7 +380,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         # Dynamisches Polling:
         # - Fahrt  : nur GETPOSDG (pos_fast, Standard 5 Hz) → Bus frei für Position
         # - Idle   : GETPOSDG (10 s) + WARN/PWM/TEMP/MINPWM (10 s)
-        #            + GETREF/GETWINDENABLE (5–10 s) + Wind (2 s)
+        #            + GETREF/GETWINDENABLE (5–10 s, GETREF aus bei Encoder-Typ 3) + Wind (2 s)
         moving = bool(
             self.az.moving or self.el.moving or self.az.ref_poll_active or self.el.ref_poll_active
         )
@@ -851,6 +864,9 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         )
 
     def _poll_ref(self, dst: int, axis_state: AxisState, axis: str):
+        # Absolut-Encoder (GETENCTYPE=3): kein periodisches GETREF in Ruhe/Homing.
+        if self.abs_encoder_no_homing():
+            return
         # WICHTIG: GETREF darf die restlichen Polls (Pos/Err/Warn/Telemetrie) nicht blockieren.
         # Daher ohne pending senden; Antwort wird in _on_async_tel verarbeitet.
         line = build(self.master_id, dst, "GETREF", "0")

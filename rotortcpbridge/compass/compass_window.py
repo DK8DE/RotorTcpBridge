@@ -4,7 +4,7 @@ import time
 from typing import Callable, Optional
 
 from PySide6.QtCore import QEvent, QTimer, Qt, Slot
-from PySide6.QtGui import QAction, QCloseEvent, QHideEvent, QPalette, QShowEvent
+from PySide6.QtGui import QAction, QCloseEvent, QFont, QFontMetrics, QHideEvent, QKeySequence, QPalette, QShortcut, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from ..app_icon import get_app_icon
 from ..angle_utils import (
     clamp_el,
+    current_rotor_az_deg,
     fmt_deg,
     om_beam_contributions_per_sector,
     rotor_az_for_display_bearing,
@@ -35,15 +36,17 @@ from ..angle_utils import (
 from ..geo_utils import bearing_deg, effective_station_lat_lon, haversine_km, maidenhead_to_lat_lon
 from ..i18n import t, tt
 from ..ui.rig_freq_utils import (
-    apply_rig_freq_band_alert_styles,
+    RIG_FREQ_OUT_OF_BAND_QSS,
     format_rig_freq_mhz,
     parse_rig_freq_mhz_text,
+    rig_freq_out_of_band_hz,
 )
 from ..ui.favorite_selection_sync import (
     apply_saved_selection_to_favorites_combo,
     clear_selection_if_favorite_removed,
     persist_favorite_selection,
 )
+from ..ui.place_search import GeocodeThread, confirm_internet_for_place_search, pick_geocode_result
 from ..ui.ui_utils import px_to_dip
 from .compass_az_window import CompassWidget
 from .compass_el_window import ElevationCompassWidget
@@ -56,6 +59,7 @@ class CompassWindow(QDialog):
     _MIN_WIDTH = 870
     _VAL_COLOR_SOLL = "#ff6b6b"
     _VAL_COLOR_IST = "#5ee07a"
+    _VAL_COLOR_IST_REVERSE = "#da9a5c"
     _VAL_COLOR_WIND = "#5eb8ff"
     _COMPASS_CARD_OBJECT_NAME = "compassCard"
     _CARD_STYLE = (
@@ -68,6 +72,7 @@ class CompassWindow(QDialog):
     _CONN_ROW_STYLE = (
         "QFrame { background: rgba(30,30,30,160); border-radius: 5px; border: none; }"
     )
+    _RIG_FREQ_FIELD_BASE_QSS = "background: transparent; border: none; padding: 0;"
 
     @classmethod
     def _apply_compass_card_style(cls, frame: QFrame) -> None:
@@ -125,25 +130,21 @@ class CompassWindow(QDialog):
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(4)
 
-        # ── RIG-Frequenz-Zeile (optional) ──────────────────────────────────────
-        self._w_rig_freq_row: QWidget | None = None
+        # ── RIG-Frequenz (optional, Karte im Rechts-Panel neben VERBINDUNG) ───
+        self._c_rig_freq: QFrame | None = None
+        self._rig_freq_val_row: QFrame | None = None
+        self._lbl_rig_freq_h: QLabel | None = None
         self._ed_rig_freq: QLineEdit | None = None
-        self._lbl_rig_freq_suffix: QLabel | None = None
         self._rig_freq_poll_timer: QTimer | None = None
         if rig_bridge_manager is not None:
-            self._w_rig_freq_row = QWidget()
-            hl_rf = QHBoxLayout(self._w_rig_freq_row)
-            hl_rf.setContentsMargins(0, 0, 0, 0)
-            hl_rf.setSpacing(px_to_dip(self, 4))
             self._ed_rig_freq = QLineEdit()
             self._ed_rig_freq.setPlaceholderText(t("main.rig_freq_placeholder"))
             self._ed_rig_freq.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._ed_rig_freq.setFixedWidth(px_to_dip(self, 104))
-            self._lbl_rig_freq_suffix = QLabel(t("main.rig_freq_suffix"))
-            hl_rf.addWidget(self._ed_rig_freq)
-            hl_rf.addWidget(self._lbl_rig_freq_suffix)
-            self._w_rig_freq_row.setVisible(False)
+            self._ed_rig_freq.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
             self._ed_rig_freq.editingFinished.connect(self._on_compass_rig_freq_editing_finished)
+            self._ed_rig_freq.textChanged.connect(lambda _t: self._fit_rig_freq_font_size())
             self._rig_freq_poll_timer = QTimer(self)
             self._rig_freq_poll_timer.setInterval(1000)
             self._rig_freq_poll_timer.timeout.connect(self._on_rig_freq_poll)
@@ -167,15 +168,6 @@ class CompassWindow(QDialog):
             self._btn_open_map.clicked.connect(open_map_cb)
 
         from ..ui.led_widget import Led  # lokaler Import zur Vermeidung des Zirkel-Imports
-
-        # Top-Bar: nur noch RIG-Frequenz (wenn vorhanden)
-        if self._w_rig_freq_row is not None:
-            top_bar = QHBoxLayout()
-            top_bar.setContentsMargins(0, 0, 0, 0)
-            top_bar.setSpacing(6)
-            top_bar.addWidget(self._w_rig_freq_row, 0)
-            top_bar.addStretch(1)
-            root.addLayout(top_bar, 0)
 
         # ── HAUPTBEREICH: Links-Panel | Kompass-Bereich | Rechts-Panel ─────────
         main_row = QHBoxLayout()
@@ -247,6 +239,17 @@ class CompassWindow(QDialog):
         self._lbl_left_ist_val.setFixedHeight(_val_row_h)
         _vl_ist.addWidget(self._lbl_ist_h)
         _vl_ist.addWidget(_val_row(self._lbl_left_ist_val))
+        self._lbl_ist_reverse_h = QLabel(t("compass.ist_reverse_label").upper())
+        self._lbl_ist_reverse_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_ist_reverse_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_ist_reverse_h.setVisible(False)
+        self._lbl_left_ist_reverse_val = QLabel("–")
+        self._lbl_left_ist_reverse_val.setStyleSheet(_VAL_STYLE)
+        self._lbl_left_ist_reverse_val.setFixedHeight(_val_row_h)
+        self._ist_reverse_val_row = _val_row(self._lbl_left_ist_reverse_val)
+        self._ist_reverse_val_row.setVisible(False)
+        _vl_ist.addWidget(self._lbl_ist_reverse_h)
+        _vl_ist.addWidget(self._ist_reverse_val_row)
 
         # ── Wind-Karte (Zahl + Einheit einzeilig) ─────────────────────────
         self._c_wind = QFrame()
@@ -298,8 +301,29 @@ class CompassWindow(QDialog):
         self.ed_az_locator.setPlaceholderText(t("compass.locator_placeholder"))
         self.ed_az_locator.setMaxLength(10)
         self.ed_az_locator.setToolTip(tt("compass.locator_tooltip"))
+        self.ed_place_search = QLineEdit()
+        self.ed_place_search.setPlaceholderText(t("map.search_placeholder"))
+        self.ed_place_search.setClearButtonEnabled(True)
+        self.ed_place_search.setToolTip(tt("map.search_tooltip_compass"))
+        self._place_search_tooltip_online = tt("map.search_tooltip_compass")
+        self._place_search_tooltip_offline = tt("map.search_offline_tooltip")
+        self._internet_online: bool | None = None
+        self._place_search_visible: bool | None = None
         _vl_loc.addWidget(self.lbl_az_locator)
         _vl_loc.addWidget(self.ed_az_locator)
+        _vl_loc.addWidget(self.ed_place_search)
+        self._geocode_thread: GeocodeThread | None = None
+
+        self._shortcut_place_search = QShortcut(QKeySequence("Ctrl+F"), self)
+        self._shortcut_place_search.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._shortcut_place_search.activated.connect(
+            lambda: self._focus_search_field(self.ed_place_search)
+        )
+        self._shortcut_locator = QShortcut(QKeySequence("Ctrl+L"), self)
+        self._shortcut_locator.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._shortcut_locator.activated.connect(
+            lambda: self._focus_search_field(self.ed_az_locator)
+        )
 
         # ── Antennen-Karte ────────────────────────────────────────────────
         _c_ant = QFrame()
@@ -344,6 +368,8 @@ class CompassWindow(QDialog):
         az_l.addWidget(self.az_compass, 1)
         self.ed_az_soll.returnPressed.connect(self._on_az_soll_entered)
         self.ed_az_locator.returnPressed.connect(self._on_az_locator_entered)
+        self.ed_place_search.returnPressed.connect(self._on_place_search_entered)
+        self._update_place_search_visibility()
         _az_col_layout.addWidget(self.gb_az, 1)
 
         self._el_column = QWidget()
@@ -388,6 +414,27 @@ class CompassWindow(QDialog):
         right_vbox = QVBoxLayout(self._az_right_panel)
         right_vbox.setContentsMargins(0, 0, 0, 0)
         right_vbox.setSpacing(6)
+
+        # ── QRG-Card (Funkgerät-Frequenz, nur bei Rig-Bridge) ─────────────
+        if self._ed_rig_freq is not None:
+            self._c_rig_freq = QFrame()
+            self._apply_compass_card_style(self._c_rig_freq)
+            _vl_rig = QVBoxLayout(self._c_rig_freq)
+            _vl_rig.setContentsMargins(8, 6, 8, 6)
+            _vl_rig.setSpacing(4)
+
+            self._lbl_rig_freq_h = QLabel(t("compass.qrg_label").upper())
+            self._lbl_rig_freq_h.setStyleSheet(_HDR_STYLE)
+            self._lbl_rig_freq_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            _vl_rig.addWidget(self._lbl_rig_freq_h)
+
+            self._ed_rig_freq.setStyleSheet(self._RIG_FREQ_FIELD_BASE_QSS)
+            self._ed_rig_freq.setFixedHeight(_val_row_h)
+            self._rig_freq_val_row = _val_row(self._ed_rig_freq)
+            _vl_rig.addWidget(self._rig_freq_val_row)
+
+            self._c_rig_freq.setVisible(False)
+            right_vbox.addWidget(self._c_rig_freq)
 
         # ── VERBINDUNG-Card ───────────────────────────────────────────────
         _conn_card = QFrame()
@@ -713,6 +760,8 @@ class CompassWindow(QDialog):
         self._apply_compass_control_theme()
         self._refresh_antenna_dropdown()
         self._refresh_favorites_dropdown()
+        self.update_homing_buttons_visibility()
+        self.update_ist_reverse_visibility()
         if hasattr(self.ctrl, "set_compass_window_open"):
             self.ctrl.set_compass_window_open(True)
         self.sync_heatmap_controls_from_cfg()
@@ -725,6 +774,8 @@ class CompassWindow(QDialog):
             self._request_antenna_offsets()
         QTimer.singleShot(300, self._request_immediate_stats_delayed)
         self._tick()
+        QTimer.singleShot(0, self._fit_rig_freq_font_size)
+        self._update_place_search_visibility()
         # Beim Oeffnen des Fensters soll kein Eingabefeld Fokus haben (v. a.
         # nicht das Frequenz-QLineEdit), damit der Cursor nicht blinkt und
         # Tasteneingaben nicht versehentlich dort landen.
@@ -769,6 +820,9 @@ class CompassWindow(QDialog):
             self.ctrl.on_antenna_offsets_changed = None
         if hasattr(self.ctrl, "set_compass_window_open"):
             self.ctrl.set_compass_window_open(False)
+        if self._geocode_thread is not None and self._geocode_thread.isRunning():
+            self._geocode_thread.requestInterruption()
+            self._geocode_thread.wait(2000)
         super().closeEvent(event)
 
     def changeEvent(self, event: QEvent) -> None:
@@ -1432,6 +1486,7 @@ class CompassWindow(QDialog):
         for lbl in (
             self._lbl_soll_h,
             self._lbl_ist_h,
+            self._lbl_ist_reverse_h,
             self._lbl_wind_h,
             self.lbl_az_locator,
             self._lbl_antenna_h,
@@ -1444,6 +1499,8 @@ class CompassWindow(QDialog):
             self._lbl_ctrl_el,
         ):
             lbl.setStyleSheet(card_hdr_style)
+        if self._lbl_rig_freq_h is not None:
+            self._lbl_rig_freq_h.setStyleSheet(card_hdr_style)
 
         self._lbl_left_soll_val.setStyleSheet(
             self._value_label_style(self._VAL_COLOR_SOLL)
@@ -1453,6 +1510,9 @@ class CompassWindow(QDialog):
         )
         self._lbl_left_ist_val.setStyleSheet(
             self._value_label_style(self._VAL_COLOR_IST)
+        )
+        self._lbl_left_ist_reverse_val.setStyleSheet(
+            self._value_label_style(self._VAL_COLOR_IST_REVERSE)
         )
         self._lbl_left_el_ist_val.setStyleSheet(
             self._value_label_style(self._VAL_COLOR_IST)
@@ -1496,18 +1556,88 @@ class CompassWindow(QDialog):
         self._lbl_antenna_h.setText(t("compass.antenna_header").upper())
         self._lbl_conn_h.setText(t("compass.status_verbindung").upper())
         self._lbl_conn_el_h.setText(t("compass.status_verbindung").upper())
+        if self._lbl_rig_freq_h is not None:
+            self._lbl_rig_freq_h.setText(t("compass.qrg_label").upper())
         self._lbl_ctrl.setText(t("compass.steuerung_label").upper())
         self._lbl_ctrl_el.setText(t("compass.steuerung_label").upper())
         self._lbl_fav_h.setText(t("compass.fav_header").upper())
+        self._lbl_ist_h.setText(t("compass.ist_label").upper())
+        self._lbl_ist_reverse_h.setText(t("compass.ist_reverse_label").upper())
+        self._lbl_soll_h.setText(t("compass.soll_label").upper())
         self._apply_label_colors_from_palette()
         self._apply_compass_control_theme()
         self.ed_az_locator.setPlaceholderText(t("compass.locator_placeholder"))
         self.ed_az_locator.setToolTip(tt("compass.locator_tooltip"))
-        if self._lbl_rig_freq_suffix is not None:
-            self._lbl_rig_freq_suffix.setText(t("main.rig_freq_suffix"))
+        self.ed_place_search.setPlaceholderText(t("map.search_placeholder"))
+        self._place_search_tooltip_online = tt("map.search_tooltip_compass")
+        self._place_search_tooltip_offline = tt("map.search_offline_tooltip")
+        self._update_place_search_visibility()
         if self._ed_rig_freq is not None:
             self._ed_rig_freq.setPlaceholderText(t("main.rig_freq_placeholder"))
         self.az_compass.update()
+
+    def apply_internet_status(self, online: bool) -> None:
+        """Ortssuche ein-/ausblenden je nach Internet (von MainWindow)."""
+        self._internet_online = bool(online)
+        self._update_place_search_visibility()
+
+    def _place_search_available(self) -> bool:
+        if bool(self.cfg.get("ui", {}).get("map_offline", False)):
+            return False
+        if self._internet_online is False:
+            return False
+        return True
+
+    def _update_place_search_visibility(self) -> None:
+        avail = self._place_search_available()
+        if self._place_search_visible == avail:
+            return
+        self._place_search_visible = avail
+        try:
+            self.ed_place_search.setVisible(avail)
+            self.ed_place_search.setToolTip(
+                self._place_search_tooltip_online if avail else self._place_search_tooltip_offline
+            )
+            self._shortcut_place_search.setEnabled(avail)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _focus_search_field(field: QLineEdit) -> None:
+        try:
+            field.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            field.selectAll()
+        except Exception:
+            pass
+
+    def _handle_compass_search_shortcut(self, event) -> bool:
+        """Strg+F → Ortssuche, Strg+L → Locator (nur mit Strg-Modifier)."""
+        try:
+            mods = event.modifiers()
+        except Exception:
+            return False
+        if not (mods & Qt.KeyboardModifier.ControlModifier):
+            return False
+        try:
+            key = event.key()
+        except Exception:
+            return False
+        if key == Qt.Key.Key_F and self._place_search_available():
+            self._focus_search_field(self.ed_place_search)
+            return True
+        if key == Qt.Key.Key_L:
+            self._focus_search_field(self.ed_az_locator)
+            return True
+        return False
+
+    def update_ist_reverse_visibility(self) -> None:
+        """Dipol: Gegenkeule (Ist +180°) unter dem Ist-Wert anzeigen."""
+        show = bool(self._selected_antenna_dipole_enabled())
+        try:
+            self._lbl_ist_reverse_h.setVisible(show)
+            self._ist_reverse_val_row.setVisible(show)
+        except Exception:
+            pass
 
     def refresh_visibility(self) -> None:
         az_on = bool(getattr(self.ctrl, "enable_az", True))
@@ -1517,6 +1647,9 @@ class CompassWindow(QDialog):
         self._el_right_panel.setVisible(el_on)
         self.gb_az.setVisible(az_on)
         self.gb_el.setVisible(el_on)
+        self.update_homing_buttons_visibility()
+        self.update_ist_reverse_visibility()
+        self._update_place_search_visibility()
 
         vis = (az_on, el_on)
         if vis == self._last_axes_vis:
@@ -1542,6 +1675,15 @@ class CompassWindow(QDialog):
                 lay.activate()
             self.adjustSize()
             self.resize(open_w, min_h)
+        except Exception:
+            pass
+
+    def update_homing_buttons_visibility(self) -> None:
+        """Absolut-Encoder (Typ 3): AZ/EL-Homing-Buttons ausblenden."""
+        hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        try:
+            self.btn_ref_az.setVisible(not hide)
+            self.btn_ref_el.setVisible(not hide)
         except Exception:
             pass
 
@@ -1594,28 +1736,69 @@ class CompassWindow(QDialog):
         except Exception:
             pass
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._fit_rig_freq_font_size()
+
+    def _rig_freq_field_stylesheet(self, hz: int) -> str:
+        qss = self._RIG_FREQ_FIELD_BASE_QSS
+        if hz > 0 and rig_freq_out_of_band_hz(hz):
+            qss = f"{qss} {RIG_FREQ_OUT_OF_BAND_QSS}"
+        return qss
+
+    def _fit_rig_freq_font_size(self) -> None:
+        ed = self._ed_rig_freq
+        if ed is None:
+            return
+        sample = (ed.text() or ed.placeholderText() or "999.999999").strip()
+        if not sample:
+            sample = "999.999999"
+        avail_w = ed.width()
+        if avail_w < 20 and self._rig_freq_val_row is not None:
+            avail_w = max(20, self._rig_freq_val_row.width() - px_to_dip(self, 10))
+        elif avail_w < 20 and self._c_rig_freq is not None:
+            avail_w = max(20, self._c_rig_freq.width() - px_to_dip(self, 16))
+        avail_w = max(20, avail_w - 4)
+        font = QFont(ed.font())
+        font.setBold(True)
+        best_px = 10
+        for px in range(px_to_dip(self, 28), 8, -1):
+            font.setPixelSize(px)
+            if QFontMetrics(font).horizontalAdvance(sample) <= avail_w:
+                best_px = px
+                break
+        font.setPixelSize(best_px)
+        ed.setFont(font)
+
+    def _refresh_rig_freq_field_style(self, hz: int = 0) -> None:
+        ed = self._ed_rig_freq
+        if ed is None:
+            return
+        ed.setStyleSheet(self._rig_freq_field_stylesheet(hz))
+        self._fit_rig_freq_font_size()
+
     def _update_rig_frequency_ui(self) -> None:
-        row = self._w_rig_freq_row
+        card = self._c_rig_freq
         rbm = self._rig_bridge_manager
         ed = self._ed_rig_freq
-        if row is None or rbm is None or ed is None:
+        if card is None or rbm is None or ed is None:
             return
         rb_cfg = self.cfg.get("rig_bridge") or {}
         if not bool(rb_cfg.get("enabled", False)):
-            if row.isVisible():
-                row.setVisible(False)
+            if card.isVisible():
+                card.setVisible(False)
                 if self._rig_freq_poll_timer is not None:
                     self._rig_freq_poll_timer.stop()
-            apply_rig_freq_band_alert_styles(ed, self._lbl_rig_freq_suffix, 0)
+            self._refresh_rig_freq_field_style(0)
             return
         try:
             st = rbm.status_model()
         except Exception:
-            apply_rig_freq_band_alert_styles(ed, self._lbl_rig_freq_suffix, 0)
+            self._refresh_rig_freq_field_style(0)
             return
         vis = bool(st.radio_connected and not st.connecting)
-        prev = row.isVisible()
-        row.setVisible(vis)
+        prev = card.isVisible()
+        card.setVisible(vis)
         if vis and not prev and self._rig_freq_poll_timer is not None:
             self._rig_freq_poll_timer.start()
             self._on_rig_freq_poll()
@@ -1629,9 +1812,9 @@ class CompassWindow(QDialog):
                     ed.blockSignals(True)
                     ed.setText(txt)
                     ed.blockSignals(False)
-            apply_rig_freq_band_alert_styles(ed, self._lbl_rig_freq_suffix, hz_disp)
+            self._refresh_rig_freq_field_style(hz_disp)
         else:
-            apply_rig_freq_band_alert_styles(ed, self._lbl_rig_freq_suffix, 0)
+            self._refresh_rig_freq_field_style(0)
 
     @Slot()
     def _tick(self) -> None:
@@ -1825,6 +2008,7 @@ class CompassWindow(QDialog):
             cur_display = wrap_deg(cur + off_az)
             self.az_compass.set_current_deg(cur_display)
         self.az_compass.set_dipole_active(self._selected_antenna_dipole_enabled())
+        self.update_ist_reverse_visibility()
 
         try:
             acc_cw = getattr(self.ctrl.az, "acc_bins_cw", None)
@@ -1930,9 +2114,15 @@ class CompassWindow(QDialog):
 
         # Linke Info-Karten aktualisieren
         if cur is not None:
-            self._lbl_left_ist_val.setText(f"{wrap_deg(cur + off_az):.1f}°")
+            cur_display = wrap_deg(cur + off_az)
+            self._lbl_left_ist_val.setText(f"{cur_display:.1f}°")
+            if self._selected_antenna_dipole_enabled():
+                self._lbl_left_ist_reverse_val.setText(f"{wrap_deg(cur_display + 180.0):.1f}°")
+            else:
+                self._lbl_left_ist_reverse_val.setText("–")
         else:
             self._lbl_left_ist_val.setText("–")
+            self._lbl_left_ist_reverse_val.setText("–")
         if tgt is not None:
             self._lbl_left_soll_val.setText(f"{wrap_deg(tgt + off_az):.1f}°")
         else:
@@ -2199,6 +2389,48 @@ class CompassWindow(QDialog):
         self.az_compass.pick_target(wrap_deg(bearing))
 
     @Slot()
+    def _on_place_search_entered(self) -> None:
+        """Stadt/Ort/PLZ suchen (Nominatim) und Rotor auf Peilung ausrichten."""
+        if not self._place_search_available():
+            return
+        query = (self.ed_place_search.text() or "").strip()
+        if not query:
+            return
+        if not confirm_internet_for_place_search(self):
+            return
+        if self._geocode_thread is not None and self._geocode_thread.isRunning():
+            return
+        self.ed_place_search.setEnabled(False)
+        self._geocode_thread = GeocodeThread(query)
+        self._geocode_thread.results_ready.connect(self._on_geocode_results)
+        self._geocode_thread.error_occurred.connect(self._on_geocode_error)
+        self._geocode_thread.finished.connect(self._on_geocode_finished)
+        self._geocode_thread.start()
+
+    def _on_geocode_finished(self) -> None:
+        self._geocode_thread = None
+        self.ed_place_search.setEnabled(True)
+
+    def _on_geocode_error(self, message: str) -> None:
+        QMessageBox.warning(
+            self,
+            t("map.search_error_title"),
+            message or t("map.search_not_found_body"),
+        )
+
+    def _on_geocode_results(self, results: list) -> None:
+        r = pick_geocode_result(self, results)
+        if r is None:
+            return
+        self._apply_place_search_target(float(r["lat"]), float(r["lon"]))
+
+    def _apply_place_search_target(self, lat: float, lon: float) -> None:
+        ui = self.cfg.get("ui", {}) or {}
+        lat0, lon0 = effective_station_lat_lon(ui)
+        bearing = bearing_deg(lat0, lon0, lat, lon)
+        self.az_compass.pick_target(wrap_deg(bearing))
+
+    @Slot()
     def _on_el_soll_entered(self) -> None:
         """Soll-Wert aus Eingabefeld: Kompass pick_target (wie Klick) → targetPicked → Handler."""
         v = self._parse_deg_input(self.ed_el_soll.text())
@@ -2207,13 +2439,7 @@ class CompassWindow(QDialog):
         self.el_compass.pick_target(clamp_el(v))
 
     def _current_rotor_az_deg(self) -> Optional[float]:
-        try:
-            pos_d10 = getattr(self.ctrl.az, "pos_d10", None)
-            if pos_d10 is not None:
-                return float(pos_d10) / 10.0
-        except Exception:
-            pass
-        return None
+        return current_rotor_az_deg(getattr(self.ctrl, "az", None))
 
     @Slot(float)
     def _on_target_picked_az(self, deg: float) -> None:
@@ -2323,5 +2549,7 @@ class CompassWindow(QDialog):
         # ESC soll dieses Fenster nicht schließen.
         if event.key() == Qt.Key.Key_Escape:
             event.ignore()
+            return
+        if self._handle_compass_search_shortcut(event):
             return
         super().keyPressEvent(event)

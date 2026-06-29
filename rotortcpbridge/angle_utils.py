@@ -29,6 +29,78 @@ def shortest_delta_deg(current: float, target: float) -> float:
     return (float(target) - float(current) + 180.0) % 360.0 - 180.0
 
 
+def rotor_travel_deg(cur: float, tgt: float) -> float:
+    """Kürzester Rotor-Drehweg cur→tgt in Grad (0…180)."""
+    c = wrap_deg(cur)
+    t = wrap_deg(tgt)
+    cw = (t - c) % 360.0
+    ccw = (c - t) % 360.0
+    return min(cw, ccw)
+
+
+def _rotor_cw_travel_deg(cur: float, tgt: float) -> float:
+    return (wrap_deg(tgt) - wrap_deg(cur)) % 360.0
+
+
+def _rotor_ccw_travel_deg(cur: float, tgt: float) -> float:
+    return (wrap_deg(cur) - wrap_deg(tgt)) % 360.0
+
+
+def dipole_rotor_move_cost(cur: float, tgt: float) -> float:
+    """Geschätzter Rotor-Fahrweg in Grad (Dipol-Keulenwahl).
+
+    Viele Controller nehmen bei Ziel „über Null“ (z. B. 300°→10°) den langen
+    CCW-Bogen (~290°), obwohl CW kürzer wäre (~70°). Dann lohnt die Gegenkeule.
+    """
+    c = wrap_deg(cur)
+    t = wrap_deg(tgt)
+    cw = _rotor_cw_travel_deg(c, t)
+    ccw = _rotor_ccw_travel_deg(c, t)
+    short = min(cw, ccw)
+    if t < c and cw < ccw and ccw > 180.0 and cw >= 50.0:
+        return ccw
+    return short
+
+
+def current_rotor_az_deg(az_axis, *, now: float | None = None) -> float | None:
+    """Aktueller Rotor-Azimut (°) — geglättete Ist-Position bevorzugt."""
+    if az_axis is None:
+        return None
+    if now is None:
+        import time
+
+        now = time.time()
+    try:
+        if hasattr(az_axis, "get_smoothed_pos_d10f"):
+            return wrap_deg(float(az_axis.get_smoothed_pos_d10f(now)) / 10.0)
+    except Exception:
+        pass
+    try:
+        pos_d10 = getattr(az_axis, "pos_d10", None)
+        if pos_d10 is not None:
+            return wrap_deg(float(pos_d10) / 10.0)
+    except Exception:
+        pass
+    return None
+
+
+def antenna_dipole_enabled(az_axis, cfg: dict | None, ant_idx: int) -> bool:
+    """Dipol-Flag für Antenne ant_idx (0–2): Rotor-Zustand, sonst Config."""
+    ant_idx = max(0, min(2, int(ant_idx)))
+    slot = ant_idx + 1
+    if az_axis is not None:
+        hw_v = getattr(az_axis, f"antdp{slot}", None)
+        if hw_v is not None:
+            return bool(hw_v)
+    if cfg:
+        dips = (cfg.get("ui") or {}).get("antenna_dipoles_az", [False, False, False])
+        try:
+            return bool(dips[ant_idx])
+        except (IndexError, TypeError):
+            pass
+    return False
+
+
 def rotor_az_for_display_bearing(
     display_bearing_deg: float,
     offset_az_deg: float,
@@ -39,21 +111,19 @@ def rotor_az_for_display_bearing(
     """Rotor-Azimut für Ziel-Peilung (Anzeige-Azimut, 0°=Nord).
 
     Normale Antenne: Hauptkeule zeigt auf ``display_bearing_deg``.
-    Dipol: Haupt- oder Gegenkeule (+180° Rotor) — die Keule, die winkelnäher
-    am Ziel liegt (kürzester Drehweg).
+    Dipol: Haupt- oder Gegenkeule (+180° Rotor) — welche Rotor-Position den
+    kürzeren geschätzten Fahrweg von der aktuellen Ist-Position erfordert.
     """
     primary = wrap_deg(float(display_bearing_deg) - float(offset_az_deg))
     if not dipole:
         return primary
-    alternate = wrap_deg(primary - 180.0)
+    alternate = wrap_deg(primary + 180.0)
     if current_rotor_az is None:
         return primary
-    off = float(offset_az_deg)
     cur = wrap_deg(float(current_rotor_az))
-    main_lobe = wrap_deg(cur + off)
-    opp_lobe = wrap_deg(main_lobe + 180.0)
-    tgt = wrap_deg(float(display_bearing_deg))
-    if abs(shortest_delta_deg(opp_lobe, tgt)) < abs(shortest_delta_deg(main_lobe, tgt)):
+    cost_p = dipole_rotor_move_cost(cur, primary)
+    cost_a = dipole_rotor_move_cost(cur, alternate)
+    if cost_a < cost_p:
         return alternate
     return primary
 

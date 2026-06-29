@@ -5,7 +5,13 @@ from __future__ import annotations
 import time
 from typing import Callable, Optional
 
-from .angle_utils import shortest_delta_deg, wrap_deg
+from .angle_utils import (
+    antenna_dipole_enabled,
+    current_rotor_az_deg,
+    rotor_az_for_display_bearing,
+    shortest_delta_deg,
+    wrap_deg,
+)
 from .rotor_parse_utils import parse_setposcc_params
 from .rs485_protocol import BROADCAST_DST, build, Telegram
 from .hardware_client import HardwareClient, HwRequest
@@ -158,7 +164,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.on_antenna_offsets_changed: Optional[Callable[[], None]] = None
         self.on_antenna_angles_changed: Optional[Callable[[], None]] = None
         self.on_antenna_dipoles_changed: Optional[Callable[[], None]] = None
-        # Antennen-Basiswerte (Offset/Winkel) nur einmal pro App-Start automatisch laden.
+        self.on_encoder_type_changed: Optional[Callable[[], None]] = None
+        # GETENCTYPE (1=Motor, 2=Ring, 3=Absolut R&S) — einmal pro Verbindung
+        self.encoder_type: Optional[int] = None
+        self.encoder_type_known: bool = False
+        self._encoder_type_requested: bool = False
         # Weitere Reads passieren explizit in den Einstellungen.
         self._antenna_bootstrap_requested: bool = False
         # RS485-Broadcast SETASELECT (DST 255): arg = Antenne 1–3 (Hintergrund-Thread → UI per QTimer marshallen)
@@ -227,6 +237,40 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             self.hw.set_expected_response_dst(int(self.master_id))
         except Exception:
             pass
+
+    def abs_encoder_no_homing(self) -> bool:
+        """Absolutwert-Encoder R&S (GETENCTYPE=3): kein manuelles Homing nötig."""
+        if not self.encoder_type_known:
+            return False
+        try:
+            return int(self.encoder_type) == 3
+        except (TypeError, ValueError):
+            return False
+
+    def request_encoder_type(self) -> None:
+        """Encoder-Variante vom Rotor lesen (GETENCTYPE, nur AZ-Slave)."""
+        if not self.enable_az:
+            return
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, self.slave_az, "GETENCTYPE", "0"),
+                expect_prefix=None,
+                timeout_s=0.5,
+                on_done=None,
+                priority=4,
+            )
+        )
+
+    def _apply_abs_encoder_referenced(self) -> None:
+        """Absolut-Encoder (Typ 3): als referenziert behandeln, kein GETREF-Polling."""
+        if self.enable_az:
+            self.az.referenced = True
+            self.az.ref_poll_active = False
+            self.az.moving = False
+        if self.enable_el:
+            self.el.referenced = True
+            self.el.ref_poll_active = False
+            self.el.moving = False
 
     def set_statistics_window_open(self, open: bool) -> None:
         """Statistik-Fenster offen/geschlossen. Nur wenn offen: CAL/LIVE/ACC pollen."""
@@ -814,15 +858,14 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         if abs(O_old - O_new) < 1e-6:
             return
         try:
-            now = time.time()
-            cur = float(self.az.get_smoothed_pos_d10f(now)) / 10.0
-        except Exception:
-            try:
-                cur = float(self.az.pos_d10) / 10.0
-            except Exception:
+            cur = current_rotor_az_deg(self.az)
+            if cur is None:
                 return
+        except Exception:
+            return
         D = wrap_deg(cur + O_old)
-        rotor_target = wrap_deg(D - O_new)
+        dipole = antenna_dipole_enabled(self.az, cfg, ni)
+        rotor_target = rotor_az_for_display_bearing(D, O_new, cur, dipole=dipole)
         if abs(shortest_delta_deg(cur, rotor_target)) < 0.05:
             return
         self.set_az_deg(rotor_target, force=True)
@@ -1205,6 +1248,9 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         - Wenn ACK_GETREF:0 -> referenced=False (User muss ggf. SETREF drücken)
         - Keine Dauerschleife (kein ref_poll_active), nur ein einmaliger Check.
         """
+        if self.abs_encoder_no_homing():
+            self._apply_abs_encoder_referenced()
+            return
 
         if self.enable_az:
             # Ohne pending senden (darf Startup nicht blockieren)
@@ -1357,6 +1403,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
     def reference_all(self, start_homing: bool = True) -> None:
         """Referenziert alle aktiven Rotoren (AZ und/oder EL laut Config)."""
+        if self.abs_encoder_no_homing():
+            return
         if self.enable_az:
             self.reference_az(start_homing)
         if self.enable_el:
@@ -1368,6 +1416,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         moving und ref_poll_active werden erst nach erfolgreichem ACK_SETREF gesetzt.
         Bei Timeout oder NAK wird on_ref_start_failed aufgerufen (aus Hintergrundthread!).
         """
+        if self.abs_encoder_no_homing():
+            return
         if not self.enable_az:
             return
         v = "1" if start_homing else "0"
@@ -1429,6 +1479,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         moving und ref_poll_active werden erst nach erfolgreichem ACK_SETREF gesetzt.
         Bei Timeout oder NAK wird on_ref_start_failed aufgerufen (aus Hintergrundthread!).
         """
+        if self.abs_encoder_no_homing():
+            return
         if not self.enable_el:
                 return
         v = "1" if start_homing else "0"

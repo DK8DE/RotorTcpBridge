@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .angle_utils import clamp_el, wrap_deg
+from .angle_utils import (
+    antenna_dipole_enabled,
+    clamp_el,
+    current_rotor_az_deg,
+    rotor_az_for_display_bearing,
+    wrap_deg,
+)
 
 if TYPE_CHECKING:
     from .rotor_controller import RotorController
@@ -21,12 +27,28 @@ def antenna_offset_for_compass_slot(cfg: dict) -> float:
         return 0.0
 
 
+def antenna_dipole_for_compass_slot(cfg: dict, ctrl: "RotorController") -> bool:
+    """Dipol-Flag der gewählten Antenne: Controller-Zustand bevorzugt, sonst Config."""
+    ui = cfg.get("ui") or {}
+    slot = max(0, min(2, int(ui.get("compass_antenna", 0))))
+    return antenna_dipole_enabled(getattr(ctrl, "az", None), cfg, slot)
+
+
+def _current_rotor_az_deg(ctrl: "RotorController") -> float | None:
+    return current_rotor_az_deg(getattr(ctrl, "az", None))
+
+
 def set_antenna_azimuth_deg(cfg: dict, ctrl: "RotorController", antenna_deg: float) -> None:
-    """Antennen-Richtung (wie Kompass-Anzeige) fahren: Rotor = Antenne − Versatz."""
+    """Antennen-Richtung (wie Kompass-Anzeige) fahren; Dipol: kürzester Rotor-Drehweg."""
     if not getattr(ctrl, "enable_az", True):
         return
     off = antenna_offset_for_compass_slot(cfg)
-    rotor = wrap_deg(float(antenna_deg) - off)
+    rotor = rotor_az_for_display_bearing(
+        wrap_deg(float(antenna_deg)),
+        off,
+        _current_rotor_az_deg(ctrl),
+        dipole=antenna_dipole_for_compass_slot(cfg, ctrl),
+    )
     ctrl.set_az_deg(rotor, force=True)
 
 

@@ -687,6 +687,8 @@ class MainWindow(QMainWindow):
 
         # Referenzierungs-Fehler-Callback: Controller ruft dies aus Hintergrundthread auf
         self.ctrl.on_ref_start_failed = self._on_ref_start_failed
+        self.ctrl.on_encoder_type_changed = self._on_encoder_type_changed
+        QTimer.singleShot(0, self._update_homing_buttons_visibility)
 
         self.t = QTimer(self)
         self.t.timeout.connect(self._tick)
@@ -1493,6 +1495,9 @@ class MainWindow(QMainWindow):
         self._internet_online = online
         if hasattr(self, "_map_win") and self._map_win is not None:
             self._map_win.apply_internet_status(online)
+        cw = getattr(self, "_compass_win", None)
+        if cw is not None and hasattr(cw, "apply_internet_status"):
+            cw.apply_internet_status(online)
 
     def _on_aswatch_users(self, items: list) -> None:
         """UDP ASWATCHLIST → Karten-Marker (Hauptthread)."""
@@ -1699,6 +1704,10 @@ class MainWindow(QMainWindow):
                 self._compass_win._update_groupbox_titles()
             if hasattr(self._compass_win, "refresh_visibility"):
                 self._compass_win.refresh_visibility()
+            if self._internet_online is not None and hasattr(self._compass_win, "apply_internet_status"):
+                self._compass_win.apply_internet_status(self._internet_online)
+            elif hasattr(self._compass_win, "_update_place_search_visibility"):
+                self._compass_win._update_place_search_visibility()
             self._bring_tool_window_to_front(self._compass_win)
         except Exception:
             pass
@@ -2152,6 +2161,29 @@ class MainWindow(QMainWindow):
                 app2.quit()
         except Exception:
             pass
+
+    def _on_encoder_type_changed(self) -> None:
+        """GETENCTYPE gelesen — Homing-Buttons ggf. ausblenden (Thread → UI)."""
+        QTimer.singleShot(0, self._update_homing_buttons_visibility)
+
+    def _update_homing_buttons_visibility(self) -> None:
+        hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        try:
+            self.btn_ref.setVisible(not hide)
+        except Exception:
+            pass
+        cw = getattr(self, "_compass_win", None)
+        if cw is not None and hasattr(cw, "update_homing_buttons_visibility"):
+            try:
+                cw.update_homing_buttons_visibility()
+            except Exception:
+                pass
+        mw = getattr(self, "_map_win", None)
+        if mw is not None and hasattr(mw, "update_homing_buttons_visibility"):
+            try:
+                mw.update_homing_buttons_visibility()
+            except Exception:
+                pass
 
     def _on_ref_start_failed(self, axis: str) -> None:
         """Wird aus Hintergrundthread aufgerufen – auf UI-Thread weiterleiten."""

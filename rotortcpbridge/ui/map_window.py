@@ -7,15 +7,14 @@ import math
 import time
 from typing import Optional
 
-from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -26,7 +25,15 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from ..angle_utils import clamp_el, fmt_deg, rotor_az_for_display_bearing, shortest_delta_deg, wrap_deg
+from ..angle_utils import (
+    antenna_dipole_enabled,
+    clamp_el,
+    current_rotor_az_deg,
+    fmt_deg,
+    rotor_az_for_display_bearing,
+    shortest_delta_deg,
+    wrap_deg,
+)
 from ..ui.led_widget import Led
 from ..ui.ui_utils import px_to_dip
 from ..app_icon import get_app_icon
@@ -39,9 +46,8 @@ from ..geo_utils import (
     lat_lon_to_maidenhead,
     maidenhead_to_lat_lon,
 )
-from ..geocode import geocode_places
 from ..i18n import t, tt
-from ..net_utils import check_internet
+from .place_search import GeocodeThread, confirm_internet_for_place_search, pick_geocode_result
 from .favorite_selection_sync import (
     apply_saved_selection_to_favorites_combo,
     clear_selection_if_favorite_removed,
@@ -83,25 +89,6 @@ def _map_antenna_swatch_icon(antenna_index: int, size_px: int = 14) -> QIcon:
     p.drawRect(1, 1, size_px - 3, size_px - 3)
     p.end()
     return QIcon(pm)
-
-
-class _GeocodeThread(QThread):
-    results_ready = Signal(list)
-    error_occurred = Signal(str)
-
-    def __init__(self, query: str) -> None:
-        super().__init__()
-        self._query = query
-
-    def run(self) -> None:
-        try:
-            results = geocode_places(self._query)
-            payload = [
-                {"lat": r.lat, "lon": r.lon, "display_name": r.display_name} for r in results
-            ]
-            self.results_ready.emit(payload)
-        except Exception as exc:  # noqa: BLE001
-            self.error_occurred.emit(str(exc))
 
 
 class MapWindow(QDialog):
@@ -164,6 +151,8 @@ class MapWindow(QDialog):
         self._ed_place_search.setClearButtonEnabled(True)
         self._ed_place_search.setMinimumWidth(px_to_dip(self, 180))
         self._ed_place_search.setToolTip(tt("map.search_tooltip"))
+        self._place_search_tooltip_online = tt("map.search_tooltip")
+        self._place_search_tooltip_offline = tt("map.search_offline_tooltip")
         self._lbl_map_loc = QLabel(t("compass.locator_label"))
         self._ed_map_loc = QLineEdit()
         self._ed_map_loc.setPlaceholderText(t("compass.locator_placeholder"))
@@ -205,8 +194,18 @@ class MapWindow(QDialog):
         self._btn_elevation.clicked.connect(self._on_elevation_profile)
         self._ed_map_loc.returnPressed.connect(self._on_map_locator_entered)
         self._ed_place_search.returnPressed.connect(self._on_place_search_entered)
+        self._shortcut_place_search = QShortcut(QKeySequence("Ctrl+F"), self)
+        self._shortcut_place_search.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._shortcut_place_search.activated.connect(
+            lambda: self._focus_map_search_field(self._ed_place_search)
+        )
+        self._shortcut_map_locator = QShortcut(QKeySequence("Ctrl+L"), self)
+        self._shortcut_map_locator.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._shortcut_map_locator.activated.connect(
+            lambda: self._focus_map_search_field(self._ed_map_loc)
+        )
         self._refresh_favorites_dropdown()
-        self._geocode_thread: Optional[_GeocodeThread] = None
+        self._geocode_thread: Optional[GeocodeThread] = None
 
         map_container = _MapContainer(self)
         map_layout = QVBoxLayout(map_container)
@@ -220,6 +219,7 @@ class MapWindow(QDialog):
         )
         self._view.setPage(self._page)
         self._view.loadFinished.connect(self._on_map_load_finished)
+        self._view.installEventFilter(self)
         map_layout.addWidget(self._view, 1)
         self._wind_overlay = MapWindOverlay(map_container)
         map_container._wind_overlay = self._wind_overlay
@@ -820,9 +820,17 @@ class MapWindow(QDialog):
         self._refresh_favorites_dropdown()
 
     def _sync_satellite_controls(self) -> None:
-        """Satelliten-Button: nur online; bei Offline Satellit ausschalten."""
+        """Offline: Satellit und Ortssuche deaktivieren (kein Internet)."""
         offline = bool(self._chk_offline.isChecked())
         self._btn_satellite.setEnabled(not offline)
+        self._ed_place_search.setEnabled(not offline)
+        try:
+            self._shortcut_place_search.setEnabled(not offline)
+        except Exception:
+            pass
+        self._ed_place_search.setToolTip(
+            self._place_search_tooltip_offline if offline else self._place_search_tooltip_online
+        )
         if offline and self._map_satellite:
             self._map_satellite = False
             self._btn_satellite.blockSignals(True)
@@ -947,8 +955,18 @@ class MapWindow(QDialog):
 
     def _on_ref_az(self) -> None:
         """Referenz AZ auslösen."""
+        if getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)():
+            return
         try:
             self.ctrl.reference_az(True)
+        except Exception:
+            pass
+
+    def update_homing_buttons_visibility(self) -> None:
+        """Absolut-Encoder (Typ 3): AZ-Homing-Button ausblenden."""
+        hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        try:
+            self._btn_ref_az.setVisible(not hide)
         except Exception:
             pass
 
@@ -1093,28 +1111,26 @@ class MapWindow(QDialog):
     @Slot()
     def _on_place_search_entered(self) -> None:
         """Stadt/Ort suchen (Nominatim) und Rotor wie bei Kartenklick ausrichten."""
+        if bool(self._chk_offline.isChecked()):
+            return
         query = (self._ed_place_search.text() or "").strip()
         if not query:
             return
-        if not check_internet():
-            QMessageBox.warning(
-                self,
-                t("map.search_no_internet_title"),
-                t("map.search_no_internet_body"),
-            )
+        if not confirm_internet_for_place_search(self):
             return
         if self._geocode_thread is not None and self._geocode_thread.isRunning():
             return
         self._ed_place_search.setEnabled(False)
-        self._geocode_thread = _GeocodeThread(query)
+        self._geocode_thread = GeocodeThread(query)
         self._geocode_thread.results_ready.connect(self._on_geocode_results)
         self._geocode_thread.error_occurred.connect(self._on_geocode_error)
         self._geocode_thread.finished.connect(self._on_geocode_finished)
         self._geocode_thread.start()
 
     def _on_geocode_finished(self) -> None:
-        self._ed_place_search.setEnabled(True)
         self._geocode_thread = None
+        if not bool(self._chk_offline.isChecked()):
+            self._ed_place_search.setEnabled(True)
 
     def _on_geocode_error(self, message: str) -> None:
         QMessageBox.warning(
@@ -1124,33 +1140,9 @@ class MapWindow(QDialog):
         )
 
     def _on_geocode_results(self, results: list) -> None:
-        if not results:
-            QMessageBox.information(
-                self,
-                t("map.search_not_found_title"),
-                t("map.search_not_found_body"),
-            )
+        r = pick_geocode_result(self, results)
+        if r is None:
             return
-        if len(results) == 1:
-            r = results[0]
-            self._apply_geocode_target(float(r["lat"]), float(r["lon"]))
-            return
-        labels = [str(r.get("display_name") or "") for r in results]
-        choice, ok = QInputDialog.getItem(
-            self,
-            t("map.search_pick_title"),
-            t("map.search_pick_body"),
-            labels,
-            0,
-            False,
-        )
-        if not ok or not choice:
-            return
-        try:
-            idx = labels.index(choice)
-        except ValueError:
-            return
-        r = results[idx]
         self._apply_geocode_target(float(r["lat"]), float(r["lon"]))
 
     def _apply_geocode_target(self, lat: float, lon: float) -> None:
@@ -1239,14 +1231,7 @@ class MapWindow(QDialog):
         bearing = bearing_deg(lat0, lon0, lat, lon)
         off = self._get_antenna_offset_az()
         antenna_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
-        cur_rotor: Optional[float] = None
-        try:
-            az_axis = getattr(self.ctrl, "az", None)
-            pos_d10 = getattr(az_axis, "pos_d10", None) if az_axis else None
-            if pos_d10 is not None:
-                cur_rotor = float(pos_d10) / 10.0
-        except Exception:
-            pass
+        cur_rotor = current_rotor_az_deg(getattr(self.ctrl, "az", None))
         rotor_deg = rotor_az_for_display_bearing(
             bearing,
             off,
@@ -1489,10 +1474,46 @@ class MapWindow(QDialog):
             self._elevation_win = None
         super().closeEvent(event)
 
+    def _focus_map_search_field(self, field: QLineEdit) -> None:
+        """Suchfeld fokussieren; vorhandenen Text markieren zum Überschreiben."""
+        try:
+            field.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            field.selectAll()
+        except Exception:
+            pass
+
+    def _handle_map_search_shortcut(self, event) -> bool:
+        """Ctrl+F → Ortssuche, Ctrl+L → Locator (nur mit Ctrl-Modifier)."""
+        try:
+            mods = event.modifiers()
+        except Exception:
+            return False
+        if not (mods & Qt.KeyboardModifier.ControlModifier):
+            return False
+        try:
+            key = event.key()
+        except Exception:
+            return False
+        if key == Qt.Key.Key_F:
+            self._focus_map_search_field(self._ed_place_search)
+            return True
+        if key == Qt.Key.Key_L:
+            self._focus_map_search_field(self._ed_map_loc)
+            return True
+        return False
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if watched is self._view and event.type() == QEvent.Type.KeyPress:
+            if self._handle_map_search_shortcut(event):
+                return True
+        return super().eventFilter(watched, event)
+
     def keyPressEvent(self, event) -> None:
         # ESC soll dieses Fenster nicht schließen (wie Kompassfenster).
         if event.key() == Qt.Key.Key_Escape:
             event.ignore()
+            return
+        if self._handle_map_search_shortcut(event):
             return
         super().keyPressEvent(event)
 
@@ -1510,6 +1531,7 @@ class MapWindow(QDialog):
         self._btn_satellite.setChecked(False)
         self._btn_satellite.blockSignals(False)
         self._sync_satellite_controls()
+        self.update_homing_buttons_visibility()
         self._smooth_rotor_az = None
         self._refresh_map()
         self._refresh_timer.start()

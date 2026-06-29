@@ -14,7 +14,12 @@ import socket
 import threading
 import time
 import xml.etree.ElementTree as ET
-from .angle_utils import wrap_deg
+from .angle_utils import (
+    antenna_dipole_enabled,
+    current_rotor_az_deg,
+    rotor_az_for_display_bearing,
+    wrap_deg,
+)
 from .net_utils import is_local_ipv4, normalize_udp_bind_host
 
 
@@ -152,7 +157,13 @@ class UdpUcxLogListener:
             # Rotor-Ziel = Antennenrichtung - Antennenversatz (wie im Kompass).
             az_deg = wrap_deg(az)
             off_az = self._get_antenna_offset_az()
-            rotor_deg = wrap_deg(az_deg - off_az)
+            ui = (self.cfg or {}).get("ui") or {}
+            ant_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
+            dipole = antenna_dipole_enabled(getattr(self.ctrl, "az", None), self.cfg, ant_idx)
+            cur_rotor = current_rotor_az_deg(getattr(self.ctrl, "az", None))
+            rotor_deg = rotor_az_for_display_bearing(
+                az_deg, off_az, cur_rotor, dipole=dipole
+            )
             sender = f"{addr[0]}:{addr[1]}" if addr else "?"
             if off_az != 0.0:
                 self.log.write(

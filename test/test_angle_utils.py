@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from rotortcpbridge.angle_utils import clamp_el, fmt_deg, shortest_delta_deg, wrap_deg
+from rotortcpbridge.angle_utils import (
+    clamp_el,
+    dipole_rotor_move_cost,
+    fmt_deg,
+    rotor_az_for_display_bearing,
+    rotor_travel_deg,
+    shortest_delta_deg,
+    wrap_deg,
+)
 
 
 @pytest.mark.parametrize(
@@ -42,3 +50,29 @@ def test_wrap_deg_large_negative() -> None:
 
 def test_shortest_delta_deg_symmetry() -> None:
     assert shortest_delta_deg(100, 200) == pytest.approx(-shortest_delta_deg(200, 100))
+
+
+def test_rotor_travel_deg_shortest() -> None:
+    assert rotor_travel_deg(300, 10) == pytest.approx(70)
+    assert rotor_travel_deg(300, 190) == pytest.approx(110)
+
+
+def test_rotor_az_for_display_bearing_dipole_picks_shorter_rotor_travel() -> None:
+    # Mit Versatz: Peilungsnähe würde Hauptkeule wählen, Drehweg die Gegenkeule.
+    assert rotor_az_for_display_bearing(350, 100, 40, dipole=True) == pytest.approx(70)
+    # 300° → 10°: langer CCW-Bogen zur Hauptkeule → Gegenkeule (Rotor 190°).
+    assert rotor_az_for_display_bearing(10, 0, 300, dipole=True) == pytest.approx(190)
+    assert rotor_az_for_display_bearing(10, 0, 306, dipole=True) == pytest.approx(190)
+    # 300° → 170°: Gegenkeule (Rotor 350°) ist näher als Hauptkeule (170°).
+    assert rotor_az_for_display_bearing(170, 0, 300, dipole=True) == pytest.approx(350)
+    # Nahe Nord: kurzer CW-Weg bleibt bei Hauptkeule.
+    assert rotor_az_for_display_bearing(10, 0, 350, dipole=True) == pytest.approx(10)
+    # Gegenkeule zeigt schon aufs Ziel → nicht drehen.
+    assert rotor_az_for_display_bearing(120, 0, 300, dipole=True) == pytest.approx(300)
+
+
+def test_dipole_rotor_move_cost_long_ccw() -> None:
+    assert dipole_rotor_move_cost(300, 10) == pytest.approx(290)
+    assert dipole_rotor_move_cost(300, 190) == pytest.approx(110)
+    assert dipole_rotor_move_cost(350, 10) == pytest.approx(20)
+    assert dipole_rotor_move_cost(300, 350) == pytest.approx(50)

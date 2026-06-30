@@ -30,6 +30,7 @@ from ..angle_utils import (
     antenna_dipole_enabled,
     az_pos_deg_from_d10,
     clamp_el,
+    fmt_deg,
     raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
     shortest_delta_az_rotor_deg,

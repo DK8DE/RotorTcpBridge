@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from rotortcpbridge.rotor_model import AxisState
 
 
@@ -72,3 +74,16 @@ def test_az_smoothing_reaches_full_circle_after_homing() -> None:
         t += 1.0 / 60.0
         v = az.get_smoothed_pos_d10f(t)
     assert v >= 3599.0
+
+
+def test_apply_position_resync_after_rehoming() -> None:
+    """Nach erneutem Homing: großer Positions-Sprung muss sofort in Anzeige/Soll landen."""
+    az = AxisState(position_wrap_360=True)
+    az.update_position_sample(1800, sample_ts=1000.0)
+    az.get_smoothed_pos_d10f(1000.0)
+    az.pos_resync_pending = True
+    az.apply_position_resync(3600, sample_ts=1002.0)
+    assert az.pos_d10 == 3600
+    assert az.smooth_pos_d10f == pytest.approx(3600.0)
+    assert az.target_d10 == 3600
+    assert az.pos_resync_pending is False

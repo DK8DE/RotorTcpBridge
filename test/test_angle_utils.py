@@ -68,8 +68,8 @@ def test_rotor_az_for_display_bearing_dipole_picks_shorter_rotor_travel() -> Non
     assert rotor_az_for_display_bearing(10, 0, 306, dipole=True) == pytest.approx(190)
     # 300° → 170°: Gegenkeule (Rotor 350°) ist näher als Hauptkeule (170°).
     assert rotor_az_for_display_bearing(170, 0, 300, dipole=True) == pytest.approx(350)
-    # Nahe Nord: kurzer CW-Weg bleibt bei Hauptkeule.
-    assert rotor_az_for_display_bearing(10, 0, 350, dipole=True) == pytest.approx(10)
+    # Nahe Nord mit Nullübertritt: Regler fährt lang → Gegenkeule.
+    assert rotor_az_for_display_bearing(10, 0, 350, dipole=True) == pytest.approx(190)
     # Gegenkeule zeigt schon aufs Ziel → nicht drehen.
     assert rotor_az_for_display_bearing(120, 0, 300, dipole=True) == pytest.approx(300)
 
@@ -77,7 +77,7 @@ def test_rotor_az_for_display_bearing_dipole_picks_shorter_rotor_travel() -> Non
 def test_dipole_rotor_move_cost_long_ccw() -> None:
     assert dipole_rotor_move_cost(300, 10) == pytest.approx(290)
     assert dipole_rotor_move_cost(300, 190) == pytest.approx(110)
-    assert dipole_rotor_move_cost(350, 10) == pytest.approx(20)
+    assert dipole_rotor_move_cost(350, 10) == pytest.approx(340)
     assert dipole_rotor_move_cost(300, 350) == pytest.approx(50)
 
 
@@ -97,5 +97,45 @@ def test_shortest_delta_az_rotor_deg_homing() -> None:
 
 
 def test_dipole_rotor_move_cost_from_full_circle() -> None:
-    assert dipole_rotor_move_cost(360, 10) == pytest.approx(10)
-    assert rotor_az_for_display_bearing(10, 0, 360, dipole=True) == pytest.approx(10)
+    assert dipole_rotor_move_cost(360, 10) == pytest.approx(350)
+    assert rotor_az_for_display_bearing(10, 0, 360, dipole=True) == pytest.approx(190)
+
+
+def test_dipole_near_east_picks_back_lobe_for_small_bearing_change() -> None:
+    """83°→99° mit 90° Versatz nahe Ost-Anschlag: Gegenkeule statt Volldrehung über Null."""
+    assert dipole_rotor_move_cost(353, 9) == pytest.approx(344)
+    assert dipole_rotor_move_cost(360, 9) == pytest.approx(351)
+    assert rotor_az_for_display_bearing(99, 90, 353, dipole=True) == pytest.approx(189)
+    assert rotor_az_for_display_bearing(99, 90, 360, dipole=True) == pytest.approx(189)
+
+
+def test_dipole_routing_ignores_stuck_smooth_at_zero() -> None:
+    """Glättung bei 0° / Roh-Ist 353°: ohne Raw-Pos würde fälschlich Hauptkeule (Volldrehung) gewählt."""
+    from rotortcpbridge.angle_utils import current_rotor_az_deg, raw_rotor_az_deg_from_axis
+
+    class _Az:
+        pos_d10 = 3530
+
+        def get_smoothed_pos_d10f(self, now: float) -> float:
+            return 0.0
+
+    az = _Az()
+    assert raw_rotor_az_deg_from_axis(az) == pytest.approx(353.0)
+    assert current_rotor_az_deg(az) == pytest.approx(0.0)
+    assert rotor_az_for_display_bearing(99, 90, 0.0, dipole=True) == pytest.approx(9.0)
+    assert rotor_az_for_display_bearing(99, 90, 353.0, dipole=True) == pytest.approx(189.0)
+
+
+def test_dipole_continuity_prefers_last_lobe_on_tie() -> None:
+    """Kleine Peilungsänderung: auf bereits aktiver Gegenkeule bleiben."""
+    assert (
+        rotor_az_for_display_bearing(99, 90, 353, dipole=True, last_rotor_az=189.0)
+        == pytest.approx(189.0)
+    )
+
+
+def test_dipole_west_from_east_stop_uses_back_lobe() -> None:
+    """99°→80° nahe Ost-Anschlag (Rotor ~9°): Gegenkeule ~170°, nicht Volldrehung über 350°."""
+    assert dipole_rotor_move_cost(9, 350) == pytest.approx(341)
+    assert dipole_rotor_move_cost(9, 170) == pytest.approx(161)
+    assert rotor_az_for_display_bearing(80, 90, 9, dipole=True) == pytest.approx(170)

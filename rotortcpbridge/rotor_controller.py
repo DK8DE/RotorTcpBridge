@@ -9,6 +9,7 @@ from .angle_utils import (
     antenna_dipole_enabled,
     az_pos_deg_from_d10,
     current_rotor_az_deg,
+    raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
     shortest_delta_deg,
     wrap_deg,
@@ -161,6 +162,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         # Kompass-Manual-Eingabe: PST-SET für 10s ignorieren, damit nicht überschrieben wird
         self._compass_manual_az_ts: float = 0.0
         self._compass_manual_el_ts: float = 0.0
+        # Dipol: angezeigte Soll-Peilung (≠ Rotor+Versatz bei Gegenkeule); von Kompass/Shortcuts gesetzt.
+        self.az_dipole_display_bearing: Optional[float] = None
+        # Dipol: zuletzt angefahrene Rotorstellung (Keulen-Kontinuität bei Hotkeys).
+        self.az_dipole_last_rotor_az: Optional[float] = None
         # Callback: wird nach jedem erfolgreichen SETANTOFF-ACK aufgerufen (z.B. Kompassfenster-Refresh)
         self.on_antenna_offsets_changed: Optional[Callable[[], None]] = None
         self.on_antenna_angles_changed: Optional[Callable[[], None]] = None
@@ -862,14 +867,22 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         if abs(O_old - O_new) < 1e-6:
             return
         try:
-            cur = current_rotor_az_deg(self.az)
+            cur = raw_rotor_az_deg_from_axis(self.az)
+            if cur is None:
+                cur = current_rotor_az_deg(self.az)
             if cur is None:
                 return
         except Exception:
             return
         D = wrap_deg(cur + O_old)
         dipole = antenna_dipole_enabled(self.az, cfg, ni)
-        rotor_target = rotor_az_for_display_bearing(D, O_new, cur, dipole=dipole)
+        rotor_target = rotor_az_for_display_bearing(
+            D,
+            O_new,
+            cur,
+            dipole=dipole,
+            last_rotor_az=getattr(self, "az_dipole_last_rotor_az", None) if dipole else None,
+        )
         if abs(shortest_delta_deg(cur, rotor_target)) < 0.05:
             return
         self.set_az_deg(rotor_target, force=True)
@@ -1430,6 +1443,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             self.az.target_d10 = 0
             self.az.last_set_sent_target_d10 = None
             self.az.last_set_sent_ts = 0.0
+            self.az.pos_resync_pending = False
         except Exception:
             pass
         self.az.referenced = False
@@ -1493,6 +1507,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             self.el.target_d10 = 0
             self.el.last_set_sent_target_d10 = None
             self.el.last_set_sent_ts = 0.0
+            self.el.pos_resync_pending = False
         except Exception:
             pass
         self.el.referenced = False

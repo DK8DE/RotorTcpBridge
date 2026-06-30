@@ -274,9 +274,10 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         except Exception:
                             had_prev_sample = False
 
+                        resync = bool(getattr(axis_state, "pos_resync_pending", False))
                         if had_prev_sample and bool(
                             getattr(axis_state, "referenced", False)
-                        ):
+                        ) and not resync:
                             try:
                                 refp = bool(
                                     getattr(axis_state, "ref_poll_active", False)
@@ -328,9 +329,13 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             )
                         except Exception:
                             exp = 0.2
-                        axis_state.update_position_sample(
-                            d10, sample_ts=time.time(), expected_period_s=exp
-                        )
+                        sample_ts = time.time()
+                        if resync:
+                            axis_state.apply_position_resync(d10, sample_ts=sample_ts)
+                        else:
+                            axis_state.update_position_sample(
+                                d10, sample_ts=sample_ts, expected_period_s=exp
+                            )
 
                         # Erstes gültiges Ist nach Start: lokales Motor-Soll = Ist, sonst bleibt
                         # target_d10 (Default 0) und UI/Kompass zeigen Soll 0° obwohl der Rotor steht.
@@ -472,6 +477,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         # Nach Homing-Ende genau einmal Position nachziehen.
                         if was_ref_active or (not was_referenced):
                             try:
+                                axis_state.pos_resync_pending = True
                                 axis_state.pos_poll_inflight = False
                                 dst = int(self.slave_az) if axis_name == "AZ" else int(self.slave_el)
                                 self._poll_pos(

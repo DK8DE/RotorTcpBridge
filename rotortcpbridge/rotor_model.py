@@ -252,6 +252,8 @@ class AxisState:
     # freigegeben; Watchdog über pos_poll_sent_ts (0,9 s) verhindert Hänger.
     pos_poll_inflight: bool = False
     pos_poll_sent_ts: float = 0.0
+    # Nach Homing-Ende: nächstes GETPOSDG ohne Sprung-Filter, Anzeige sofort nachziehen.
+    pos_resync_pending: bool = False
     pos_poll_expected_period_s: float = 0.2
 
     # Kalibrier-Bins (nur wenn GETCALSTATE=2 DONE): 72 Stromwerte in mV pro Richtung
@@ -306,6 +308,24 @@ class AxisState:
             self.smooth_pos_d10 = int(nxt)
             self._last_smooth_render_ts = 0.0
             self._smooth_vel_f = 0.0
+
+    def apply_position_resync(self, new_pos_d10: int, sample_ts: Optional[float] = None) -> None:
+        """Homing beendet: Ist/Soll ohne Glättung auf die Hardware-Position setzen."""
+        d10 = int(new_pos_d10)
+        try:
+            ts = float(sample_ts) if sample_ts is not None else time.time()
+        except Exception:
+            ts = time.time()
+        self._last_sample_ts = ts
+        self.pos_d10 = d10
+        self.smooth_pos_d10f = float(d10)
+        self.smooth_pos_d10 = d10
+        self._last_smooth_render_ts = 0.0
+        self._smooth_vel_f = 0.0
+        self.target_d10 = d10
+        self.last_set_sent_target_d10 = d10
+        self.last_set_sent_ts = ts
+        self.pos_resync_pending = False
 
     def _in_dynamic_smoothing(self) -> bool:
         """Fahrt oder Referenz-Polling: schnelleres Nachführen wie bei Bewegung."""

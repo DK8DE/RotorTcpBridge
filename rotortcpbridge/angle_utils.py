@@ -84,8 +84,9 @@ def _rotor_ccw_travel_deg(cur: float, tgt: float) -> float:
 def dipole_rotor_move_cost(cur: float, tgt: float) -> float:
     """Geschätzter Rotor-Fahrweg in Grad (Dipol-Keulenwahl).
 
-    Viele Controller nehmen bei Ziel „über Null“ (z. B. 300°→10°) den langen
-    CCW-Bogen (~290°), obwohl CW kürzer wäre (~70°). Dann lohnt die Gegenkeule.
+    Modelliert typisches Regler-Verhalten beim Überfahren des Nullpunkts:
+    - Ist > Ziel (z. B. 353°→9°): oft langer CCW-Bogen statt kurz CW
+    - Ist < Ziel (z. B. 9°→350°): oft langer CW-Bogen statt kurz CCW
     """
     c = float(cur)
     t = wrap_deg(tgt)
@@ -95,10 +96,39 @@ def dipole_rotor_move_cost(cur: float, tgt: float) -> float:
         c = wrap_deg(c)
     cw = _rotor_cw_travel_deg(c, t)
     ccw = _rotor_ccw_travel_deg(c, t)
-    short = min(cw, ccw)
-    if t < c and cw < ccw and ccw > 180.0 and cw >= 50.0:
+    if abs(cw - ccw) < 1e-9:
+        return cw
+    # Ziel kleiner als Ist (Nullübertritt von oben): langer CCW-Bogen.
+    if t < c and cw < ccw and ccw > 180.0:
         return ccw
-    return short
+    # Ziel größer als Ist (Nullübertritt von unten, z. B. Ost-Anschlag): langer CW-Bogen.
+    if t > c and cw > ccw and cw > 180.0:
+        return cw
+    return min(cw, ccw)
+
+
+def _normalize_rotor_az_for_routing(cur: float) -> float:
+    c = float(cur)
+    if c >= 359.95:
+        return 360.0
+    return wrap_deg(c)
+
+
+def raw_rotor_az_deg_from_axis(az_axis) -> float | None:
+    """Rotor-Ist aus GETPOSDG-Rohwert — für Dipol-Routing (ohne Anzeige-Glättung).
+
+    Die UI-Glättung kann kurzzeitig bei 0° hängen, obwohl der Rotor z. B. bei 353°
+    steht; dann würde die Keulenwahl fälschlich die Volldrehung wählen.
+    """
+    if az_axis is None:
+        return None
+    try:
+        pos_d10 = getattr(az_axis, "pos_d10", None)
+        if pos_d10 is not None:
+            return az_pos_deg_from_d10(int(pos_d10))
+    except Exception:
+        pass
+    return None
 
 
 def current_rotor_az_deg(az_axis, *, now: float | None = None) -> float | None:
@@ -147,6 +177,7 @@ def rotor_az_for_display_bearing(
     current_rotor_az: float | None = None,
     *,
     dipole: bool = False,
+    last_rotor_az: float | None = None,
 ) -> float:
     """Rotor-Azimut für Ziel-Peilung (Anzeige-Azimut, 0°=Nord).
 
@@ -160,13 +191,24 @@ def rotor_az_for_display_bearing(
     alternate = wrap_deg(primary + 180.0)
     if current_rotor_az is None:
         return primary
-    cur = float(current_rotor_az)
-    if cur >= 359.95:
-        cur = 360.0
-    else:
-        cur = wrap_deg(cur)
+    cur = _normalize_rotor_az_for_routing(float(current_rotor_az))
     cost_p = dipole_rotor_move_cost(cur, primary)
     cost_a = dipole_rotor_move_cost(cur, alternate)
+
+    if last_rotor_az is not None:
+        last = _normalize_rotor_az_for_routing(float(last_rotor_az))
+        on_primary = dipole_rotor_move_cost(last, primary) <= 25.0
+        on_alternate = dipole_rotor_move_cost(last, alternate) <= 25.0
+        if on_alternate and not on_primary:
+            cost_p += 30.0
+        elif on_primary and not on_alternate:
+            cost_a += 30.0
+        elif abs(cost_a - cost_p) <= 30.0:
+            if dipole_rotor_move_cost(last, alternate) < dipole_rotor_move_cost(last, primary):
+                cost_p += 10.0
+            elif dipole_rotor_move_cost(last, primary) < dipole_rotor_move_cost(last, alternate):
+                cost_a += 10.0
+
     if cost_a < cost_p:
         return alternate
     return primary

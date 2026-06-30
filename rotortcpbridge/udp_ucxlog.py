@@ -16,7 +16,7 @@ import time
 import xml.etree.ElementTree as ET
 from .angle_utils import (
     antenna_dipole_enabled,
-    current_rotor_az_deg,
+    raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
     wrap_deg,
 )
@@ -160,9 +160,13 @@ class UdpUcxLogListener:
             ui = (self.cfg or {}).get("ui") or {}
             ant_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
             dipole = antenna_dipole_enabled(getattr(self.ctrl, "az", None), self.cfg, ant_idx)
-            cur_rotor = current_rotor_az_deg(getattr(self.ctrl, "az", None))
+            cur_rotor = raw_rotor_az_deg_from_axis(getattr(self.ctrl, "az", None))
             rotor_deg = rotor_az_for_display_bearing(
-                az_deg, off_az, cur_rotor, dipole=dipole
+                az_deg,
+                off_az,
+                cur_rotor,
+                dipole=dipole,
+                last_rotor_az=getattr(self.ctrl, "az_dipole_last_rotor_az", None) if dipole else None,
             )
             sender = f"{addr[0]}:{addr[1]}" if addr else "?"
             if off_az != 0.0:
@@ -175,5 +179,8 @@ class UdpUcxLogListener:
             try:
                 if getattr(self.ctrl, "enable_az", True):
                     self.ctrl.set_az_deg(rotor_deg, force=True)
+                    if dipole:
+                        self.ctrl.az_dipole_display_bearing = az_deg
+                        self.ctrl.az_dipole_last_rotor_az = rotor_deg
             except Exception as e:
                 self.log.write("WARN", f"UDP UcxLog set_az_deg: {e}")

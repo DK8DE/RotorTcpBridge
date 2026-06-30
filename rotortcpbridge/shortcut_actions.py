@@ -8,7 +8,7 @@ from .angle_utils import (
     antenna_dipole_enabled,
     az_pos_deg_from_d10,
     clamp_el,
-    current_rotor_az_deg,
+    raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
     wrap_deg,
 )
@@ -17,10 +17,15 @@ if TYPE_CHECKING:
     from .rotor_controller import RotorController
 
 
-def antenna_offset_for_compass_slot(cfg: dict) -> float:
-    """Versatz der gewählten Antenne (Kompass-Slot) in Grad."""
+def antenna_offset_for_compass_slot(cfg: dict, ctrl: "RotorController | None" = None) -> float:
+    """Versatz der gewählten Antenne (Kompass-Slot) in Grad — Hardware vor Config."""
     ui = cfg.get("ui") or {}
     slot = max(0, min(2, int(ui.get("compass_antenna", 0))))
+    if ctrl is not None:
+        az_axis = getattr(ctrl, "az", None)
+        hw_v = getattr(az_axis, f"antoff{slot + 1}", None) if az_axis else None
+        if hw_v is not None:
+            return float(hw_v)
     offs = ui.get("antenna_offsets_az", [0.0, 0.0, 0.0])
     try:
         return float(offs[slot]) if slot < len(offs) else 0.0
@@ -35,22 +40,27 @@ def antenna_dipole_for_compass_slot(cfg: dict, ctrl: "RotorController") -> bool:
     return antenna_dipole_enabled(getattr(ctrl, "az", None), cfg, slot)
 
 
-def _current_rotor_az_deg(ctrl: "RotorController") -> float | None:
-    return current_rotor_az_deg(getattr(ctrl, "az", None))
-
-
 def set_antenna_azimuth_deg(cfg: dict, ctrl: "RotorController", antenna_deg: float) -> None:
     """Antennen-Richtung (wie Kompass-Anzeige) fahren; Dipol: kürzester Rotor-Drehweg."""
     if not getattr(ctrl, "enable_az", True):
         return
-    off = antenna_offset_for_compass_slot(cfg)
+    bearing = wrap_deg(float(antenna_deg))
+    off = antenna_offset_for_compass_slot(cfg, ctrl)
+    dipole = antenna_dipole_for_compass_slot(cfg, ctrl)
     rotor = rotor_az_for_display_bearing(
-        wrap_deg(float(antenna_deg)),
+        bearing,
         off,
-        _current_rotor_az_deg(ctrl),
-        dipole=antenna_dipole_for_compass_slot(cfg, ctrl),
+        raw_rotor_az_deg_from_axis(getattr(ctrl, "az", None)),
+        dipole=dipole,
+        last_rotor_az=getattr(ctrl, "az_dipole_last_rotor_az", None) if dipole else None,
     )
     ctrl.set_az_deg(rotor, force=True)
+    if dipole:
+        ctrl.az_dipole_display_bearing = bearing
+        ctrl.az_dipole_last_rotor_az = rotor
+    else:
+        ctrl.az_dipole_display_bearing = None
+        ctrl.az_dipole_last_rotor_az = None
 
 
 def _az_rotor_deg_for_relative_steps(ctrl: "RotorController") -> float:
@@ -66,6 +76,9 @@ def _az_rotor_deg_for_relative_steps(ctrl: "RotorController") -> float:
     except Exception:
         pass
     try:
+        raw = raw_rotor_az_deg_from_axis(getattr(ctrl, "az", None))
+        if raw is not None:
+            return raw
         return az_pos_deg_from_d10(int(getattr(ctrl.az, "pos_d10", 0)))
     except Exception:
         return 0.0
@@ -76,9 +89,14 @@ def effective_antenna_target_deg(cfg: dict, ctrl: "RotorController") -> float:
 
     Nur Rotor-Ist bzw. Motor-``target_d10`` (kein ``compass_target_d10`` / SETPOSCC), damit
     schnelle Hotkey-Ketten nicht am Encoder-Schnipsel hängen.
+    Bei Dipol: gespeicherte Anzeige-Peilung (Gegenkeule ≠ Rotor+Versatz).
     """
+    if antenna_dipole_for_compass_slot(cfg, ctrl):
+        ext = getattr(ctrl, "az_dipole_display_bearing", None)
+        if ext is not None:
+            return wrap_deg(float(ext))
     rotor_tgt = _az_rotor_deg_for_relative_steps(ctrl)
-    off = antenna_offset_for_compass_slot(cfg)
+    off = antenna_offset_for_compass_slot(cfg, ctrl)
     return wrap_deg(rotor_tgt + off)
 
 

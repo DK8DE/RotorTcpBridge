@@ -32,6 +32,7 @@ from ..angle_utils import (
     current_rotor_az_deg,
     fmt_deg,
     om_beam_contributions_per_sector,
+    raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
     wrap_deg,
 )
@@ -125,6 +126,8 @@ class CompassWindow(QDialog):
         # Mausklick + Fahrt: zwischen CC-Paketen letzten Encoder-Soll halten (nicht auf altes Motorziel springen)
         self._cc_display_latch_az_d10: Optional[int] = None
         self._cc_display_latch_el_d10: Optional[int] = None
+        self._az_ref_poll_was_active = False
+        self._el_ref_poll_was_active = False
         # Letzte gemeldete Strommap an Controller — nur bei Änderung neu setzen (wie die gezeichneten Ringe)
         self._last_strom_notify_key: tuple[bool, bool] | None = None
 
@@ -1204,6 +1207,34 @@ class CompassWindow(QDialog):
     def _selected_antenna_dipole_enabled(self) -> bool:
         return self._antenna_dipole_enabled(self._selected_antenna_idx())
 
+    def _clear_az_dipole_soll_display(self) -> None:
+        self._az_soll_display_bearing = None
+        try:
+            self.ctrl.az_dipole_display_bearing = None
+            self.ctrl.az_dipole_last_rotor_az = None
+        except Exception:
+            pass
+
+    def _sync_az_dipole_soll_from_controller(self) -> None:
+        """Dipol-Soll aus Shortcuts/Hotkeys: Anzeige-Peilung und lokales Rotor-Soll nachziehen."""
+        if not self._selected_antenna_dipole_enabled():
+            return
+        ext = getattr(self.ctrl, "az_dipole_display_bearing", None)
+        if ext is None:
+            return
+        self._az_soll_display_bearing = wrap_deg(float(ext))
+        try:
+            self._target_az = az_pos_deg_from_d10(int(self.ctrl.az.target_d10))
+        except Exception:
+            pass
+
+    def _az_target_display_deg(self, tgt: Optional[float], off_az: float) -> Optional[float]:
+        if tgt is None:
+            return None
+        if self._selected_antenna_dipole_enabled() and self._az_soll_display_bearing is not None:
+            return wrap_deg(self._az_soll_display_bearing)
+        return antenna_bearing_from_rotor_and_offset(tgt, off_az)
+
     @staticmethod
     def _dwell_sector_index(deg: float, n_d: int) -> int:
         step = 360.0 / float(n_d)
@@ -1891,6 +1922,15 @@ class CompassWindow(QDialog):
 
     def _tick_az(self) -> None:
         now = time.time()
+        ref_polling_az = bool(getattr(self.ctrl.az, "ref_poll_active", False))
+        if self._az_ref_poll_was_active and not ref_polling_az:
+            if bool(getattr(self.ctrl.az, "referenced", False)):
+                self._target_az = None
+                self._clear_az_dipole_soll_display()
+                self._stop_az_ts = None
+                self._cc_display_latch_az_d10 = None
+        self._az_ref_poll_was_active = ref_polling_az
+        self._sync_az_dipole_soll_from_controller()
         try:
             cur = az_pos_deg_from_d10(
                 int(self.ctrl.az.pos_d10),
@@ -1935,7 +1975,7 @@ class CompassWindow(QDialog):
                 # Abbremsen vorbei: Soll einmal an Ist angleichen
                 if cur is not None:
                     self._target_az = cur if cur >= 359.95 else wrap_deg(cur)
-                    self._az_soll_display_bearing = None
+                    self._clear_az_dipole_soll_display()
                 self._stop_az_ts = None
                 tgt = self._target_az  # diesen Tick noch die angeglichene Position zeigen
             elif self._target_az is not None:
@@ -1950,7 +1990,7 @@ class CompassWindow(QDialog):
                     manual_d10 = int(round(self._target_az * 10.0))
                     if pst_d10 != manual_d10:
                         self._target_az = None
-                        self._az_soll_display_bearing = None
+                        self._clear_az_dipole_soll_display()
                 except Exception:
                     pass
 
@@ -2069,33 +2109,31 @@ class CompassWindow(QDialog):
             pass
 
         if tgt is not None:
-            if self._selected_antenna_dipole_enabled() and self._az_soll_display_bearing is not None:
-                tgt_display = wrap_deg(self._az_soll_display_bearing)
-            else:
-                tgt_display = antenna_bearing_from_rotor_and_offset(tgt, off_az)
-            self.az_compass.set_target_deg(tgt_display)
-            desired_txt = f"{tgt_display:.1f}"
-            bus_d10 = self._effective_az_bus_target_d10()
-            bus_changed = (
-                self._compass_last_bus_target_d10_az is None
-                or bus_d10 != self._compass_last_bus_target_d10_az
-            )
-            update_text = False
-            if not self.ed_az_soll.hasFocus():
-                update_text = True
-            elif bus_changed and not self._soll_line_matches_display_deg(
-                self.ed_az_soll, float(tgt_display), is_az=True
-            ):
-                update_text = True
-            if update_text:
-                had_focus = self.ed_az_soll.hasFocus()
-                self.ed_az_soll.setText(desired_txt)
-                if had_focus:
-                    self.ed_az_soll.selectAll()
-            self._compass_last_bus_target_d10_az = bus_d10
+            tgt_display = self._az_target_display_deg(tgt, off_az)
+            if tgt_display is not None:
+                self.az_compass.set_target_deg(tgt_display)
+                desired_txt = f"{tgt_display:.1f}"
+                bus_d10 = self._effective_az_bus_target_d10()
+                bus_changed = (
+                    self._compass_last_bus_target_d10_az is None
+                    or bus_d10 != self._compass_last_bus_target_d10_az
+                )
+                update_text = False
+                if not self.ed_az_soll.hasFocus():
+                    update_text = True
+                elif bus_changed and not self._soll_line_matches_display_deg(
+                    self.ed_az_soll, float(tgt_display), is_az=True
+                ):
+                    update_text = True
+                if update_text:
+                    had_focus = self.ed_az_soll.hasFocus()
+                    self.ed_az_soll.setText(desired_txt)
+                    if had_focus:
+                        self.ed_az_soll.selectAll()
+                self._compass_last_bus_target_d10_az = bus_d10
         else:
             self.az_compass.set_target_deg(None)
-            self._az_soll_display_bearing = None
+            self._clear_az_dipole_soll_display()
             if not self.ed_az_soll.hasFocus():
                 self.ed_az_soll.clear()
             self._compass_last_bus_target_d10_az = None
@@ -2140,8 +2178,9 @@ class CompassWindow(QDialog):
             self._lbl_left_ist_val.setText("–")
             self._lbl_left_ist_reverse_val.setText("–")
         if tgt is not None:
+            soll_display = self._az_target_display_deg(tgt, off_az)
             self._lbl_left_soll_val.setText(
-                f"{antenna_bearing_from_rotor_and_offset(tgt, off_az):.1f}°"
+                f"{soll_display:.1f}°" if soll_display is not None else "–"
             )
         else:
             self._lbl_left_soll_val.setText("–")
@@ -2464,12 +2503,31 @@ class CompassWindow(QDialog):
         off_az = self._get_antenna_offset_az()
         display_bearing = wrap_deg(deg)
         self._az_soll_display_bearing = display_bearing
+        try:
+            if self._selected_antenna_dipole_enabled():
+                self.ctrl.az_dipole_display_bearing = display_bearing
+            else:
+                self.ctrl.az_dipole_display_bearing = None
+        except Exception:
+            pass
         rotor_deg = rotor_az_for_display_bearing(
             display_bearing,
             off_az,
-            self._current_rotor_az_deg(),
+            raw_rotor_az_deg_from_axis(getattr(self.ctrl, "az", None)),
             dipole=self._selected_antenna_dipole_enabled(),
+            last_rotor_az=(
+                getattr(self.ctrl, "az_dipole_last_rotor_az", None)
+                if self._selected_antenna_dipole_enabled()
+                else None
+            ),
         )
+        try:
+            if self._selected_antenna_dipole_enabled():
+                self.ctrl.az_dipole_last_rotor_az = rotor_deg
+            else:
+                self.ctrl.az_dipole_last_rotor_az = None
+        except Exception:
+            pass
         self._target_az = rotor_deg
         self.az_compass.set_target_deg(display_bearing)
         self.ed_az_soll.setText(f"{display_bearing:.1f}")

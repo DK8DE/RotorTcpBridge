@@ -30,8 +30,7 @@ from ..angle_utils import (
     antenna_dipole_enabled,
     az_pos_deg_from_d10,
     clamp_el,
-    current_rotor_az_deg,
-    fmt_deg,
+    raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
     shortest_delta_az_rotor_deg,
     shortest_delta_deg,
@@ -1242,16 +1241,21 @@ class MapWindow(QDialog):
         bearing = bearing_deg(lat0, lon0, lat, lon)
         off = self._get_antenna_offset_az()
         antenna_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
-        cur_rotor = current_rotor_az_deg(getattr(self.ctrl, "az", None))
+        cur_rotor = raw_rotor_az_deg_from_axis(getattr(self.ctrl, "az", None))
+        dipole = self._antenna_dipole_enabled(antenna_idx)
         rotor_deg = rotor_az_for_display_bearing(
             bearing,
             off,
             cur_rotor,
-            dipole=self._antenna_dipole_enabled(antenna_idx),
+            dipole=dipole,
+            last_rotor_az=getattr(self.ctrl, "az_dipole_last_rotor_az", None) if dipole else None,
         )
         self._map_click_rotor_az = rotor_deg  # Kartenklick-Azimut merken
         try:
             self.ctrl.set_az_deg(rotor_deg, force=True)
+            if dipole:
+                self.ctrl.az_dipole_display_bearing = wrap_deg(bearing)
+                self.ctrl.az_dipole_last_rotor_az = rotor_deg
         except Exception:
             pass
         self._refresh_map()

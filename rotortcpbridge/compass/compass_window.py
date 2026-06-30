@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
 
 from ..app_icon import get_app_icon
 from ..angle_utils import (
+    antenna_bearing_from_rotor_and_offset,
+    az_pos_deg_from_d10,
     clamp_el,
     current_rotor_az_deg,
     fmt_deg,
@@ -1878,10 +1880,22 @@ class CompassWindow(QDialog):
         except Exception:
             return 0
 
+    def _current_rotor_az_deg(self) -> float | None:
+        try:
+            return az_pos_deg_from_d10(
+                int(self.ctrl.az.pos_d10),
+                float(self.ctrl.az.get_smoothed_pos_d10f(time.time())),
+            )
+        except Exception:
+            return current_rotor_az_deg(getattr(self.ctrl, "az", None))
+
     def _tick_az(self) -> None:
         now = time.time()
         try:
-            cur = float(self.ctrl.az.get_smoothed_pos_d10f(now)) / 10.0
+            cur = az_pos_deg_from_d10(
+                int(self.ctrl.az.pos_d10),
+                float(self.ctrl.az.get_smoothed_pos_d10f(now)),
+            )
         except Exception:
             cur = None
         off_az = self._get_antenna_offset_az()
@@ -1920,7 +1934,7 @@ class CompassWindow(QDialog):
             if (now - self._stop_az_ts) >= self._STOP_PULL_DELAY_S:
                 # Abbremsen vorbei: Soll einmal an Ist angleichen
                 if cur is not None:
-                    self._target_az = wrap_deg(cur)
+                    self._target_az = cur if cur >= 359.95 else wrap_deg(cur)
                     self._az_soll_display_bearing = None
                 self._stop_az_ts = None
                 tgt = self._target_az  # diesen Tick noch die angeglichene Position zeigen
@@ -1950,16 +1964,16 @@ class CompassWindow(QDialog):
                 cc_d10 = None
             if cc_d10 is not None:
                 self._cc_display_latch_az_d10 = int(cc_d10)
-                tgt = wrap_deg(float(int(cc_d10)) / 10.0)
+                tgt = az_pos_deg_from_d10(int(cc_d10))
             elif moving_az:
                 if self._cc_display_latch_az_d10 is not None:
-                    tgt = wrap_deg(float(self._cc_display_latch_az_d10) / 10.0)
+                    tgt = az_pos_deg_from_d10(int(self._cc_display_latch_az_d10))
                 else:
                     try:
                         td = int(getattr(self.ctrl.az, "target_d10", 0))
                     except Exception:
                         td = 0
-                    tgt = wrap_deg(float(td) / 10.0)
+                    tgt = az_pos_deg_from_d10(td)
             else:
                 self._cc_display_latch_az_d10 = None
                 tgt = self._target_az
@@ -1972,7 +1986,7 @@ class CompassWindow(QDialog):
                 )
                 axis_last_set_ts = float(getattr(axis, "last_set_sent_ts", 0.0) or 0.0)
                 axis_last_set_target_d10 = getattr(axis, "last_set_sent_target_d10", None)
-                tgt = float(axis_target_d10) / 10.0
+                tgt = az_pos_deg_from_d10(axis_target_d10)
                 unknown_target = (
                     axis_target_d10 == 0
                     and axis_last_set_ts <= 0.0
@@ -2005,7 +2019,7 @@ class CompassWindow(QDialog):
             tgt = None
 
         if cur is not None:
-            cur_display = wrap_deg(cur + off_az)
+            cur_display = antenna_bearing_from_rotor_and_offset(cur, off_az)
             self.az_compass.set_current_deg(cur_display)
         self.az_compass.set_dipole_active(self._selected_antenna_dipole_enabled())
         self.update_ist_reverse_visibility()
@@ -2033,7 +2047,7 @@ class CompassWindow(QDialog):
             # Rotor-Sektor (ohne Antennenversatz); die Drehung zur Anzeige übernimmt
             # paint_dwell_ring(..., offset_deg) wie bei OM-Radar/Heatmap.
             # Dipol: zusätzlich Gegenrichtung (+180°), da in beide Richtungen gestrahlt wird.
-            rotor_deg = wrap_deg(cur)
+            rotor_deg = 360.0 if cur >= 359.95 else wrap_deg(cur)
             ant_i = self._selected_antenna_idx()
             for idx in self._dwell_sectors_to_accumulate(rotor_deg, n_d, ant_i):
                 self._dwell_az_seconds_per_ant[ant_i][idx] += dt
@@ -2058,7 +2072,7 @@ class CompassWindow(QDialog):
             if self._selected_antenna_dipole_enabled() and self._az_soll_display_bearing is not None:
                 tgt_display = wrap_deg(self._az_soll_display_bearing)
             else:
-                tgt_display = wrap_deg(tgt + off_az)
+                tgt_display = antenna_bearing_from_rotor_and_offset(tgt, off_az)
             self.az_compass.set_target_deg(tgt_display)
             desired_txt = f"{tgt_display:.1f}"
             bus_d10 = self._effective_az_bus_target_d10()
@@ -2114,17 +2128,21 @@ class CompassWindow(QDialog):
 
         # Linke Info-Karten aktualisieren
         if cur is not None:
-            cur_display = wrap_deg(cur + off_az)
+            cur_display = antenna_bearing_from_rotor_and_offset(cur, off_az)
             self._lbl_left_ist_val.setText(f"{cur_display:.1f}°")
             if self._selected_antenna_dipole_enabled():
-                self._lbl_left_ist_reverse_val.setText(f"{wrap_deg(cur_display + 180.0):.1f}°")
+                self._lbl_left_ist_reverse_val.setText(
+                    f"{antenna_bearing_from_rotor_and_offset(cur_display, 180.0):.1f}°"
+                )
             else:
                 self._lbl_left_ist_reverse_val.setText("–")
         else:
             self._lbl_left_ist_val.setText("–")
             self._lbl_left_ist_reverse_val.setText("–")
         if tgt is not None:
-            self._lbl_left_soll_val.setText(f"{wrap_deg(tgt + off_az):.1f}°")
+            self._lbl_left_soll_val.setText(
+                f"{antenna_bearing_from_rotor_and_offset(tgt, off_az):.1f}°"
+            )
         else:
             self._lbl_left_soll_val.setText("–")
         if wind_on and wind_kmh is not None:
@@ -2139,7 +2157,7 @@ class CompassWindow(QDialog):
 
         # Ist-Text im Kompass (Soll = Eingabe oben rechts)
         if cur is not None:
-            cur_display_ov = wrap_deg(cur + off_az)
+            cur_display_ov = antenna_bearing_from_rotor_and_offset(cur, off_az)
             ist_txt = t("compass.ist_prefix") + fmt_deg(cur_display_ov)
         else:
             ist_txt = t("compass.ist_prefix") + "–"
@@ -2438,9 +2456,6 @@ class CompassWindow(QDialog):
             return
         self.el_compass.pick_target(clamp_el(v))
 
-    def _current_rotor_az_deg(self) -> Optional[float]:
-        return current_rotor_az_deg(getattr(self.ctrl, "az", None))
-
     @Slot(float)
     def _on_target_picked_az(self, deg: float) -> None:
         """deg = angezeigter Winkel (Antennenrichtung). Rotor-Ziel = deg - Versatz."""
@@ -2509,9 +2524,11 @@ class CompassWindow(QDialog):
         self._cc_display_latch_az_d10 = None
         self._stop_az_ts = now
         try:
-            cur = float(self.ctrl.az.get_smoothed_pos_d10f(now)) / 10.0
-            self._target_az = wrap_deg(cur)  # Soll springt auf Position bei STOP
-            # Controller mitschreiben, damit keine andere Stelle alte Soll-Position zurückholt
+            cur = az_pos_deg_from_d10(
+                int(self.ctrl.az.pos_d10),
+                float(self.ctrl.az.get_smoothed_pos_d10f(now)),
+            )
+            self._target_az = cur if cur >= 359.95 else wrap_deg(cur)  # Soll springt auf Position bei STOP
             self.ctrl.az.target_d10 = int(round(self._target_az * 10.0))
             self._compass_last_bus_target_d10_az = self._effective_az_bus_target_d10()
         except Exception:

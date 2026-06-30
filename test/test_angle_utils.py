@@ -5,11 +5,14 @@ from __future__ import annotations
 import pytest
 
 from rotortcpbridge.angle_utils import (
+    az_pos_deg_from_d10,
     clamp_el,
     dipole_rotor_move_cost,
     fmt_deg,
+    is_az_pos_at_full_circle_d10,
     rotor_az_for_display_bearing,
     rotor_travel_deg,
+    shortest_delta_az_rotor_deg,
     shortest_delta_deg,
     wrap_deg,
 )
@@ -76,3 +79,23 @@ def test_dipole_rotor_move_cost_long_ccw() -> None:
     assert dipole_rotor_move_cost(300, 190) == pytest.approx(110)
     assert dipole_rotor_move_cost(350, 10) == pytest.approx(20)
     assert dipole_rotor_move_cost(300, 350) == pytest.approx(50)
+
+
+def test_az_pos_deg_from_d10_full_circle() -> None:
+    assert az_pos_deg_from_d10(3600) == pytest.approx(360.0)
+    assert az_pos_deg_from_d10(3600, 0.0) == pytest.approx(360.0)
+    assert az_pos_deg_from_d10(3599) == pytest.approx(360.0)
+    assert az_pos_deg_from_d10(0) == pytest.approx(0.0)
+    assert az_pos_deg_from_d10(900, 905.0) == pytest.approx(90.5)
+
+
+def test_shortest_delta_az_rotor_deg_homing() -> None:
+    assert shortest_delta_az_rotor_deg(0.0, 360.0) == pytest.approx(360.0)
+    assert shortest_delta_az_rotor_deg(350.0, 360.0) == pytest.approx(10.0)
+    assert shortest_delta_az_rotor_deg(360.0, 10.0) == pytest.approx(10.0)
+    assert shortest_delta_az_rotor_deg(360.0, 0.0) == pytest.approx(0.0)
+
+
+def test_dipole_rotor_move_cost_from_full_circle() -> None:
+    assert dipole_rotor_move_cost(360, 10) == pytest.approx(10)
+    assert rotor_az_for_display_bearing(10, 0, 360, dipole=True) == pytest.approx(10)

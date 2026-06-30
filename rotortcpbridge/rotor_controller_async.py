@@ -382,6 +382,20 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         # - Außerdem kann die Zielabweichung >0,2° sein, obwohl der Motor steht.
                         #   Daher basiert "steht" primär auf *Positionsstabilität*.
                         dpos = abs(int(d10) - int(prev_pos)) if had_prev_sample else 0
+                        if had_prev_sample and axis_name == "AZ" and bool(
+                            getattr(axis_state, "position_wrap_360", True)
+                        ):
+                            dpos = abs(
+                                int(
+                                    round(
+                                        shortest_delta_deg(
+                                            float(prev_pos) / 10.0,
+                                            float(d10) / 10.0,
+                                        )
+                                        * 10.0
+                                    )
+                                )
+                            )
                         stable = (not had_prev_sample) or (dpos <= 1)
 
                         if stable:

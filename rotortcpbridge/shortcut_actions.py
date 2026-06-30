@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from .angle_utils import (
     antenna_dipole_enabled,
+    az_pos_deg_from_d10,
     clamp_el,
     current_rotor_az_deg,
     rotor_az_for_display_bearing,
@@ -61,11 +62,11 @@ def _az_rotor_deg_for_relative_steps(ctrl: "RotorController") -> float:
     """
     try:
         if getattr(ctrl.az, "last_set_sent_target_d10", None) is not None:
-            return int(getattr(ctrl.az, "target_d10", 0)) / 10.0
+            return az_pos_deg_from_d10(int(getattr(ctrl.az, "target_d10", 0)))
     except Exception:
         pass
     try:
-        return int(getattr(ctrl.az, "pos_d10", 0)) / 10.0
+        return az_pos_deg_from_d10(int(getattr(ctrl.az, "pos_d10", 0)))
     except Exception:
         return 0.0
 

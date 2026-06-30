@@ -29,6 +29,41 @@ def shortest_delta_deg(current: float, target: float) -> float:
     return (float(target) - float(current) + 180.0) % 360.0 - 180.0
 
 
+def shortest_delta_az_rotor_deg(current: float, target: float) -> float:
+    """Winkeldifferenz für Rotor-Ist; 360° nach Homing ist nicht dasselbe wie 0°."""
+    c = float(current)
+    t = float(target)
+    if t >= 359.95 and c < 359.95:
+        return t - c
+    if c >= 359.95 and t < 359.95:
+        return shortest_delta_deg(c, t)
+    return shortest_delta_deg(c, t)
+
+
+def is_az_pos_at_full_circle_d10(pos_d10: int) -> bool:
+    """True wenn GETPOSDG nahe 360,0° meldet (Homing-Ende ohne Rückfahrt)."""
+    return int(pos_d10) >= 3599
+
+
+def az_pos_deg_from_d10(pos_d10: int, smooth_d10f: float | None = None) -> float:
+    """Rotor-Azimut in Grad aus GETPOSDG (0,1°-Einheiten).
+
+    Nach Homing mit SETHOMERETURN=0 meldet die Hardware oft 360,00° — das ist nicht
+    dasselbe wie 0° für Anzeige/Glättung (volle Umdrehung vs. Nullstellung).
+    """
+    p = int(pos_d10)
+    if is_az_pos_at_full_circle_d10(p):
+        return 360.0
+    if smooth_d10f is not None:
+        return wrap_deg(float(smooth_d10f) / 10.0)
+    return wrap_deg(float(p) / 10.0)
+
+
+def antenna_bearing_from_rotor_and_offset(rotor_deg: float, offset_deg: float) -> float:
+    """Antennen-Peilung für Kompass-Anzeige (Rotor-Ist + Versatz)."""
+    return wrap_deg(float(rotor_deg) + float(offset_deg))
+
+
 def rotor_travel_deg(cur: float, tgt: float) -> float:
     """Kürzester Rotor-Drehweg cur→tgt in Grad (0…180)."""
     c = wrap_deg(cur)
@@ -52,8 +87,12 @@ def dipole_rotor_move_cost(cur: float, tgt: float) -> float:
     Viele Controller nehmen bei Ziel „über Null“ (z. B. 300°→10°) den langen
     CCW-Bogen (~290°), obwohl CW kürzer wäre (~70°). Dann lohnt die Gegenkeule.
     """
-    c = wrap_deg(cur)
+    c = float(cur)
     t = wrap_deg(tgt)
+    if c >= 359.95:
+        c = 360.0
+    else:
+        c = wrap_deg(c)
     cw = _rotor_cw_travel_deg(c, t)
     ccw = _rotor_ccw_travel_deg(c, t)
     short = min(cw, ccw)
@@ -71,14 +110,15 @@ def current_rotor_az_deg(az_axis, *, now: float | None = None) -> float | None:
 
         now = time.time()
     try:
+        pos_d10 = int(getattr(az_axis, "pos_d10", 0))
         if hasattr(az_axis, "get_smoothed_pos_d10f"):
-            return wrap_deg(float(az_axis.get_smoothed_pos_d10f(now)) / 10.0)
+            return az_pos_deg_from_d10(pos_d10, float(az_axis.get_smoothed_pos_d10f(now)))
     except Exception:
         pass
     try:
         pos_d10 = getattr(az_axis, "pos_d10", None)
         if pos_d10 is not None:
-            return wrap_deg(float(pos_d10) / 10.0)
+            return az_pos_deg_from_d10(int(pos_d10))
     except Exception:
         pass
     return None
@@ -120,7 +160,11 @@ def rotor_az_for_display_bearing(
     alternate = wrap_deg(primary + 180.0)
     if current_rotor_az is None:
         return primary
-    cur = wrap_deg(float(current_rotor_az))
+    cur = float(current_rotor_az)
+    if cur >= 359.95:
+        cur = 360.0
+    else:
+        cur = wrap_deg(cur)
     cost_p = dipole_rotor_move_cost(cur, primary)
     cost_a = dipole_rotor_move_cost(cur, alternate)
     if cost_a < cost_p:

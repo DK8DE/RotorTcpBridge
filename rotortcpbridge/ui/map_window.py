@@ -26,11 +26,14 @@ from PySide6.QtWidgets import (
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from ..angle_utils import (
+    antenna_bearing_from_rotor_and_offset,
     antenna_dipole_enabled,
+    az_pos_deg_from_d10,
     clamp_el,
     current_rotor_az_deg,
     fmt_deg,
     rotor_az_for_display_bearing,
+    shortest_delta_az_rotor_deg,
     shortest_delta_deg,
     wrap_deg,
 )
@@ -428,8 +431,8 @@ class MapWindow(QDialog):
         az_axis = getattr(self.ctrl, "az", None)
         az_pos = getattr(az_axis, "pos_d10", None) if az_axis else None
         if az_pos is not None:
-            rotor_az = az_pos / 10.0
-            azimuth = wrap_deg(rotor_az + offset)
+            rotor_az = az_pos_deg_from_d10(int(az_pos))
+            azimuth = antenna_bearing_from_rotor_and_offset(rotor_az, offset)
         else:
             rotor_az = 0.0
             azimuth = 0.0
@@ -584,10 +587,10 @@ class MapWindow(QDialog):
         if unknown_target:
             return None, None
         pos_d10 = getattr(az_axis, "pos_d10", None)
-        target_rotor_az = float(tgt_d10) / 10.0
+        target_rotor_az = az_pos_deg_from_d10(int(tgt_d10))
         if pos_d10 is not None:
-            cur_rotor = float(pos_d10) / 10.0
-            if abs(shortest_delta_deg(cur_rotor, target_rotor_az)) < 0.2:
+            cur_rotor = az_pos_deg_from_d10(int(pos_d10))
+            if abs(shortest_delta_az_rotor_deg(cur_rotor, target_rotor_az)) < 0.2:
                 return None, None
         ui = self.cfg.get("ui", {}) or {}
         lat, lon = effective_station_lat_lon(ui)
@@ -602,7 +605,7 @@ class MapWindow(QDialog):
         if self._target_lat is not None and self._target_lon is not None:
             bearing_display = bearing_deg(lat, lon, self._target_lat, self._target_lon)
         else:
-            bearing_display = wrap_deg(target_rotor_az + offset)
+            bearing_display = antenna_bearing_from_rotor_and_offset(target_rotor_az, offset)
         center_line = beam_center_line_points(lat, lon, bearing_display, range_km)
         stroke = _MAP_ANTENNA_BEAM_COLORS[i][0]
         darker = QColor(stroke).darker(150).name()
@@ -1023,12 +1026,20 @@ class MapWindow(QDialog):
             return
         try:
             pos_d10 = getattr(az_axis, "pos_d10", None)
-            cur = wrap_deg(float(pos_d10) / 10.0 + off) if pos_d10 is not None else None
+            cur = (
+                antenna_bearing_from_rotor_and_offset(az_pos_deg_from_d10(int(pos_d10)), off)
+                if pos_d10 is not None
+                else None
+            )
         except Exception:
             cur = None
         try:
             tgt_d10 = getattr(az_axis, "target_d10", None)
-            tgt = wrap_deg(float(tgt_d10) / 10.0 + off) if tgt_d10 is not None else None
+            tgt = (
+                antenna_bearing_from_rotor_and_offset(az_pos_deg_from_d10(int(tgt_d10)), off)
+                if tgt_d10 is not None
+                else None
+            )
         except Exception:
             tgt = None
         ref_ok = bool(getattr(az_axis, "referenced", False))
@@ -1333,8 +1344,12 @@ class MapWindow(QDialog):
         if self._smooth_rotor_az is None:
             self._smooth_rotor_az = rotor_target
         else:
-            delta = shortest_delta_deg(self._smooth_rotor_az, rotor_target)
-            self._smooth_rotor_az = wrap_deg(self._smooth_rotor_az + delta * self._SMOOTH_FACTOR)
+            delta = shortest_delta_az_rotor_deg(self._smooth_rotor_az, rotor_target)
+            nxt = self._smooth_rotor_az + delta * self._SMOOTH_FACTOR
+            if nxt >= 359.95 and rotor_target >= 359.95:
+                self._smooth_rotor_az = min(360.0, nxt)
+            else:
+                self._smooth_rotor_az = wrap_deg(nxt)
         ui = self.cfg.get("ui", {})
         antenna_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
         params["beams"] = self._compute_beams(self._smooth_rotor_az, antenna_idx)
@@ -1343,7 +1358,9 @@ class MapWindow(QDialog):
         params["target_bearing_color"] = tb_color
         offs = ui.get("antenna_offsets_az", [0.0, 0.0, 0.0])
         offset_sel = float(offs[antenna_idx]) if antenna_idx < len(offs) else 0.0
-        params["azimuth"] = wrap_deg(float(self._smooth_rotor_az or 0.0) + offset_sel)
+        params["azimuth"] = antenna_bearing_from_rotor_and_offset(
+            float(self._smooth_rotor_az or 0.0), offset_sel
+        )
         if self._map_loaded:
             data = {
                 "lat": params["lat"],

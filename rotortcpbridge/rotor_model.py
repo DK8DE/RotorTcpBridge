@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Set, Optional
 
-from .angle_utils import shortest_delta_deg
+from .angle_utils import is_az_pos_at_full_circle_d10, shortest_delta_deg
 
 WARNINGS = {
     0: ("SW_NONE", "Keine Warnung", "-"),
@@ -157,6 +157,12 @@ _SMOOTH_SNAP_D10 = 500
 def _smooth_delta_d10(wrap_360: bool, smooth_f: float, target_i: int) -> float:
     """Differenz smooth → target; AZ kürzester Kreisweg, EL linear."""
     if wrap_360:
+        # 360,0° (3600) und 0° (0) sind peilungsgleich, aber nach Homing ohne
+        # Rückfahrt meldet die Hardware 360,0 — Glättung darf nicht bei smooth≈0 stehen bleiben.
+        if is_az_pos_at_full_circle_d10(target_i) and smooth_f < 3599.0:
+            return float(target_i) - float(smooth_f)
+        if smooth_f >= 3599.0 and target_i < 3599:
+            return float(target_i) - float(smooth_f)
         return shortest_delta_deg(smooth_f * 0.1, float(target_i) * 0.1) * 10.0
     return float(target_i) - float(smooth_f)
 

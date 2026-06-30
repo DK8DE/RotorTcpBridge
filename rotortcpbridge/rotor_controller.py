@@ -7,6 +7,7 @@ from typing import Callable, Optional
 
 from .angle_utils import (
     antenna_dipole_enabled,
+    az_pos_deg_from_d10,
     current_rotor_az_deg,
     rotor_az_for_display_bearing,
     shortest_delta_deg,
@@ -819,10 +820,13 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return
         try:
             now = time.time()
-            cur = float(self.az.get_smoothed_pos_d10f(now)) / 10.0
+            cur = az_pos_deg_from_d10(
+                int(self.az.pos_d10),
+                float(self.az.get_smoothed_pos_d10f(now)),
+            )
         except Exception:
             try:
-                cur = float(self.az.pos_d10) / 10.0
+                cur = az_pos_deg_from_d10(int(self.az.pos_d10))
             except Exception:
                 return
         d10 = int(round(cur * 10.0))

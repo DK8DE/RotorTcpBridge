@@ -58,3 +58,17 @@ def test_az_wrap_shortest_path_when_moving() -> None:
     az.update_position_sample(200, sample_ts=1001.0)
     v = az.get_smoothed_pos_d10f(1001.05)
     assert v > 3580.0
+
+
+def test_az_smoothing_reaches_full_circle_after_homing() -> None:
+    """Homing-Ende 360,0°: Glättung darf nicht bei smooth≈0 stehen bleiben."""
+    az = AxisState(position_wrap_360=True)
+    az.update_position_sample(0, sample_ts=1000.0)
+    az.get_smoothed_pos_d10f(1000.0)
+    az.update_position_sample(3600, sample_ts=1001.0)
+    t = 1001.0
+    v = 0.0
+    for _ in range(480):
+        t += 1.0 / 60.0
+        v = az.get_smoothed_pos_d10f(t)
+    assert v >= 3599.0

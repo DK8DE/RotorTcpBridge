@@ -11,6 +11,11 @@ from .hardware_client import HardwareClient, HwRequest
 from .rotor_model import AxisState
 from .rotor_parse_utils import parse_int
 
+# GETPOSDG während Fahrt: Roundtrip oft ~200 ms — nächste Abfrage erst nach ACK + Puffer.
+_POS_POLL_MOTION_MIN_CYCLE_S = 0.25
+_POS_POLL_DEFAULT_RTT_S = 0.20
+_POS_POLL_POST_ACK_GAP_S = 0.05
+
 
 def bins_block_looks_complete(vals: list[int]) -> bool:
     """12 Strom-Werte je Block: bei Buslast liefert die Firmware oft Null-Padding (siehe Log).
@@ -240,25 +245,18 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             or bool(getattr(self, "_compass_strom_heatmap_el", False))
         )
 
-    @staticmethod
-    def _axis_motion_by_target_gap(axis_state: AxisState, now: float) -> bool:
+    def _axis_motion_by_target_gap(self, axis_state: AxisState, now: float) -> bool:
         """Zusätzliche Bewegungserkennung über Soll-Ist-Abstand.
 
-        Wichtig: Nur kurz nach einem frischen SET-Befehl verwenden.
-        Ein alter Soll-Ist-Versatz (z. B. nach Neustart/Reconnect) darf nicht
-        dauerhaft den Fast-Polling-Modus erzwingen.
+        Solange ein Motorziel gesetzt ist und Soll≠Ist: nur GETPOSDG (alle Encoder,
+        auch lange Schleichfahrten). Ohne ``last_set_sent_target_d10`` kein Dauer-Fast-Poll
+        nach Reconnect mit altem Zielversatz.
         """
+        _ = now
         try:
-            if not bool(getattr(axis_state, "referenced", False)):
+            if getattr(axis_state, "last_set_sent_target_d10", None) is None:
                 return False
-            last_set_ts = float(getattr(axis_state, "last_set_sent_ts", 0.0) or 0.0)
-            if (now - last_set_ts) > 3.0:
-                return False
-            pos_d10 = int(getattr(axis_state, "pos_d10", 0))
-            tgt_d10 = int(getattr(axis_state, "target_d10", 0))
-            if bool(getattr(axis_state, "position_wrap_360", True)):
-                return abs(float(shortest_delta_deg(pos_d10 / 10.0, tgt_d10 / 10.0))) > 0.25
-            return abs(tgt_d10 - pos_d10) > 2
+            return bool(self._axis_target_pending(axis_state))
         except Exception:
             return False
 
@@ -337,7 +335,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     self._poll_ref(self.slave_az, self.az, "AZ")
                     self._poll_warn(self.slave_az, self.az, "AZ")
                     self._poll_idle_telemetry(self.slave_az, self.az, "AZ")
-                    self._poll_idle_wind(self.slave_az, self.az, "AZ")
+                    if not self.abs_encoder_no_homing():
+                        self._poll_idle_wind(self.slave_az, self.az, "AZ")
                 if self.enable_el:
                     self._poll_pos(self.slave_el, self.el, "EL", now, expected_period_s=pos_fast_s)
                     self._poll_pwm(self.slave_el, self.el, "EL")
@@ -410,8 +409,10 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 self._wind_beaufort_inflight = False
 
             pos_period = pos_fast_s if poll_restrict else pos_slow_s
+            if poll_restrict:
+                pos_period = max(float(pos_period), _POS_POLL_MOTION_MIN_CYCLE_S)
             # In den ersten Sekunden nach Connect einmal schneller pollen, damit Werte "schnappen"
-            if now < float(self._startup_burst_until or 0.0):
+            if (not poll_restrict) and now < float(self._startup_burst_until or 0.0):
                 pos_period = min(pos_period, pos_fast_s)
             # Während aktivem Homing (GETREF-Polling) keine GETPOSDG-Flut:
             # nur Referenzstatus pollen; Positionsabfrage erst nach Homing-Ende einmalig.
@@ -484,7 +485,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                         self._poll_minpwm(self.slave_el, self.el, "EL")
 
                 # GETWINDENABLE: Startphase alle 3 s, danach alle 10 s (Sensor an/ab)
-                if self.enable_az:
+                # Absolut-Encoder (Typ 3): kein Wind — Sensor nicht vorhanden.
+                if self.enable_az and (not self.abs_encoder_no_homing()):
                     wind_unknown_retry = not self.wind_enabled_known and (
                         now - self._last_wind_enable_poll >= 3.0
                     )
@@ -575,8 +577,10 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
             # Wind auch während GETACCBINS: GETANEMO/GETWINDDIR/GETBEAUFORT haben prio 2, kein Pending —
             # blockiert ACC nicht, hält aber Telemetrie für den Kompass (Windpfeil) aktuell.
-            if (not poll_restrict) and now >= float(
-                getattr(self, "_idle_poll_defer_until", 0.0) or 0.0
+            if (
+                (not poll_restrict)
+                and (not self.abs_encoder_no_homing())
+                and now >= float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
             ):
                 if self.wind_enabled and (now - self._last_wind >= 2.0):
                     if self.enable_az and (not self._wind_speed_inflight):
@@ -806,6 +810,46 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         )
 
     # -------------------- Poll helpers --------------------
+    def _motion_pos_min_interval(
+        self, axis_state: AxisState, expected_period_s: float, motion_fast: bool
+    ) -> float:
+        """Mindestabstand zwischen zwei GETPOSDG (nach ACK) während/normal."""
+        base = float(max(0.05, expected_period_s))
+        if not motion_fast:
+            return base
+        try:
+            rtt = float(getattr(axis_state, "pos_poll_last_rtt_s", 0.0) or 0.0)
+            ema = float(getattr(axis_state, "pos_poll_rtt_ema_s", 0.0) or 0.0)
+            rtt_plan = max(rtt, ema, _POS_POLL_DEFAULT_RTT_S)
+            return max(base, _POS_POLL_MOTION_MIN_CYCLE_S, rtt_plan + _POS_POLL_POST_ACK_GAP_S)
+        except Exception:
+            return max(base, _POS_POLL_MOTION_MIN_CYCLE_S)
+
+    def _pos_poll_ready(
+        self,
+        axis_state: AxisState,
+        now: float,
+        expected_period_s: float,
+        motion_fast: bool = False,
+    ) -> bool:
+        """True wenn GETPOSDG gesendet werden darf (Antwort abgewartet, Mindestzyklus)."""
+        try:
+            next_due = float(getattr(axis_state, "pos_poll_next_due_ts", 0.0) or 0.0)
+            if next_due > 0.0 and now < next_due:
+                return False
+
+            inflight = bool(getattr(axis_state, "pos_poll_inflight", False))
+            last_sent = float(getattr(axis_state, "pos_poll_sent_ts", 0.0) or 0.0)
+            last_ack = float(getattr(axis_state, "pos_poll_last_ack_ts", 0.0) or 0.0)
+            if inflight and (now - last_sent) < 0.9:
+                return False
+            # Noch keine Antwort auf letztes GETPOSDG → nicht erneut senden.
+            if last_sent > 0.0 and last_ack < (last_sent - 1e-6) and (now - last_sent) < 0.9:
+                return False
+            return True
+        except Exception:
+            return True
+
     def _poll_pos(
         self,
         dst: int,
@@ -837,16 +881,17 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             axis_state.pos_poll_expected_period_s = 0.2
 
         now = time.time()
-        try:
-            if bool(getattr(axis_state, "pos_poll_inflight", False)):
-                last = float(getattr(axis_state, "pos_poll_sent_ts", 0.0) or 0.0)
-                if (now - last) < 0.9:
-                    return False
-        except Exception:
-            pass
+        if not self._pos_poll_ready(
+            axis_state, now, float(expected_period_s), motion_fast=bool(high_priority)
+        ):
+            return False
 
         prio = 0 if high_priority else 5
         line = build(self.master_id, dst, "GETPOSDG", "0")
+        try:
+            axis_state.pos_poll_motion_fast = bool(high_priority)
+        except Exception:
+            pass
         axis_state.pos_poll_inflight = True
         axis_state.pos_poll_sent_ts = now
         self.hw.send_request(
@@ -925,6 +970,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
     def _poll_idle_wind(self, dst: int, axis_state: AxisState, axis: str):
         """Windgeschwindigkeit im Idle pollen (AZ)."""
+        if self.abs_encoder_no_homing():
+            return
         # Winddaten kommen ausschließlich vom AZ-Rotor.
         if int(dst) != int(self.slave_az) or (not self.wind_enabled):
             return
@@ -942,6 +989,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
     def _poll_idle_wind_dir(self, dst: int, axis_state: AxisState, axis: str):
         """Windrichtung im Idle pollen (AZ), zeitversetzt zu GETANEMO."""
+        if self.abs_encoder_no_homing():
+            return
         if int(dst) != int(self.slave_az) or (not self.wind_enabled):
             return
         self._wind_dir_inflight = True
@@ -958,6 +1007,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
     def _poll_idle_wind_beaufort(self, dst: int, axis_state: AxisState, axis: str):
         """Windstärke in Beaufort (0–12) im Idle pollen (AZ)."""
+        if self.abs_encoder_no_homing():
+            return
         if int(dst) != int(self.slave_az) or (not self.wind_enabled):
             return
         self._wind_beaufort_inflight = True
@@ -974,6 +1025,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
     def _poll_wind_enable(self, dst: int, axis_state: AxisState, axis: str):
         """Abfragen, ob Windsensor vorhanden ist (GETWINDENABLE). Inflight-Guard verhindert Doppelabfrage."""
+        if self.abs_encoder_no_homing():
+            return
         if int(dst) != int(self.slave_az):
             return
         if self._wind_enable_inflight:

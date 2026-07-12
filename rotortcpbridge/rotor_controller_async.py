@@ -12,6 +12,7 @@ from .rotor_parse_utils import (
     parse_float,
     parse_float_any,
     parse_getposdg_ist_deg,
+    parse_getposdg_ist_d10,
     parse_int,
     parse_setposcc_params,
 )
@@ -128,7 +129,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         except Exception:
                             pass
                     self._apply_local_state_for_ui_command(
-                        dst, "SETPOSDG", tel.params, from_bus_sniff=True
+                        dst, "SETPOSDG", tel.params, from_bus_sniff=True, bus_src=int(tel.src)
                     )
                     ax = self.az if dst == saz else self.el
                     ax.online = True
@@ -225,6 +226,11 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     self.az.moving = False
                     self.az.online = True
                     self.az.last_rx_ts = time.time()
+                    try:
+                        self.az.pos_poll_inflight = False
+                        self.az.pos_poll_next_due_ts = 0.0
+                    except Exception:
+                        pass
                     self.log.write("ERROR", f"ERR vom Slave {tel.src}: {code}")
                     return
                 if int(tel.src) == int(self.slave_el):
@@ -232,6 +238,11 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     self.el.moving = False
                     self.el.online = True
                     self.el.last_rx_ts = time.time()
+                    try:
+                        self.el.pos_poll_inflight = False
+                        self.el.pos_poll_next_due_ts = 0.0
+                    except Exception:
+                        pass
                     self.log.write("ERROR", f"ERR vom Slave {tel.src}: {code}")
                     return
             except Exception:
@@ -257,12 +268,48 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     axis_state.last_rx_ts = time.time()
                     # Coalescing-Flag freigeben: nächster Tick darf wieder GETPOSDG enqueuen.
                     try:
+                        ack_ts = time.time()
+                        sent_ts = float(
+                            getattr(axis_state, "pos_poll_sent_ts", 0.0) or 0.0
+                        )
+                        if sent_ts > 0.0:
+                            rtt = max(0.05, float(ack_ts - sent_ts))
+                            axis_state.pos_poll_last_rtt_s = rtt
+                            try:
+                                ema = float(
+                                    getattr(axis_state, "pos_poll_rtt_ema_s", 0.0) or 0.0
+                                )
+                                axis_state.pos_poll_rtt_ema_s = (
+                                    rtt if ema <= 0.0 else (ema * 0.75 + rtt * 0.25)
+                                )
+                            except Exception:
+                                axis_state.pos_poll_rtt_ema_s = rtt
+                        axis_state.pos_poll_last_ack_ts = ack_ts
+                        try:
+                            exp = float(
+                                getattr(axis_state, "pos_poll_expected_period_s", 0.2)
+                                or 0.2
+                            )
+                            motion_fast = bool(
+                                getattr(axis_state, "pos_poll_motion_fast", False)
+                            )
+                            min_iv = self._motion_pos_min_interval(
+                                axis_state, exp, motion_fast
+                            )
+                            axis_state.pos_poll_next_due_ts = float(ack_ts + min_iv)
+                        except Exception:
+                            pass
                         axis_state.pos_poll_inflight = False
                     except Exception:
                         pass
-                    v = parse_getposdg_ist_deg(tel.params)
-                    if v is not None:
-                        d10 = int(round(v * 10))
+                    d10 = parse_getposdg_ist_d10(tel.params)
+                    if d10 is None:
+                        v = parse_getposdg_ist_deg(tel.params)
+                        if v is not None:
+                            from .angle_utils import deg_to_d10
+
+                            d10 = deg_to_d10(v)
+                    if d10 is not None:
                         prev_pos = int(axis_state.pos_d10)
                         prev_moving = bool(axis_state.moving)
                         # Beim allerersten Sample nach Programmstart ist prev_pos nur Default (meist 0)
@@ -300,28 +347,55 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                         delta_deg
                                         > _GETPOSDG_MAX_ONE_SHOT_DELTA_DEG_AZ
                                     ):
-                                        try:
-                                            self.log.write(
-                                                "WARN",
-                                                f"{axis_name}: GETPOSDG-Ist verworfen (|Δ|={delta_deg:.1f}°), vermutlich veraltetes ACK — params={tel.params!r}",
-                                            )
-                                        except Exception:
-                                            pass
-                                        return
+                                        if axis_state.note_getposdg_jump_reject(d10):
+                                            try:
+                                                self.log.write(
+                                                    "INFO",
+                                                    f"{axis_name}: GETPOSDG Resync nach kohärenter Serie "
+                                                    f"({float(prev_pos) / 10.0:.1f}° → {float(d10) / 10.0:.1f}°), "
+                                                    f"params={tel.params!r}",
+                                                )
+                                            except Exception:
+                                                pass
+                                            resync = True
+                                        else:
+                                            try:
+                                                self.log.write(
+                                                    "WARN",
+                                                    f"{axis_name}: GETPOSDG-Ist verworfen (|Δ|={delta_deg:.1f}°, "
+                                                    f"prev={float(prev_pos) / 10.0:.1f}°), vermutlich veraltetes ACK "
+                                                    f"— params={tel.params!r}",
+                                                )
+                                            except Exception:
+                                                pass
+                                            return
                                 elif axis_name == "EL":
                                     djump = abs(int(d10) - int(prev_pos))
                                     if (
                                         djump
                                         > _GETPOSDG_MAX_ONE_SHOT_DELTA_D10_EL
                                     ):
-                                        try:
-                                            self.log.write(
-                                                "WARN",
-                                                f"{axis_name}: GETPOSDG-Ist verworfen (|Δ|={djump / 10.0:.1f}°), params={tel.params!r}",
-                                            )
-                                        except Exception:
-                                            pass
-                                        return
+                                        if axis_state.note_getposdg_jump_reject(d10):
+                                            try:
+                                                self.log.write(
+                                                    "INFO",
+                                                    f"{axis_name}: GETPOSDG Resync nach kohärenter Serie "
+                                                    f"({float(prev_pos) / 10.0:.1f}° → {float(d10) / 10.0:.1f}°), "
+                                                    f"params={tel.params!r}",
+                                                )
+                                            except Exception:
+                                                pass
+                                            resync = True
+                                        else:
+                                            try:
+                                                self.log.write(
+                                                    "WARN",
+                                                    f"{axis_name}: GETPOSDG-Ist verworfen (|Δ|={djump / 10.0:.1f}°, "
+                                                    f"prev={float(prev_pos) / 10.0:.1f}°), params={tel.params!r}",
+                                                )
+                                            except Exception:
+                                                pass
+                                            return
 
                         try:
                             exp = float(
@@ -375,17 +449,6 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         except Exception:
                             pass
 
-                        # Bewegung/Stillstand robust bestimmen:
-                        # - Nicht sofort "moving=False" sobald wir nahe am Ziel sind, weil der Rotor
-                        #   beim Überschleifen noch weiterläuft. Das führte zu langsamem Polling und
-                        #   zu einem kurzen "Stocken" im grünen Zeiger.
-                        # - Stattdessen: "steht" erst nach mehreren stabilen Samples.
-                        #
-                        # WICHTIG (Bugfix):
-                        # - Beim Programmstart oder nach einem externen SET (z.B. PST) kann `moving=True`
-                        #   gesetzt sein, obwohl der Rotor faktisch steht (Ziel == Position).
-                        # - Außerdem kann die Zielabweichung >0,2° sein, obwohl der Motor steht.
-                        #   Daher basiert "steht" primär auf *Positionsstabilität*.
                         dpos = abs(int(d10) - int(prev_pos)) if had_prev_sample else 0
                         if had_prev_sample and axis_name == "AZ" and bool(
                             getattr(axis_state, "position_wrap_360", True)
@@ -401,6 +464,39 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                     )
                                 )
                             )
+
+                        # Mit aktivem Motor-Soll: Fahrt solange Ziel≠Ist (alle Encoder).
+                        # stop_confirm scheitert bei Schleichfahrt (<0,1°/Sample) → sonst Idle-Polls.
+                        try:
+                            if getattr(axis_state, "last_set_sent_target_d10", None) is not None:
+                                sample_ts = time.time()
+                                if self._axis_target_pending(axis_state):
+                                    axis_state.moving = True
+                                    axis_state.stop_confirm_samples = 0
+                                    if had_prev_sample and dpos > 0:
+                                        axis_state.last_motion_ts = sample_ts
+                                    elif float(
+                                        getattr(axis_state, "last_motion_ts", 0.0) or 0.0
+                                    ) <= 0.0:
+                                        axis_state.last_motion_ts = sample_ts
+                                    return
+                                axis_state.moving = False
+                                axis_state.stop_confirm_samples = 0
+                                return
+                        except Exception:
+                            pass
+
+                        # Bewegung/Stillstand robust bestimmen:
+                        # - Nicht sofort "moving=False" sobald wir nahe am Ziel sind, weil der Rotor
+                        #   beim Überschleifen noch weiterläuft. Das führte zu langsamem Polling und
+                        #   zu einem kurzen "Stocken" im grünen Zeiger.
+                        # - Stattdessen: "steht" erst nach mehreren stabilen Samples.
+                        #
+                        # WICHTIG (Bugfix):
+                        # - Beim Programmstart oder nach einem externen SET (z.B. PST) kann `moving=True`
+                        #   gesetzt sein, obwohl der Rotor faktisch steht (Ziel == Position).
+                        # - Außerdem kann die Zielabweichung >0,2° sein, obwohl der Motor steht.
+                        #   Daher basiert "steht" primär auf *Positionsstabilität*.
                         stable = (not had_prev_sample) or (dpos <= 1)
 
                         if stable:
@@ -442,6 +538,11 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 if tel.cmd.startswith("NAK_GETPOSDG") or tel.cmd.startswith("NAK_POSDG"):
                     axis_state.online = True
                     axis_state.last_rx_ts = time.time()
+                    try:
+                        axis_state.pos_poll_inflight = False
+                        axis_state.pos_poll_next_due_ts = time.time() + 0.25
+                    except Exception:
+                        pass
                     self.log.write("WARN", f"{axis_name} GETPOSDG NAK: {tel.params}")
                     return
 
@@ -461,6 +562,14 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 # Referenz-Status (GETREF Polling ohne pending)
                 if tel.cmd.startswith("ACK_GETREF") or tel.cmd.startswith("ACK_REF"):
                     axis_state.last_rx_ts = time.time()
+                    # Absolut-Encoder (Typ 3): GETREF ist irrelevant — nicht auf 0 zurückfallen.
+                    try:
+                        if self.abs_encoder_no_homing():
+                            axis_state.referenced = True
+                            axis_state.ref_poll_active = False
+                            return
+                    except Exception:
+                        pass
                     try:
                         if int(tel.dst) != int(self.master_id):
                             axis_state.last_external_getref_ts = time.time()
@@ -565,6 +674,11 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         if new_type == 3:
                             try:
                                 self._apply_abs_encoder_referenced()
+                            except Exception:
+                                pass
+                            try:
+                                self.wind_enabled = False
+                                self.wind_enabled_known = True
                             except Exception:
                                 pass
                         if changed and callable(self.on_encoder_type_changed):

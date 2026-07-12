@@ -76,6 +76,19 @@ def test_az_smoothing_reaches_full_circle_after_homing() -> None:
     assert v >= 3599.0
 
 
+def test_getposdg_jump_reject_coherent_series_triggers_resync() -> None:
+    """Veraltetes pos_d10 (~180°) + kohärente Hardware ~12° → nach 2. Sample Resync."""
+    az = AxisState(position_wrap_360=True)
+    az.referenced = True
+    az.update_position_sample(1797, sample_ts=1000.0)
+    assert az.note_getposdg_jump_reject(118) is False
+    assert az.pos_reject_streak == 1
+    assert az.note_getposdg_jump_reject(121) is True
+    assert az.pos_reject_streak == 2
+    az.clear_getposdg_jump_reject()
+    assert az.pos_reject_streak == 0
+
+
 def test_apply_position_resync_after_rehoming() -> None:
     """Nach erneutem Homing: großer Positions-Sprung muss sofort in Anzeige/Soll landen."""
     az = AxisState(position_wrap_360=True)

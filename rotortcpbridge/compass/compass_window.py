@@ -35,6 +35,7 @@ from ..angle_utils import (
     raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
     wrap_deg,
+    shortest_delta_deg,
 )
 from ..geo_utils import bearing_deg, effective_station_lat_lon, haversine_km, maidenhead_to_lat_lon
 from ..i18n import t, tt
@@ -1932,12 +1933,15 @@ class CompassWindow(QDialog):
         self._az_ref_poll_was_active = ref_polling_az
         self._sync_az_dipole_soll_from_controller()
         try:
-            cur = az_pos_deg_from_d10(
-                int(self.ctrl.az.pos_d10),
+            pos_d10_az = int(self.ctrl.az.pos_d10)
+            cur_smooth = az_pos_deg_from_d10(
+                pos_d10_az,
                 float(self.ctrl.az.get_smoothed_pos_d10f(now)),
             )
+            cur = az_pos_deg_from_d10(pos_d10_az)
         except Exception:
             cur = None
+            cur_smooth = None
         off_az = self._get_antenna_offset_az()
 
         try:
@@ -1969,17 +1973,26 @@ class CompassWindow(QDialog):
         tgt: Optional[float] = None
         unknown_target = False
 
-        # Nach STOP: Soll bleibt fix auf STOP-Position; Ist rollt aus und kommt zurück; danach nachziehen
+        # Nach STOP: Soll bleibt fix auf STOP-Position; Ist rollt aus und kommt zurück.
         if self._stop_az_ts is not None:
-            if (now - self._stop_az_ts) >= self._STOP_PULL_DELAY_S:
-                # Abbremsen vorbei: Soll einmal an Ist angleichen
+            if self._target_az is not None:
+                tgt = self._target_az
                 if cur is not None:
-                    self._target_az = cur if cur >= 359.95 else wrap_deg(cur)
-                    self._clear_az_dipole_soll_display()
+                    try:
+                        err = abs(
+                            float(
+                                shortest_delta_deg(
+                                    float(cur),
+                                    float(self._target_az),
+                                )
+                            )
+                        )
+                    except Exception:
+                        err = 999.0
+                    if err <= 0.35:
+                        self._stop_az_ts = None
+            elif (now - self._stop_az_ts) >= self._STOP_PULL_DELAY_S:
                 self._stop_az_ts = None
-                tgt = self._target_az  # diesen Tick noch die angeglichene Position zeigen
-            elif self._target_az is not None:
-                tgt = self._target_az  # Soll fix halten, nicht mit Ist mitziehen
 
         # Wenn manuelle Eingabe abgelaufen (>10s) und PST ein neues Ziel gesetzt hat → freigeben
         if self._target_az is not None and self._stop_az_ts is None:
@@ -1996,7 +2009,8 @@ class CompassWindow(QDialog):
 
         # _target_az hat Vorrang (Eingabefeld/Klick), außer SETPOSCC (Encoder) liefert ein Soll.
         # CC live auch ohne Motor-moving (Vorschau vor SETPOSDG); Lücken → Latch, sonst Motorziel.
-        if self._target_az is not None:
+        # Während STOP-Hold: Soll nicht durch moving/CC-Logik überschreiben.
+        if self._target_az is not None and self._stop_az_ts is None:
             moving_az = bool(getattr(self.ctrl.az, "moving", False))
             try:
                 cc_d10 = getattr(self.ctrl.az, "compass_target_d10", None)
@@ -2049,18 +2063,19 @@ class CompassWindow(QDialog):
                 tgt = self._target_az
 
         # Ohne Referenz kein Soll aus Bus (target_d10=0 flackert sonst mit „–“);
-        # SETPOSCC (Encoder) darf trotzdem den Sollzeiger setzen.
+        # SETPOSCC (Encoder) und gesetztes Motorziel (last_set_sent) dürfen trotzdem zeigen.
         if (
             not bool(getattr(self.ctrl.az, "referenced", False))
             and self._target_az is None
             and self._stop_az_ts is None
             and getattr(self.ctrl.az, "compass_target_d10", None) is None
+            and getattr(self.ctrl.az, "last_set_sent_target_d10", None) is None
         ):
             tgt = None
 
-        if cur is not None:
-            cur_display = antenna_bearing_from_rotor_and_offset(cur, off_az)
-            self.az_compass.set_current_deg(cur_display)
+        if cur_smooth is not None:
+            cur_display_needle = antenna_bearing_from_rotor_and_offset(cur_smooth, off_az)
+            self.az_compass.set_current_deg(cur_display_needle)
         self.az_compass.set_dipole_active(self._selected_antenna_dipole_enabled())
         self.update_ist_reverse_visibility()
 
@@ -2112,7 +2127,7 @@ class CompassWindow(QDialog):
             tgt_display = self._az_target_display_deg(tgt, off_az)
             if tgt_display is not None:
                 self.az_compass.set_target_deg(tgt_display)
-                desired_txt = f"{tgt_display:.1f}"
+                desired_txt = fmt_deg(float(tgt_display)).rstrip("°")
                 bus_d10 = self._effective_az_bus_target_d10()
                 bus_changed = (
                     self._compass_last_bus_target_d10_az is None
@@ -2167,10 +2182,10 @@ class CompassWindow(QDialog):
         # Linke Info-Karten aktualisieren
         if cur is not None:
             cur_display = antenna_bearing_from_rotor_and_offset(cur, off_az)
-            self._lbl_left_ist_val.setText(f"{cur_display:.1f}°")
+            self._lbl_left_ist_val.setText(fmt_deg(cur_display))
             if self._selected_antenna_dipole_enabled():
                 self._lbl_left_ist_reverse_val.setText(
-                    f"{antenna_bearing_from_rotor_and_offset(cur_display, 180.0):.1f}°"
+                    fmt_deg(antenna_bearing_from_rotor_and_offset(cur_display, 180.0))
                 )
             else:
                 self._lbl_left_ist_reverse_val.setText("–")
@@ -2180,7 +2195,7 @@ class CompassWindow(QDialog):
         if tgt is not None:
             soll_display = self._az_target_display_deg(tgt, off_az)
             self._lbl_left_soll_val.setText(
-                f"{soll_display:.1f}°" if soll_display is not None else "–"
+                fmt_deg(soll_display) if soll_display is not None else "–"
             )
         else:
             self._lbl_left_soll_val.setText("–")
@@ -2213,16 +2228,14 @@ class CompassWindow(QDialog):
         tgt: Optional[float] = None
         unknown_target = False
 
-        # Nach STOP: Soll bleibt fix auf STOP-Position; Ist rollt aus und kommt zurück; danach nachziehen
+        # Nach STOP: Soll bleibt fix auf STOP-Position; Ist rollt aus und kommt zurück.
         if self._stop_el_ts is not None:
-            if (now - self._stop_el_ts) >= self._STOP_PULL_DELAY_S:
-                # Abbremsen vorbei: Soll einmal an Ist angleichen
-                if cur is not None:
-                    self._target_el = clamp_el(cur)
+            if self._target_el is not None:
+                tgt = self._target_el
+                if cur is not None and abs(float(cur) - float(self._target_el)) <= 0.35:
+                    self._stop_el_ts = None
+            elif (now - self._stop_el_ts) >= self._STOP_PULL_DELAY_S:
                 self._stop_el_ts = None
-                tgt = self._target_el  # diesen Tick noch die angeglichene Position zeigen
-            elif self._target_el is not None:
-                tgt = self._target_el  # Soll fix halten, nicht mit Ist mitziehen
 
         # Wenn manuelle Eingabe abgelaufen (>10s) und PST ein neues Ziel gesetzt hat → freigeben
         if self._target_el is not None and self._stop_el_ts is None:
@@ -2237,7 +2250,7 @@ class CompassWindow(QDialog):
                     pass
 
         # _target_el hat Vorrang (Eingabefeld/Klick), außer SETPOSCC — wie bei AZ.
-        if self._target_el is not None:
+        if self._target_el is not None and self._stop_el_ts is None:
             moving_el = bool(getattr(self.ctrl.el, "moving", False))
             try:
                 cc_el = getattr(self.ctrl.el, "compass_target_d10", None)
@@ -2291,6 +2304,8 @@ class CompassWindow(QDialog):
             not bool(getattr(self.ctrl.el, "referenced", False))
             and self._target_el is None
             and self._stop_el_ts is None
+            and getattr(self.ctrl.el, "compass_target_d10", None) is None
+            and getattr(self.ctrl.el, "last_set_sent_target_d10", None) is None
         ):
             tgt = None
 
@@ -2316,7 +2331,7 @@ class CompassWindow(QDialog):
         if tgt is not None:
             tgt_clamped = clamp_el(tgt)
             self.el_compass.set_target_deg(tgt_clamped)
-            desired_txt = f"{tgt_clamped:.1f}"
+            desired_txt = fmt_deg(float(tgt_clamped)).rstrip("°")
             try:
                 bus_d10 = int(getattr(self.ctrl.el, "target_d10", 0))
             except Exception:
@@ -2587,8 +2602,10 @@ class CompassWindow(QDialog):
                 float(self.ctrl.az.get_smoothed_pos_d10f(now)),
             )
             self._target_az = cur if cur >= 359.95 else wrap_deg(cur)  # Soll springt auf Position bei STOP
-            self.ctrl.az.target_d10 = int(round(self._target_az * 10.0))
-            self._compass_last_bus_target_d10_az = self._effective_az_bus_target_d10()
+            d10 = int(round(self._target_az * 10.0))
+            self.ctrl.az.target_d10 = d10
+            self.ctrl.az.compass_target_d10 = d10
+            self._compass_last_bus_target_d10_az = d10
         except Exception:
             pass
         try:
@@ -2608,8 +2625,10 @@ class CompassWindow(QDialog):
             cur = float(self.ctrl.el.get_smoothed_pos_d10f(now)) / 10.0
             self._target_el = clamp_el(cur)  # Soll springt auf Position bei STOP
             # Controller mitschreiben, damit keine andere Stelle alte Soll-Position zurückholt
-            self.ctrl.el.target_d10 = int(round(self._target_el * 10.0))
-            self._compass_last_bus_target_d10_el = int(self.ctrl.el.target_d10)
+            d10 = int(round(self._target_el * 10.0))
+            self.ctrl.el.target_d10 = d10
+            self.ctrl.el.compass_target_d10 = d10
+            self._compass_last_bus_target_d10_el = d10
         except Exception:
             pass
         try:

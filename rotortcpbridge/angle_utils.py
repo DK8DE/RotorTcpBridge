@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import math
+import re
+
+_ANGLE_D10_RE = re.compile(r"^(-?)(\d+)(?:[.,](\d*))?$")
+
 
 def wrap_deg(v: float) -> float:
     """Winkel in den Bereich 0..360° bringen."""
@@ -40,6 +45,59 @@ def shortest_delta_az_rotor_deg(current: float, target: float) -> float:
     return shortest_delta_deg(c, t)
 
 
+def deg_str_to_d10(s: str) -> int | None:
+    """RS485-Winkelstring → 0,1°-Einheiten; nur erste Nachkommastelle, Rest abschneiden.
+
+    ``96,15`` → 961 (Anzeige 96,1°), nicht 962 durch Float-/Format-Rundung.
+    """
+    raw = str(s or "").strip().replace(" ", "")
+    if not raw:
+        return None
+    if ":" in raw:
+        raw = raw.split(":", 1)[0].strip()
+    if ";" in raw:
+        raw = raw.split(";", 1)[0].strip()
+    raw = raw.replace(",", ".")
+    m = _ANGLE_D10_RE.match(raw)
+    if not m:
+        try:
+            return deg_to_d10(float(raw))
+        except Exception:
+            return None
+    neg = m.group(1) == "-"
+    whole = int(m.group(2))
+    frac_s = m.group(3) or ""
+    frac1 = int(frac_s[0]) if frac_s else 0
+    d10 = whole * 10 + frac1
+    return -d10 if neg else d10
+
+
+def deg_to_d10(deg: float) -> int:
+    """Grad → 0,1°-Einheiten; zweite Nachkommastelle abschneiden (Rotor-Auflösung 0,1°)."""
+    v = float(deg)
+    if v >= 0.0:
+        return int(math.floor(v * 10.0 + 1e-6))
+    return int(math.ceil(v * 10.0 - 1e-6))
+
+
+def d10_to_deg(d10: int) -> float:
+    """0,1°-Einheiten → Grad ohne Float-Anzeige-Rundung."""
+    if is_az_pos_at_full_circle_d10(int(d10)):
+        return 360.0
+    return int(d10) / 10.0
+
+
+def fmt_deg_d10(d10: int) -> str:
+    """Winkel aus 0,1°-Einheiten als String mit genau einer Nachkommastelle."""
+    if is_az_pos_at_full_circle_d10(int(d10)):
+        return "360.0°"
+    d = int(d10)
+    if d < 0:
+        d = abs(d)
+        return f"-{d // 10}.{d % 10}°"
+    return f"{d // 10}.{d % 10}°"
+
+
 def is_az_pos_at_full_circle_d10(pos_d10: int) -> bool:
     """True wenn GETPOSDG nahe 360,0° meldet (Homing-Ende ohne Rückfahrt)."""
     return int(pos_d10) >= 3599
@@ -56,7 +114,7 @@ def az_pos_deg_from_d10(pos_d10: int, smooth_d10f: float | None = None) -> float
         return 360.0
     if smooth_d10f is not None:
         return wrap_deg(float(smooth_d10f) / 10.0)
-    return wrap_deg(float(p) / 10.0)
+    return wrap_deg(d10_to_deg(p))
 
 
 def antenna_bearing_from_rotor_and_offset(rotor_deg: float, offset_deg: float) -> float:
@@ -215,9 +273,9 @@ def rotor_az_for_display_bearing(
 
 
 def fmt_deg(v: float) -> str:
-    """Winkel als String mit 1 Nachkommastelle und °-Symbol."""
+    """Winkel als String mit 1 Nachkommastelle und °-Symbol (über d10, ohne .1f-Rundung)."""
     try:
-        return f"{float(v):.1f}°"
+        return fmt_deg_d10(deg_to_d10(float(v)))
     except Exception:
         return f"{v}°"
 

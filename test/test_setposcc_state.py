@@ -43,6 +43,26 @@ def test_setposdg_clears_compass_and_sets_moving() -> None:
     assert c.az.moving is True
 
 
+def test_external_setposdg_keeps_compass_target_for_display() -> None:
+    """Controller CC→DG: compass_target bleibt für Soll-Anzeige während und nach Fahrt."""
+    c = RotorController(
+        _hw_stub(),
+        master_id=0,
+        slave_az=20,
+        slave_el=21,
+        log=_Log(),
+        setposcc_controller_src_id=2,
+    )
+    c.az.compass_target_d10 = 923
+    c._apply_local_state_for_ui_command(
+        20, "SETPOSDG", "92,30:114,3", from_bus_sniff=True, bus_src=2
+    )
+    assert c.az.compass_target_d10 == 923
+    assert c.az.target_d10 == 923
+    assert c.az.moving is True
+    assert c.az.external_panel_move_active is True
+
+
 def test_setposcc_applies_while_moving() -> None:
     """Encoder-Soll auch während Fahrt (Sollzeiger folgt SETPOSCC)."""
     c = RotorController(_hw_stub(), master_id=1, slave_az=20, slave_el=21, log=_Log())
@@ -292,3 +312,29 @@ def test_compass_window_open_clears_strom_flags_for_fresh_sync() -> None:
     assert c._compass_strom_heatmap_el is False
     assert c._acc_bins_poll_enabled() is False
     assert c._acc_bins_strom_live() is False
+
+
+def test_external_setposdg_sets_panel_move_flag() -> None:
+    c = RotorController(
+        _hw_stub(),
+        master_id=0,
+        slave_az=20,
+        slave_el=21,
+        log=_Log(),
+        setposcc_controller_src_id=2,
+    )
+    c.az.compass_target_d10 = 923
+    c._apply_local_state_for_ui_command(
+        20, "SETPOSDG", "92,30:114,3", from_bus_sniff=True, bus_src=2
+    )
+    assert c.az.external_panel_move_active is True
+    assert c.az.compass_target_d10 == 923
+    assert c.az.target_d10 == 923
+    assert c.az.moving is True
+
+
+def test_bridge_setposdg_clears_panel_move_flag() -> None:
+    c = RotorController(_hw_stub(), master_id=0, slave_az=20, slave_el=21, log=_Log())
+    c.az.external_panel_move_active = True
+    c._apply_local_state_for_ui_command(20, "SETPOSDG", "45,0")
+    assert c.az.external_panel_move_active is False

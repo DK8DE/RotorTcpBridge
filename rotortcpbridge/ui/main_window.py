@@ -931,6 +931,8 @@ class MainWindow(QMainWindow):
             return False
         if action in az_motion_actions:
             try:
+                if bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)()):
+                    return bool(getattr(self.ctrl, "enable_az", True))
                 return bool(getattr(self.ctrl.az, "referenced", False))
             except Exception:
                 return False
@@ -1882,10 +1884,14 @@ class MainWindow(QMainWindow):
             if now - float(last.get(key, 0.0)) < cool:
                 return
             last[key] = now
-            try:
-                QMessageBox.warning(self, title, text)
-            except Exception:
-                pass
+
+            def _deferred() -> None:
+                try:
+                    QMessageBox.warning(self, title, text)
+                except Exception:
+                    pass
+
+            QTimer.singleShot(0, _deferred)
 
         try:
             tel = getattr(self.ctrl.az, "telemetry", None)
@@ -2165,6 +2171,20 @@ class MainWindow(QMainWindow):
     def _on_encoder_type_changed(self) -> None:
         """GETENCTYPE gelesen — Homing-Buttons ggf. ausblenden (Thread → UI)."""
         QTimer.singleShot(0, self._update_homing_buttons_visibility)
+        QTimer.singleShot(0, self._update_encoder_dependent_settings_ui)
+        try:
+            if bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)()):
+                self.ctrl._apply_abs_encoder_referenced()
+        except Exception:
+            pass
+
+    def _update_encoder_dependent_settings_ui(self) -> None:
+        sw = getattr(self, "_settings_win", None)
+        if sw is not None and hasattr(sw, "update_encoder_dependent_ui"):
+            try:
+                sw.update_encoder_dependent_ui()
+            except Exception:
+                pass
 
     def _update_homing_buttons_visibility(self) -> None:
         hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
@@ -2227,6 +2247,12 @@ class MainWindow(QMainWindow):
             self._log_exception("PST-UDP notify_position", e)
 
     def _tick(self):
+        try:
+            self._tick_body()
+        except Exception as e:
+            self._log_exception("_tick", e)
+
+    def _tick_body(self):
         import time as _time
 
         self.ctrl.tick_polling()

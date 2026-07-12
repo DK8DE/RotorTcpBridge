@@ -253,6 +253,40 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         except (TypeError, ValueError):
             return False
 
+    def _axis_target_pending(self, axis_state: AxisState) -> bool:
+        """True solange Motor-Soll und Ist noch außerhalb des Ankunft-Toleranzbands liegen."""
+        try:
+            ext_move = bool(getattr(axis_state, "external_panel_move_active", False))
+            has_goal = getattr(axis_state, "last_set_sent_target_d10", None) is not None
+            if (
+                not bool(getattr(axis_state, "referenced", False))
+                and not ext_move
+                and not has_goal
+            ):
+                return False
+            pos_d10 = int(getattr(axis_state, "pos_d10", 0))
+            tgt_d10 = int(getattr(axis_state, "target_d10", 0))
+            if bool(getattr(axis_state, "position_wrap_360", True)):
+                return abs(float(shortest_delta_deg(pos_d10 / 10.0, tgt_d10 / 10.0))) > 0.25
+            return abs(tgt_d10 - pos_d10) > 2
+        except Exception:
+            return False
+
+    def _is_external_panel_controller(self, bus_src: Optional[int]) -> bool:
+        """True wenn der Bus-Master der konfigurierte Encoder/Controller ist (nicht die Bridge)."""
+        if bus_src is None:
+            return False
+        try:
+            s = int(bus_src)
+            if s == int(self.master_id):
+                return False
+            csrc = int(getattr(self, "setposcc_controller_src_id", 0) or 0)
+            if csrc > 0:
+                return s == csrc
+            return True
+        except Exception:
+            return False
+
     def request_encoder_type(self) -> None:
         """Encoder-Variante vom Rotor lesen (GETENCTYPE, nur AZ-Slave)."""
         if not self.enable_az:
@@ -345,34 +379,35 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         return
 
     def request_immediate_pos(self) -> None:
-        """Positionsabfrage sofort mit höchster Priorität (beim Öffnen des Kompassfensters)."""
-        if self.hw.is_connected():
-            try:
-                prio = 0
-                if self.enable_az:
-                    line = build(self.master_id, self.slave_az, "GETPOSDG", "0")
-                    self.hw.send_request(
-                        HwRequest(
-                            line=line,
-                            expect_prefix=None,
-                            timeout_s=0.8,
-                            on_done=None,
-                            priority=prio,
-                        )
-                    )
-                if self.enable_el:
-                    line = build(self.master_id, self.slave_el, "GETPOSDG", "0")
-                    self.hw.send_request(
-                        HwRequest(
-                            line=line,
-                            expect_prefix=None,
-                            timeout_s=0.8,
-                            on_done=None,
-                            priority=prio,
-                        )
-                    )
-            except Exception:
-                pass
+        """Positionsabfrage sofort (Kompass öffnen) — über Coalescing-Pfad."""
+        if not self.hw.is_connected():
+            return
+        try:
+            now = time.time()
+            pos_fast_s = float(self._cfg_poll.get("pos_fast", 200)) / 1000.0
+            poll_restrict = bool(
+                self._motion_poll_restrict_active(now, pos_fast_s)
+            )
+            if self.enable_az:
+                self._poll_pos(
+                    self.slave_az,
+                    self.az,
+                    "AZ",
+                    now,
+                    expected_period_s=pos_fast_s,
+                    high_priority=poll_restrict,
+                )
+            if self.enable_el:
+                self._poll_pos(
+                    self.slave_el,
+                    self.el,
+                    "EL",
+                    now,
+                    expected_period_s=pos_fast_s,
+                    high_priority=poll_restrict,
+                )
+        except Exception:
+            pass
 
     def request_antenna_offsets(self) -> None:
         """AZ-Antennenversätze vom Rotor lesen (GETANTOFF1–3). EL-Versatz entfällt."""
@@ -1045,7 +1080,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         return result[0]
 
     def _apply_local_state_for_ui_command(
-        self, dst: int, cmd: str, params: str, *, from_bus_sniff: bool = False
+        self, dst: int, cmd: str, params: str, *, from_bus_sniff: bool = False, bus_src: Optional[int] = None
     ) -> None:
         """Setzt lokale Statusfelder für UI-Direktkommandos.
 
@@ -1073,6 +1108,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             if cmd == "STOP":
                 self._abort_stats_fetch_and_cooldown()
                 axis.moving = False
+                axis.external_panel_move_active = False
                 return
 
             # -------------------- Referenzfahrt --------------------
@@ -1170,13 +1206,22 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 self._abort_stats_fetch_and_cooldown()
                 if d10 is not None:
                     axis.target_d10 = d10
-                    axis.compass_target_d10 = None
-                    axis.last_set_sent_target_d10 = d10
-                    axis.last_set_sent_ts = time.time()
+                    ext_panel = bool(
+                        from_bus_sniff and self._is_external_panel_controller(bus_src)
+                    )
+                    if ext_panel:
+                        # Encoder CC→DG: Soll-Nadel/Zahl behalten (compass_target), nicht löschen.
+                        axis.compass_target_d10 = int(d10)
+                        axis.external_panel_move_active = True
+                    else:
+                        axis.compass_target_d10 = None
+                        axis.external_panel_move_active = False
                     try:
                         axis.setposcc_ignore_until_ts = time.time() + _SETPOSCC_SUPPRESS_S
                     except Exception:
                         pass
+                    axis.last_set_sent_target_d10 = d10
+                    axis.last_set_sent_ts = time.time()
                 # Bus-Mitschnitt kann SETPOSDG zyklisch wiederholen, obwohl der Rotor
                 # bereits am Ziel steht. Dann "moving=True" nicht erneut erzwingen,
                 # sonst bleibt Polling unnötig im Schnellmodus.
@@ -1217,6 +1262,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             if not self.enable_az:
                 return
             self.az.compass_target_d10 = None
+            self.az.external_panel_move_active = False
             self.az.target_d10 = d10
             self._compass_manual_az_ts = time.time()
             self._send_setpos(self.slave_az, d10, axis="AZ")
@@ -1243,6 +1289,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             if not self.enable_el:
                 return
             self.el.compass_target_d10 = None
+            self.el.external_panel_move_active = False
             self.el.target_d10 = d10
             self._compass_manual_el_ts = time.time()
             self._send_setpos(self.slave_el, d10, axis="EL")
@@ -1370,14 +1417,15 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             d10 = int(self.az.pos_d10)
         except Exception:
             return
-        self.az.compass_target_d10 = None
+        self.az.compass_target_d10 = d10
+        self.az.external_panel_move_active = False
         self.az.target_d10 = d10
         self.az.last_set_sent_target_d10 = d10
         self.az.last_set_sent_ts = time.time()
-        self.az.moving = False
         if not self.az.referenced:
             return
         self._send_setpos(self.slave_az, d10, axis="AZ")
+        self.az.moving = True
 
     def hold_el_at_current_pos(self) -> None:
         """Wie hold_az_at_current_pos für EL."""
@@ -1388,14 +1436,15 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             d10 = int(self.el.pos_d10)
         except Exception:
             return
-        self.el.compass_target_d10 = None
+        self.el.compass_target_d10 = d10
+        self.el.external_panel_move_active = False
         self.el.target_d10 = d10
         self.el.last_set_sent_target_d10 = d10
         self.el.last_set_sent_ts = time.time()
-        self.el.moving = False
         if not self.el.referenced:
             return
         self._send_setpos(self.slave_el, d10, axis="EL")
+        self.el.moving = True
 
     def hold_all_at_current_pos(self) -> None:
         """Beide Achsen: aktuelle Position als SETPOSDG (für PST-Stop von HW/Remote)."""

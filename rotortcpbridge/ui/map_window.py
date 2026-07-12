@@ -569,8 +569,9 @@ class MapWindow(QDialog):
             return None, None
         cc = getattr(az_axis, "compass_target_d10", None)
         ref_ok = bool(getattr(az_axis, "referenced", False))
-        # Wie compass_window._tick_az: ohne Referenz kein Bus-Soll — SETPOSCC darf trotzdem zeigen.
-        if not ref_ok and cc is None:
+        last_set = getattr(az_axis, "last_set_sent_target_d10", None)
+        # Wie compass_window._tick_az: ohne Referenz kein Bus-Soll — SETPOSCC/Motorziel trotzdem.
+        if not ref_ok and cc is None and last_set is None:
             return None, None
         try:
             tgt_d10 = int(cc) if cc is not None else int(getattr(az_axis, "target_d10", 0))
@@ -588,7 +589,7 @@ class MapWindow(QDialog):
             return None, None
         pos_d10 = getattr(az_axis, "pos_d10", None)
         target_rotor_az = az_pos_deg_from_d10(int(tgt_d10))
-        if pos_d10 is not None:
+        if pos_d10 is not None and cc is None:
             cur_rotor = az_pos_deg_from_d10(int(pos_d10))
             if abs(shortest_delta_az_rotor_deg(cur_rotor, target_rotor_az)) < 0.2:
                 return None, None
@@ -1034,7 +1035,11 @@ class MapWindow(QDialog):
         except Exception:
             cur = None
         try:
-            tgt_d10 = getattr(az_axis, "target_d10", None)
+            cc_d10 = getattr(az_axis, "compass_target_d10", None)
+            if cc_d10 is not None:
+                tgt_d10 = int(cc_d10)
+            else:
+                tgt_d10 = getattr(az_axis, "target_d10", None)
             tgt = (
                 antenna_bearing_from_rotor_and_offset(az_pos_deg_from_d10(int(tgt_d10)), off)
                 if tgt_d10 is not None
@@ -1042,6 +1047,7 @@ class MapWindow(QDialog):
             )
         except Exception:
             tgt = None
+            tgt_d10 = None
         ref_ok = bool(getattr(az_axis, "referenced", False))
         # Bei unbekanntem Ziel (z.B. erste Öffnung): Soll = Ist — nur wenn referenziert
         unknown_target = (tgt_d10 is None) or (
@@ -1051,7 +1057,11 @@ class MapWindow(QDialog):
         )
         if cur is not None and unknown_target and ref_ok:
             tgt = cur
-        if not ref_ok:
+        if (
+            not ref_ok
+            and getattr(az_axis, "compass_target_d10", None) is None
+            and getattr(az_axis, "last_set_sent_target_d10", None) is None
+        ):
             tgt = None
         self._lbl_ist.setText(t("compass.ist_prefix") + (fmt_deg(cur) if cur is not None else "–"))
         if self._hover_preview_display_az is not None:

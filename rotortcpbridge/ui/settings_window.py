@@ -1448,6 +1448,7 @@ class SettingsWindow(QDialog):
         except Exception:
             pass
         self._update_antenna_offset_enabled()
+        self.update_encoder_dependent_ui()
         self._update_status_on_open()
         self._request_antenna_offsets_if_needed()
         self._antenna_refresh_timer.start()
@@ -2370,6 +2371,7 @@ class SettingsWindow(QDialog):
         """Periodisch: Verbindungsabhängige Buttons + Antennennamen (HW-Controller)."""
         self._update_strom_cal_buttons_enabled()
         self._update_antenna_offset_enabled()
+        self.update_encoder_dependent_ui()
         self._update_weather_tab_visibility()
 
     def _wind_sensor_available_for_ui(self) -> bool:
@@ -2861,7 +2863,7 @@ class SettingsWindow(QDialog):
         chw["speaker_freq_hz"] = int(self.sp_cont_beep_freq.value())
         chw["speaker_volume"] = int(self.sp_cont_beep_vol.value())
         chw["display_brightness_pct"] = int(self.sl_cont_display_brightness.value())
-        chw["wind_anemometer"] = bool(self.chk_cont_wind_anemo.isChecked())
+        chw["wind_anemometer"] = bool(self._controller_wind_anemo_ui_value())
         chw["encoder_delta"] = int(self.cb_cont_encoder_delta.currentData())
         chw["antenna_realign_on_switch"] = bool(self.chk_cont_antenna_realign.isChecked())
 
@@ -3009,6 +3011,36 @@ class SettingsWindow(QDialog):
         t = (s or "").strip()
         return "".join(c for c in t[:9] if c not in bad)[:9]
 
+    def _rotor_has_abs_encoder_type3(self) -> bool:
+        """Absolut-Encoder am Rotor (GETENCTYPE=3): kein Anemometer an der Achse."""
+        try:
+            fn = getattr(self.ctrl, "abs_encoder_no_homing", None)
+            if callable(fn):
+                return bool(fn())
+        except Exception:
+            pass
+        return False
+
+    def _controller_wind_anemo_ui_value(self) -> int:
+        """Windmesser-Checkbox → 0/1; bei Encoder Typ 3 immer aus."""
+        if self._rotor_has_abs_encoder_type3():
+            return 0
+        return 1 if self.chk_cont_wind_anemo.isChecked() else 0
+
+    def update_encoder_dependent_ui(self) -> None:
+        """Nach GETENCTYPE: abhängige Controller-/UI-Zeilen aktualisieren."""
+        self._update_wind_anemo_row_visibility()
+
+    def _update_wind_anemo_row_visibility(self) -> None:
+        """Windmesser am Controller: bei Rotor-Encoder Typ 3 ausblenden."""
+        if not hasattr(self, "chk_cont_wind_anemo"):
+            return
+        hide = self._rotor_has_abs_encoder_type3()
+        self.chk_cont_wind_anemo.setVisible(not hide)
+        if hide:
+            self.chk_cont_wind_anemo.setChecked(False)
+        self._update_wind_dir_display_row_visibility()
+
     def _controller_hw_enabled(self) -> bool:
         """True: Hardware-Controller ist eingeschaltet (Checkbox / Config)."""
         if hasattr(self, "chk_hw_controller_enabled"):
@@ -3025,13 +3057,17 @@ class SettingsWindow(QDialog):
             return
         self.gb_controller.setEnabled(self._controller_hw_enabled())
         self._update_antenna_offset_enabled()
-        self._update_wind_dir_display_row_visibility()
+        self.update_encoder_dependent_ui()
 
     def _update_wind_dir_display_row_visibility(self) -> None:
         """Wind-Richtung (UI): nur sinnvoll mit Windmesser (Controller)."""
         if not hasattr(self, "_gb_wind_dir_display"):
             return
-        self._gb_wind_dir_display.setVisible(bool(self.chk_cont_wind_anemo.isChecked()))
+        show = (
+            bool(self.chk_cont_wind_anemo.isChecked())
+            and self.chk_cont_wind_anemo.isVisible()
+        )
+        self._gb_wind_dir_display.setVisible(show)
 
     def _controller_bus_dst(self) -> int:
         """RS485-Zieladresse für den Hardware-Controller (Einstellungsfeld Controller-ID)."""
@@ -3097,7 +3133,7 @@ class SettingsWindow(QDialog):
             int(self.sp_cont_beep_freq.value()),
             int(self.sp_cont_beep_vol.value()),
             int(self.sl_cont_display_brightness.value()),
-            1 if self.chk_cont_wind_anemo.isChecked() else 0,
+            self._controller_wind_anemo_ui_value(),
             self._controller_encoder_delta_value(),
             1 if self.chk_cont_antenna_realign.isChecked() else 0,
             1 if self.chk_az_dipole_1.isChecked() else 0,
@@ -3365,19 +3401,22 @@ class SettingsWindow(QDialog):
                     w = self._parse_hw_int(str(rp).split(";")[0].strip())
                 if w is not None:
                     sp.setValue(max(lo, min(hi, w)))
-            rp_ano = c.sync_ui_command_response(dst, "GETCONANO", "0", "ACK_GETCONANO")
-            if _sync_nak_notimpl(rp_ano):
+            if self._rotor_has_abs_encoder_type3():
                 acks.append(True)
-            elif rp_ano is not None and str(rp_ano).startswith(SYNC_UI_NAK_PREFIX):
-                acks.append(False)
             else:
-                acks.append(_sync_got_ack_value(rp_ano))
-                if rp_ano is not None and _sync_got_ack_value(rp_ano):
-                    w = self._parse_hw_int(rp_ano)
-                    if w is None:
-                        w = self._parse_hw_int(str(rp_ano).split(";")[0].strip())
-                    if w is not None:
-                        self.chk_cont_wind_anemo.setChecked(bool(int(w)))
+                rp_ano = c.sync_ui_command_response(dst, "GETCONANO", "0", "ACK_GETCONANO")
+                if _sync_nak_notimpl(rp_ano):
+                    acks.append(True)
+                elif rp_ano is not None and str(rp_ano).startswith(SYNC_UI_NAK_PREFIX):
+                    acks.append(False)
+                else:
+                    acks.append(_sync_got_ack_value(rp_ano))
+                    if rp_ano is not None and _sync_got_ack_value(rp_ano):
+                        w = self._parse_hw_int(rp_ano)
+                        if w is None:
+                            w = self._parse_hw_int(str(rp_ano).split(";")[0].strip())
+                        if w is not None:
+                            self.chk_cont_wind_anemo.setChecked(bool(int(w)))
             rp_del = c.sync_ui_command_response(dst, "GETCONDELTA", "0", "ACK_GETCONDELTA")
             if _sync_nak_notimpl(rp_del):
                 acks.append(True)
@@ -3418,7 +3457,7 @@ class SettingsWindow(QDialog):
         finally:
             self._controller_suppress_dirty = False
             self._set_controller_wait_visible(False)
-            self._update_wind_dir_display_row_visibility()
+            self.update_encoder_dependent_ui()
 
     def _save_controller_hw_if_changed(self) -> bool:
         if not self._controller_hw_enabled():
@@ -3474,7 +3513,7 @@ class SettingsWindow(QDialog):
             r = c.sync_ui_command_response(dst, "SETCONLEDP", str(int(cur[8])), "ACK_SETCONLEDP")
             if not _sync_got_ack_value(r):
                 all_ok = False
-        if snap[9] != cur[9]:
+        if snap[9] != cur[9] and not self._rotor_has_abs_encoder_type3():
             r = c.sync_ui_command_response(dst, "SETCONANO", str(int(cur[9])), "ACK_SETCONANO")
             if not _sync_got_ack_value(r):
                 all_ok = False

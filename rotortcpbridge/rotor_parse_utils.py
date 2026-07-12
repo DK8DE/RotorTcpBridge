@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from .angle_utils import d10_to_deg, deg_str_to_d10
+
 
 def parse_float(s: str) -> Optional[float]:
     try:
@@ -64,6 +66,23 @@ def parse_setposcc_params(params: str) -> tuple[Optional[float], Optional[int]]:
     return parse_float(raw), None
 
 
+def parse_getposdg_ist_d10(params: str) -> Optional[int]:
+    """Ist-Position aus ACK_GETPOSDG als 0,1°-Einheiten (eine Nachkommastelle)."""
+    try:
+        p = str(params or "").strip()
+    except Exception:
+        return None
+    if not p:
+        return None
+    if ";" in p:
+        p = p.split(";", 1)[0].strip()
+    if ":" in p:
+        p = p.split(":", 1)[0].strip()
+    if ":" in p:
+        p = p.split(":", 1)[0].strip()
+    return deg_str_to_d10(p)
+
+
 def parse_getposdg_ist_deg(params: str) -> Optional[float]:
     """Ist-Position aus ACK_GETPOSDG-Parametern (Grad, Komma als Dezimaltrenner).
 
@@ -72,6 +91,9 @@ def parse_getposdg_ist_deg(params: str) -> Optional[float]:
     enthält. ``Ist;Soll`` (semikolongetrennt) wird weiter unterstützt — hier ist der erste
     Wert der Ist.
     """
+    d10 = parse_getposdg_ist_d10(params)
+    if d10 is not None:
+        return d10_to_deg(d10)
     try:
         p = str(params or "").strip()
     except Exception:

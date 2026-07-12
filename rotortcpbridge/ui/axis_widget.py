@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from .led_widget import Led
 from .ui_utils import px_to_dip
-from ..angle_utils import wrap_deg
+from ..angle_utils import az_pos_deg_from_d10, fmt_deg, wrap_deg
 from ..i18n import t
 
 
@@ -536,26 +536,21 @@ def retranslate_axis_panel(fields: dict) -> None:
 def fill_axis_panel(fields: dict, axis_state) -> None:
     """Aktualisiert die Anzeige eines Axis-Panels mit axis_state."""
     now = float(_time_mod.time())
-    p = float(axis_state.get_smoothed_pos_d10f(now))
-    pos_deg = p / 10.0
-    pos_raw_d10 = int(round(p))
+    _ = now
+    pos_d10 = int(getattr(axis_state, "pos_d10", 0))
     wrap_az = bool(getattr(axis_state, "position_wrap_360", False))
     if wrap_az:
-        pos_deg = wrap_deg(pos_deg)
-        # Echte 360.0° nicht als 0.0° anzeigen (sonst wirkt es wie "nicht abgefragt").
-        if abs(pos_deg) < 0.05 and abs(pos_raw_d10) >= 3599:
-            pos_deg = 360.0
-    fields["pos"].setText(f"{pos_deg:.1f}")
+        pos_deg = az_pos_deg_from_d10(pos_d10)
+    else:
+        pos_deg = float(axis_state.get_smoothed_pos_d10f(now)) / 10.0
+    fields["pos"].setText(fmt_deg(pos_deg).rstrip("°"))
     if bool(getattr(axis_state, "referenced", False)):
-        tgt_deg = axis_state.target_d10 / 10.0
+        tgt_d10 = int(getattr(axis_state, "target_d10", 0))
         if wrap_az:
-            tgt_deg = wrap_deg(tgt_deg)
-            try:
-                if abs(tgt_deg) < 0.05 and abs(int(getattr(axis_state, "target_d10", 0))) >= 3599:
-                    tgt_deg = 360.0
-            except Exception:
-                pass
-        fields["target"].setText(f"{tgt_deg:.1f}")
+            tgt_deg = az_pos_deg_from_d10(tgt_d10)
+        else:
+            tgt_deg = tgt_d10 / 10.0
+        fields["target"].setText(fmt_deg(tgt_deg).rstrip("°"))
     else:
         fields["target"].setText("–")
 

@@ -223,6 +223,8 @@ class AxisState:
     target_d10: int = 0
     # Kompass-Soll aus Bus (SETPOSCC, z. B. Encoder-Panel): nur Anzeige; SETPOSDG/PST/manuell setzen das zurück.
     compass_target_d10: Optional[int] = None
+    # SETPOSDG vom externen Controller (z. B. Bus-Master #2): während Fahrt kein Soll in UI, nur Ist.
+    external_panel_move_active: bool = False
     referenced: bool = False
     moving: bool = False
     error_code: int = 0
@@ -252,8 +254,16 @@ class AxisState:
     # freigegeben; Watchdog über pos_poll_sent_ts (0,9 s) verhindert Hänger.
     pos_poll_inflight: bool = False
     pos_poll_sent_ts: float = 0.0
+    pos_poll_last_ack_ts: float = 0.0
+    pos_poll_last_rtt_s: float = 0.0
+    pos_poll_rtt_ema_s: float = 0.0
+    pos_poll_next_due_ts: float = 0.0
+    pos_poll_motion_fast: bool = False
     # Nach Homing-Ende: nächstes GETPOSDG ohne Sprung-Filter, Anzeige sofort nachziehen.
     pos_resync_pending: bool = False
+    # Sprungfilter verworf mehrere Samples, Hardware meldet aber kohärent neu → Resync.
+    pos_reject_streak: int = 0
+    pos_reject_last_d10: Optional[int] = None
     pos_poll_expected_period_s: float = 0.2
 
     # Kalibrier-Bins (nur wenn GETCALSTATE=2 DONE): 72 Stromwerte in mV pro Richtung
@@ -284,6 +294,29 @@ class AxisState:
     antdis2: Optional[int] = None
     antdis3: Optional[int] = None
 
+    def clear_getposdg_jump_reject(self) -> None:
+        self.pos_reject_streak = 0
+        self.pos_reject_last_d10 = None
+
+    def note_getposdg_jump_reject(self, new_pos_d10: int) -> bool:
+        """Sprungfilter-Ablehnung: True wenn Serie kohärent → lokales pos_d10 resyncen."""
+        nxt = int(new_pos_d10)
+        last = self.pos_reject_last_d10
+        max_step_d10 = 150.0  # 15° zwischen verworfenen Samples
+        if last is not None:
+            if self.position_wrap_360:
+                step_d10 = abs(shortest_delta_deg(last / 10.0, nxt / 10.0)) * 10.0
+            else:
+                step_d10 = abs(float(nxt - int(last)))
+            if step_d10 <= max_step_d10:
+                self.pos_reject_streak = int(self.pos_reject_streak) + 1
+            else:
+                self.pos_reject_streak = 1
+        else:
+            self.pos_reject_streak = 1
+        self.pos_reject_last_d10 = nxt
+        return int(self.pos_reject_streak) >= 2
+
     def update_position_sample(
         self, new_pos_d10: int, sample_ts: Optional[float] = None, expected_period_s: float = 0.2
     ) -> None:
@@ -292,6 +325,7 @@ class AxisState:
         ``expected_period_s`` bleibt in der Signatur (Aufrufer); optional für zukünftige Nutzung.
         """
         _ = expected_period_s
+        self.clear_getposdg_jump_reject()
         prev = int(self.pos_d10)
         try:
             ts = float(sample_ts) if sample_ts is not None else 0.0
@@ -326,6 +360,7 @@ class AxisState:
         self.last_set_sent_target_d10 = d10
         self.last_set_sent_ts = ts
         self.pos_resync_pending = False
+        self.clear_getposdg_jump_reject()
 
     def _in_dynamic_smoothing(self) -> bool:
         """Fahrt oder Referenz-Polling: schnelleres Nachführen wie bei Bewegung."""

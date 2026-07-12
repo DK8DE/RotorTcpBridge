@@ -7,8 +7,11 @@ import pytest
 from rotortcpbridge.angle_utils import (
     az_pos_deg_from_d10,
     clamp_el,
+    deg_str_to_d10,
+    deg_to_d10,
     dipole_rotor_move_cost,
     fmt_deg,
+    fmt_deg_d10,
     is_az_pos_at_full_circle_d10,
     rotor_az_for_display_bearing,
     rotor_travel_deg,
@@ -45,6 +48,24 @@ def test_clamp_el() -> None:
 
 def test_fmt_deg() -> None:
     assert "45.0" in fmt_deg(45.0)
+    assert fmt_deg(95.97) == "95.9°"
+    assert fmt_deg(96.15) == "96.1°"
+    assert fmt_deg_d10(959) == "95.9°"
+    assert fmt_deg_d10(961) == "96.1°"
+
+
+def test_deg_str_to_d10_truncates_second_decimal() -> None:
+    assert deg_str_to_d10("96,15") == 961
+    assert deg_str_to_d10("95,97") == 959
+    assert deg_str_to_d10("96,00") == 960
+    assert deg_to_d10(95.97) == 959
+
+
+def test_parse_getposdg_ist_d10() -> None:
+    from rotortcpbridge.rotor_parse_utils import parse_getposdg_ist_d10, parse_getposdg_ist_deg
+
+    assert parse_getposdg_ist_d10("96,15") == 961
+    assert parse_getposdg_ist_deg("95,97") == pytest.approx(95.9)
 
 
 def test_wrap_deg_large_negative() -> None:

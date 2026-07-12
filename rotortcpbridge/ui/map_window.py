@@ -967,12 +967,18 @@ class MapWindow(QDialog):
             pass
 
     def update_homing_buttons_visibility(self) -> None:
-        """Absolut-Encoder (Typ 3): AZ-Homing-Button ausblenden."""
+        """Absolut-Encoder (Typ 3): AZ-Homing-Button und Home-Status ausblenden."""
         hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
         try:
             self._btn_ref_az.setVisible(not hide)
         except Exception:
             pass
+        for w in (getattr(self, "_led_ref", None), getattr(self, "_lbl_ref", None)):
+            if w is not None:
+                try:
+                    w.setVisible(not hide)
+                except Exception:
+                    pass
 
     def _update_wind_overlay(self) -> None:
         """Wind-Overlay aus Telemetrie aktualisieren."""
@@ -1341,6 +1347,10 @@ class MapWindow(QDialog):
     def _refresh_map(self) -> None:
         """Beam-Daten aktualisieren ohne Karten-Zoom/Zentrum zu ändern.
         Azimuth wird geglättet für flüssige Bewegung ohne Ruckeln."""
+        hide_homing = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        if hide_homing != getattr(self, "_homing_ui_hidden_for_abs_enc", False):
+            self._homing_ui_hidden_for_abs_enc = hide_homing
+            self.update_homing_buttons_visibility()
         # ── Fremd-Bewegungserkennung: Rotor extern bewegt? → Marker löschen ──
         if self._map_click_rotor_az is not None and self._target_lat is not None:
             az_axis = getattr(self.ctrl, "az", None)

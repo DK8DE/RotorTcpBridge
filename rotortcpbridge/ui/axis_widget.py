@@ -352,6 +352,7 @@ def _make_axis_panel(
     mv_w, mv_led, lbl_moving = status_widget(t("axis.moving_label"))
     ref_w, ref_led, lbl_ref = status_widget(t("axis.ref_label"), left_margin=_led_gap)
     on_w, on_led, lbl_online = status_widget(t("axis.online_label"))
+    fields["ref_w"] = ref_w
     fields["ref_led"] = ref_led
     fields["moving_led"] = mv_led
     fields["online_led"] = on_led
@@ -645,3 +646,21 @@ def fill_axis_panel(fields: dict, axis_state) -> None:
                         pwm_val.setText(f"{iv:d}")
     except Exception:
         pass
+
+
+def update_axis_homing_visibility(fields: dict, hide: bool) -> None:
+    """Absolut-Encoder (Typ 3): Home-LED und -Label im Achsen-Panel ausblenden."""
+    if not isinstance(fields, dict):
+        return
+    ref_w = fields.get("ref_w")
+    if ref_w is not None:
+        try:
+            ref_w.setVisible(not hide)
+        except Exception:
+            pass
+    align = fields.get("_led_status_align")
+    if align is not None:
+        try:
+            _align_axis_led_status_columns(*align)
+        except Exception:
+            pass

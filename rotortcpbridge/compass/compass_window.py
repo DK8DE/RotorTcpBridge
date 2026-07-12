@@ -118,6 +118,7 @@ class CompassWindow(QDialog):
         self._stop_el_ts: Optional[float] = None
         self._STOP_PULL_DELAY_S = 3.0
         self._last_label_color: Optional[str] = None
+        self._homing_ui_hidden_for_abs_enc = False
         # AZ Standzeit-Ring (nur Session): je Antenne (0–2) eigene Sektorliste, parallel geführt
         self._dwell_az_seconds_per_ant: list[list[float]] = [[], [], []]
         self._dwell_prev_mono: Optional[float] = None
@@ -479,7 +480,8 @@ class CompassWindow(QDialog):
         self._top_ref_led = Led(_led_d)
         self._top_ref_lbl = QLabel(t("axis.ref_label"))
         self._top_ref_lbl.setStyleSheet(_lbl_style)
-        _conn_vbox.addWidget(_status_row(self._top_ref_led, self._top_ref_lbl))
+        self._top_ref_row = _status_row(self._top_ref_led, self._top_ref_lbl)
+        _conn_vbox.addWidget(self._top_ref_row)
 
         self._top_online_led = Led(_led_d)
         self._top_online_lbl = QLabel(t("axis.online_label"))
@@ -612,7 +614,8 @@ class CompassWindow(QDialog):
         self._top_el_ref_led = Led(_led_d)
         self._top_el_ref_lbl = QLabel(t("axis.ref_label"))
         self._top_el_ref_lbl.setStyleSheet(_lbl_style)
-        _conn_el_vbox.addWidget(_status_row(self._top_el_ref_led, self._top_el_ref_lbl))
+        self._top_el_ref_row = _status_row(self._top_el_ref_led, self._top_el_ref_lbl)
+        _conn_el_vbox.addWidget(self._top_el_ref_row)
 
         self._top_el_online_led = Led(_led_d)
         self._top_el_online_lbl = QLabel(t("axis.online_label"))
@@ -1713,13 +1716,19 @@ class CompassWindow(QDialog):
             pass
 
     def update_homing_buttons_visibility(self) -> None:
-        """Absolut-Encoder (Typ 3): AZ/EL-Homing-Buttons ausblenden."""
+        """Absolut-Encoder (Typ 3): AZ/EL-Homing-Buttons und Home-Status ausblenden."""
         hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
         try:
             self.btn_ref_az.setVisible(not hide)
             self.btn_ref_el.setVisible(not hide)
         except Exception:
             pass
+        for row in (getattr(self, "_top_ref_row", None), getattr(self, "_top_el_ref_row", None)):
+            if row is not None:
+                try:
+                    row.setVisible(not hide)
+                except Exception:
+                    pass
 
     def eventFilter(self, watched, event):  # noqa: N802
         try:
@@ -1852,6 +1861,10 @@ class CompassWindow(QDialog):
 
     @Slot()
     def _tick(self) -> None:
+        hide_homing = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        if hide_homing != getattr(self, "_homing_ui_hidden_for_abs_enc", False):
+            self._homing_ui_hidden_for_abs_enc = hide_homing
+            self.update_homing_buttons_visibility()
         self.refresh_visibility()
         # Bei Windows-Theme-Wechsel Palette prüfen (PaletteChange kann ausbleiben)
         if self.isVisible():

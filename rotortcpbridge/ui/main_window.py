@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
 )
 from PySide6.QtGui import QAction, QFont, QGuiApplication
-from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 
 from .antenna_sync import AntennaSelectionBridge
 
@@ -144,11 +144,18 @@ from .rig_freq_utils import (
 from .ui_utils import px_to_dip
 from .theme import apply_theme_mode
 from .popup_handlers import ErrorPopupHandler, WarningPopupHandler
-from .axis_widget import _make_axis_panel, fill_axis_panel, retranslate_axis_panel
+from .axis_widget import (
+    _make_axis_panel,
+    fill_axis_panel,
+    retranslate_axis_panel,
+    update_axis_homing_visibility,
+)
 
 
 
 class MainWindow(QMainWindow):
+    _encoder_type_changed_ui = Signal()
+
     @staticmethod
     def _hamlib_listener_ports_sorted(ham_cfg: dict) -> list[int]:
         ports: list[int] = []
@@ -687,6 +694,8 @@ class MainWindow(QMainWindow):
 
         # Referenzierungs-Fehler-Callback: Controller ruft dies aus Hintergrundthread auf
         self.ctrl.on_ref_start_failed = self._on_ref_start_failed
+        self._homing_ui_hidden_for_abs_enc = False
+        self._encoder_type_changed_ui.connect(self._on_encoder_type_changed_ui)
         self.ctrl.on_encoder_type_changed = self._on_encoder_type_changed
         QTimer.singleShot(0, self._update_homing_buttons_visibility)
 
@@ -2169,9 +2178,16 @@ class MainWindow(QMainWindow):
             pass
 
     def _on_encoder_type_changed(self) -> None:
-        """GETENCTYPE gelesen — Homing-Buttons ggf. ausblenden (Thread → UI)."""
-        QTimer.singleShot(0, self._update_homing_buttons_visibility)
-        QTimer.singleShot(0, self._update_encoder_dependent_settings_ui)
+        """GETENCTYPE gelesen — Homing-UI auf UI-Thread aktualisieren (Callback aus HW-Thread)."""
+        try:
+            self._encoder_type_changed_ui.emit()
+        except Exception:
+            QTimer.singleShot(0, self._on_encoder_type_changed_ui)
+
+    def _on_encoder_type_changed_ui(self) -> None:
+        """UI-Thread: Home-Elemente nach GETENCTYPE ein-/ausblenden."""
+        self._update_homing_buttons_visibility()
+        self._update_encoder_dependent_settings_ui()
         try:
             if bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)()):
                 self.ctrl._apply_abs_encoder_referenced()
@@ -2192,6 +2208,12 @@ class MainWindow(QMainWindow):
             self.btn_ref.setVisible(not hide)
         except Exception:
             pass
+        for fields in (getattr(self, "az_fields", None), getattr(self, "el_fields", None)):
+            if fields is not None:
+                try:
+                    update_axis_homing_visibility(fields, hide)
+                except Exception:
+                    pass
         cw = getattr(self, "_compass_win", None)
         if cw is not None and hasattr(cw, "update_homing_buttons_visibility"):
             try:
@@ -2256,6 +2278,11 @@ class MainWindow(QMainWindow):
         import time as _time
 
         self.ctrl.tick_polling()
+
+        hide_homing = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        if hide_homing != getattr(self, "_homing_ui_hidden_for_abs_enc", False):
+            self._homing_ui_hidden_for_abs_enc = hide_homing
+            self._update_homing_buttons_visibility()
 
         pst_on = bool(self.pst.running)
         hw_on = bool(self.hw.is_connected())

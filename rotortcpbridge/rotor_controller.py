@@ -1604,6 +1604,48 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             )
         )
 
+    def set_enc_zero(self, axis: str) -> None:
+        """SETENCZERO 1 — Absolut-Encoder in der aktuellen Position auf 0 setzen."""
+        if not self.abs_encoder_no_homing():
+            return
+        axis_u = str(axis or "").strip().upper()
+        if axis_u == "AZ":
+            if not self.enable_az:
+                return
+            dst = int(self.slave_az)
+            label = "AZ"
+        elif axis_u == "EL":
+            if not self.enable_el:
+                return
+            dst = int(self.slave_el)
+            label = "EL"
+        else:
+            return
+        line = build(self.master_id, dst, "SETENCZERO", "1")
+        _ctrl = self
+
+        def _on_done(tel: Optional[Telegram], err: Optional[str]) -> None:
+            if err:
+                _ctrl.log.write("WARN", f"{label} SETENCZERO -> keine Antwort ({err})")
+                return
+            if tel and tel.cmd.startswith("ACK_SETENCZERO"):
+                _ctrl.log.write("INFO", f"{label} Encoder-Nullpunkt gesetzt (SETENCZERO)")
+            else:
+                _ctrl.log.write(
+                    "WARN",
+                    f"{label} SETENCZERO -> NAK/unbekannte Antwort: {tel.cmd if tel else 'None'}",
+                )
+
+        self.hw.send_request(
+            HwRequest(
+                line=line,
+                expect_prefix="ACK_SETENCZERO",
+                timeout_s=1.0,
+                on_done=_on_done,
+                priority=0,
+            )
+        )
+
     def clear_warnings_all(self):
         if self.enable_az:
             self._send_simple(self.slave_az, "DELWARN", "1", expect="ACK_DELWARN", prio=0)

@@ -1306,6 +1306,17 @@ SPECS_DATA: list[dict] = [
         "help_text": "Encoder-Variante lesen. 1 = Axis/Motor, 2 = Ring Encoder, 3 = Absolutwert Encoder R&S.",
         "help_text_en": "Read encoder variant. 1 = Axis/Motor, 2 = Ring Encoder, 3 = Absolute Encoder R&S.",
     },
+    {
+        "name": "SETENCZERO",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 1.0,
+        "help_text": "Encoder in der aktuellen Position auf 0 setzen (Absolut-Encoder). Parameter 1 = ausführen.",
+        "help_text_en": "Set encoder zero at current position (absolute encoder). Parameter 1 = execute.",
+    },
     # Controller-Oberfläche (HW-Display / Tasten)
     {
         "name": "SETCONTID",

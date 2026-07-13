@@ -288,7 +288,19 @@ class SettingsWindow(QDialog):
             self.chk_enable_az.setChecked(True)
         self.chk_enable_az.setToolTip(tt("settings.chk_enable_az_tooltip"))
         self.chk_enable_el.setToolTip(tt("settings.chk_enable_el_tooltip"))
-        form_axes.addRow(self.chk_enable_az)
+        self.btn_set_enc_zero_az = QPushButton(t("settings.btn_set_enc_zero"))
+        self.btn_set_enc_zero_az.setAutoDefault(False)
+        self.btn_set_enc_zero_az.setDefault(False)
+        self.btn_set_enc_zero_az.setToolTip(tt("settings.btn_set_enc_zero_tooltip"))
+        self.btn_set_enc_zero_az.clicked.connect(self._on_set_enc_zero_az)
+        self.btn_set_enc_zero_az.setVisible(False)
+        _row_enable_az = QWidget()
+        _lay_enable_az = QHBoxLayout(_row_enable_az)
+        _lay_enable_az.setContentsMargins(0, 0, 0, 0)
+        _lay_enable_az.setSpacing(8)
+        _lay_enable_az.addWidget(self.chk_enable_az, 1)
+        _lay_enable_az.addWidget(self.btn_set_enc_zero_az, 0)
+        form_axes.addRow(_row_enable_az)
         form_axes.addRow(self.chk_enable_el)
 
         self.chk_force_dark_mode = QCheckBox(t("settings.chk_dark_mode"))
@@ -1355,6 +1367,7 @@ class SettingsWindow(QDialog):
         self.chk_enable_el.installEventFilter(self)
         self.chk_enable_az.stateChanged.connect(self._update_antenna_visibility)
         self.chk_enable_el.stateChanged.connect(self._update_antenna_visibility)
+        self.chk_enable_az.stateChanged.connect(lambda _s: self._update_enc_zero_button_ui())
         self.chk_enable_el.stateChanged.connect(self._shortcuts_tab.refresh_el_visibility)
         self._update_antenna_visibility()
 
@@ -1627,6 +1640,7 @@ class SettingsWindow(QDialog):
         self.btn_cal_start_el.setEnabled(en_el)
         self.btn_cal_del_el.setEnabled(en_el)
         self.btn_cal_reset_el.setEnabled(en_el)
+        self._update_enc_zero_button_ui()
 
     def _apply_cal_progress_bar_ui(self, pb: QProgressBar, st: int, prog: int) -> None:
         """Fortschrittsbalken: sichtbar bei Kalibrierfahrt (GETCALSTATE state/progress)."""
@@ -3030,6 +3044,29 @@ class SettingsWindow(QDialog):
     def update_encoder_dependent_ui(self) -> None:
         """Nach GETENCTYPE: abhängige Controller-/UI-Zeilen aktualisieren."""
         self._update_wind_anemo_row_visibility()
+        self._update_enc_zero_button_ui()
+
+    def _update_enc_zero_button_ui(self) -> None:
+        """Absolut-Encoder (Typ 3): Nullpunkt-Button hinter der AZ-Achse."""
+        btn = getattr(self, "btn_set_enc_zero_az", None)
+        if btn is None:
+            return
+        show = self._rotor_has_abs_encoder_type3() and bool(self.chk_enable_az.isChecked())
+        try:
+            hw_on = bool(self.hw and self.hw.is_connected())
+        except Exception:
+            hw_on = False
+        az_online = bool(getattr(getattr(self.ctrl, "az", None), "online", False))
+        btn.setVisible(show)
+        btn.setEnabled(show and hw_on and az_online)
+
+    def _on_set_enc_zero_az(self) -> None:
+        try:
+            fn = getattr(self.ctrl, "set_enc_zero", None)
+            if callable(fn):
+                fn("AZ")
+        except Exception:
+            pass
 
     def _update_wind_anemo_row_visibility(self) -> None:
         """Windmesser am Controller: bei Rotor-Encoder Typ 3 ausblenden."""

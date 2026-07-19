@@ -114,6 +114,8 @@ class SettingsWindow(QDialog):
         map_window=None,
         pst_serial=None,
         udp_pst=None,
+        pst_target_push=None,
+        rotctld_server=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -121,6 +123,8 @@ class SettingsWindow(QDialog):
         self.ctrl = controller
         self.pst = pst_server
         self._udp_pst = udp_pst
+        self._pst_target_push = pst_target_push
+        self._rotctld_server = rotctld_server
         self.hw = hw_client
         self.save_cfg_cb = save_cfg_cb
         self.logbuf = logbuf
@@ -434,6 +438,31 @@ class SettingsWindow(QDialog):
         self.ed_udp_pst_send_host.setFixedWidth(_udp_target_field_w)
         self.ed_udp_pst_send_host.setToolTip(tt("settings.udp_pst_send_host_tooltip"))
 
+        # Ausgehender Ziel-Push an PstRotator (Soll-Zeiger) — laeuft parallel zum SPID-TCP-Server
+        self.chk_pst_target_push = QCheckBox(t("settings.chk_pst_target_push"))
+        self.chk_pst_target_push.setToolTip(tt("settings.chk_pst_target_push_tooltip"))
+        self.chk_pst_target_push.setChecked(bool(_ui0.get("pst_target_push_enabled", False)))
+        self.ed_pst_target_push_host = QLineEdit()
+        self.ed_pst_target_push_host.setText(str(_ui0.get("pst_target_push_host", "127.0.0.1")))
+        self.ed_pst_target_push_host.setFixedWidth(_udp_ip_field_w)
+        self.ed_pst_target_push_host.setToolTip(tt("settings.pst_target_push_host_tooltip"))
+        self.sp_pst_target_push_port = QSpinBox()
+        self.sp_pst_target_push_port.setRange(1, 65535)
+        self.sp_pst_target_push_port.setValue(int(_ui0.get("pst_target_push_port", 12000)))
+        self.sp_pst_target_push_port.setFixedWidth(_udp_port_ucx_aswatch_w)
+        self.sp_pst_target_push_port.setToolTip(tt("settings.pst_target_push_port_tooltip"))
+        _tp_base = fl_spid_tcp_pst.rowCount() - 1  # vor der Status-Zeile einfuegen
+        if _tp_base < 0:
+            _tp_base = 0
+        fl_spid_tcp_pst.insertRow(_tp_base, self.chk_pst_target_push)
+        fl_spid_tcp_pst.insertRow(
+            _tp_base + 1, t("settings.pst_target_push_host"), self.ed_pst_target_push_host
+        )
+        fl_spid_tcp_pst.insertRow(
+            _tp_base + 2, t("settings.pst_target_push_port"), self.sp_pst_target_push_port
+        )
+        self.chk_pst_target_push.stateChanged.connect(self._on_pst_target_push_toggled)
+
         _lbl_ip = t("settings.udp_listen_ip_label")
         _lbl_port = t("settings.udp_listen_port_label")
         _lbl_tgt = t("settings.udp_pst_target_short_label")
@@ -555,6 +584,46 @@ class SettingsWindow(QDialog):
         hl_udp_pst.addWidget(self._lbl_udp_pst_bind, 1)
         hl_udp_pst.addStretch(1)
 
+        # --- Hamlib rotctld-Server (TCP) ---------------------------------------
+        _rc_cfg = self.cfg.get("rotctld_server", {}) or {}
+        self._lbl_rotctld_info = QLabel(t("settings.rotctld_info"))
+        self._lbl_rotctld_info.setWordWrap(True)
+        self.chk_rotctld_enabled = QCheckBox(t("settings.chk_rotctld_enabled"))
+        self.chk_rotctld_enabled.setChecked(bool(_rc_cfg.get("enabled", False)))
+        self.chk_rotctld_enabled.setToolTip(tt("settings.chk_rotctld_enabled_tooltip"))
+        self.ed_rotctld_host = QLineEdit(str(_rc_cfg.get("listen_host", "127.0.0.1")))
+        self.ed_rotctld_host.setMinimumWidth(_conn_ip_w)
+        self.ed_rotctld_host.setToolTip(tt("settings.rotctld_listen_host_tooltip"))
+        self.sp_rotctld_port = QSpinBox()
+        self.sp_rotctld_port.setRange(1, 65535)
+        self.sp_rotctld_port.setValue(int(_rc_cfg.get("listen_port", 4533)))
+        self.sp_rotctld_port.setToolTip(tt("settings.rotctld_port_tooltip"))
+
+        w_rotctld = QWidget()
+        fl_rotctld = QFormLayout(w_rotctld)
+        fl_rotctld.setContentsMargins(0, 0, 0, 0)
+        fl_rotctld.addRow(self._lbl_rotctld_info)
+        fl_rotctld.addRow(self.chk_rotctld_enabled)
+        fl_rotctld.addRow(t("settings.rotctld_listen_host"), self.ed_rotctld_host)
+        fl_rotctld.addRow(t("settings.rotctld_port"), self.sp_rotctld_port)
+
+        row_rotctld_status = QWidget()
+        hl_rotctld = QHBoxLayout(row_rotctld_status)
+        hl_rotctld.setContentsMargins(0, 0, 0, 0)
+        hl_rotctld.setSpacing(8)
+        hl_rotctld.addWidget(QLabel(t("rig.lbl_status")))
+        self._led_rotctld_running = Led(_pst_led_d, self)
+        self._led_rotctld_running.setToolTip(tt("settings.rotctld_led_running_tooltip"))
+        hl_rotctld.addWidget(self._led_rotctld_running, 0, Qt.AlignmentFlag.AlignLeft)
+        hl_rotctld.addSpacing(10)
+        self._lbl_rotctld_bind = QLabel("")
+        self._lbl_rotctld_bind.setWordWrap(True)
+        hl_rotctld.addWidget(self._lbl_rotctld_bind, 1)
+        hl_rotctld.addStretch(1)
+        fl_rotctld.addRow(row_rotctld_status)
+
+        self.chk_rotctld_enabled.stateChanged.connect(self._on_rotctld_toggled)
+
         # Zwei getrennte Gruppenrahmen: SPID-BIG-RAS (TCP, Yaesu-kompatibel) und
         # PST-Rotator (UDP). Beide sind Emulationen unterschiedlicher Protokolle
         # und schliessen sich weiterhin gegenseitig aus (siehe Handler unten).
@@ -566,6 +635,10 @@ class SettingsWindow(QDialog):
         _vl_pst_box = QVBoxLayout(gb_udp_pst_emulation)
         _vl_pst_box.addWidget(udp_pst_block_w)
         _vl_pst_box.addWidget(row_udp_pst_status)
+
+        gb_rotctld_emulation = QGroupBox(t("settings.group_rotctld_server"))
+        _vl_rotctld_box = QVBoxLayout(gb_rotctld_emulation)
+        _vl_rotctld_box.addWidget(w_rotctld)
 
         pg_links = QWidget()
         vl_links = QVBoxLayout(pg_links)
@@ -582,6 +655,7 @@ class SettingsWindow(QDialog):
         vl_rotor_emu.setSpacing(10)
         vl_rotor_emu.addWidget(gb_spid_emulation)
         vl_rotor_emu.addWidget(gb_udp_pst_emulation)
+        vl_rotor_emu.addWidget(gb_rotctld_emulation)
         vl_rotor_emu.addStretch(1)
 
         # SPID BIG-RAS (TCP) und UDP PST-Rotator schließen sich aus; beide aus ist erlaubt.
@@ -2019,6 +2093,7 @@ class SettingsWindow(QDialog):
             self.chk_udp_pst.blockSignals(False)
         self._sync_pst_server_cfg_from_tcp_ui()
         self._sync_udp_pst_cfg_from_ui()
+        self._sync_pst_target_push_cfg_from_ui()
         try:
             self.save_cfg_cb(self.cfg)
         except Exception as exc:
@@ -2050,6 +2125,17 @@ class SettingsWindow(QDialog):
                 )
             except Exception as exc:
                 self.logbuf.write("WARN", f"UDP PST live: {exc}")
+        tp = getattr(self, "_pst_target_push", None)
+        if tp is not None:
+            try:
+                ui = self.cfg.get("ui", {}) or {}
+                tp.start(
+                    enabled=bool(ui.get("pst_target_push_enabled", False)),
+                    host=str(ui.get("pst_target_push_host", "127.0.0.1")),
+                    port=int(ui.get("pst_target_push_port", 12000)),
+                )
+            except Exception as exc:
+                self.logbuf.write("WARN", f"PST-Ziel-Push live: {exc}")
         if self.after_apply_cb:
             try:
                 self.after_apply_cb()
@@ -2065,6 +2151,17 @@ class SettingsWindow(QDialog):
                 self.chk_udp_pst.setChecked(False)
                 self.chk_udp_pst.blockSignals(False)
         self._apply_pst_emulation_live_from_ui()
+
+    def _on_pst_target_push_toggled(self, _state: object = None) -> None:
+        """PST-Ziel-Push umschalten und sofort auf den Dienst anwenden."""
+        self._apply_pst_emulation_live_from_ui()
+
+    def _sync_pst_target_push_cfg_from_ui(self) -> None:
+        """PST-Ziel-Push-Felder → ``cfg['ui']``."""
+        ui = self.cfg.setdefault("ui", {})
+        ui["pst_target_push_enabled"] = bool(self.chk_pst_target_push.isChecked())
+        ui["pst_target_push_host"] = self.ed_pst_target_push_host.text().strip() or "127.0.0.1"
+        ui["pst_target_push_port"] = int(self.sp_pst_target_push_port.value())
 
     def _on_udp_pst_emulation_toggled(self, _state: object = None) -> None:
         """UDP-PST an → SPID-TCP aus; jede Änderung sofort auf Dienste anwenden."""
@@ -2443,6 +2540,58 @@ class SettingsWindow(QDialog):
     def _tick_emulation_status(self) -> None:
         self._tick_pst_tcp_status()
         self._tick_udp_pst_status()
+        self._tick_rotctld_status()
+
+    def _sync_rotctld_cfg_from_ui(self) -> None:
+        """Hamlib-rotctld-Gruppe → ``cfg['rotctld_server']``."""
+        rc = self.cfg.setdefault("rotctld_server", {})
+        rc["enabled"] = bool(self.chk_rotctld_enabled.isChecked())
+        rc["listen_host"] = self.ed_rotctld_host.text().strip() or "127.0.0.1"
+        rc["listen_port"] = int(self.sp_rotctld_port.value())
+
+    def _apply_rotctld_server_live(self) -> None:
+        """rotctld-Server anhand der aktuellen Config starten/neu binden/stoppen."""
+        srv = getattr(self, "_rotctld_server", None)
+        if srv is None:
+            return
+        rc = self.cfg.get("rotctld_server", {}) or {}
+        try:
+            if bool(rc.get("enabled")):
+                srv.restart(
+                    str(rc.get("listen_host", "127.0.0.1")),
+                    int(rc.get("listen_port", 4533)),
+                )
+            else:
+                srv.stop()
+        except Exception as exc:
+            self.logbuf.write("WARN", f"rotctld live: {exc}")
+
+    def _on_rotctld_toggled(self, _state: object = None) -> None:
+        """rotctld-Checkbox: sofort in Config schreiben, speichern und Dienst anwenden."""
+        self._sync_rotctld_cfg_from_ui()
+        try:
+            self.save_cfg_cb(self.cfg)
+        except Exception as exc:
+            self.logbuf.write("WARN", f"rotctld live: Config speichern fehlgeschlagen: {exc}")
+        self._apply_rotctld_server_live()
+        self._tick_rotctld_status()
+
+    def _tick_rotctld_status(self) -> None:
+        """Status-LED und Bind-Text für den Hamlib-rotctld-Server."""
+        srv = getattr(self, "_rotctld_server", None)
+        try:
+            on = bool(getattr(srv, "running", False)) if srv is not None else False
+        except Exception:
+            on = False
+        self._led_rotctld_running.set_state(on)
+        host = (self.ed_rotctld_host.text() or "").strip() or "127.0.0.1"
+        try:
+            port = int(self.sp_rotctld_port.value())
+        except Exception:
+            port = 4533
+        self._lbl_rotctld_bind.setText(
+            t("settings.rotctld_bind_detail", host=host, port=port)
+        )
 
     def _sync_udp_pst_cfg_from_ui(self) -> None:
         """UDP-PST-Gruppe → ``cfg['ui']`` (Ports, Hosts, aktiv)."""
@@ -2745,6 +2894,8 @@ class SettingsWindow(QDialog):
         self.cfg["pst_server"]["listen_port_az"] = int(self.sp_listen_port_az.value())
         self.cfg["pst_server"]["listen_port_el"] = int(self.sp_listen_port_el.value())
 
+        self._sync_rotctld_cfg_from_ui()
+
         self.cfg["rotor_bus"]["master_id"] = int(self.sp_master.value())
         self.cfg["rotor_bus"]["slave_az"] = int(self.sp_slave_az.value())
         self.cfg["rotor_bus"]["slave_el"] = int(self.sp_slave_el.value())
@@ -2797,6 +2948,7 @@ class SettingsWindow(QDialog):
         self.cfg.setdefault("ui", {})["udp_pst_port"] = int(self.sp_udp_pst_port.value())
         self.cfg.setdefault("ui", {})["udp_pst_listen_host"] = self.ed_udp_pst_listen.text().strip()
         self.cfg.setdefault("ui", {})["udp_pst_send_host"] = self.ed_udp_pst_send_host.text().strip()
+        self._sync_pst_target_push_cfg_from_ui()
         new_lang = str(self.cb_language.currentData() or "de")
         lang_changed = self.cfg.get("ui", {}).get("language", "de") != new_lang
         self.cfg.setdefault("ui", {})["language"] = new_lang
@@ -2985,6 +3137,7 @@ class SettingsWindow(QDialog):
             int(self.cfg["pst_server"]["listen_port_az"]),
             int(self.cfg["pst_server"]["listen_port_el"]),
         )
+        self._apply_rotctld_server_live()
 
         if lang_changed:
             load_lang(new_lang)

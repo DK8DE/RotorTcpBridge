@@ -156,7 +156,9 @@ class MapWindow(QDialog):
         self._ed_place_search.setToolTip(tt("map.search_tooltip"))
         self._place_search_tooltip_online = tt("map.search_tooltip")
         self._place_search_tooltip_offline = tt("map.search_offline_tooltip")
-        self._lbl_map_loc = QLabel(t("compass.locator_label"))
+        self._lbl_map_ort = QLabel(t("map.ort_label"))
+        self._lbl_map_ort.setStyleSheet("font-size: 11pt; font-weight: bold;")
+        self._lbl_map_loc = QLabel(t("map.locator_label"))
         self._ed_map_loc = QLineEdit()
         self._ed_map_loc.setPlaceholderText(t("compass.locator_placeholder"))
         self._ed_map_loc.setMaxLength(10)
@@ -180,6 +182,7 @@ class MapWindow(QDialog):
         toolbar.addWidget(self._btn_fav_save)
         toolbar.addWidget(self._btn_fav_delete)
         toolbar.addStretch(1)
+        toolbar.addWidget(self._lbl_map_ort)
         toolbar.addWidget(self._ed_place_search)
         toolbar.addWidget(self._w_map_loc)
         toolbar.addWidget(self._btn_elevation)
@@ -257,6 +260,10 @@ class MapWindow(QDialog):
         self._chk_offline = QCheckBox(t("map.chk_offline"))
         self._chk_offline.setChecked(bool(self.cfg.get("ui", {}).get("map_offline", False)))
         self._chk_offline.stateChanged.connect(self._on_offline_changed)
+        self._chk_hover = QCheckBox(t("map.chk_hover_preview"))
+        self._chk_hover.setChecked(bool(self.cfg.get("ui", {}).get("map_hover_preview", True)))
+        self._chk_hover.setToolTip(tt("map.tooltip_hover_preview"))
+        self._chk_hover.stateChanged.connect(self._on_hover_preview_changed)
         self._internet_online: Optional[bool] = None
         self._chk_locator = QCheckBox(t("map.chk_locator"))
         self._chk_locator.setChecked(bool(self.cfg.get("ui", {}).get("map_locator_overlay", False)))
@@ -290,6 +297,7 @@ class MapWindow(QDialog):
         status_bar.addWidget(self._lbl_temp_ambient)
         status_bar.addStretch(1)
         status_bar.addWidget(self._chk_offline)
+        status_bar.addWidget(self._chk_hover)
         status_bar.addWidget(self._btn_satellite)
         status_bar.addWidget(self._chk_locator)
         status_bar.addWidget(self._btn_ref_az)
@@ -461,6 +469,7 @@ class MapWindow(QDialog):
             "dark_mode": bool(self.cfg.get("ui", {}).get("force_dark_mode", True)),
             "offline": bool(self.cfg.get("ui", {}).get("map_offline", False)),
             "map_locator_overlay": bool(self.cfg.get("ui", {}).get("map_locator_overlay", False)),
+            "map_hover_preview": bool(self.cfg.get("ui", {}).get("map_hover_preview", True)),
             "horizon_dist_km": horizon_dist_km,
             "popup_antenna": t("map.popup_antenna"),
             "popup_target": t("map.popup_target"),
@@ -957,6 +966,31 @@ class MapWindow(QDialog):
             pass
         self._refresh_map()
 
+    def _on_hover_preview_changed(self) -> None:
+        """Maus-Vorschau (roter Peilstrich + Live-Anzeige) ein/aus."""
+        on = bool(self._chk_hover.isChecked())
+        if "ui" not in self.cfg:
+            self.cfg["ui"] = {}
+        self.cfg["ui"]["map_hover_preview"] = on
+        try:
+            if self.save_cfg_cb:
+                self.save_cfg_cb(self.cfg)
+        except Exception:
+            pass
+        if self._map_loaded and self._view:
+            try:
+                self._view.page().runJavaScript(
+                    f"if (typeof window.setHoverPreviewEnabled === 'function') "
+                    f"window.setHoverPreviewEnabled({str(on).lower()});"
+                )
+            except Exception:
+                pass
+        if not on:
+            # Aktive Vorschau sofort zurücksetzen: kein Strich, Live-Werte einfrieren
+            self._hover_preview_display_az = None
+            self._restore_map_locator_field()
+            self._update_status_bar()
+
     def _on_ref_az(self) -> None:
         """Referenz AZ auslösen."""
         if getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)():
@@ -1197,6 +1231,8 @@ class MapWindow(QDialog):
 
     def _on_map_hover(self, lat: Optional[float], lon: Optional[float]) -> None:
         """Maus über Karte: Soll-Winkel und Locator live anzeigen (ohne Rotor zu bewegen)."""
+        if not bool(self.cfg.get("ui", {}).get("map_hover_preview", True)):
+            return
         if lat is None or lon is None:
             self._hover_preview_display_az = None
             self._restore_map_locator_field()

@@ -77,6 +77,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     asnearest_tooltip_catpath = params.get("asnearest_tooltip_catpath", "Strecke/Kategorie")
     offline = bool(params.get("offline", False))
     locator_overlay = bool(params.get("map_locator_overlay", False))
+    hover_preview = bool(params.get("map_hover_preview", True))
     aswatch_use_cluster = bool(params.get("aswatch_use_cluster", True))
     offline_min_z, offline_max_z = _offline_zoom_range(dark)
     if offline:
@@ -821,6 +822,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       }}).addTo(map);
     }}
     let previewBearingLineLayer = null;
+    let hoverPreviewEnabled = {str(hover_preview).lower()};
     function clearPreviewBearingLine() {{
       if (previewBearingLineLayer) {{
         map.removeLayer(previewBearingLineLayer);
@@ -863,6 +865,10 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       }}
     }}
     window.clearPreviewBearingLine = clearPreviewBearingLine;
+    window.setHoverPreviewEnabled = function(on) {{
+      hoverPreviewEnabled = !!on;
+      if (!hoverPreviewEnabled) {{ clearPreviewBearingLine(); console.log('ROTOR_HOVERAZ:'); }}
+    }};
     drawBeamLayers(beamsInitial);
     drawTargetBearingLine(targetBearingLineInitial, targetBearingColorInitial);
 
@@ -891,6 +897,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
 
     let _lastHoverNotify = 0;
     map.on('mousemove', function(e) {{
+      if (!hoverPreviewEnabled) return;
       if (map.dragging && map.dragging.moving()) return;
       const lat2 = e.latlng.lat;
       const lon2 = e.latlng.lng;

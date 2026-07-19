@@ -2610,22 +2610,21 @@ class CompassWindow(QDialog):
         self._cc_display_latch_az_d10 = None
         self._stop_az_ts = now
         try:
-            cur = az_pos_deg_from_d10(
-                int(self.ctrl.az.pos_d10),
-                float(self.ctrl.az.get_smoothed_pos_d10f(now)),
-            )
-            self._target_az = cur if cur >= 359.95 else wrap_deg(cur)  # Soll springt auf Position bei STOP
-            d10 = int(round(self._target_az * 10.0))
-            self.ctrl.az.target_d10 = d10
-            self.ctrl.az.compass_target_d10 = d10
-            self._compass_last_bus_target_d10_az = d10
+            # Im Kompassfenster kein STOP mehr senden: SETPOSDG auf die aktuelle
+            # Ist-Position (Controller nutzt die rohe pos_d10). Zuerst senden …
+            self.ctrl.hold_az_at_current_pos()
         except Exception:
             pass
         try:
-            # Im Kompassfenster kein STOP mehr senden:
-            # Soll explizit auf aktuelle Ist-Position schreiben (SETPOSDG),
-            # damit der Sollzeiger genau auf der Stop-Position stehen bleibt.
-            self.ctrl.hold_az_at_current_pos()
+            # … dann die Soll-Anzeige EXAKT aus dem tatsächlich gesendeten Ziel
+            # (target_d10) ableiten. Sonst würde die Anzeige den geglätteten,
+            # nachlaufenden Wert zeigen und vom angefahrenen Ziel abweichen
+            # (Soll ≠ Ist, wenn der Rotor die Stop-Position erreicht hat).
+            d10 = int(self.ctrl.az.target_d10)
+            cur = az_pos_deg_from_d10(d10)
+            self._target_az = cur if cur >= 359.95 else wrap_deg(cur)
+            self.ctrl.az.compass_target_d10 = d10
+            self._compass_last_bus_target_d10_az = d10
         except Exception:
             pass
 
@@ -2635,20 +2634,18 @@ class CompassWindow(QDialog):
         self._cc_display_latch_el_d10 = None
         self._stop_el_ts = now
         try:
-            cur = float(self.ctrl.el.get_smoothed_pos_d10f(now)) / 10.0
-            self._target_el = clamp_el(cur)  # Soll springt auf Position bei STOP
-            # Controller mitschreiben, damit keine andere Stelle alte Soll-Position zurückholt
-            d10 = int(round(self._target_el * 10.0))
-            self.ctrl.el.target_d10 = d10
-            self.ctrl.el.compass_target_d10 = d10
-            self._compass_last_bus_target_d10_el = d10
+            # Im Kompassfenster kein STOP mehr senden: SETPOSDG auf die aktuelle
+            # Ist-Position (Controller nutzt die rohe pos_d10). Zuerst senden …
+            self.ctrl.hold_el_at_current_pos()
         except Exception:
             pass
         try:
-            # Im Kompassfenster kein STOP mehr senden:
-            # Soll explizit auf aktuelle Ist-Position schreiben (SETPOSDG),
-            # damit der Sollzeiger genau auf der Stop-Position stehen bleibt.
-            self.ctrl.hold_el_at_current_pos()
+            # … dann die Soll-Anzeige EXAKT aus dem tatsächlich gesendeten Ziel
+            # (target_d10) ableiten, damit Soll == angefahrenes Ziel.
+            d10 = int(self.ctrl.el.target_d10)
+            self._target_el = clamp_el(d10 / 10.0)
+            self.ctrl.el.compass_target_d10 = d10
+            self._compass_last_bus_target_d10_el = d10
         except Exception:
             pass
 

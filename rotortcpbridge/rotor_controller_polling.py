@@ -187,7 +187,10 @@ class _RotorPollingHost:
     set_el_from_spid: Callable[[int], None]
     note_setposcc_bus_activity: Callable[[], None]
     note_setposdg_poll_restrict: Callable[[], None]
+    cc_poll_hold_active: Callable[[float], bool]
     _setposdg_poll_grace_until_ts: float
+    _setposcc_poll_hold: bool
+    _setposcc_hold_until: float
     _acc_bins_chain_in_progress: Callable[[], bool]
     _fetch_cal_bins: Callable[..., None]
     _fetch_live_bins: Callable[..., None]
@@ -262,6 +265,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
     def _motion_poll_restrict_active(self, now: float, pos_fast_s: float) -> bool:
         """True, solange nur GETPOSDG erlaubt sein soll (Fahrt/Homing/SETPOSDG-Grace)."""
+        if self.cc_poll_hold_active(now):
+            return True
         try:
             grace_u = float(getattr(self, "_setposdg_poll_grace_until_ts", 0.0) or 0.0)
         except Exception:
@@ -358,6 +363,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             self.encoder_type = None
             self.encoder_type_known = False
             self._encoder_type_requested = False
+            self._setposcc_poll_hold = False
+            self._setposcc_hold_until = 0.0
             cb = getattr(self, "on_encoder_type_changed", None)
             if callable(cb):
                 try:
@@ -386,14 +393,15 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         # Wie „Fahrt“: nur GETPOSDG, solange Achse fährt/referenziert/nahe SET-Ziel in Bewegung
         # oder kurz nach SETPOSDG-Mitschnitt.
         poll_restrict = self._motion_poll_restrict_active(now, pos_fast_s)
+        cc_hold = self.cc_poll_hold_active(now)
 
         # GETACCBINS: Abschlussprüfung auch ohne hw_on (sonst hängt Inflight bei Disconnect).
         self._tick_acc_bins_finalize_rounds(now)
-        if poll_restrict:
+        if poll_restrict and not cc_hold:
             # Harte Vorgabe: während Fahrt nur Positions-/Fehlerpfad; Strom-/Statistikketten sofort stoppen.
             self._abort_acc_bins_fetch_only()
 
-        if hw_on:
+        if hw_on and (not cc_hold):
             # Inflight-Sperren nach Request-Timeout freigeben (verhindert dauerhaftes Blockieren).
             if self._wind_enable_inflight and (
                 (now - self._wind_enable_sent_ts) > 1.5
@@ -417,9 +425,11 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             # Während aktivem Homing (GETREF-Polling) keine GETPOSDG-Flut:
             # nur Referenzstatus pollen; Positionsabfrage erst nach Homing-Ende einmalig.
             homing_active = bool(self.az.ref_poll_active or self.el.ref_poll_active)
-            # Im Stand: während SETPOSCC-Strom kein GETPOSDG (sonst Bus-Kollisionen mit Encoder).
+            # Während SETPOSCC-Strom (Encoder-Drehen, Stillstand) kein GETPOSDG — Bus frei bis SETPOSDG.
+            # ABER: sobald gefahren wird (poll_restrict: SETPOSDG-Grace / moving), muss GETPOSDG
+            # schnell laufen. Das Idle-Defer-Fenster darf die Positionsabfrage dann NICHT bremsen.
             _defer_u = float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
-            skip_pos_for_cc = (not moving) and (now < _defer_u)
+            skip_pos_for_cc = (not poll_restrict) and (now < _defer_u)
             acc_chain = self._acc_bins_chain_in_progress()
             if (
                 (not homing_active)
@@ -579,6 +589,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             # blockiert ACC nicht, hält aber Telemetrie für den Kompass (Windpfeil) aktuell.
             if (
                 (not poll_restrict)
+                and (not cc_hold)
                 and (not self.abs_encoder_no_homing())
                 and now >= float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
             ):

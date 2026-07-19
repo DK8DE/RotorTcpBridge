@@ -285,10 +285,12 @@ class MainWindow(QMainWindow):
         logbuf,
         udp_ucxlog=None,
         udp_pst=None,
+        pst_target_push=None,
         udp_aswatch=None,
         aswatch_bridge=None,
         rig_bridge_manager=None,
         pst_serial=None,
+        rotctld_server=None,
     ):
         super().__init__()
         self.cfg = cfg
@@ -299,9 +301,11 @@ class MainWindow(QMainWindow):
         self.logbuf = logbuf
         self._udp_ucxlog = udp_ucxlog
         self._udp_pst = udp_pst
+        self._pst_target_push = pst_target_push
         self._udp_aswatch = udp_aswatch
         self._rig_bridge_manager = rig_bridge_manager
         self.pst_serial = pst_serial
+        self._rotctld_server = rotctld_server
         if aswatch_bridge is not None:
             try:
                 aswatch_bridge.users.connect(
@@ -328,6 +332,10 @@ class MainWindow(QMainWindow):
         self._pst_tcp_blink_active = False
         self._pst_tcp_prev_last_rx_ts = 0.0
         self._pst_tcp_blink_sequence = (True, False, True, False, True, False, True, False, True)
+        self._rotctld_blink_phase = 0
+        self._rotctld_blink_active = False
+        self._rotctld_prev_last_rx_ts = 0.0
+        self._rotctld_blink_sequence = (True, False, True, False, True, False, True, False, True)
         self._aswatch_blink_phase = 0
         self._aswatch_blink_active = False
         self._aswatch_blink_sequence = (True, False, True, False, True, False, True, False, True)
@@ -498,6 +506,7 @@ class MainWindow(QMainWindow):
         led_d = px_to_dip(self, 12)
         self._srv_led_d = led_d
         self.led_pst = Led(led_d, self)
+        self.led_rotctld = Led(led_d, self)
         self.led_ucxlog = Led(led_d, self)
         self.led_pst_udp = Led(led_d, self)
         self.led_aswatch = Led(led_d, self)
@@ -511,6 +520,11 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         self.lbl_pst.setWordWrap(False)
+        self.lbl_rotctld = QLabel("")
+        self.lbl_rotctld.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.lbl_rotctld.setWordWrap(False)
         self.lbl_hw = QLabel("")
         self.lbl_hw.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -536,6 +550,16 @@ class MainWindow(QMainWindow):
         pst_row_w.setLayout(pst_row)
         srv_form.addRow(t("main.srv_pst_label"), pst_row_w)
         self._srv_row_pst_w = pst_row_w
+
+        rotctld_row = QHBoxLayout()
+        rotctld_row.setContentsMargins(0, 0, 0, 0)
+        rotctld_row.setSpacing(px_to_dip(self, 6))
+        rotctld_row.addWidget(self._srv_led_wrap(self.led_rotctld))
+        rotctld_row.addWidget(self.lbl_rotctld, 1)
+        rotctld_row_w = QWidget()
+        rotctld_row_w.setLayout(rotctld_row)
+        srv_form.addRow(t("main.srv_rotctld_label"), rotctld_row_w)
+        self._srv_row_rotctld_w = rotctld_row_w
 
         ucxlog_row = QHBoxLayout()
         ucxlog_row.setContentsMargins(0, 0, 0, 0)
@@ -758,6 +782,8 @@ class MainWindow(QMainWindow):
             map_window=self._map_win,
             pst_serial=self.pst_serial,
             udp_pst=self._udp_pst,
+            pst_target_push=self._pst_target_push,
+            rotctld_server=self._rotctld_server,
             parent=None,
         )
         self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
@@ -1235,6 +1261,9 @@ class MainWindow(QMainWindow):
             lab = sf.labelForField(self._srv_row_pst_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_pst_label"))
+            lab = sf.labelForField(self._srv_row_rotctld_w)
+            if isinstance(lab, QLabel):
+                lab.setText(t("main.srv_rotctld_label"))
             lab = sf.labelForField(self._srv_row_ucxlog_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_ucxlog_prefix"))
@@ -1395,6 +1424,8 @@ class MainWindow(QMainWindow):
                 map_window=self._map_win,
                 pst_serial=self.pst_serial,
                 udp_pst=self._udp_pst,
+                pst_target_push=self._pst_target_push,
+                rotctld_server=self._rotctld_server,
                 parent=None,
             )
         except Exception:
@@ -1418,6 +1449,16 @@ class MainWindow(QMainWindow):
                 self.pst.stop()
         except Exception as e:
             self._log_exception("_after_settings_applied PST start/stop", e)
+        # Hamlib rotctld-Server starten oder stoppen je nach Einstellung
+        if self._rotctld_server is not None:
+            rc_enabled = bool(self.cfg.get("rotctld_server", {}).get("enabled", False))
+            try:
+                if rc_enabled and not self._rotctld_server.running:
+                    self._rotctld_server.start()
+                elif not rc_enabled and self._rotctld_server.running:
+                    self._rotctld_server.stop()
+            except Exception as e:
+                self._log_exception("_after_settings_applied rotctld start/stop", e)
         # PST-Serial (com0com) Listener analog aktualisieren
         if self.pst_serial is not None:
             try:
@@ -1454,6 +1495,13 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(
                     self, t("main.pst_udp_error_title"), self._udp_pst.bind_error_msg
                 )
+        if self._pst_target_push is not None:
+            ui = self.cfg.get("ui", {})
+            self._pst_target_push.start(
+                enabled=bool(ui.get("pst_target_push_enabled", False)),
+                host=str(ui.get("pst_target_push_host", "127.0.0.1")),
+                port=int(ui.get("pst_target_push_port", 12000)),
+            )
         if self._udp_aswatch is not None:
             ui = self.cfg.get("ui", {})
             self._udp_aswatch.start(
@@ -1826,6 +1874,7 @@ class MainWindow(QMainWindow):
         """Server-GroupBox-Zeilen je nach aktivierten Diensten ein-/ausblenden."""
         ui = self.cfg.get("ui", {})
         pst_on = bool(self.cfg.get("pst_server", {}).get("enabled", False))
+        rotctld_on = bool(self.cfg.get("rotctld_server", {}).get("enabled", False))
         ucxlog_on = bool(ui.get("udp_ucxlog_enabled", False))
         pst_udp_on = bool(ui.get("udp_pst_enabled", True))
         aswatch_on = bool(ui.get("aswatch_udp_enabled", False))
@@ -1835,6 +1884,7 @@ class MainWindow(QMainWindow):
         rig_ham = rig_mod and bool((rb.get("hamlib") or {}).get("enabled", False))
         try:
             self._srv_form.setRowVisible(self._srv_row_pst_w, pst_on)
+            self._srv_form.setRowVisible(self._srv_row_rotctld_w, rotctld_on)
             self._srv_form.setRowVisible(self._srv_row_ucxlog_w, ucxlog_on)
             self._srv_form.setRowVisible(self._srv_row_pst_udp_w, pst_udp_on)
             self._srv_form.setRowVisible(self._srv_row_aswatch_w, aswatch_on)
@@ -2268,6 +2318,23 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._log_exception("PST-UDP notify_position", e)
 
+    def _notify_pst_target(self) -> None:
+        """Sendet das aktuelle Soll (AZ/EL) an PstRotators UDP-Control, wenn es sich ändert."""
+        push = getattr(self, "_pst_target_push", None)
+        if push is None or not push.is_active:
+            return
+        try:
+            az_d10 = getattr(self.ctrl.az, "target_d10", None)
+            el_d10 = getattr(self.ctrl.el, "target_d10", None)
+            push.notify_target(
+                None if az_d10 is None else int(az_d10),
+                None if el_d10 is None else int(el_d10),
+                az_enabled=bool(getattr(self.ctrl, "enable_az", True)),
+                el_enabled=bool(getattr(self.ctrl, "enable_el", True)),
+            )
+        except Exception as e:
+            self._log_exception("PST-UDP notify_target", e)
+
     def _tick(self):
         try:
             self._tick_body()
@@ -2309,6 +2376,32 @@ class MainWindow(QMainWindow):
                     self._pst_tcp_blink_active = False
             if not self._pst_tcp_blink_active:
                 self.led_pst.set_state(True)
+
+        rotctld = getattr(self, "_rotctld_server", None)
+        rotctld_on = bool(getattr(rotctld, "running", False)) if rotctld is not None else False
+        if not rotctld_on:
+            self._rotctld_blink_active = False
+            self._rotctld_prev_last_rx_ts = 0.0
+            self.led_rotctld.set_state(False)
+        else:
+            try:
+                last_rx_ts = float(getattr(rotctld, "last_rx_ts", 0.0) or 0.0)
+                prev_rx = float(self._rotctld_prev_last_rx_ts or 0.0)
+                if last_rx_ts > prev_rx + 1e-9:
+                    self._rotctld_prev_last_rx_ts = last_rx_ts
+                    self._rotctld_blink_phase = 0
+                    self._rotctld_blink_active = True
+            except Exception as e:
+                self._log_exception("_tick rotctld_rx", e)
+            if self._rotctld_blink_active:
+                seq = self._rotctld_blink_sequence
+                if self._rotctld_blink_phase < len(seq):
+                    self.led_rotctld.set_state(seq[self._rotctld_blink_phase])
+                    self._rotctld_blink_phase += 1
+                else:
+                    self._rotctld_blink_active = False
+            if not self._rotctld_blink_active:
+                self.led_rotctld.set_state(True)
 
         udp = getattr(self, "_udp_ucxlog", None)
         if udp is not None:
@@ -2658,6 +2751,20 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             _pel = 4002
         self.lbl_pst.setText(f"{_h}:{_paz}:{_pel}")
+
+        rc = self.cfg.get("rotctld_server", {}) or {}
+        _rch = str(
+            getattr(self._rotctld_server, "host", None)
+            or rc.get("listen_host", "127.0.0.1")
+            or "127.0.0.1"
+        ).strip()
+        _rcp = getattr(self._rotctld_server, "port", None)
+        try:
+            _rcport = int(_rcp) if _rcp is not None else int(rc.get("listen_port", 4533))
+        except (TypeError, ValueError):
+            _rcport = 4533
+        self.lbl_rotctld.setText(f"{_rch}:{_rcport}")
+
         hl = self.cfg["hardware_link"]
         mode = str(hl.get("mode", "tcp") or "tcp").strip().lower()
         ip = str(hl.get("tcp_ip", "") or "")
@@ -2730,6 +2837,7 @@ class MainWindow(QMainWindow):
             self._warning_popup.maybe_show(self, "EL", self.ctrl.el)
 
         self._notify_pst_position()
+        self._notify_pst_target()
         self._update_actions_locked_by_moving()
         self._update_title_bar()
 

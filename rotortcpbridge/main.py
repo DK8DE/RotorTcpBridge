@@ -18,10 +18,12 @@ from .logutil import LogBuffer
 from .hardware_client import HardwareClient
 from .rotor_controller import RotorController
 from .pst_server import PstDualServer
+from .rotctld_server import RotctldServer, DEFAULT_ROTCTLD_PORT
 from .pst_serial import PstSerialManager
 from .udp_ucxlog import UdpUcxLogListener
 from .udp_aswatchlist import UdpAswatchlistListener
 from .udp_pst_rotator import UdpPstRotator
+from .pst_target_push import PstTargetPush
 from .rig_bridge.manager import RigBridgeManager
 from .ui.main_window import MainWindow
 
@@ -145,6 +147,17 @@ def main():
     if bool(cfg["pst_server"].get("enabled", False)):
         pst.start()
 
+    # Hamlib-kompatibler rotctld-TCP-Server (gpredict, SatNOGS, ...)
+    rotctld_cfg = cfg.get("rotctld_server", {})
+    rotctld = RotctldServer(
+        str(rotctld_cfg.get("listen_host", "127.0.0.1")),
+        int(rotctld_cfg.get("listen_port", DEFAULT_ROTCTLD_PORT)),
+        ctrl,
+        log,
+    )
+    if bool(rotctld_cfg.get("enabled", False)):
+        rotctld.start()
+
     # SPID BIG-RAS / CAT über serielle Schnittstelle (com0com etc.)
     # Der Manager bekommt einen Zeiger auf die Rig-Bridge, damit
     # Rig-Listener das aktive Profil kennen und Schreibbefehle in die
@@ -178,6 +191,14 @@ def main():
         enabled=bool(ui_cfg.get("udp_pst_enabled", True)),
         port=int(ui_cfg.get("udp_pst_port", 12000)),
         listen_host=str(ui_cfg.get("udp_pst_listen_host", "127.0.0.1")),
+    )
+
+    # Ausgehender Ziel-Push an PstRotator (Soll-Zeiger setzen; parallel zum SPID-TCP-Server)
+    pst_target_push = PstTargetPush(ctrl, log, cfg=cfg)
+    pst_target_push.start(
+        enabled=bool(ui_cfg.get("pst_target_push_enabled", False)),
+        host=str(ui_cfg.get("pst_target_push_host", "127.0.0.1")),
+        port=int(ui_cfg.get("pst_target_push_port", 12000)),
     )
 
     def save_cfg_cb(new_cfg):
@@ -222,10 +243,12 @@ def main():
         log,
         udp_ucxlog=udp_ucxlog,
         udp_pst=udp_pst,
+        pst_target_push=pst_target_push,
         udp_aswatch=udp_aswatch,
         aswatch_bridge=aswatch_bridge,
         rig_bridge_manager=rig_bridge_manager,
         pst_serial=pst_serial,
+        rotctld_server=rotctld,
     )
     main_window_holder["window"] = w
     w.resize(1100, 650)
@@ -241,6 +264,10 @@ def main():
     udp_ucxlog.stop()
     udp_aswatch.stop()
     udp_pst.stop()
+    try:
+        rotctld.stop()
+    except Exception:
+        pass
     try:
         pst_serial.stop_all()
     except Exception:

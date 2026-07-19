@@ -27,6 +27,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "listen_port_az": 4001,
         "listen_port_el": 4002,
     },
+    # Hamlib-kompatibler rotctld-TCP-Server (fuer gpredict, SatNOGS, Linux-/
+    # Satelliten-/Stationssoftware). Standardport 4533. Standard aus.
+    "rotctld_server": {
+        "enabled": False,
+        "listen_host": "127.0.0.1",
+        "listen_port": 4533,
+    },
     # SPID BIG-RAS / CAT über serielle Schnittstelle (z. B. com0com). Jeder
     # Listener bedient entweder den Rotor (ROT2PROG-13-Byte-Frames, AZ+EL in
     # einem Frame) oder ein Funkgeraet (CAT-Protokoll des aktiven Rig-Profils).
@@ -174,6 +181,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "map_offline": False,
         # Amateurfunk-Locator: True = Maidenhead-Grid als Overlay einblenden
         "map_locator_overlay": False,
+        # Maus-Vorschau auf der Karte: True = roter Peilstrich folgt der Maus und
+        # Locator/Winkel werden live aktualisiert. False = beides abgeschaltet.
+        "map_hover_preview": True,
         # UDP UcxLog: Lauscht auf udp_ucxlog_listen_host:udp_ucxlog_port (Standard aus, 127.0.0.1:12040).
         # XML von UcxLog (<Rotor><Azimut>…</Azimut></Rotor>).
         "udp_ucxlog_enabled": False,
@@ -193,6 +203,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # Neuinstallation: in load_config beim ersten Speichern als Subnetz-Broadcast (x.y.z.255) gesetzt.
         # Leer = zur Laufzeit automatisch ipv4_subnet_broadcast_default()
         "udp_pst_send_host": "",
+        # Ausgehender Ziel-Push an PstRotator: sendet das hier gesetzte Soll (AZ/EL)
+        # als <PST><AZIMUTH>/<ELEVATION> an PstRotators UDP-Control-Port, damit dort
+        # der Soll-Zeiger gesetzt wird. Laeuft parallel zum SPID-TCP-Server.
+        "pst_target_push_enabled": False,
+        "pst_target_push_host": "127.0.0.1",
+        "pst_target_push_port": 12000,
         # AirScout/KST: ASWATCHLIST/ASSETPATH auf aswatch_udp_listen_host:aswatch_udp_port (Standard aus, 127.0.0.1)
         "aswatch_udp_enabled": False,
         "aswatch_udp_port": 9872,

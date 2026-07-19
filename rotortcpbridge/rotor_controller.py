@@ -30,6 +30,10 @@ _SETPOSCC_SUPPRESS_S = 0.6
 # SETPOSCC vom Bus: Idle-Polling (inkl. GETPOSDG) aussetzen — nach jedem CC mindestens diese Zeit.
 _CC_IDLE_DEFER_S = 1.0
 
+# SETPOSCC-Strom (Encoder-Drehen): Bridge-Polling komplett pausieren, bis ein SETPOSDG kommt.
+# Sicherheitsnetz: bleibt kein SETPOSDG aus, wird nach diesem Fenster ohne neues CC wieder gepollt.
+_CC_POLL_HOLD_MAX_S = 2.0
+
 # Nach SETPOSDG (Bridge oder Mitschnitt fremder Master): kurz nur Positions-/Fehler-Polling,
 # damit kein GETANEMO/GETWARN/… den Bus mit dem Rotor kreuzt. Deckt auch schnelle Hotkey-Bursts
 # (mehrere SETPOSDG hintereinander) ab; Idle-Zusatzabfragen werden solange wie bei Fahrt pausiert.
@@ -78,6 +82,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.az = AxisState(position_wrap_360=True)
         self.el = AxisState(position_wrap_360=False)
         self._idle_poll_defer_until: float = 0.0
+        self._setposcc_poll_hold: bool = False
+        self._setposcc_hold_until: float = 0.0
         self._setposdg_poll_grace_until_ts: float = 0.0
 
         self._last_poll = 0.0
@@ -815,8 +821,29 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.hw.send_line_fire_and_forget(line)
 
     def note_setposcc_bus_activity(self) -> None:
-        """SETPOSCC auf dem Bus (Mitschnitt): Idle-Polling bis Zeitstempel pausieren (je CC neu verlängert)."""
-        self._idle_poll_defer_until = time.time() + _CC_IDLE_DEFER_S
+        """SETPOSCC auf dem Bus (Encoder-Drehen): Bridge-Polling pausieren bis SETPOSDG.
+
+        Jedes CC verlängert das Sicherheitsfenster (``_setposcc_hold_until``). Bleibt ein
+        SETPOSDG aus (Encoder nur kurz bewegt), löst sich der Hold nach ``_CC_POLL_HOLD_MAX_S``
+        von selbst, damit das Idle-Polling nicht dauerhaft stehen bleibt.
+        """
+        now = time.time()
+        self._setposcc_poll_hold = True
+        self._setposcc_hold_until = now + _CC_POLL_HOLD_MAX_S
+        self._idle_poll_defer_until = now + _CC_IDLE_DEFER_S
+
+    def cc_poll_hold_active(self, now: float) -> bool:
+        """True solange der SETPOSCC-Hold gilt; räumt abgelaufene Holds selbst auf."""
+        if not bool(getattr(self, "_setposcc_poll_hold", False)):
+            return False
+        try:
+            until = float(getattr(self, "_setposcc_hold_until", 0.0) or 0.0)
+        except Exception:
+            until = 0.0
+        if now >= until:
+            self._setposcc_poll_hold = False
+            return False
+        return True
 
     def note_setposdg_poll_restrict(self) -> None:
         """SETPOSDG an Rotor-Slave (gesendet oder mitgeschnitten): Zusatz-Polling wie bei Fahrt begrenzen.
@@ -827,6 +854,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         zwischen die SETPOSDG/ACK rutschen und den Bus mit dem Rotor kreuzen. Ohne diesen Schutz
         verschwanden z. B. Windanzeigen im Kompass oder der Rotor verlor sein Ziel.
         """
+        self._setposcc_poll_hold = False
+        self._setposcc_hold_until = 0.0
         now = time.time()
         self._setposdg_poll_grace_until_ts = now + _SETPOSDG_POLL_GRACE_S
         try:
@@ -1168,6 +1197,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         pass
                 if d10 is not None:
                     axis.compass_target_d10 = d10
+                try:
+                    self.note_setposcc_bus_activity()
+                except Exception:
+                    pass
                 return
 
             # -------------------- Fahrziel setzen --------------------

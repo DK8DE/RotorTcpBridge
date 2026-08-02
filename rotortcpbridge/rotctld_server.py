@@ -6,6 +6,7 @@ import time
 from typing import Optional, Tuple
 
 from .logutil import LogBuffer
+from .angle_utils import az_d10_for_external_report
 
 # Hamlib rotctld Standardport (rigctld nutzt 4532 -> Rotor ungerade, z.B. 4533).
 DEFAULT_ROTCTLD_PORT = 4533
@@ -58,7 +59,12 @@ def build_dump_state(*, az_enabled: bool = True, el_enabled: bool = True) -> str
 
 
 def process_rotctld_line(
-    line: str, ctrl, log: Optional[LogBuffer] = None
+    line: str,
+    ctrl,
+    log: Optional[LogBuffer] = None,
+    *,
+    shortest_path: bool = False,
+    report_mod360: bool = False,
 ) -> Tuple[Optional[str], bool]:
     """Eine rotctld-Protokollzeile verarbeiten.
 
@@ -94,6 +100,9 @@ def process_rotctld_line(
             az_d10 = int(getattr(ctrl.az, "pos_d10", 0) or 0) if az_enabled else 0
         except Exception:
             az_d10 = 0
+        az_d10 = az_d10_for_external_report(
+            az_d10, shortest_path=shortest_path, report_mod360=report_mod360
+        )
         try:
             el_d10 = int(getattr(ctrl.el, "pos_d10", 0) or 0) if el_enabled else 0
         except Exception:
@@ -111,7 +120,9 @@ def process_rotctld_line(
             return ("RPRT -8\n", False)
         try:
             if az_enabled:
-                ctrl.set_az_from_spid(int(round(az_deg * 10.0)))
+                ctrl.set_az_from_spid(
+                    int(round(az_deg * 10.0)), shortest_path=bool(shortest_path)
+                )
             if el_enabled:
                 ctrl.set_el_from_spid(int(round(el_deg * 10.0)))
             if log is not None:
@@ -181,11 +192,12 @@ class RotctldServer:
     Rotorposition abfragen (``p``) und den Rotor steuern (``P <az> <el>``).
     """
 
-    def __init__(self, host: str, port: int, controller, log: LogBuffer):
+    def __init__(self, host: str, port: int, controller, log: LogBuffer, cfg=None):
         self.host = host
         self.port = int(port)
         self.ctrl = controller
         self.log = log
+        self.cfg = cfg
         self.running = False
         self._thread: Optional[threading.Thread] = None
         self._listen_sock: Optional[socket.socket] = None
@@ -193,6 +205,22 @@ class RotctldServer:
         self._clients_lock = threading.Lock()
         # Zeitstempel der letzten gueltigen Client-Aktivitaet (fuer UI-LED).
         self.last_rx_ts: float = 0.0
+
+    def _az_shortest_path(self) -> bool:
+        try:
+            return bool(
+                (self.cfg or {}).get("rotctld_server", {}).get("az_shortest_path", False)
+            )
+        except Exception:
+            return False
+
+    def _az_report_mod360(self) -> bool:
+        try:
+            return bool(
+                (self.cfg or {}).get("rotctld_server", {}).get("az_report_mod360", False)
+            )
+        except Exception:
+            return False
 
     def start(self) -> None:
         if self.running:
@@ -305,7 +333,13 @@ class RotctldServer:
                         self.last_rx_ts = time.time()
                     except Exception:
                         pass
-                    resp, close = process_rotctld_line(line, self.ctrl, self.log)
+                    resp, close = process_rotctld_line(
+                        line,
+                        self.ctrl,
+                        self.log,
+                        shortest_path=self._az_shortest_path(),
+                        report_mod360=self._az_report_mod360(),
+                    )
                     if resp:
                         try:
                             conn.sendall(resp.encode("ascii", errors="ignore"))

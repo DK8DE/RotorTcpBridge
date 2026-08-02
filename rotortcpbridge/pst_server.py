@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 
 from .spid_rot2prog import parse_command_packet, encode_reply, CMD_SET, CMD_STOP, CMD_STATUS
+from .angle_utils import az_d10_for_external_report
 from .logutil import LogBuffer
 
 
@@ -24,12 +25,13 @@ class PstAxisServer:
       damit ein blockierendes accept() sofort beendet wird.
     """
 
-    def __init__(self, host: str, port: int, axis: str, controller, log: LogBuffer):
+    def __init__(self, host: str, port: int, axis: str, controller, log: LogBuffer, cfg=None):
         self.host = host
         self.port = port
         self.axis = axis
         self.ctrl = controller
         self.log = log
+        self.cfg = cfg
         self.running = False
         self._thread: threading.Thread | None = None
         self._listen_sock: socket.socket | None = None
@@ -56,11 +58,25 @@ class PstAxisServer:
             pass
         self._listen_sock = None
 
+    def _az_shortest_path(self) -> bool:
+        try:
+            return bool((self.cfg or {}).get("pst_server", {}).get("az_shortest_path", False))
+        except Exception:
+            return False
+
+    def _az_report_mod360(self) -> bool:
+        try:
+            return bool((self.cfg or {}).get("pst_server", {}).get("az_report_mod360", False))
+        except Exception:
+            return False
+
     def _apply_set(self, cmd):
         # Je nach Port nur AZ oder nur EL setzen; deaktivierte Achsen ignorieren
         if self.axis == "az":
             if cmd.az_d10 is not None and bool(getattr(self.ctrl, "enable_az", True)):
-                self.ctrl.set_az_from_spid(cmd.az_d10)
+                self.ctrl.set_az_from_spid(
+                    cmd.az_d10, shortest_path=self._az_shortest_path()
+                )
         else:
             if cmd.el_d10 is not None and bool(getattr(self.ctrl, "enable_el", True)):
                 self.ctrl.set_el_from_spid(cmd.el_d10)
@@ -145,11 +161,21 @@ class PstAxisServer:
 
                             # Antwort: Position je Achse – deaktivierte oder unbekannte Achse liefert 0°.
                             # MacDoppler/HRD erwarten 0 für nicht vorhandene Achsen statt ungültiger Werte.
-                            az_d10 = (
-                                (self.ctrl.az.pos_d10 or 0)
-                                if bool(getattr(self.ctrl, "enable_az", True))
-                                else 0
-                            )
+                            # Bei kürzerem Weg ohne 0…360-Ausgabe: Rohwinkel (kann >360°).
+                            # Sonst: 0…360° (Overlap 370° → 10°).
+                            try:
+                                az_raw = (
+                                    int(self.ctrl.az.pos_d10 or 0)
+                                    if bool(getattr(self.ctrl, "enable_az", True))
+                                    else 0
+                                )
+                                az_d10 = az_d10_for_external_report(
+                                    az_raw,
+                                    shortest_path=self._az_shortest_path(),
+                                    report_mod360=self._az_report_mod360(),
+                                )
+                            except Exception:
+                                az_d10 = 0
                             el_d10 = (
                                 (self.ctrl.el.pos_d10 or 0)
                                 if bool(getattr(self.ctrl, "enable_el", True))
@@ -180,14 +206,15 @@ class PstAxisServer:
 class PstDualServer:
     """Kapselt zwei Listener: AZ (port_az) und EL (port_el)."""
 
-    def __init__(self, host: str, port_az: int, port_el: int, controller, log: LogBuffer):
+    def __init__(self, host: str, port_az: int, port_el: int, controller, log: LogBuffer, cfg=None):
         self.host = host
         self.port_az = port_az
         self.port_el = port_el
         self.log = log
         self._ctrl = controller
-        self.az = PstAxisServer(host, port_az, "az", controller, log)
-        self.el = PstAxisServer(host, port_el, "el", controller, log)
+        self.cfg = cfg
+        self.az = PstAxisServer(host, port_az, "az", controller, log, cfg=cfg)
+        self.el = PstAxisServer(host, port_el, "el", controller, log, cfg=cfg)
 
     @property
     def running(self) -> bool:
@@ -227,6 +254,6 @@ class PstDualServer:
         self.port_az = port_az
         self.port_el = port_el
         # Neue Axis-Objekte erstellen (sauberer Neustart)
-        self.az = PstAxisServer(host, port_az, "az", self._ctrl, self.log)
-        self.el = PstAxisServer(host, port_el, "el", self._ctrl, self.log)
+        self.az = PstAxisServer(host, port_az, "az", self._ctrl, self.log, cfg=self.cfg)
+        self.el = PstAxisServer(host, port_el, "el", self._ctrl, self.log, cfg=self.cfg)
         self.start()

@@ -30,8 +30,8 @@ class _Ctrl:
         self.enable_el = enable_el
         self.calls: list[tuple] = []
 
-    def set_az_from_spid(self, d10: int) -> None:
-        self.calls.append(("set_az", int(d10)))
+    def set_az_from_spid(self, d10: int, *, shortest_path: bool = False) -> None:
+        self.calls.append(("set_az", int(d10), bool(shortest_path)))
 
     def set_el_from_spid(self, d10: int) -> None:
         self.calls.append(("set_el", int(d10)))
@@ -62,19 +62,41 @@ def test_get_pos_disabled_axis_reports_zero() -> None:
     assert resp == "180.000000\n0.000000\n"
 
 
+def test_get_pos_report_mod360_wraps_when_shortest() -> None:
+    ctrl = _Ctrl(az_d10=3700, el_d10=0)
+    resp, _ = process_rotctld_line(
+        "p", ctrl, shortest_path=True, report_mod360=True
+    )
+    assert resp == "10.000000\n0.000000\n"
+
+
+def test_get_pos_shortest_without_mod360_keeps_extended() -> None:
+    ctrl = _Ctrl(az_d10=3700, el_d10=0)
+    resp, _ = process_rotctld_line(
+        "p", ctrl, shortest_path=True, report_mod360=False
+    )
+    assert resp == "370.000000\n0.000000\n"
+
+
 def test_set_pos_moves_both_axes_and_acks() -> None:
     ctrl = _Ctrl()
     resp, close = process_rotctld_line("P 123.4 45.6", ctrl)
     assert resp == "RPRT 0\n"
     assert close is False
-    assert ("set_az", 1234) in ctrl.calls
+    assert ("set_az", 1234, False) in ctrl.calls
     assert ("set_el", 456) in ctrl.calls
+
+
+def test_set_pos_passes_shortest_path_flag() -> None:
+    ctrl = _Ctrl()
+    process_rotctld_line("P 70 0", ctrl, shortest_path=True)
+    assert ("set_az", 700, True) in ctrl.calls
 
 
 def test_set_pos_respects_disabled_axis() -> None:
     ctrl = _Ctrl(enable_el=False)
     process_rotctld_line("P 10 20", ctrl)
-    assert ("set_az", 100) in ctrl.calls
+    assert ("set_az", 100, False) in ctrl.calls
     assert all(c[0] != "set_el" for c in ctrl.calls)
 
 

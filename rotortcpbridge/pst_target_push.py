@@ -127,8 +127,20 @@ class PstTargetPush:
         if (now - self._last_send_ts) < self._MIN_SEND_INTERVAL_S:
             return
         if send_az and az_d10 is not None:
+            out_az = int(az_d10)
+            try:
+                from .angle_utils import az_d10_for_external_report
+
+                ps = (self.cfg or {}).get("pst_server", {}) or {}
+                out_az = az_d10_for_external_report(
+                    out_az,
+                    shortest_path=bool(ps.get("az_shortest_path", False)),
+                    report_mod360=bool(ps.get("az_report_mod360", False)),
+                )
+            except Exception:
+                out_az = int(az_d10)
             self._last_az_d10 = int(az_d10)
-            self._send(f"<PST><AZIMUTH>{int(az_d10) / 10.0:.1f}</AZIMUTH></PST>")
+            self._send(f"<PST><AZIMUTH>{out_az / 10.0:.1f}</AZIMUTH></PST>")
         if send_el and el_d10 is not None:
             self._last_el_d10 = int(el_d10)
             self._send(f"<PST><ELEVATION>{int(el_d10) / 10.0:.1f}</ELEVATION></PST>")

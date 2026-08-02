@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .angle_utils import (
+    antenna_bearing_from_rotor_and_offset,
     antenna_dipole_enabled,
+    az_max_d10_from_axis,
     az_pos_deg_from_d10,
     clamp_el,
     raw_rotor_az_deg_from_axis,
@@ -47,12 +49,14 @@ def set_antenna_azimuth_deg(cfg: dict, ctrl: "RotorController", antenna_deg: flo
     bearing = wrap_deg(float(antenna_deg))
     off = antenna_offset_for_compass_slot(cfg, ctrl)
     dipole = antenna_dipole_for_compass_slot(cfg, ctrl)
+    max_deg = float(az_max_d10_from_axis(getattr(ctrl, "az", None))) / 10.0
     rotor = rotor_az_for_display_bearing(
         bearing,
         off,
         raw_rotor_az_deg_from_axis(getattr(ctrl, "az", None)),
         dipole=dipole,
         last_rotor_az=getattr(ctrl, "az_dipole_last_rotor_az", None) if dipole else None,
+        max_deg=max_deg,
     )
     ctrl.set_az_deg(rotor, force=True)
     if dipole:
@@ -70,16 +74,17 @@ def _az_rotor_deg_for_relative_steps(ctrl: "RotorController") -> float:
     von GETPOSDG kommt — dann soll Jog von der aktuellen Peilung aus zählen, nicht von 0°.
     Sobald ein Motor-Soll gesendet wurde (``last_set_sent_target_d10``), gilt weiter das Soll.
     """
+    mx = az_max_d10_from_axis(getattr(ctrl, "az", None))
     try:
         if getattr(ctrl.az, "last_set_sent_target_d10", None) is not None:
-            return az_pos_deg_from_d10(int(getattr(ctrl.az, "target_d10", 0)))
+            return az_pos_deg_from_d10(int(getattr(ctrl.az, "target_d10", 0)), max_d10=mx)
     except Exception:
         pass
     try:
         raw = raw_rotor_az_deg_from_axis(getattr(ctrl, "az", None))
         if raw is not None:
             return raw
-        return az_pos_deg_from_d10(int(getattr(ctrl.az, "pos_d10", 0)))
+        return az_pos_deg_from_d10(int(getattr(ctrl.az, "pos_d10", 0)), max_d10=mx)
     except Exception:
         return 0.0
 
@@ -97,7 +102,8 @@ def effective_antenna_target_deg(cfg: dict, ctrl: "RotorController") -> float:
             return wrap_deg(float(ext))
     rotor_tgt = _az_rotor_deg_for_relative_steps(ctrl)
     off = antenna_offset_for_compass_slot(cfg, ctrl)
-    return wrap_deg(rotor_tgt + off)
+    mx = az_max_d10_from_axis(getattr(ctrl, "az", None))
+    return antenna_bearing_from_rotor_and_offset(rotor_tgt, off, max_d10=mx)
 
 
 def bump_antenna_target_deg(cfg: dict, ctrl: "RotorController", delta_deg: float) -> None:

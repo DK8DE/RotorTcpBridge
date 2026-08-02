@@ -20,7 +20,13 @@ from PySide6.QtWidgets import (
 
 from .led_widget import Led
 from .ui_utils import px_to_dip
-from ..angle_utils import az_pos_deg_from_d10, fmt_deg, wrap_deg
+from ..angle_utils import (
+    antenna_bearing_from_rotor_and_offset,
+    az_max_d10_from_axis,
+    az_pos_deg_from_d10,
+    fmt_deg,
+    wrap_deg,
+)
 from ..i18n import t
 
 
@@ -534,21 +540,40 @@ def retranslate_axis_panel(fields: dict) -> None:
             pass
 
 
-def fill_axis_panel(fields: dict, axis_state) -> None:
-    """Aktualisiert die Anzeige eines Axis-Panels mit axis_state."""
+def fill_axis_panel(
+    fields: dict,
+    axis_state,
+    *,
+    offset_deg: float = 0.0,
+    is_az: bool = False,
+) -> None:
+    """Aktualisiert die Anzeige eines Axis-Panels mit axis_state.
+
+    AZ: numerisch Rotor + Antennenversatz (ggf. erweiterter Bereich über MAXDG).
+    EL: unverändert ohne Versatz.
+    """
     now = float(_time_mod.time())
     _ = now
     pos_d10 = int(getattr(axis_state, "pos_d10", 0))
-    wrap_az = bool(getattr(axis_state, "position_wrap_360", False))
-    if wrap_az:
-        pos_deg = az_pos_deg_from_d10(pos_d10)
+    if is_az:
+        max_d10 = az_max_d10_from_axis(axis_state)
+        rotor_pos = az_pos_deg_from_d10(
+            pos_d10,
+            float(axis_state.get_smoothed_pos_d10f(now)),
+            max_d10=max_d10,
+        )
+        pos_deg = antenna_bearing_from_rotor_and_offset(rotor_pos, float(offset_deg), max_d10=max_d10)
     else:
         pos_deg = float(axis_state.get_smoothed_pos_d10f(now)) / 10.0
     fields["pos"].setText(fmt_deg(pos_deg).rstrip("°"))
     if bool(getattr(axis_state, "referenced", False)):
         tgt_d10 = int(getattr(axis_state, "target_d10", 0))
-        if wrap_az:
-            tgt_deg = az_pos_deg_from_d10(tgt_d10)
+        if is_az:
+            max_d10 = az_max_d10_from_axis(axis_state)
+            rotor_tgt = az_pos_deg_from_d10(tgt_d10, max_d10=max_d10)
+            tgt_deg = antenna_bearing_from_rotor_and_offset(
+                rotor_tgt, float(offset_deg), max_d10=max_d10
+            )
         else:
             tgt_deg = tgt_d10 / 10.0
         fields["target"].setText(fmt_deg(tgt_deg).rstrip("°"))

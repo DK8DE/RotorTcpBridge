@@ -119,6 +119,7 @@ class _JogRepeatController:
 from ..app_icon import get_app_icon
 from ..i18n import t
 from ..shortcut_actions import (
+    antenna_offset_for_compass_slot,
     bump_antenna_target_deg,
     bump_el_target_deg,
     set_antenna_azimuth_deg,
@@ -2845,7 +2846,12 @@ class MainWindow(QMainWindow):
         if size_changed:
             self._apply_fixed_mainwindow_size()
         if self.gb_az.isVisible():
-            fill_axis_panel(self.az_fields, self.ctrl.az)
+            fill_axis_panel(
+                self.az_fields,
+                self.ctrl.az,
+                offset_deg=antenna_offset_for_compass_slot(self.cfg, self.ctrl),
+                is_az=True,
+            )
             self._error_popup.maybe_show(self, "AZ", getattr(self.ctrl.az, "error_code", 0))
             self._warning_popup.maybe_show(self, "AZ", self.ctrl.az)
         if self.gb_el.isVisible():

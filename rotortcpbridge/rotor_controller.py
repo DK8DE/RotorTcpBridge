@@ -7,9 +7,13 @@ from typing import Callable, Optional
 
 from .angle_utils import (
     antenna_dipole_enabled,
+    az_max_d10_from_axis,
     az_pos_deg_from_d10,
     current_rotor_az_deg,
+    deg_to_d10,
+    pick_nearest_az_deg,
     raw_rotor_az_deg_from_axis,
+    resolve_external_az_d10,
     rotor_az_for_display_bearing,
     shortest_delta_deg,
     wrap_deg,
@@ -26,6 +30,9 @@ SYNC_UI_NAK_PREFIX = "__NAK__:"
 
 # Nach SETPOSDG: SETPOSCC vom Encoder nicht sofort anwenden (Reihenfolge auf dem Bus).
 _SETPOSCC_SUPPRESS_S = 0.6
+
+# Kürzerer Weg: widersprüchliche Folgebefehle (z. B. 370° dann 360° von PstRotator) kurz ignorieren.
+_SHORTEST_TARGET_LOCK_S = 3.0
 
 # SETPOSCC vom Bus: Idle-Polling (inkl. GETPOSDG) aussetzen — nach jedem CC mindestens diese Zeit.
 _CC_IDLE_DEFER_S = 1.0
@@ -181,6 +188,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.encoder_type: Optional[int] = None
         self.encoder_type_known: bool = False
         self._encoder_type_requested: bool = False
+        self._max_deg_requested: bool = False
         # Weitere Reads passieren explizit in den Einstellungen.
         self._antenna_bootstrap_requested: bool = False
         # GETASELECT an Controller (cont_id) einmal pro Verbindung → UI an HW-Auswahl
@@ -304,6 +312,20 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.hw.send_request(
             HwRequest(
                 line=build(self.master_id, self.slave_az, "GETENCTYPE", "0"),
+                expect_prefix=None,
+                timeout_s=0.5,
+                on_done=None,
+                priority=4,
+            )
+        )
+
+    def request_max_deg(self) -> None:
+        """Max-Winkel vom Rotor lesen (GETMAXDG, nur AZ-Slave)."""
+        if not self.enable_az:
+            return
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, self.slave_az, "GETMAXDG", "0"),
                 expect_prefix=None,
                 timeout_s=0.5,
                 on_done=None,
@@ -968,14 +990,19 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return
         D = wrap_deg(cur + O_old)
         dipole = antenna_dipole_enabled(self.az, cfg, ni)
+        max_deg = float(az_max_d10_from_axis(self.az)) / 10.0
         rotor_target = rotor_az_for_display_bearing(
             D,
             O_new,
             cur,
             dipole=dipole,
             last_rotor_az=getattr(self, "az_dipole_last_rotor_az", None) if dipole else None,
+            max_deg=max_deg,
         )
-        if abs(shortest_delta_deg(cur, rotor_target)) < 0.05:
+        if max_deg > 360.0 + 1e-9:
+            if abs(float(cur) - float(rotor_target)) < 0.05:
+                return
+        elif abs(shortest_delta_deg(cur, rotor_target)) < 0.05:
             return
         self.set_az_deg(rotor_target, force=True)
 
@@ -1231,6 +1258,24 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     pass
                 return
 
+            # -------------------- Max-Winkel (SETMAXDG) --------------------
+            if cmd == "SETMAXDG" and axis is self.az:
+                try:
+                    p = str(params).strip().replace(" ", "").replace(",", ".")
+                    v = float(p)
+                    max_d10 = int(deg_to_d10(v))
+                    if max_d10 <= 0:
+                        max_d10 = 3600
+                    axis.pos_max_d10 = max_d10
+                    axis.position_wrap_360 = max_d10 <= 3600
+                except Exception:
+                    pass
+                try:
+                    self.request_max_deg()
+                except Exception:
+                    pass
+                return
+
             # -------------------- Fahrziel setzen --------------------
             if cmd == "SETPOSDG":
                 # params ist i.d.R. Grad als Float mit "," oder ".".
@@ -1389,16 +1434,50 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.set_az_from_spid(az_d10)
         self.set_el_from_spid(el_d10)
 
-    def set_az_from_spid(self, az_d10: int):
-        """Zielposition von PstRotator (0,1°) für AZ.
+    def set_az_from_spid(self, az_d10: int, *, shortest_path: bool = False):
+        """Zielposition von PstRotator/rotctld (0,1°) für AZ.
 
         PstRotator sendet bei manchen Einstellungen SET ständig erneut.
         Wir senden SETPOSDG nur dann, wenn sich das Ziel wirklich geändert hat
         (und wenn wir nicht bereits am Ziel sind).
         Kompass-Manual-Eingabe hat 10s Vorrang (PST-SET wird ignoriert).
+        Bei MAXDG > 360°: standardmäßig Kompassrichtung 0…360° (auch wenn der
+        Client Overlap 370° sendet); mit ``shortest_path=True`` die
+        nächstgelegene Repräsentation zum Ist.
         """
         if (time.time() - self._compass_manual_az_ts) < 10.0:
             return
+        try:
+            max_d10 = az_max_d10_from_axis(self.az)
+            cur_d10 = int(getattr(self.az, "pos_d10", 0) or 0)
+            az_d10 = resolve_external_az_d10(
+                int(az_d10),
+                current_d10=cur_d10,
+                max_d10=max_d10,
+                shortest_path=bool(shortest_path),
+            )
+        except Exception:
+            pass
+
+        # PstRotator sendet nach Overlap-Ziel (370°) oft ein geklemmtes 360° nach —
+        # das würde den kurzen Weg abbrechen. Während der Fahrt zum gewählten
+        # Overlap-Ziel abweichende Richtungen kurz ignorieren.
+        if shortest_path:
+            try:
+                prev = self.az.last_set_sent_target_d10
+                prev_ts = float(getattr(self.az, "last_set_sent_ts", 0.0) or 0.0)
+                if (
+                    prev is not None
+                    and (time.time() - prev_ts) < _SHORTEST_TARGET_LOCK_S
+                    and abs(int(self.az.pos_d10) - int(prev)) > 15
+                ):
+                    old_b = wrap_deg(float(prev) / 10.0)
+                    new_b = wrap_deg(float(az_d10) / 10.0)
+                    if abs(shortest_delta_deg(old_b, new_b)) > 5.0:
+                        return
+            except Exception:
+                pass
+
         self.az.compass_target_d10 = None
         self.az.target_d10 = az_d10
 

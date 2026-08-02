@@ -716,6 +716,22 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             except Exception:
                                 pass
                     return
+                # Max-Winkel (GETMAXDG) — Wire: Grad mit Komma; intern 0,1°-Einheiten
+                if axis_name == "AZ" and tel.cmd.startswith("ACK_GETMAXDG"):
+                    v = parse_float(tel.params.strip())
+                    if v is not None:
+                        try:
+                            from .angle_utils import deg_to_d10
+
+                            max_d10 = int(deg_to_d10(float(v)))
+                        except Exception:
+                            max_d10 = int(round(float(v) * 10.0))
+                        if max_d10 <= 0:
+                            max_d10 = 3600
+                        axis_state.pos_max_d10 = max_d10
+                        # Erweiterter Bereich (>360°): lineare Positionsrechnung, kein Kreis-Wrap
+                        axis_state.position_wrap_360 = max_d10 <= 3600
+                    return
                 # Antennen-Versätze (GETANTOFF1–3)
                 if tel.cmd.startswith("ACK_GETANTOFF1"):
                     v = parse_float(tel.params.strip())

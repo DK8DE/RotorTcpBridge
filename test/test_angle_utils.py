@@ -108,6 +108,82 @@ def test_az_pos_deg_from_d10_full_circle() -> None:
     assert az_pos_deg_from_d10(3599) == pytest.approx(360.0)
     assert az_pos_deg_from_d10(0) == pytest.approx(0.0)
     assert az_pos_deg_from_d10(900, 905.0) == pytest.approx(90.5)
+    # Über 360°: nur Homing-Band 3599..3600, nicht alles ab 3599
+    assert is_az_pos_at_full_circle_d10(3601) is False
+    assert is_az_pos_at_full_circle_d10(4200) is False
+
+
+def test_fmt_deg_extended_beyond_360() -> None:
+    assert fmt_deg(430.0) == "430.0°"
+    assert fmt_deg_d10(4300) == "430.0°"
+    assert fmt_deg(420.0) == "420.0°"
+
+
+def test_az_pos_deg_from_d10_extended_range() -> None:
+    from rotortcpbridge.angle_utils import antenna_bearing_from_rotor_and_offset
+
+    assert az_pos_deg_from_d10(4200, max_d10=4300) == pytest.approx(420.0)
+    assert az_pos_deg_from_d10(4300, max_d10=4300) == pytest.approx(430.0)
+    # Klassisch wrappt weiter
+    assert az_pos_deg_from_d10(4200, max_d10=3600) == pytest.approx(60.0)
+    assert antenna_bearing_from_rotor_and_offset(420.0, 10.0, max_d10=4300) == pytest.approx(430.0)
+    assert antenna_bearing_from_rotor_and_offset(420.0, 10.0, max_d10=3600) == pytest.approx(70.0)
+    # Versatz darf Summe über MAXDG heben (sonst klebt Anzeige bei großem Offset)
+    assert antenna_bearing_from_rotor_and_offset(350.0, 180.0, max_d10=4200) == pytest.approx(530.0)
+    assert antenna_bearing_from_rotor_and_offset(240.0, 180.0, max_d10=4200) == pytest.approx(420.0)
+    assert antenna_bearing_from_rotor_and_offset(241.0, 180.0, max_d10=4200) == pytest.approx(421.0)
+
+
+def test_pick_nearest_and_shortest_target_extended() -> None:
+    from rotortcpbridge.angle_utils import pick_nearest_az_deg, resolve_external_az_d10
+
+    # Ist 420°, Wunsch 70° bei MAXDG 430° → 430° (10°), nicht 70° (350°)
+    assert pick_nearest_az_deg(70.0, 420.0, 430.0) == pytest.approx(430.0)
+    assert rotor_az_for_display_bearing(70.0, 0.0, 420.0, max_deg=430.0) == pytest.approx(430.0)
+    # MAXDG 360°: unverändert 70°
+    assert rotor_az_for_display_bearing(70.0, 0.0, 350.0, max_deg=360.0) == pytest.approx(70.0)
+    assert pick_nearest_az_deg(70.0, 350.0, 360.0) == pytest.approx(70.0)
+
+    # Extern exact: Kompassrichtung 0…360 (auch wenn Client Overlap 370 sendet)
+    assert resolve_external_az_d10(
+        700, current_d10=4200, max_d10=4300, shortest_path=False
+    ) == 700
+    assert resolve_external_az_d10(
+        3700, current_d10=3550, max_d10=4300, shortest_path=False
+    ) == 100
+    # Extern: kürzerer Weg (10° bzw. 370°-Overlap → 370/430 je nach Ist)
+    assert resolve_external_az_d10(
+        700, current_d10=4200, max_d10=4300, shortest_path=True
+    ) == 4300
+    assert resolve_external_az_d10(
+        100, current_d10=3550, max_d10=4300, shortest_path=True
+    ) == 3700
+    assert resolve_external_az_d10(
+        3700, current_d10=3550, max_d10=4300, shortest_path=True
+    ) == 3700
+    # Expliziter Overlap-Winkel bleibt erhalten (nicht auf 10° zurück)
+    assert resolve_external_az_d10(
+        3700, current_d10=500, max_d10=4300, shortest_path=True
+    ) == 3700
+    # Klassischer Bereich: Wrap
+    assert resolve_external_az_d10(
+        3700, current_d10=0, max_d10=3600, shortest_path=False
+    ) == 100
+
+    from rotortcpbridge.angle_utils import az_d10_for_external_report
+
+    # Report: kürzerer Weg ohne 0…360 → Rohwert
+    assert az_d10_for_external_report(
+        3700, shortest_path=True, report_mod360=False
+    ) == 3700
+    # Report: kürzerer Weg mit 0…360 → wrap
+    assert az_d10_for_external_report(
+        3700, shortest_path=True, report_mod360=True
+    ) == 100
+    # Report: Exact → immer wrap
+    assert az_d10_for_external_report(
+        3700, shortest_path=False, report_mod360=False
+    ) == 100
 
 
 def test_shortest_delta_az_rotor_deg_homing() -> None:

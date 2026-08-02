@@ -161,7 +161,7 @@ _INTERP_SAMPLE_DT_MAX_S = 1.5
 
 
 def _smooth_delta_d10(wrap_360: bool, smooth_f: float, target: float) -> float:
-    """Differenz smooth → target; AZ kürzester Kreisweg, EL linear."""
+    """Differenz smooth → target; AZ kürzester Kreisweg (nur bei wrap_360), sonst linear."""
     target_f = float(target)
     if wrap_360:
         # 360,0° (3600) und 0° (0) sind peilungsgleich, aber nach Homing ohne
@@ -172,6 +172,21 @@ def _smooth_delta_d10(wrap_360: bool, smooth_f: float, target: float) -> float:
             return target_f - float(smooth_f)
         return shortest_delta_deg(smooth_f * 0.1, target_f * 0.1) * 10.0
     return target_f - float(smooth_f)
+
+
+def _clamp_smooth_d10f(axis: "AxisState", value: float) -> float:
+    """Anzeige-Glättung begrenzen: EL 0..90°, AZ erweitert 0..pos_max, sonst unverändert."""
+    if bool(getattr(axis, "position_wrap_360", True)):
+        return float(value)
+    try:
+        mx = int(getattr(axis, "pos_max_d10", 3600) or 3600)
+    except Exception:
+        mx = 3600
+    # EL: typisch max 90°; wenn pos_max_d10 noch Default 3600 und wrap aus → EL-Clamp.
+    # AZ mit erweitertem Bereich: pos_max_d10 > 3600.
+    if mx > 3600:
+        return max(0.0, min(float(mx), float(value)))
+    return max(0.0, min(900.0, float(value)))
 
 
 def _smooth_damp_scalar(
@@ -248,8 +263,10 @@ class AxisState:
     # Interne Entprellung für "steht am Ziel": erst nach mehreren stabilen Samples
     # wird moving=False gesetzt (sonst stockt die Anzeige beim Überschleifen).
     stop_confirm_samples: int = 0
-    # True = AZ (0..360° kürzester Weg); False = EL (linear 0..90°).
+    # True = AZ (0..360° kürzester Weg); False = EL (linear) oder AZ mit MAXDG>360.
     position_wrap_360: bool = True
+    # GETMAXDG als 0,1°-Einheiten (Default 360,0°). Bei >3600: erweiterter Bereich.
+    pos_max_d10: int = 3600
     _last_smooth_render_ts: float = 0.0
     # Geschwindigkeit der Anzeige (0,1°/s) für SmoothDamp (Idle/Fallback).
     _smooth_vel_f: float = 0.0
@@ -454,8 +471,7 @@ class AxisState:
                 self.smooth_pos_d10f = float(self._interp_from_d10f) + float(delta) * float(u)
             self._last_smooth_render_ts = now
             self._smooth_vel_f = 0.0
-            if not self.position_wrap_360:
-                self.smooth_pos_d10f = max(0.0, min(900.0, float(self.smooth_pos_d10f)))
+            self.smooth_pos_d10f = _clamp_smooth_d10f(self, float(self.smooth_pos_d10f))
             self.smooth_pos_d10 = int(round(self.smooth_pos_d10f))
             return self.smooth_pos_d10f
 
@@ -481,8 +497,7 @@ class AxisState:
             self.smooth_pos_d10f = new_x
             self._smooth_vel_f = float(new_v)
 
-        if not self.position_wrap_360:
-            self.smooth_pos_d10f = max(0.0, min(900.0, float(self.smooth_pos_d10f)))
+        self.smooth_pos_d10f = _clamp_smooth_d10f(self, float(self.smooth_pos_d10f))
 
         self.smooth_pos_d10 = int(round(self.smooth_pos_d10f))
         return self.smooth_pos_d10f

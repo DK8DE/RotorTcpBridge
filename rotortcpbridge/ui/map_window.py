@@ -28,6 +28,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from ..angle_utils import (
     antenna_bearing_from_rotor_and_offset,
     antenna_dipole_enabled,
+    az_max_d10_from_axis,
     az_pos_deg_from_d10,
     clamp_el,
     fmt_deg,
@@ -1067,8 +1068,13 @@ class MapWindow(QDialog):
             return
         try:
             pos_d10 = getattr(az_axis, "pos_d10", None)
+            max_d10 = az_max_d10_from_axis(az_axis)
             cur = (
-                antenna_bearing_from_rotor_and_offset(az_pos_deg_from_d10(int(pos_d10)), off)
+                antenna_bearing_from_rotor_and_offset(
+                    az_pos_deg_from_d10(int(pos_d10), max_d10=max_d10),
+                    off,
+                    max_d10=max_d10,
+                )
                 if pos_d10 is not None
                 else None
             )
@@ -1080,8 +1086,13 @@ class MapWindow(QDialog):
                 tgt_d10 = int(cc_d10)
             else:
                 tgt_d10 = getattr(az_axis, "target_d10", None)
+            max_d10 = az_max_d10_from_axis(az_axis)
             tgt = (
-                antenna_bearing_from_rotor_and_offset(az_pos_deg_from_d10(int(tgt_d10)), off)
+                antenna_bearing_from_rotor_and_offset(
+                    az_pos_deg_from_d10(int(tgt_d10), max_d10=max_d10),
+                    off,
+                    max_d10=max_d10,
+                )
                 if tgt_d10 is not None
                 else None
             )
@@ -1302,6 +1313,7 @@ class MapWindow(QDialog):
             cur_rotor,
             dipole=dipole,
             last_rotor_az=getattr(self.ctrl, "az_dipole_last_rotor_az", None) if dipole else None,
+            max_deg=float(az_max_d10_from_axis(getattr(self.ctrl, "az", None))) / 10.0,
         )
         self._map_click_rotor_az = rotor_deg  # Kartenklick-Azimut merken
         try:

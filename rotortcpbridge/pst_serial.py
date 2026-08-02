@@ -37,6 +37,7 @@ except Exception:  # pragma: no cover - pyserial ist eine harte Abhängigkeit
     serial = None  # type: ignore[assignment]
 
 from . import verbose_cat_log
+from .angle_utils import az_d10_for_external_report
 from .logutil import LogBuffer
 from .rig_bridge.cat_responder import CatResponder, build_responder
 from .spid_rot2prog import (
@@ -73,11 +74,22 @@ class PstSerialPort:
     schreibend ignoriert und liefern in der Statusantwort 0°.
     """
 
-    def __init__(self, port: str, baudrate: int, ctrl, log: LogBuffer):
+    def __init__(
+        self,
+        port: str,
+        baudrate: int,
+        ctrl,
+        log: LogBuffer,
+        *,
+        az_shortest_path_getter=None,
+        az_report_mod360_getter=None,
+    ):
         self.port = str(port or "").strip()
         self.baudrate = int(baudrate or 115200)
         self.ctrl = ctrl
         self.log = log
+        self._az_shortest_path_getter = az_shortest_path_getter
+        self._az_report_mod360_getter = az_report_mod360_getter
         self.running: bool = False
         self._thread: Optional[threading.Thread] = None
         self._ser: Optional[Any] = None
@@ -110,12 +122,32 @@ class PstSerialPort:
             pass
         self._ser = None
 
+    def _az_shortest_path(self) -> bool:
+        getter = self._az_shortest_path_getter
+        if getter is None:
+            return False
+        try:
+            return bool(getter())
+        except Exception:
+            return False
+
+    def _az_report_mod360(self) -> bool:
+        getter = self._az_report_mod360_getter
+        if getter is None:
+            return False
+        try:
+            return bool(getter())
+        except Exception:
+            return False
+
     # -------------------------------------------------------------- internals
     def _apply_set(self, cmd) -> None:
         """CMD_SET bedient beide Achsen gleichzeitig (SPID MD-03 / ROT2PROG)."""
         try:
             if cmd.az_d10 is not None and bool(getattr(self.ctrl, "enable_az", True)):
-                self.ctrl.set_az_from_spid(cmd.az_d10)
+                self.ctrl.set_az_from_spid(
+                    cmd.az_d10, shortest_path=self._az_shortest_path()
+                )
         except Exception as exc:
             self.log.write("WARN", f"PST-Serial {self.port}: set AZ fehlgeschlagen: {exc}")
         try:
@@ -138,11 +170,19 @@ class PstSerialPort:
             pass
 
     def _build_reply(self) -> bytes:
-        az_d10 = (
-            (self.ctrl.az.pos_d10 or 0)
-            if bool(getattr(self.ctrl, "enable_az", True))
-            else 0
-        )
+        try:
+            az_raw = (
+                int(self.ctrl.az.pos_d10 or 0)
+                if bool(getattr(self.ctrl, "enable_az", True))
+                else 0
+            )
+            az_d10 = az_d10_for_external_report(
+                az_raw,
+                shortest_path=self._az_shortest_path(),
+                report_mod360=self._az_report_mod360(),
+            )
+        except Exception:
+            az_d10 = 0
         el_d10 = (
             (self.ctrl.el.pos_d10 or 0)
             if bool(getattr(self.ctrl, "enable_el", True))
@@ -648,13 +688,30 @@ class PstSerialManager:
     nicht aufgebaut werden).
     """
 
-    def __init__(self, ctrl, log: LogBuffer, rig_bridge=None):
+    def __init__(self, ctrl, log: LogBuffer, rig_bridge=None, cfg=None):
         self._ctrl = ctrl
         self._log = log
         self._rb = rig_bridge
+        self._app_cfg = cfg
         # Port → Listener (PstSerialPort oder RigSerialPort)
         self._ports: Dict[str, Any] = {}
         self._cfg: Dict[str, Any] = {"enabled": False, "listeners": []}
+
+    def _pst_az_shortest_path(self) -> bool:
+        try:
+            return bool(
+                (self._app_cfg or {}).get("pst_server", {}).get("az_shortest_path", False)
+            )
+        except Exception:
+            return False
+
+    def _pst_az_report_mod360(self) -> bool:
+        try:
+            return bool(
+                (self._app_cfg or {}).get("pst_server", {}).get("az_report_mod360", False)
+            )
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------ API
     @property
@@ -695,7 +752,14 @@ class PstSerialManager:
                 lc.port, lc.baudrate, self._rb, profile_id, self._log
             )
         # Rotor-Listener (Fallback auch wenn rig_bridge fehlt oder target unbekannt).
-        return PstSerialPort(lc.port, lc.baudrate, self._ctrl, self._log)
+        return PstSerialPort(
+            lc.port,
+            lc.baudrate,
+            self._ctrl,
+            self._log,
+            az_shortest_path_getter=self._pst_az_shortest_path,
+            az_report_mod360_getter=self._pst_az_report_mod360,
+        )
 
     def _needs_rebuild(self, cur: Any, lc: _ListenerCfg) -> bool:
         """Prueft, ob die Laufzeit-Instanz verworfen werden muss."""

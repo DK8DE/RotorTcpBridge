@@ -115,3 +115,17 @@ def test_smoothing_lerps_between_getposdg_without_overshoot() -> None:
     # Kein Zurückrudern innerhalb des Segments
     for a, b in zip(vals, vals[1:]):
         assert b + 1e-6 >= a
+
+
+def test_smoothing_linear_across_360_when_extended() -> None:
+    """Bei MAXDG>360: Glättung linear über 360° hinaus, kein Kreis-Rücksprung."""
+    az = AxisState(position_wrap_360=False, pos_max_d10=4300)
+    az.moving = True
+    az.update_position_sample(3580, sample_ts=1000.0, expected_period_s=0.25)
+    az.get_smoothed_pos_d10f(1000.0)
+    az.update_position_sample(3650, sample_ts=1000.25, expected_period_s=0.25)
+    vals = [az.get_smoothed_pos_d10f(1000.25 + i * (1.0 / 60.0)) for i in range(30)]
+    assert vals[-1] == pytest.approx(3650.0, abs=1.0)
+    assert vals[-1] > 3600.0
+    for a, b in zip(vals, vals[1:]):
+        assert b + 1e-6 >= a

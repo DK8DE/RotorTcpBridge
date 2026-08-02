@@ -16,6 +16,7 @@ import time
 import xml.etree.ElementTree as ET
 from .angle_utils import (
     antenna_dipole_enabled,
+    az_max_d10_from_axis,
     raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
     wrap_deg,
@@ -167,6 +168,7 @@ class UdpUcxLogListener:
                 cur_rotor,
                 dipole=dipole,
                 last_rotor_az=getattr(self.ctrl, "az_dipole_last_rotor_az", None) if dipole else None,
+                max_deg=float(az_max_d10_from_axis(getattr(self.ctrl, "az", None))) / 10.0,
             )
             sender = f"{addr[0]}:{addr[1]}" if addr else "?"
             if off_az != 0.0:

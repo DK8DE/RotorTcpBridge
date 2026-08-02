@@ -20,7 +20,12 @@ import re
 import socket
 import threading
 import time
-from .angle_utils import wrap_deg
+from .angle_utils import (
+    az_deg_for_external_report,
+    az_d10_for_external_report,
+    az_max_d10_from_axis,
+    resolve_external_az_d10,
+)
 from .net_utils import ipv4_subnet_broadcast_default, normalize_udp_bind_host
 from .pst_notify_logic import pst_notify_position_decision
 
@@ -185,6 +190,16 @@ class UdpPstRotator:
         if self._enabled:
             self.log.write("INFO", "UDP PST-Rotator gestoppt")
 
+    def _udp_az_flags(self) -> tuple[bool, bool]:
+        try:
+            ui = (self.cfg or {}).get("ui", {}) or {}
+            return (
+                bool(ui.get("udp_pst_az_shortest_path", False)),
+                bool(ui.get("udp_pst_az_report_mod360", False)),
+            )
+        except Exception:
+            return (False, False)
+
     def notify_position(self, az_d10: int) -> None:
         """Vom Haupt-Tick aufgerufen wenn sich AZ-Position geändert hat.
 
@@ -196,16 +211,23 @@ class UdpPstRotator:
         """
         if not self._enabled or self._sock_tx is None:
             return
+        shortest, report_mod360 = self._udp_az_flags()
+        try:
+            report_d10 = az_d10_for_external_report(
+                int(az_d10), shortest_path=shortest, report_mod360=report_mod360
+            )
+        except Exception:
+            report_d10 = int(az_d10)
         send, self._zero_confirm = pst_notify_position_decision(
-            az_d10,
+            report_d10,
             self._last_sent_d10,
             self._zero_confirm,
             zero_confirm_ticks=_ZERO_CONFIRM_TICKS,
         )
         if not send:
             return
-        self._last_sent_d10 = az_d10
-        az_deg = az_d10 / 10.0
+        self._last_sent_d10 = report_d10
+        az_deg = report_d10 / 10.0
         self._send_reply(f"AZ:{az_deg:.1f}\r")
 
     # ------------------------------------------------------------------
@@ -237,7 +259,12 @@ class UdpPstRotator:
                     and self._zero_confirm < _ZERO_CONFIRM_TICKS
                 ):
                     return self._last_sent_d10 / 10.0
-                return d10 / 10.0
+                shortest, report_mod360 = self._udp_az_flags()
+                return az_deg_for_external_report(
+                    float(d10) / 10.0,
+                    shortest_path=shortest,
+                    report_mod360=report_mod360,
+                )
         except Exception as e:
             self.log.write("WARN", f"UDP PST-Rotator _current_az_deg: {e}")
         return 0.0
@@ -247,7 +274,12 @@ class UdpPstRotator:
         try:
             d10 = getattr(self.ctrl.az, "target_d10", None)
             if d10 is not None:
-                return d10 / 10.0
+                shortest, report_mod360 = self._udp_az_flags()
+                return az_deg_for_external_report(
+                    float(d10) / 10.0,
+                    shortest_path=shortest,
+                    report_mod360=report_mod360,
+                )
         except Exception as e:
             self.log.write("WARN", f"UDP PST-Rotator _target_az_deg: {e}")
         return self._current_az_deg()
@@ -310,11 +342,30 @@ class UdpPstRotator:
         """Verarbeitet einen einzelnen PST-Tag."""
         if tag == "AZIMUTH":
             try:
-                az_deg = wrap_deg(float(val))
+                az_deg = float(val)
             except ValueError:
                 self.log.write(
                     "WARN", f"UDP PST-Rotator: ungültiger AZIMUTH-Wert '{val}' von {sender}"
                 )
+                return
+            try:
+                shortest = bool(
+                    (self.cfg or {}).get("ui", {}).get("udp_pst_az_shortest_path", False)
+                )
+            except Exception:
+                shortest = False
+            try:
+                max_d10 = az_max_d10_from_axis(self.ctrl.az)
+                cur_d10 = int(getattr(self.ctrl.az, "pos_d10", 0) or 0)
+                az_d10 = resolve_external_az_d10(
+                    int(round(float(az_deg) * 10.0)),
+                    current_d10=cur_d10,
+                    max_d10=max_d10,
+                    shortest_path=shortest,
+                )
+                az_deg = float(az_d10) / 10.0
+            except Exception as e:
+                self.log.write("WARN", f"UDP PST-Rotator AZ-Auflösung: {e}")
                 return
             self.log.write("UDP", f"PST AZIMUTH={az_deg:.1f}° von {sender} → setze Rotor")
             try:

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QFontDatabase, QShowEvent
+from PySide6.QtGui import QCloseEvent, QFontDatabase, QShowEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -28,12 +29,18 @@ from ..command_catalog import command_specs, format_cmd_tooltip
 from ..app_icon import get_app_icon
 from ..i18n import format_tooltip, t, tt
 from ..rotor_backup import (
-    backupable_pairs,
-    get_params_for_get,
-    save_rotor_config_xml,
-    load_rotor_config_xml,
-    extract_gui_config_for_backup,
     apply_gui_config_from_backup,
+    apply_live_ids_from_cfg,
+    build_backup_work,
+    controller_hw_enabled,
+    encoder_type_from_backup_entries,
+    encoder_type_from_ctrl,
+    extract_gui_config_for_backup,
+    filter_restore_entries_for_encoder,
+    get_params_for_get,
+    load_rotor_config_xml,
+    parse_encoder_type_value,
+    save_rotor_config_xml,
 )
 from ..backup import backups_dir
 
@@ -74,6 +81,7 @@ _BLOCK2_DEFS = [
     ("cmd.label_home_bl_scale", "SETHOMEBLSCALE", "GETHOMEBLSCALE"),
     ("cmd.label_min_pwm", "SETMINPWM", "GETMINPWM"),
     ("cmd.label_max_angle", "SETMAXDG", "GETMAXDG"),
+    ("cmd.label_dgcal", "SETDGCAL", "GETDGCAL"),
     ("cmd.label_current_warn", "SETIWARN", "GETIWARN"),
     ("cmd.label_current_max", "SETIMAX", "GETIMAX"),
 ]
@@ -109,7 +117,8 @@ _PARAM_SPEC = {
     "SETHOMEBACKOFF": (0, 360, "°", False, False),
     "SETHOMEBLSCALE": (0, 1, "0…1", False, False),
     "SETMINPWM": (15, 100, "%", False, False),
-    "SETMAXDG": (0, 360, "°", False, False),
+    "SETMAXDG": (0, 720, "°", False, False),
+    "SETDGCAL": (-360, 360, "°", False, False),
     "SETIWARN": (100, 10000, "mA", True, False),
     "SETIMAX": (100, 10000, "mA", True, False),
 }
@@ -127,6 +136,8 @@ _INTEGER_PERCENT_SET_CMDS = frozenset(
 
 # SET mit Dezimalwert 0..1 (kein int()-Truncate wie bei Homing-Winkeln).
 _FLOAT_01_SET_CMDS = frozenset({"SETHOMEBLSCALE"})
+# SET mit Dezimal-Winkel (Nachkommastellen behalten).
+_FLOAT_ANGLE_SET_CMDS = frozenset({"SETDGCAL"})
 
 
 _PARAM_EDIT_WIDTH = 90
@@ -135,6 +146,77 @@ _PARAM_UNIT_WIDTH = 28
 _PARAM_EDIT_LEFT_MARGIN = 5
 _PARAM_LABEL_MIN_WIDTH = 170
 
+
+class _HwTransferProgressDialog(QDialog):
+    """Fortschritt für Backup/Wiederherstellen: Balken, Status, Abbrechen — kein Schließen per X."""
+
+    cancelled = Signal()
+
+    def __init__(self, title: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowIcon(get_app_icon())
+        self.setModal(True)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+        self.setMinimumWidth(420)
+        self._allow_close = False
+        self._cancel_requested = False
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+        self._lbl = QLabel(t("cmd.hint_backup_start"))
+        self._lbl.setWordWrap(True)
+        self._lbl.setMinimumHeight(40)
+        lay.addWidget(self._lbl)
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 1)
+        self._bar.setValue(0)
+        self._bar.setTextVisible(True)
+        lay.addWidget(self._bar)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self._btn_cancel = QPushButton(t("cmd.btn_cancel_transfer"))
+        self._btn_cancel.setAutoDefault(False)
+        self._btn_cancel.setDefault(False)
+        self._btn_cancel.clicked.connect(self._on_cancel)
+        row.addWidget(self._btn_cancel)
+        lay.addLayout(row)
+
+    def _on_cancel(self) -> None:
+        if self._cancel_requested:
+            return
+        self._cancel_requested = True
+        self._btn_cancel.setEnabled(False)
+        self._lbl.setText(t("cmd.hint_transfer_cancelling"))
+        self.cancelled.emit()
+
+    def set_progress(self, current: int, total: int, text: str) -> None:
+        total_i = max(0, int(total))
+        cur_i = max(0, min(int(current), total_i if total_i > 0 else int(current)))
+        if total_i <= 0:
+            self._bar.setRange(0, 0)  # busy
+        else:
+            self._bar.setRange(0, total_i)
+            self._bar.setValue(cur_i)
+        self._lbl.setText(str(text or ""))
+
+    def finish_and_close(self) -> None:
+        self._allow_close = True
+        self.accept()
+
+    def reject(self) -> None:  # noqa: A003 — Qt API
+        if self._allow_close:
+            super().reject()
+        else:
+            self._on_cancel()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._allow_close:
+            event.accept()
+            return
+        event.ignore()
+        self._on_cancel()
 
 
 class _GuiCallEvent(QEvent):
@@ -184,8 +266,11 @@ class CommandButtonsWindow(QDialog):
 
         self._backup_state: Optional[dict] = None
         self._restore_state: Optional[dict] = None
+        self._xfer_progress: Optional[_HwTransferProgressDialog] = None
         self._BACKUP_DELAY_MS = 500
         self._RESTORE_DELAY_MS = 500
+        self._BACKUP_MAX_RETRIES = 3
+        self._RESTORE_MAX_RETRIES = 3
         self._block_auto_send = False
         self._auto_query_inflight = False
         self._auto_query_pending_cmd: str = ""
@@ -396,6 +481,96 @@ class CommandButtonsWindow(QDialog):
     def _invoke_on_gui(self, fn: Callable[[], None]) -> None:
         """Ruft fn im GUI-Thread aus (on_done von send_ui_command läuft im Reader-Thread)."""
         QCoreApplication.postEvent(self, _GuiCallEvent(fn))
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._backup_state is not None or self._restore_state is not None:
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    def reject(self) -> None:  # noqa: A003 — Qt API
+        if self._backup_state is not None or self._restore_state is not None:
+            return
+        super().reject()
+
+    def _xfer_in_progress(self) -> bool:
+        return self._backup_state is not None or self._restore_state is not None
+
+    def _open_xfer_progress(self, title: str, total: int, start_text: str) -> None:
+        self._close_xfer_progress()
+        dlg = _HwTransferProgressDialog(title, parent=self)
+        dlg.cancelled.connect(self._on_xfer_cancel_requested)
+        dlg.set_progress(0, max(1, int(total)), start_text)
+        self._xfer_progress = dlg
+        dlg.show()
+
+    def _update_xfer_progress(self, current: int, total: int, text: str) -> None:
+        dlg = self._xfer_progress
+        if dlg is not None:
+            try:
+                dlg.set_progress(current, total, text)
+            except RuntimeError:
+                pass
+        self.lbl_hint.setText(text)
+
+    def _close_xfer_progress(self) -> None:
+        dlg = self._xfer_progress
+        self._xfer_progress = None
+        if dlg is None:
+            return
+        try:
+            dlg.finish_and_close()
+        except RuntimeError:
+            pass
+
+    def _on_xfer_cancel_requested(self) -> None:
+        if self._backup_state is not None:
+            self._backup_state["cancelled"] = True
+        if self._restore_state is not None:
+            self._restore_state["cancelled"] = True
+        self.lbl_hint.setText(t("cmd.hint_transfer_cancelling"))
+
+    def _xfer_was_cancelled(self, state: Optional[dict]) -> bool:
+        return bool(state and state.get("cancelled"))
+
+    def _resolve_encoder_type_for_xfer(self) -> Optional[int]:
+        """Encoder-Typ für Backup/Restore: Controller-Cache, sonst GETENCTYPE am AZ-Slave."""
+        et = encoder_type_from_ctrl(self.ctrl)
+        if et is not None:
+            return et
+        rb = self.cfg.get("rotor_bus") if isinstance(self.cfg.get("rotor_bus"), dict) else {}
+        try:
+            dst = int(rb.get("slave_az", 20))
+        except Exception:
+            dst = 20
+        try:
+            if not hasattr(self.ctrl, "sync_ui_command_response"):
+                return None
+            rp = self.ctrl.sync_ui_command_response(
+                dst, "GETENCTYPE", "0", "ACK_GETENCTYPE"
+            )
+            if rp is None:
+                return None
+            return parse_encoder_type_value(rp)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _format_xfer_failures(items: list) -> str:
+        """Kompakte Liste fehlgeschlagener Schritte für Hinweis/MessageBox."""
+        lines: list[str] = []
+        for it in items or []:
+            try:
+                dst = int(it.get("dst", 0))
+            except Exception:
+                dst = 0
+            cmd = str(it.get("cmd", "") or "").strip() or "?"
+            err = str(it.get("err", "") or "").strip()
+            if err:
+                lines.append(f"• DST {dst}: {cmd} — {err}")
+            else:
+                lines.append(f"• DST {dst}: {cmd}")
+        return "\n".join(lines)
 
     def _make_dst_combo(self) -> QComboBox:
         cb = QComboBox()
@@ -1090,9 +1265,11 @@ class CommandButtonsWindow(QDialog):
                 return str(int(round(x)))
             except (ValueError, TypeError):
                 pass
-        if set_cmd in _FLOAT_01_SET_CMDS:
+        if set_cmd in _FLOAT_01_SET_CMDS or set_cmd in _FLOAT_ANGLE_SET_CMDS:
             try:
                 x = float(str(params).strip().replace(",", "."))
+                if set_cmd in _FLOAT_ANGLE_SET_CMDS:
+                    return f"{x:.1f}".rstrip("0").rstrip(".").replace(".", ",") or "0"
                 s = f"{x:.6f}".rstrip("0").rstrip(".")
                 return s if s else "0"
             except (ValueError, TypeError):
@@ -1154,11 +1331,16 @@ class CommandButtonsWindow(QDialog):
             xf = float(str(raw).strip().replace(",", "."))
         except (ValueError, TypeError):
             return (None, f"Ungültige Zahl: {raw}")
-        if cmd in _FLOAT_01_SET_CMDS:
-            lo = float(min_v) if min_v is not None else 0.0
-            hi = float(max_v) if max_v is not None else 1.0
+        if cmd in _FLOAT_01_SET_CMDS or cmd in _FLOAT_ANGLE_SET_CMDS:
+            lo = float(min_v) if min_v is not None else (-360.0 if cmd in _FLOAT_ANGLE_SET_CMDS else 0.0)
+            hi = float(max_v) if max_v is not None else (360.0 if cmd in _FLOAT_ANGLE_SET_CMDS else 1.0)
             if xf < lo - 1e-9 or xf > hi + 1e-9:
                 return (None, f"Wert außerhalb {lo}–{hi}")
+            if cmd in _FLOAT_ANGLE_SET_CMDS:
+                txt = f"{xf:.1f}".rstrip("0").rstrip(".")
+                if not txt or txt == "-0":
+                    txt = "0"
+                return (txt.replace(".", ","), None)
             txt = f"{xf:.6f}".rstrip("0").rstrip(".")
             if not txt or txt == "-0":
                 txt = "0"
@@ -1311,20 +1493,9 @@ class CommandButtonsWindow(QDialog):
                 self.lbl_hint.setText(t("cmd.hint_sent", cmd=cmd))
 
     def _on_backup_clicked(self) -> None:
-        if self._backup_state:
+        if self._xfer_in_progress():
             QMessageBox.information(self, t("cmd.btn_backup"), t("cmd.msgbox_backup_running"))
             return
-        rb = self.cfg.get("rotor_bus", {})
-        dsts = []
-        for key in ("slave_az", "slave_el"):
-            try:
-                v = int(rb.get(key))
-                if v not in dsts:
-                    dsts.append(v)
-            except Exception:
-                pass
-        if not dsts:
-            dsts = [0]
         path, _ = QFileDialog.getSaveFileName(
             self, t("cmd.backup_save_title"), str(backups_dir()), t("cmd.file_filter_xml")
         )
@@ -1333,23 +1504,46 @@ class CommandButtonsWindow(QDialog):
         path = Path(path)
         if path.suffix.lower() != ".xml":
             path = path.with_suffix(".xml")
-        pairs = backupable_pairs()
-        work = [(dst, sc, gc) for dst in dsts for sc, gc in pairs]
-        self._backup_state = {"work": work, "index": 0, "data": [], "path": path}
+        enc_type = self._resolve_encoder_type_for_xfer()
+        work = build_backup_work(self.cfg, encoder_type=enc_type)
+        self._backup_state = {
+            "work": work,
+            "index": 0,
+            "data": [],
+            "path": path,
+            "retries": 0,
+            "failed": 0,
+            "failed_items": [],
+            "cancelled": False,
+        }
         self.btn_backup.setEnabled(False)
         self.btn_restore.setEnabled(False)
-        self.lbl_hint.setText(t("cmd.hint_backup_start"))
+        start_txt = t("cmd.hint_backup_start")
+        self._open_xfer_progress(t("cmd.btn_backup"), len(work), start_txt)
+        self.lbl_hint.setText(start_txt)
         QTimer.singleShot(100, self._run_backup_step)
 
     def _run_backup_step(self) -> None:
         if not self._backup_state:
             return
         s = self._backup_state
+        if self._xfer_was_cancelled(s):
+            self._abort_backup()
+            return
         work, idx = s["work"], s["index"]
         if idx >= len(work):
             self._finish_backup()
             return
         dst, set_cmd, get_cmd = work[idx]
+        total = len(work)
+        status = t(
+            "cmd.hint_backup_progress",
+            idx=idx + 1,
+            total=total,
+            cmd=get_cmd,
+            dst=dst,
+        )
+        self._update_xfer_progress(idx, total, status)
         spec = self._all_spec_by_name.get(get_cmd)
         params_to_send = get_params_for_get(spec) if spec else "0"
 
@@ -1387,34 +1581,97 @@ class CommandButtonsWindow(QDialog):
         if not self._backup_state:
             return
         s = self._backup_state
+        if self._xfer_was_cancelled(s):
+            self._abort_backup()
+            return
+        total = len(s["work"])
+        idx = int(s["index"])
         if ok and params_val is not None:
             s["data"].append({"dst": dst, "cmd": set_cmd, "params": params_val})
-        idx = s["index"] + 1
+            s["retries"] = 0
+            idx += 1
+        else:
+            retries = int(s.get("retries", 0)) + 1
+            if retries < int(self._BACKUP_MAX_RETRIES):
+                s["retries"] = retries
+            else:
+                s["retries"] = 0
+                s["failed"] = int(s.get("failed", 0)) + 1
+                fails = s.setdefault("failed_items", [])
+                fails.append(
+                    {
+                        "dst": int(dst),
+                        "cmd": str(get_cmd),
+                        "err": str(err or "keine Antwort").strip(),
+                    }
+                )
+                idx += 1
         s["index"] = idx
-        total = len(s["work"])
-        self.lbl_hint.setText(t("cmd.hint_backup_progress", idx=idx, total=total, cmd=set_cmd))
+        status = t(
+            "cmd.hint_backup_progress",
+            idx=min(idx, total),
+            total=total,
+            cmd=get_cmd,
+            dst=dst,
+        )
+        self._update_xfer_progress(idx, total, status)
         if idx >= total:
             QTimer.singleShot(self._BACKUP_DELAY_MS, self._finish_backup)
         else:
             QTimer.singleShot(self._BACKUP_DELAY_MS, self._run_backup_step)
 
+    def _abort_backup(self) -> None:
+        if not self._backup_state:
+            return
+        self._backup_state = None
+        self._close_xfer_progress()
+        self.btn_backup.setEnabled(True)
+        self.btn_restore.setEnabled(True)
+        self.lbl_hint.setText(t("cmd.hint_transfer_cancelled"))
+
     def _finish_backup(self) -> None:
         if not self._backup_state:
             return
+        if self._xfer_was_cancelled(self._backup_state):
+            self._abort_backup()
+            return
         s = self._backup_state
         path, data = s["path"], s["data"]
+        failed = int(s.get("failed", 0))
+        failed_items = list(s.get("failed_items") or [])
         self._backup_state = None
+        self._close_xfer_progress()
         self.btn_backup.setEnabled(True)
         self.btn_restore.setEnabled(True)
+        fail_detail = self._format_xfer_failures(failed_items)
         try:
             gui_cfg = extract_gui_config_for_backup(self.cfg)
             save_rotor_config_xml(path, data, gui_config=gui_cfg)
-            self.lbl_hint.setText(t("cmd.hint_backup_done", count=len(data), name=path.name))
+            self.lbl_hint.setText(
+                t(
+                    "cmd.hint_backup_done",
+                    count=len(data),
+                    name=path.name,
+                    failed=failed,
+                )
+            )
+            if failed > 0:
+                QMessageBox.warning(
+                    self,
+                    t("cmd.btn_backup"),
+                    t(
+                        "cmd.msgbox_backup_done_with_failures",
+                        count=len(data),
+                        name=path.name,
+                        failed=failed,
+                        detail=fail_detail,
+                    ),
+                )
         except Exception as e:
             QMessageBox.warning(self, t("cmd.btn_backup"), t("cmd.msgbox_backup_save_error", err=e))
 
     def _on_restore_clicked(self) -> None:
-        if self._restore_state:
+        if self._xfer_in_progress():
             QMessageBox.information(self, t("cmd.btn_restore"), t("cmd.msgbox_restore_running"))
             return
         path, _ = QFileDialog.getOpenFileName(
@@ -1432,16 +1689,40 @@ class CommandButtonsWindow(QDialog):
         if not entries and not gui_config:
             QMessageBox.information(self, t("cmd.btn_restore"), t("cmd.msgbox_restore_empty"))
             return
-        self._restore_state = {"entries": entries or [], "gui_config": gui_config, "index": 0}
+        live_et = self._resolve_encoder_type_for_xfer()
+        bak_et = encoder_type_from_backup_entries(entries or [])
+        # Typ 3 live oder im Backup → Wind-/Anemo-SETs nicht wiederherstellen
+        enc_type = 3 if (live_et == 3 or bak_et == 3) else (live_et if live_et is not None else bak_et)
+        filtered = filter_restore_entries_for_encoder(
+            entries or [],
+            encoder_type=enc_type,
+            include_controller=controller_hw_enabled(self.cfg),
+        )
+        self._restore_state = {
+            "entries": filtered,
+            "gui_config": gui_config,
+            "index": 0,
+            "retries": 0,
+            "failed": 0,
+            "failed_items": [],
+            "cancelled": False,
+        }
         self.btn_backup.setEnabled(False)
         self.btn_restore.setEnabled(False)
-        self.lbl_hint.setText(t("cmd.hint_restore_start"))
+        start_txt = t("cmd.hint_restore_start")
+        self._open_xfer_progress(
+            t("cmd.btn_restore"), len(filtered), start_txt
+        )
+        self.lbl_hint.setText(start_txt)
         QTimer.singleShot(100, self._run_restore_step)
 
     def _run_restore_step(self) -> None:
         if not self._restore_state:
             return
         s = self._restore_state
+        if self._xfer_was_cancelled(s):
+            self._abort_restore()
+            return
         entries, idx = s["entries"], s["index"]
         if idx >= len(entries):
             self._finish_restore()
@@ -1450,6 +1731,15 @@ class CommandButtonsWindow(QDialog):
         dst = int(e["dst"])
         cmd = str(e["cmd"])
         params = str(e.get("params", "")).strip()
+        total = len(entries)
+        status = t(
+            "cmd.hint_restore_progress",
+            idx=idx + 1,
+            total=total,
+            cmd=cmd,
+            dst=dst,
+        )
+        self._update_xfer_progress(idx, total, status)
 
         cmd_u = str(cmd).strip().upper()
 
@@ -1483,35 +1773,109 @@ class CommandButtonsWindow(QDialog):
         if not self._restore_state:
             return
         s = self._restore_state
-        idx = s["index"] + 1
-        s["index"] = idx
+        if self._xfer_was_cancelled(s):
+            self._abort_restore()
+            return
         total = len(s["entries"])
-        self.lbl_hint.setText(t("cmd.hint_restore_progress", idx=idx, total=total, cmd=cmd))
+        idx = int(s["index"])
+        if ok:
+            s["retries"] = 0
+            idx += 1
+        else:
+            retries = int(s.get("retries", 0)) + 1
+            if retries < int(self._RESTORE_MAX_RETRIES):
+                s["retries"] = retries
+            else:
+                s["retries"] = 0
+                s["failed"] = int(s.get("failed", 0)) + 1
+                fails = s.setdefault("failed_items", [])
+                fails.append(
+                    {
+                        "dst": int(dst),
+                        "cmd": str(cmd),
+                        "err": str(err or "keine Antwort").strip(),
+                    }
+                )
+                idx += 1
+        s["index"] = idx
+        status = t(
+            "cmd.hint_restore_progress",
+            idx=min(idx, total),
+            total=total,
+            cmd=cmd,
+            dst=dst,
+        )
+        self._update_xfer_progress(idx, total, status)
         if idx >= total:
             QTimer.singleShot(self._RESTORE_DELAY_MS, self._finish_restore)
         else:
             QTimer.singleShot(self._RESTORE_DELAY_MS, self._run_restore_step)
 
+    def _abort_restore(self) -> None:
+        if not self._restore_state:
+            return
+        self._restore_state = None
+        self._close_xfer_progress()
+        self.btn_backup.setEnabled(True)
+        self.btn_restore.setEnabled(True)
+        self.lbl_hint.setText(t("cmd.hint_transfer_cancelled"))
+
     def _finish_restore(self) -> None:
         if not self._restore_state:
             return
+        if self._xfer_was_cancelled(self._restore_state):
+            self._abort_restore()
+            return
         s = self._restore_state
         total = len(s["entries"])
+        failed = int(s.get("failed", 0))
+        failed_items = list(s.get("failed_items") or [])
         gui_config = s.get("gui_config")
         self._restore_state = None
+        self._close_xfer_progress()
         self.btn_backup.setEnabled(True)
         self.btn_restore.setEnabled(True)
         if gui_config:
             try:
                 apply_gui_config_from_backup(self.cfg, gui_config)
                 self.save_cfg_cb(self.cfg)
-                self._refresh_dst_dropdown()
-                self._read_all_params()
+                apply_live_ids_from_cfg(self.ctrl, self.cfg)
+                cb = self._after_slave_ids_changed_cb
+                if callable(cb):
+                    try:
+                        cb()
+                    except Exception:
+                        pass
             except Exception as e:
                 QMessageBox.warning(
                     self, t("cmd.btn_restore"), t("cmd.msgbox_restore_gui_error", err=e)
                 )
-        self.lbl_hint.setText(t("cmd.hint_restore_done", total=total))
-        QMessageBox.information(
-            self, t("cmd.btn_restore"), t("cmd.msgbox_restore_done", total=total)
-        )
+        try:
+            self._refresh_dst_dropdown()
+            self._read_all_params()
+            if hasattr(self.ctrl, "request_antenna_offsets"):
+                self.ctrl.request_antenna_offsets()
+        except Exception:
+            pass
+        fail_detail = self._format_xfer_failures(failed_items)
+        done_txt = t("cmd.hint_restore_done", total=total, failed=failed)
+        if fail_detail:
+            done_txt = f"{done_txt}\n{fail_detail}"
+        self.lbl_hint.setText(done_txt)
+        if failed > 0:
+            QMessageBox.warning(
+                self,
+                t("cmd.btn_restore"),
+                t(
+                    "cmd.msgbox_restore_done_with_failures",
+                    total=total,
+                    failed=failed,
+                    detail=fail_detail,
+                ),
+            )
+        else:
+            QMessageBox.information(
+                self,
+                t("cmd.btn_restore"),
+                t("cmd.msgbox_restore_done", total=total, failed=failed),
+            )

@@ -141,6 +141,7 @@ def main():
         int(cfg["pst_server"]["listen_port_el"]),
         ctrl,
         log,
+        cfg=cfg,
     )
 
     # PST-Server beim Programmstart starten (wenn aktiviert)
@@ -154,6 +155,7 @@ def main():
         int(rotctld_cfg.get("listen_port", DEFAULT_ROTCTLD_PORT)),
         ctrl,
         log,
+        cfg=cfg,
     )
     if bool(rotctld_cfg.get("enabled", False)):
         rotctld.start()
@@ -162,7 +164,7 @@ def main():
     # Der Manager bekommt einen Zeiger auf die Rig-Bridge, damit
     # Rig-Listener das aktive Profil kennen und Schreibbefehle in die
     # bestehende CAT-Queue legen koennen.
-    pst_serial = PstSerialManager(ctrl, log, rig_bridge=rig_bridge_manager)
+    pst_serial = PstSerialManager(ctrl, log, rig_bridge=rig_bridge_manager, cfg=cfg)
     pst_serial.update_config(cfg.get("pst_serial", {}))
     if bool(cfg.get("pst_serial", {}).get("enabled", False)):
         pst_serial.start_all()

@@ -46,31 +46,27 @@ def parse_command_packet(pkt: bytes) -> Rot2ProgCommand | None:
     az_d10 = None
     el_d10 = None
     if cmd == CMD_SET:
-        # ROT2PROG / PstRotator / SatPC32 / Hamlib senden H und V je nach
-        # gewaehltem Rotator-Profil in zwei unterschiedlichen Aufloesungen:
-        #
-        #   * 0,1°-Aufloesung (Alfaspid RAS, RAS AZ):   H = 10*(az+360)
-        #   * 1°-Aufloesung   (Alfaspid BIG-RAS AZ/EL): H = (az+360)
-        #
-        # Die Header-Bytes PH/PV sind dabei oft nicht eindeutig (PstRotator
-        # schickt in beiden Faellen PH=PV=1), daher entscheiden wir anhand
-        # des Wertebereichs: Werte >= 1000 liegen sicher im 0,1°-Bereich
-        # (1800..8100 fuer AZ = -180°..+450°), Werte < 1000 liegen sicher im
-        # 1°-Bereich (180..810 fuer denselben Winkelbereich). Die beiden
-        # Bereiche ueberlappen sich nicht.
-        #
-        # Ist das Feld nicht mit ASCII-Digits belegt (z.B. binaere Nullen,
-        # wenn die Gegenstelle nur eine Achse setzen will), bleibt der Wert
-        # None und die Achse wird nicht verfahren.
-        def _decode(raw: int | None) -> int | None:
+        # ROT2PROG: H = PH * (az_deg + 360), V = PV * (el_deg + 360).
+        # PH/PV = 10 → 0,1°; PH/PV = 2 → 0,5°; PH/PV = 1 → 1°.
+        # PstRotator setzt PH/PV oft auf 1 auch bei 0,1°-Daten — dann Heuristik
+        # (Werte >= 1000 = 0,1°-Kodierung). PH in {2,5,10} ist vertrauenswürdig.
+        def _decode(raw: int | None, p: int) -> int | None:
             if raw is None:
                 return None
+            try:
+                p_i = int(p)
+            except Exception:
+                p_i = 1
+            if p_i in (2, 5, 10):
+                deg = float(raw) / float(p_i) - 360.0
+                return int(round(deg * 10.0))
+            # PH=1 oder unbekannt: 0,1° vs 1° anhand Wertebereich
             if raw >= 1000:
                 return raw - 3600
             return (raw - 360) * 10
 
-        az_d10 = _decode(H)
-        el_d10 = _decode(V)
+        az_d10 = _decode(H, ph)
+        el_d10 = _decode(V, pv)
     return Rot2ProgCommand(cmd=cmd, az_d10=az_d10, el_d10=el_d10, ph=ph, pv=pv)
 
 

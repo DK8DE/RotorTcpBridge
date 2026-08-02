@@ -363,12 +363,21 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 if (not bool(getattr(self, "_encoder_type_requested", False))) and self.enable_az:
                     self.request_encoder_type()
                     self._encoder_type_requested = True
+                if (not bool(getattr(self, "_max_deg_requested", False))) and self.enable_az:
+                    self.request_max_deg()
+                    self._max_deg_requested = True
             except Exception:
                 pass
         if (not hw_on) and self._hw_prev_connected:
             self.encoder_type = None
             self.encoder_type_known = False
             self._encoder_type_requested = False
+            self._max_deg_requested = False
+            try:
+                self.az.pos_max_d10 = 3600
+                self.az.position_wrap_360 = True
+            except Exception:
+                pass
             self._antenna_selection_bootstrap_requested = False
             self._setposcc_poll_hold = False
             self._setposcc_hold_until = 0.0

@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Callable, Optional
 
-from PySide6.QtCore import QEvent, QTimer, Qt, Slot
+from PySide6.QtCore import QEvent, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QFont, QFontMetrics, QHideEvent, QKeySequence, QPalette, QShortcut, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -27,8 +27,10 @@ from PySide6.QtWidgets import (
 from ..app_icon import get_app_icon
 from ..angle_utils import (
     antenna_bearing_from_rotor_and_offset,
+    az_max_d10_from_axis,
     az_pos_deg_from_d10,
     clamp_el,
+    compute_dgcal_deg,
     current_rotor_az_deg,
     fmt_deg,
     om_beam_contributions_per_sector,
@@ -38,7 +40,7 @@ from ..angle_utils import (
     shortest_delta_deg,
 )
 from ..geo_utils import bearing_deg, effective_station_lat_lon, haversine_km, maidenhead_to_lat_lon
-from ..i18n import t, tt
+from ..i18n import format_tooltip, t, tt
 from ..ui.rig_freq_utils import (
     RIG_FREQ_OUT_OF_BAND_QSS,
     format_rig_freq_mhz,
@@ -59,6 +61,10 @@ from .statistic_compass_widget import parse_heatmap_scale
 
 class CompassWindow(QDialog):
     """Gemeinsames Kompass-Fenster für AZ/EL."""
+
+    # Reader-Thread → GUI (GET/SETDGCAL)
+    sig_dgcal_get_done = Signal(str, object, str)  # axis, value|None, err
+    sig_dgcal_set_done = Signal(str, bool, str, float)  # axis, ok, err, value
 
     _MIN_WIDTH = 870
     _VAL_COLOR_SOLL = "#ff6b6b"
@@ -132,6 +138,12 @@ class CompassWindow(QDialog):
         self._el_ref_poll_was_active = False
         # Letzte gemeldete Strommap an Controller — nur bei Änderung neu setzen (wie die gezeichneten Ringe)
         self._last_strom_notify_key: tuple[bool, bool] | None = None
+        self._dgcal_az: Optional[float] = None
+        self._dgcal_el: Optional[float] = None
+        self._dgcal_az_ist: Optional[float] = None
+        self._dgcal_el_ist: Optional[float] = None
+        self._dgcal_req_busy_az = False
+        self._dgcal_req_busy_el = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
@@ -345,11 +357,44 @@ class CompassWindow(QDialog):
         _vl_ant.addWidget(self._lbl_antenna_h)
         _vl_ant.addWidget(self.cb_antenna)
 
+        # ── Korrekturwinkel AZ ────────────────────────────────────────────
+        _c_dgcal_az = QFrame()
+        self._apply_compass_card_style(_c_dgcal_az)
+        _vl_dgcal_az = QVBoxLayout(_c_dgcal_az)
+        _vl_dgcal_az.setContentsMargins(8, 8, 8, 10)
+        _vl_dgcal_az.setSpacing(4)
+        self._lbl_dgcal_az_h = QLabel(t("compass.dgcal_header").upper())
+        self._lbl_dgcal_az_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_dgcal_az_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_dgcal_az_cur = QLabel("–")
+        self._lbl_dgcal_az_cur.setStyleSheet(_VAL_STYLE)
+        self._lbl_dgcal_az_cur.setFixedHeight(_val_row_h)
+        self._lbl_dgcal_az_cur.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ed_dgcal_az_true = QLineEdit()
+        self.ed_dgcal_az_true.setPlaceholderText(t("compass.dgcal_true_placeholder"))
+        self.ed_dgcal_az_true.setToolTip(format_tooltip(t("compass.dgcal_true_tooltip")))
+        self.ed_dgcal_az_true.setMaxLength(8)
+        self.btn_dgcal_az_save = QPushButton(t("compass.dgcal_btn_save"))
+        self.btn_dgcal_az_save.setAutoDefault(False)
+        self.btn_dgcal_az_save.setDefault(False)
+        self.btn_dgcal_az_clear = QPushButton(t("compass.dgcal_btn_clear"))
+        self.btn_dgcal_az_clear.setAutoDefault(False)
+        self.btn_dgcal_az_clear.setDefault(False)
+        _dgcal_az_btns = QHBoxLayout()
+        _dgcal_az_btns.setSpacing(4)
+        _dgcal_az_btns.addWidget(self.btn_dgcal_az_save, 1)
+        _dgcal_az_btns.addWidget(self.btn_dgcal_az_clear, 1)
+        _vl_dgcal_az.addWidget(self._lbl_dgcal_az_h)
+        _vl_dgcal_az.addWidget(_val_row(self._lbl_dgcal_az_cur))
+        _vl_dgcal_az.addWidget(self.ed_dgcal_az_true)
+        _vl_dgcal_az.addLayout(_dgcal_az_btns)
+
         left_vbox.addWidget(_c_soll)
         left_vbox.addWidget(_c_ist)
         left_vbox.addWidget(self._c_wind)
         left_vbox.addWidget(_c_loc)
         left_vbox.addWidget(_c_ant)
+        left_vbox.addWidget(_c_dgcal_az)
         left_vbox.addStretch(1)
         main_row.addWidget(left_panel, 0)
 
@@ -651,6 +696,37 @@ class CompassWindow(QDialog):
         _vl_el_ist.addWidget(self._lbl_el_ist_h)
         _vl_el_ist.addWidget(_val_row(self._lbl_left_el_ist_val))
 
+        _c_dgcal_el = QFrame()
+        self._apply_compass_card_style(_c_dgcal_el)
+        _vl_dgcal_el = QVBoxLayout(_c_dgcal_el)
+        _vl_dgcal_el.setContentsMargins(8, 8, 8, 10)
+        _vl_dgcal_el.setSpacing(4)
+        self._lbl_dgcal_el_h = QLabel(t("compass.dgcal_header").upper())
+        self._lbl_dgcal_el_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_dgcal_el_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_dgcal_el_cur = QLabel("–")
+        self._lbl_dgcal_el_cur.setStyleSheet(_VAL_STYLE)
+        self._lbl_dgcal_el_cur.setFixedHeight(_val_row_h)
+        self._lbl_dgcal_el_cur.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ed_dgcal_el_true = QLineEdit()
+        self.ed_dgcal_el_true.setPlaceholderText(t("compass.dgcal_true_placeholder"))
+        self.ed_dgcal_el_true.setToolTip(format_tooltip(t("compass.dgcal_true_tooltip")))
+        self.ed_dgcal_el_true.setMaxLength(8)
+        self.btn_dgcal_el_save = QPushButton(t("compass.dgcal_btn_save"))
+        self.btn_dgcal_el_save.setAutoDefault(False)
+        self.btn_dgcal_el_save.setDefault(False)
+        self.btn_dgcal_el_clear = QPushButton(t("compass.dgcal_btn_clear"))
+        self.btn_dgcal_el_clear.setAutoDefault(False)
+        self.btn_dgcal_el_clear.setDefault(False)
+        _dgcal_el_btns = QHBoxLayout()
+        _dgcal_el_btns.setSpacing(4)
+        _dgcal_el_btns.addWidget(self.btn_dgcal_el_save, 1)
+        _dgcal_el_btns.addWidget(self.btn_dgcal_el_clear, 1)
+        _vl_dgcal_el.addWidget(self._lbl_dgcal_el_h)
+        _vl_dgcal_el.addWidget(_val_row(self._lbl_dgcal_el_cur))
+        _vl_dgcal_el.addWidget(self.ed_dgcal_el_true)
+        _vl_dgcal_el.addLayout(_dgcal_el_btns)
+
         _ctrl_el_card = QFrame()
         self._apply_compass_card_style(_ctrl_el_card)
         _ctrl_el_vbox = QVBoxLayout(_ctrl_el_card)
@@ -668,6 +744,7 @@ class CompassWindow(QDialog):
         _el_right_vbox.addWidget(_conn_el_card)
         _el_right_vbox.addWidget(_c_el_soll)
         _el_right_vbox.addWidget(_c_el_ist)
+        _el_right_vbox.addWidget(_c_dgcal_el)
         _el_right_vbox.addWidget(_ctrl_el_card)
         _el_right_vbox.addStretch(1)
 
@@ -680,6 +757,14 @@ class CompassWindow(QDialog):
         self.btn_stop_el.clicked.connect(self._on_stop_el)
         self.btn_ref_az.clicked.connect(lambda: self.ctrl.reference_az(True))
         self.btn_ref_el.clicked.connect(lambda: self.ctrl.reference_el(True))
+        self.btn_dgcal_az_save.clicked.connect(lambda: self._on_dgcal_save("az"))
+        self.btn_dgcal_az_clear.clicked.connect(lambda: self._on_dgcal_clear("az"))
+        self.btn_dgcal_el_save.clicked.connect(lambda: self._on_dgcal_save("el"))
+        self.btn_dgcal_el_clear.clicked.connect(lambda: self._on_dgcal_clear("el"))
+        self.ed_dgcal_az_true.returnPressed.connect(lambda: self._on_dgcal_save("az"))
+        self.ed_dgcal_el_true.returnPressed.connect(lambda: self._on_dgcal_save("el"))
+        self.sig_dgcal_get_done.connect(self._on_dgcal_get_done)
+        self.sig_dgcal_set_done.connect(self._on_dgcal_set_done)
         self.btn_reset_dwell_az.clicked.connect(self._on_reset_dwell_az)
         self._migrate_heatmap_ui_keys()
         self._fill_heatmap_az_list()
@@ -781,6 +866,8 @@ class CompassWindow(QDialog):
         if not all_known:
             # Noch nicht bekannt: einmalig anfordern (kein periodischer Retry beim Fahren).
             self._request_antenna_offsets()
+        self._request_dgcal("az")
+        QTimer.singleShot(350, lambda: self._request_dgcal("el"))
         QTimer.singleShot(300, self._request_immediate_stats_delayed)
         self._tick()
         QTimer.singleShot(0, self._fit_rig_freq_font_size)
@@ -1228,16 +1315,25 @@ class CompassWindow(QDialog):
             return
         self._az_soll_display_bearing = wrap_deg(float(ext))
         try:
-            self._target_az = az_pos_deg_from_d10(int(self.ctrl.az.target_d10))
+            self._target_az = az_pos_deg_from_d10(
+                int(self.ctrl.az.target_d10),
+                max_d10=az_max_d10_from_axis(self.ctrl.az),
+            )
         except Exception:
             pass
+
+    def _az_max_d10(self) -> int:
+        try:
+            return az_max_d10_from_axis(getattr(self.ctrl, "az", None))
+        except Exception:
+            return 3600
 
     def _az_target_display_deg(self, tgt: Optional[float], off_az: float) -> Optional[float]:
         if tgt is None:
             return None
         if self._selected_antenna_dipole_enabled() and self._az_soll_display_bearing is not None:
             return wrap_deg(self._az_soll_display_bearing)
-        return antenna_bearing_from_rotor_and_offset(tgt, off_az)
+        return antenna_bearing_from_rotor_and_offset(tgt, off_az, max_d10=self._az_max_d10())
 
     @staticmethod
     def _dwell_sector_index(deg: float, n_d: int) -> int:
@@ -1527,12 +1623,14 @@ class CompassWindow(QDialog):
             self._lbl_wind_h,
             self.lbl_az_locator,
             self._lbl_antenna_h,
+            self._lbl_dgcal_az_h,
             self._lbl_conn_h,
             self._lbl_ctrl,
             self._lbl_fav_h,
             self._lbl_conn_el_h,
             self._lbl_el_soll_h,
             self._lbl_el_ist_h,
+            self._lbl_dgcal_el_h,
             self._lbl_ctrl_el,
         ):
             lbl.setStyleSheet(card_hdr_style)
@@ -1552,6 +1650,12 @@ class CompassWindow(QDialog):
             self._value_label_style(self._VAL_COLOR_IST_REVERSE)
         )
         self._lbl_left_el_ist_val.setStyleSheet(
+            self._value_label_style(self._VAL_COLOR_IST)
+        )
+        self._lbl_dgcal_az_cur.setStyleSheet(
+            self._value_label_style(self._VAL_COLOR_IST)
+        )
+        self._lbl_dgcal_el_cur.setStyleSheet(
             self._value_label_style(self._VAL_COLOR_IST)
         )
         self._lbl_left_wind_val.setStyleSheet(
@@ -1591,6 +1695,16 @@ class CompassWindow(QDialog):
             self._btn_open_map.setToolTip(tt("compass.open_map_tooltip"))
         self.lbl_az_locator.setText(t("compass.locator_label").upper())
         self._lbl_antenna_h.setText(t("compass.antenna_header").upper())
+        self._lbl_dgcal_az_h.setText(t("compass.dgcal_header").upper())
+        self._lbl_dgcal_el_h.setText(t("compass.dgcal_header").upper())
+        self.ed_dgcal_az_true.setPlaceholderText(t("compass.dgcal_true_placeholder"))
+        self.ed_dgcal_az_true.setToolTip(format_tooltip(t("compass.dgcal_true_tooltip")))
+        self.ed_dgcal_el_true.setPlaceholderText(t("compass.dgcal_true_placeholder"))
+        self.ed_dgcal_el_true.setToolTip(format_tooltip(t("compass.dgcal_true_tooltip")))
+        self.btn_dgcal_az_save.setText(t("compass.dgcal_btn_save"))
+        self.btn_dgcal_az_clear.setText(t("compass.dgcal_btn_clear"))
+        self.btn_dgcal_el_save.setText(t("compass.dgcal_btn_save"))
+        self.btn_dgcal_el_clear.setText(t("compass.dgcal_btn_clear"))
         self._lbl_conn_h.setText(t("compass.status_verbindung").upper())
         self._lbl_conn_el_h.setText(t("compass.status_verbindung").upper())
         if self._lbl_rig_freq_h is not None:
@@ -1930,6 +2044,7 @@ class CompassWindow(QDialog):
             return az_pos_deg_from_d10(
                 int(self.ctrl.az.pos_d10),
                 float(self.ctrl.az.get_smoothed_pos_d10f(time.time())),
+                max_d10=self._az_max_d10(),
             )
         except Exception:
             return current_rotor_az_deg(getattr(self.ctrl, "az", None))
@@ -1947,15 +2062,18 @@ class CompassWindow(QDialog):
         self._sync_az_dipole_soll_from_controller()
         try:
             pos_d10_az = int(self.ctrl.az.pos_d10)
+            max_d10_az = self._az_max_d10()
             cur_smooth = az_pos_deg_from_d10(
                 pos_d10_az,
                 float(self.ctrl.az.get_smoothed_pos_d10f(now)),
+                max_d10=max_d10_az,
             )
-            cur = az_pos_deg_from_d10(pos_d10_az)
+            cur = az_pos_deg_from_d10(pos_d10_az, max_d10=max_d10_az)
         except Exception:
             cur = None
             cur_smooth = None
         off_az = self._get_antenna_offset_az()
+        max_d10_az = self._az_max_d10()
 
         try:
             wind_kmh = self.ctrl.az.telemetry.wind_kmh
@@ -2031,16 +2149,18 @@ class CompassWindow(QDialog):
                 cc_d10 = None
             if cc_d10 is not None:
                 self._cc_display_latch_az_d10 = int(cc_d10)
-                tgt = az_pos_deg_from_d10(int(cc_d10))
+                tgt = az_pos_deg_from_d10(int(cc_d10), max_d10=max_d10_az)
             elif moving_az:
                 if self._cc_display_latch_az_d10 is not None:
-                    tgt = az_pos_deg_from_d10(int(self._cc_display_latch_az_d10))
+                    tgt = az_pos_deg_from_d10(
+                        int(self._cc_display_latch_az_d10), max_d10=max_d10_az
+                    )
                 else:
                     try:
                         td = int(getattr(self.ctrl.az, "target_d10", 0))
                     except Exception:
                         td = 0
-                    tgt = az_pos_deg_from_d10(td)
+                    tgt = az_pos_deg_from_d10(td, max_d10=max_d10_az)
             else:
                 self._cc_display_latch_az_d10 = None
                 tgt = self._target_az
@@ -2053,7 +2173,7 @@ class CompassWindow(QDialog):
                 )
                 axis_last_set_ts = float(getattr(axis, "last_set_sent_ts", 0.0) or 0.0)
                 axis_last_set_target_d10 = getattr(axis, "last_set_sent_target_d10", None)
-                tgt = az_pos_deg_from_d10(axis_target_d10)
+                tgt = az_pos_deg_from_d10(axis_target_d10, max_d10=max_d10_az)
                 unknown_target = (
                     axis_target_d10 == 0
                     and axis_last_set_ts <= 0.0
@@ -2087,7 +2207,8 @@ class CompassWindow(QDialog):
             tgt = None
 
         if cur_smooth is not None:
-            cur_display_needle = antenna_bearing_from_rotor_and_offset(cur_smooth, off_az)
+            # Windrose/Zeiger: immer 0..360°; Zahlen: erweiterter Bereich inkl. Versatz
+            cur_display_needle = wrap_deg(float(cur_smooth) + float(off_az))
             self.az_compass.set_current_deg(cur_display_needle)
         self.az_compass.set_dipole_active(self._selected_antenna_dipole_enabled())
         self.update_ist_reverse_visibility()
@@ -2139,7 +2260,7 @@ class CompassWindow(QDialog):
         if tgt is not None:
             tgt_display = self._az_target_display_deg(tgt, off_az)
             if tgt_display is not None:
-                self.az_compass.set_target_deg(tgt_display)
+                self.az_compass.set_target_deg(wrap_deg(float(tgt_display)))
                 desired_txt = fmt_deg(float(tgt_display)).rstrip("°")
                 bus_d10 = self._effective_az_bus_target_d10()
                 bus_changed = (
@@ -2192,21 +2313,25 @@ class CompassWindow(QDialog):
         except Exception:
             pass
 
-        # Linke Info-Karten / Overlay: dieselbe geglättete Ist-Anzeige wie der Zeiger
-        # (Rohwert ``cur`` nur für Bus-Logik/Standzeit, sonst stocken die Gradzahlen).
+        # Linke Info-Karten / Overlay: numerisch Rotor + Versatz (ggf. >360°).
         ist_src = cur_smooth if cur_smooth is not None else cur
         if ist_src is not None:
-            cur_display = antenna_bearing_from_rotor_and_offset(ist_src, off_az)
+            cur_display = antenna_bearing_from_rotor_and_offset(
+                ist_src, off_az, max_d10=max_d10_az
+            )
+            self._dgcal_az_ist = float(cur_display)
             self._lbl_left_ist_val.setText(fmt_deg(cur_display))
             if self._selected_antenna_dipole_enabled():
                 self._lbl_left_ist_reverse_val.setText(
-                    fmt_deg(antenna_bearing_from_rotor_and_offset(cur_display, 180.0))
+                    fmt_deg(wrap_deg(float(cur_display) + 180.0))
                 )
             else:
                 self._lbl_left_ist_reverse_val.setText("–")
         else:
+            self._dgcal_az_ist = None
             self._lbl_left_ist_val.setText("–")
             self._lbl_left_ist_reverse_val.setText("–")
+        self._refresh_dgcal_labels()
         if tgt is not None:
             soll_display = self._az_target_display_deg(tgt, off_az)
             self._lbl_left_soll_val.setText(
@@ -2226,7 +2351,9 @@ class CompassWindow(QDialog):
 
         # Ist-Text im Kompass (Soll = Eingabe oben rechts)
         if ist_src is not None:
-            cur_display_ov = antenna_bearing_from_rotor_and_offset(ist_src, off_az)
+            cur_display_ov = antenna_bearing_from_rotor_and_offset(
+                ist_src, off_az, max_d10=max_d10_az
+            )
             ist_txt = t("compass.ist_prefix") + fmt_deg(cur_display_ov)
         else:
             ist_txt = t("compass.ist_prefix") + "–"
@@ -2394,9 +2521,12 @@ class CompassWindow(QDialog):
             pass
 
         if cur is not None:
+            self._dgcal_el_ist = float(clamp_el(cur))
             self._lbl_left_el_ist_val.setText(fmt_deg(clamp_el(cur)))
         else:
+            self._dgcal_el_ist = None
             self._lbl_left_el_ist_val.setText("–")
+        self._refresh_dgcal_labels()
         if tgt is not None:
             self._lbl_left_el_soll_val.setText(fmt_deg(clamp_el(tgt)))
         else:
@@ -2407,6 +2537,195 @@ class CompassWindow(QDialog):
         else:
             ist_txt = t("compass.ist_prefix") + "–"
         self.el_compass.set_overlay_ist_soll(ist_txt, "")
+
+    def _refresh_dgcal_labels(self) -> None:
+        if self._dgcal_az is not None:
+            self._lbl_dgcal_az_cur.setText(fmt_deg(self._dgcal_az))
+        else:
+            self._lbl_dgcal_az_cur.setText("–")
+        if self._dgcal_el is not None:
+            self._lbl_dgcal_el_cur.setText(fmt_deg(self._dgcal_el))
+        else:
+            self._lbl_dgcal_el_cur.setText("–")
+
+    def _dgcal_dst(self, axis: str) -> Optional[int]:
+        rb = self.cfg.get("rotor_bus") if isinstance(self.cfg.get("rotor_bus"), dict) else {}
+        try:
+            if axis == "el":
+                if not bool(getattr(self.ctrl, "enable_el", rb.get("enable_el", False))):
+                    return None
+                return int(getattr(self.ctrl, "slave_el", rb.get("slave_el", 21)))
+            if not bool(getattr(self.ctrl, "enable_az", rb.get("enable_az", True))):
+                return None
+            return int(getattr(self.ctrl, "slave_az", rb.get("slave_az", 20)))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_dgcal_params(params: object) -> Optional[float]:
+        try:
+            raw = str(params or "").strip().split(";")[0].replace(",", ".")
+            if not raw:
+                return None
+            return float(raw)
+        except Exception:
+            return None
+
+    def _request_dgcal(self, axis: str) -> None:
+        dst = self._dgcal_dst(axis)
+        if dst is None or not hasattr(self.ctrl, "send_ui_command"):
+            return
+        busy_attr = "_dgcal_req_busy_el" if axis == "el" else "_dgcal_req_busy_az"
+        if bool(getattr(self, busy_attr, False)):
+            return
+        setattr(self, busy_attr, True)
+
+        def done(tel, err):
+            val = None
+            err_s = ""
+            if err or tel is None:
+                err_s = str(err or "keine Antwort")
+            else:
+                cmd = str(getattr(tel, "cmd", "") or "").upper()
+                if cmd.startswith("ACK_GETDGCAL"):
+                    val = self._parse_dgcal_params(getattr(tel, "params", ""))
+                    if val is None:
+                        err_s = "ungültige Antwort"
+                else:
+                    err_s = cmd or "NAK"
+            try:
+                self.sig_dgcal_get_done.emit(str(axis), val, err_s)
+            except RuntimeError:
+                pass
+
+        try:
+            self.ctrl.send_ui_command(
+                int(dst),
+                "GETDGCAL",
+                "0",
+                expect_prefix="ACK_GETDGCAL",
+                timeout_s=1.2,
+                priority=1,
+                on_done=done,
+                apply_local_state=False,
+            )
+        except Exception as e:
+            setattr(self, busy_attr, False)
+            try:
+                self.sig_dgcal_get_done.emit(str(axis), None, str(e))
+            except RuntimeError:
+                pass
+
+    @Slot(str, object, str)
+    def _on_dgcal_get_done(self, axis: str, value: object, err: str) -> None:
+        busy_attr = "_dgcal_req_busy_el" if axis == "el" else "_dgcal_req_busy_az"
+        setattr(self, busy_attr, False)
+        if value is not None:
+            try:
+                v = float(value)
+            except Exception:
+                v = None
+            if v is not None:
+                if axis == "el":
+                    self._dgcal_el = v
+                else:
+                    self._dgcal_az = v
+                self._refresh_dgcal_labels()
+
+    def _fmt_dgcal_wire(self, deg: float) -> str:
+        txt = f"{float(deg):.1f}".rstrip("0").rstrip(".")
+        if not txt or txt == "-0":
+            txt = "0"
+        return txt.replace(".", ",")
+
+    def _on_dgcal_save(self, axis: str) -> None:
+        ed = self.ed_dgcal_el_true if axis == "el" else self.ed_dgcal_az_true
+        ist = self._dgcal_el_ist if axis == "el" else self._dgcal_az_ist
+        cur = self._dgcal_el if axis == "el" else self._dgcal_az
+        if ist is None:
+            QMessageBox.warning(
+                self, t("compass.dgcal_err_title"), t("compass.dgcal_err_no_ist")
+            )
+            return
+        true_v = self._parse_deg_input(ed.text())
+        if true_v is None:
+            QMessageBox.warning(
+                self, t("compass.dgcal_err_title"), t("compass.dgcal_err_invalid")
+            )
+            return
+        if cur is None:
+            cur = 0.0
+        neu = compute_dgcal_deg(cur, ist, true_v)
+        self._send_dgcal(axis, neu, clear_input=ed)
+
+    def _on_dgcal_clear(self, axis: str) -> None:
+        ed = self.ed_dgcal_el_true if axis == "el" else self.ed_dgcal_az_true
+        self._send_dgcal(axis, 0.0, clear_input=ed)
+
+    def _send_dgcal(self, axis: str, value_deg: float, *, clear_input: QLineEdit) -> None:
+        dst = self._dgcal_dst(axis)
+        if dst is None or not hasattr(self.ctrl, "send_ui_command"):
+            return
+        params = self._fmt_dgcal_wire(value_deg)
+        # Eingabefeld sofort leeren; Anzeige folgt nach ACK + GET
+        try:
+            clear_input.clear()
+        except Exception:
+            pass
+
+        def done(tel, err):
+            ok = (
+                err is None
+                and tel is not None
+                and str(getattr(tel, "cmd", "") or "").upper().startswith("ACK_SETDGCAL")
+            )
+            err_s = "" if ok else (str(err or "NAK"))
+            try:
+                self.sig_dgcal_set_done.emit(str(axis), bool(ok), err_s, float(value_deg))
+            except RuntimeError:
+                pass
+
+        try:
+            self.ctrl.send_ui_command(
+                int(dst),
+                "SETDGCAL",
+                params,
+                expect_prefix="ACK_SETDGCAL",
+                timeout_s=1.2,
+                priority=0,
+                on_done=done,
+                apply_local_state=False,
+            )
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                t("compass.dgcal_err_title"),
+                t("compass.dgcal_err_send", err=e),
+            )
+
+    @Slot(str, bool, str, float)
+    def _on_dgcal_set_done(self, axis: str, ok: bool, err: str, value_deg: float) -> None:
+        if not ok:
+            QMessageBox.warning(
+                self,
+                t("compass.dgcal_err_title"),
+                t("compass.dgcal_err_send", err=err or "NAK"),
+            )
+            return
+        # Sofort anzeigen, dann vom Rotor bestätigen und Position neu lesen
+        if axis == "el":
+            self._dgcal_el = float(value_deg)
+        else:
+            self._dgcal_az = float(value_deg)
+        self._refresh_dgcal_labels()
+        busy_attr = "_dgcal_req_busy_el" if axis == "el" else "_dgcal_req_busy_az"
+        setattr(self, busy_attr, False)
+        QTimer.singleShot(150, lambda a=axis: self._request_dgcal(a))
+        try:
+            if hasattr(self.ctrl, "request_immediate_pos"):
+                QTimer.singleShot(250, self.ctrl.request_immediate_pos)
+        except Exception:
+            pass
 
     def _parse_deg_input(self, text: str) -> Optional[float]:
         """Eingabe parsen: Komma und Punkt als Dezimaltrennzeichen."""
@@ -2447,11 +2766,11 @@ class CompassWindow(QDialog):
 
     @Slot()
     def _on_az_soll_entered(self) -> None:
-        """Soll-Wert aus Eingabefeld: Kompass pick_target (wie Klick) → targetPicked → Handler."""
+        """Soll aus Eingabefeld: exakt diesen Wert anfahren (kein kürzester-Weg-Remap)."""
         v = self._parse_deg_input(self.ed_az_soll.text())
         if v is None:
             return
-        self.az_compass.pick_target(wrap_deg(v))
+        self._apply_az_target_from_display(v, exact=True)
 
     @Slot()
     def _on_az_locator_entered(self) -> None:
@@ -2527,39 +2846,67 @@ class CompassWindow(QDialog):
 
     @Slot(float)
     def _on_target_picked_az(self, deg: float) -> None:
-        """deg = angezeigter Winkel (Antennenrichtung). Rotor-Ziel = deg - Versatz."""
+        """Kompassklick / Locator / Ort: kürzester Weg zum Ziel."""
+        self._apply_az_target_from_display(deg, exact=False)
+
+    def _normalize_soll_display_input(self, v: float) -> float:
+        """SOLL-Anzeige: bei MAXDG>360 ohne Wrap auf 0..(max+Versatz), sonst 0..360."""
+        max_deg = float(self._az_max_d10()) / 10.0
+        if max_deg > 360.0 + 1e-9:
+            off = float(self._get_antenna_offset_az())
+            hi = max_deg + max(0.0, off)
+            return max(0.0, min(hi, float(v)))
+        return wrap_deg(float(v))
+
+    def _rotor_from_display_exact(self, display: float, off_az: float) -> float:
+        """Anzeige → Rotor exakt (Versatz abziehen), ohne ±360-Umschaltung."""
+        max_deg = float(self._az_max_d10()) / 10.0
+        rotor = float(display) - float(off_az)
+        if max_deg > 360.0 + 1e-9:
+            if rotor < 0.0:
+                rotor += 360.0
+            return max(0.0, min(max_deg, rotor))
+        return wrap_deg(rotor)
+
+    def _apply_az_target_from_display(self, deg: float, *, exact: bool) -> None:
+        """deg = Antennenrichtung. exact=True: SOLL-Feld ohne kürzesten Weg."""
         self._stop_az_ts = None
         self._cc_display_latch_az_d10 = None
         off_az = self._get_antenna_offset_az()
-        display_bearing = wrap_deg(deg)
+        if exact:
+            display_bearing = self._normalize_soll_display_input(deg)
+            rotor_deg = self._rotor_from_display_exact(display_bearing, off_az)
+            # Zeiger auf der Windrose bleibt 0..360°
+            needle_bearing = wrap_deg(display_bearing)
+        else:
+            display_bearing = wrap_deg(deg)
+            needle_bearing = display_bearing
+            rotor_deg = rotor_az_for_display_bearing(
+                display_bearing,
+                off_az,
+                raw_rotor_az_deg_from_axis(getattr(self.ctrl, "az", None)),
+                dipole=self._selected_antenna_dipole_enabled(),
+                last_rotor_az=(
+                    getattr(self.ctrl, "az_dipole_last_rotor_az", None)
+                    if self._selected_antenna_dipole_enabled()
+                    else None
+                ),
+                max_deg=float(self._az_max_d10()) / 10.0,
+            )
         self._az_soll_display_bearing = display_bearing
         try:
             if self._selected_antenna_dipole_enabled():
-                self.ctrl.az_dipole_display_bearing = display_bearing
-            else:
-                self.ctrl.az_dipole_display_bearing = None
-        except Exception:
-            pass
-        rotor_deg = rotor_az_for_display_bearing(
-            display_bearing,
-            off_az,
-            raw_rotor_az_deg_from_axis(getattr(self.ctrl, "az", None)),
-            dipole=self._selected_antenna_dipole_enabled(),
-            last_rotor_az=(
-                getattr(self.ctrl, "az_dipole_last_rotor_az", None)
-                if self._selected_antenna_dipole_enabled()
-                else None
-            ),
-        )
-        try:
-            if self._selected_antenna_dipole_enabled():
+                self.ctrl.az_dipole_display_bearing = (
+                    wrap_deg(display_bearing) if not exact else display_bearing
+                )
                 self.ctrl.az_dipole_last_rotor_az = rotor_deg
             else:
+                self.ctrl.az_dipole_display_bearing = None
                 self.ctrl.az_dipole_last_rotor_az = None
         except Exception:
             pass
         self._target_az = rotor_deg
-        self.az_compass.set_target_deg(display_bearing)
+        self.az_compass.set_target_deg(needle_bearing)
         self.ed_az_soll.setText(f"{display_bearing:.1f}")
         self.ed_az_soll.setFocus()
         self.ed_az_soll.selectAll()
@@ -2623,8 +2970,11 @@ class CompassWindow(QDialog):
             # nachlaufenden Wert zeigen und vom angefahrenen Ziel abweichen
             # (Soll ≠ Ist, wenn der Rotor die Stop-Position erreicht hat).
             d10 = int(self.ctrl.az.target_d10)
-            cur = az_pos_deg_from_d10(d10)
-            self._target_az = cur if cur >= 359.95 else wrap_deg(cur)
+            cur = az_pos_deg_from_d10(d10, max_d10=self._az_max_d10())
+            if self._az_max_d10() > 3600:
+                self._target_az = cur
+            else:
+                self._target_az = cur if cur >= 359.95 else wrap_deg(cur)
             self.ctrl.az.compass_target_d10 = d10
             self._compass_last_bus_target_d10_az = d10
         except Exception:

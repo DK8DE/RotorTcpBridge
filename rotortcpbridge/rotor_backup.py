@@ -3,7 +3,10 @@ Rotor-Konfiguration als XML sichern und wiederherstellen.
 
 Nur Befehle mit GET und SET werden berücksichtigt.
 Steuerbefehle (STOP, NSTOP, SETREF, SETPOSDG, etc.) werden ausgeschlossen.
-GUI-Einstellungen (rotor_bus, hardware_link, ui, etc.) werden mit gespeichert.
+
+Lokale App-Einstellungen (config.json-Bereiche) werden mitgespeichert.
+Hardware-Parameter gehen an Rotor-Slaves (AZ/EL) bzw. an den Display-Controller
+(``SETCON*`` / ``SETLSL`` → ``controller_hw.cont_id``).
 """
 
 from __future__ import annotations
@@ -15,17 +18,22 @@ from typing import Any, Dict, Optional
 
 from .command_catalog import command_specs, CommandSpec
 
-# Config-Bereiche, die als GUI-Einstellungen mit gesichert werden
+# Alle Top-Level-Bereiche der lokalen App-Config (siehe app_config.DEFAULT_CONFIG).
 _GUI_CONFIG_KEYS = (
     "pst_server",
+    "rotctld_server",
+    "pst_serial",
     "rotor_bus",
     "hardware_link",
+    "network_modules",
+    "network_scan",
     "ui",
     "polling_ms",
     "spid",
     "pwm",
     "behavior",
     "controller_hw",
+    "rig_bridge",
 )
 
 # SET-Befehle ohne GET oder Steuerbefehle – nicht backupbar
@@ -62,6 +70,83 @@ _SET_TO_GET_SPECIAL = {
     "SETANGLE3": "GETANGLE3",
 }
 
+# Display-/Hardware-Controller (nicht Rotor-Slave)
+_CONTROLLER_SET_CMDS = frozenset(
+    {
+        "SETLSL",  # Piep-Lautstärke am Controller
+    }
+)
+
+# Absolut-Encoder Typ 3: kein Windsensor am Rotor / kein Anemo am Controller
+_TYPE3_UNSUPPORTED_SET = frozenset(
+    {
+        "SETWINDENABLE",
+        "SETWINDDIROF",
+        "SETWINDCOH",
+        "SETWINDPEAK",
+        "SETANEMOOF",
+        "SETCONANO",
+    }
+)
+
+
+def is_controller_set_cmd(set_cmd: str) -> bool:
+    """True für Befehle, die an ``controller_hw.cont_id`` gehen (nicht AZ/EL-Slave)."""
+    name = str(set_cmd or "").strip().upper()
+    return name.startswith("SETCON") or name in _CONTROLLER_SET_CMDS
+
+
+def is_type3_unsupported_set_cmd(set_cmd: str) -> bool:
+    """True für SET-Befehle, die bei Encoder-Typ 3 nicht existieren / NAK liefern."""
+    return str(set_cmd or "").strip().upper() in _TYPE3_UNSUPPORTED_SET
+
+
+def parse_encoder_type_value(params: Any) -> Optional[int]:
+    """Parst GETENCTYPE/SETENCTYPE-Parameter zu 1…3."""
+    try:
+        raw = str(params or "").strip().split(";")[0].replace(",", ".")
+        v = int(float(raw))
+    except Exception:
+        return None
+    return v if v in (1, 2, 3) else None
+
+
+def encoder_type_from_ctrl(ctrl: Any) -> Optional[int]:
+    """Bekannter Encoder-Typ vom laufenden Controller, sonst None."""
+    if ctrl is None:
+        return None
+    try:
+        if not bool(getattr(ctrl, "encoder_type_known", False)):
+            return None
+        return parse_encoder_type_value(getattr(ctrl, "encoder_type", None))
+    except Exception:
+        return None
+
+
+def encoder_type_from_backup_entries(entries: list[dict]) -> Optional[int]:
+    """Encoder-Typ aus Backup-``SETENCTYPE``-Einträgen (letzter Treffer gewinnt)."""
+    found: Optional[int] = None
+    for e in entries or []:
+        try:
+            cmd = str(e.get("cmd", "") or "").strip().upper()
+        except Exception:
+            continue
+        if cmd != "SETENCTYPE":
+            continue
+        v = parse_encoder_type_value(e.get("params"))
+        if v is not None:
+            found = v
+    return found
+
+
+def should_skip_set_for_encoder(set_cmd: str, encoder_type: Optional[int]) -> bool:
+    """Wind-/Anemo-SETs bei Absolut-Encoder Typ 3 überspringen."""
+    try:
+        et = int(encoder_type) if encoder_type is not None else None
+    except Exception:
+        et = None
+    return et == 3 and is_type3_unsupported_set_cmd(set_cmd)
+
 
 def backupable_pairs() -> list[tuple[str, str]]:
     """
@@ -84,6 +169,117 @@ def backupable_pairs() -> list[tuple[str, str]]:
     return pairs
 
 
+def rotor_backupable_pairs() -> list[tuple[str, str]]:
+    """SET/GET-Paare für Rotor-Slaves (ohne Controller-Befehle)."""
+    return [(s, g) for s, g in backupable_pairs() if not is_controller_set_cmd(s)]
+
+
+def controller_backupable_pairs() -> list[tuple[str, str]]:
+    """SET/GET-Paare für den Display-Controller."""
+    return [(s, g) for s, g in backupable_pairs() if is_controller_set_cmd(s)]
+
+
+def controller_hw_enabled(cfg: Dict[str, Any]) -> bool:
+    """True wenn in den Einstellungen „Hardware-Controller verwenden“ aktiv ist."""
+    chw = cfg.get("controller_hw") if isinstance(cfg.get("controller_hw"), dict) else {}
+    return bool(chw.get("enabled", True))
+
+
+def backup_hw_destinations(cfg: Dict[str, Any]) -> list[tuple[int, str]]:
+    """Bus-Ziele für Hardware-Backup: ``(dst, 'rotor'|'controller')``."""
+    out: list[tuple[int, str]] = []
+    rb = cfg.get("rotor_bus") if isinstance(cfg.get("rotor_bus"), dict) else {}
+    seen: set[int] = set()
+
+    def _add(dst: int, role: str) -> None:
+        if dst in seen:
+            return
+        seen.add(dst)
+        out.append((dst, role))
+
+    try:
+        if bool(rb.get("enable_az", True)):
+            _add(int(rb.get("slave_az", 20)), "rotor")
+    except Exception:
+        pass
+    try:
+        if bool(rb.get("enable_el", False)):
+            _add(int(rb.get("slave_el", 21)), "rotor")
+    except Exception:
+        pass
+    if not any(role == "rotor" for _, role in out):
+        try:
+            _add(int(rb.get("slave_az", 0) or 0), "rotor")
+        except Exception:
+            _add(0, "rotor")
+
+    if controller_hw_enabled(cfg):
+        chw = cfg.get("controller_hw") if isinstance(cfg.get("controller_hw"), dict) else {}
+        try:
+            cid = int(chw.get("cont_id", 2) or 0)
+        except Exception:
+            cid = 0
+        try:
+            master = int(rb.get("master_id", 0) or 0)
+        except Exception:
+            master = 0
+        if cid > 0 and cid != master:
+            _add(cid, "controller")
+    return out
+
+
+def build_backup_work(
+    cfg: Dict[str, Any],
+    *,
+    encoder_type: Optional[int] = None,
+) -> list[tuple[int, str, str]]:
+    """Arbeitsschritte: ``(dst, set_cmd, get_cmd)`` für Rotor + Controller.
+
+    - Ohne Hardware-Controller: keine ``SETCON*`` / ``SETLSL`` (kein Zielgerät).
+    - Bei ``encoder_type == 3``: keine Wind-/Anemo-Befehle.
+    """
+    work: list[tuple[int, str, str]] = []
+    rotor_pairs = rotor_backupable_pairs()
+    include_controller = controller_hw_enabled(cfg)
+    ctrl_pairs = controller_backupable_pairs() if include_controller else []
+    for dst, role in backup_hw_destinations(cfg):
+        if role == "controller":
+            if not include_controller:
+                continue
+            pairs = ctrl_pairs
+        else:
+            pairs = rotor_pairs
+        for set_cmd, get_cmd in pairs:
+            if should_skip_set_for_encoder(set_cmd, encoder_type):
+                continue
+            # Verteidigung: Controller-Befehle nie an Rotor-DST hängen
+            if is_controller_set_cmd(set_cmd) and role != "controller":
+                continue
+            work.append((int(dst), set_cmd, get_cmd))
+    return work
+
+
+def filter_restore_entries_for_encoder(
+    entries: list[dict],
+    *,
+    encoder_type: Optional[int] = None,
+    include_controller: bool = True,
+) -> list[dict]:
+    """Filtert Restore-Einträge (Typ-3-Wind und optional ohne Hardware-Controller)."""
+    out: list[dict] = []
+    for e in entries or []:
+        try:
+            cmd = str(e.get("cmd", "") or "").strip().upper()
+        except Exception:
+            continue
+        if should_skip_set_for_encoder(cmd, encoder_type):
+            continue
+        if not include_controller and is_controller_set_cmd(cmd):
+            continue
+        out.append(e)
+    return out
+
+
 def get_params_for_get(spec: Optional[CommandSpec]) -> str:
     """Parameter-String für einen GET-Befehl ermitteln."""
     if spec is None:
@@ -93,22 +289,34 @@ def get_params_for_get(spec: Optional[CommandSpec]) -> str:
     return "0"
 
 
+def _clone_json(val: Any) -> Any:
+    return json.loads(json.dumps(val))
+
+
 def _extract_gui_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Extrahiert die GUI-relevanten Bereiche aus der Konfiguration."""
+    """Extrahiert die lokalen App-Config-Bereiche fürs Backup."""
     out: Dict[str, Any] = {}
     for key in _GUI_CONFIG_KEYS:
-        if key in cfg and isinstance(cfg[key], dict):
-            out[key] = json.loads(json.dumps(cfg[key]))
+        if key not in cfg:
+            continue
+        val = cfg[key]
+        if isinstance(val, (dict, list)):
+            out[key] = _clone_json(val)
+        elif val is not None:
+            out[key] = val
     return out
 
 
 def _apply_gui_config(cfg: Dict[str, Any], gui: Dict[str, Any]) -> None:
-    """Überschreibt cfg mit den geladenen GUI-Einstellungen (in-place merge)."""
+    """Ersetzt cfg-Bereiche mit den geladenen GUI-Einstellungen (vollständige Wiederherstellung)."""
     for key, val in gui.items():
-        if isinstance(val, dict) and isinstance(cfg.get(key), dict):
-            _deep_merge(cfg[key], val)
+        if key not in _GUI_CONFIG_KEYS and key not in cfg:
+            # Unbekannte Keys aus älteren/neueren Backups trotzdem übernehmen
+            pass
+        if isinstance(val, (dict, list)):
+            cfg[key] = _clone_json(val)
         else:
-            cfg[key] = json.loads(json.dumps(val)) if isinstance(val, (dict, list)) else val
+            cfg[key] = val
 
 
 def extract_gui_config_for_backup(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -121,12 +329,29 @@ def apply_gui_config_from_backup(cfg: Dict[str, Any], gui: Dict[str, Any]) -> No
     _apply_gui_config(cfg, gui)
 
 
-def _deep_merge(dst: dict, src: dict) -> None:
-    for k, v in src.items():
-        if isinstance(v, dict) and isinstance(dst.get(k), dict):
-            _deep_merge(dst[k], v)
-        else:
-            dst[k] = v
+def apply_live_ids_from_cfg(ctrl: Any, cfg: Dict[str, Any]) -> None:
+    """``rotor_bus`` / ``controller_hw`` aus cfg auf den laufenden Controller anwenden."""
+    rb = cfg.get("rotor_bus") if isinstance(cfg.get("rotor_bus"), dict) else {}
+    try:
+        mid = int(rb.get("master_id", 0))
+        saz = int(rb.get("slave_az", 20))
+        sel = int(rb.get("slave_el", 21))
+        en_az = bool(rb.get("enable_az", True))
+        en_el = bool(rb.get("enable_el", False))
+    except Exception:
+        return
+    try:
+        if hasattr(ctrl, "update_ids"):
+            ctrl.update_ids(mid, saz, sel, enable_az=en_az, enable_el=en_el)
+    except Exception:
+        pass
+    chw = cfg.get("controller_hw") if isinstance(cfg.get("controller_hw"), dict) else {}
+    try:
+        cid = int(chw.get("cont_id", 2) or 0)
+        if hasattr(ctrl, "setposcc_controller_src_id"):
+            ctrl.setposcc_controller_src_id = cid
+    except Exception:
+        pass
 
 
 def save_rotor_config_xml(
@@ -135,7 +360,7 @@ def save_rotor_config_xml(
     """
     Speichert Einträge und optional GUI-Einstellungen als XML.
     Jeder Eintrag: {"dst": int, "cmd": str, "params": str}
-    gui_config: Dict mit pst_server, rotor_bus, hardware_link, ui, etc.
+    gui_config: Dict mit lokalen App-Config-Bereichen.
     """
     root = ET.Element("rotor_config")
     if gui_config:

@@ -26,6 +26,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "listen_host": "127.0.0.1",
         "listen_port_az": 4001,
         "listen_port_el": 4002,
+        # Bei MAXDG > 360°: False = eingehenden Winkel exakt anfahren (Standard),
+        # True = nächstgelegene Repräsentation (kürzerer Weg zum Ist).
+        "az_shortest_path": False,
+        # Nur mit az_shortest_path: Position an externe Programme als 0…360° melden.
+        "az_report_mod360": False,
     },
     # Hamlib-kompatibler rotctld-TCP-Server (fuer gpredict, SatNOGS, Linux-/
     # Satelliten-/Stationssoftware). Standardport 4533. Standard aus.
@@ -33,6 +38,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "enabled": False,
         "listen_host": "127.0.0.1",
         "listen_port": 4533,
+        "az_shortest_path": False,
+        "az_report_mod360": False,
     },
     # SPID BIG-RAS / CAT über serielle Schnittstelle (z. B. com0com). Jeder
     # Listener bedient entweder den Rotor (ROT2PROG-13-Byte-Frames, AZ+EL in
@@ -204,6 +211,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # 127.0.0.1 = nur dieser PC; 255.255.255.255 = globaler Broadcast; sonst konkrete IPv4.
         "udp_pst_enabled": True,
         "udp_pst_port": 12000,
+        # Wie pst_server.az_shortest_path: Standard aus = exakter eingehender Winkel.
+        "udp_pst_az_shortest_path": False,
+        "udp_pst_az_report_mod360": False,
         # Standardmaessig nur Loopback: Windows filtert Pakete per bind() schon nach
         # Ziel-IP; so koennen parallele Rotor-Setups im LAN uns nicht versehentlich
         # ansteuern. Wer von einem anderen Rechner im Netz steuern will, traegt hier
@@ -327,6 +337,16 @@ def load_config() -> Dict[str, Any]:
             ps.setdefault("listen_port_az", base_port)
             ps.setdefault("listen_port_el", base_port + 1)
             ps.pop("listen_port", None)
+        ps.setdefault("az_shortest_path", False)
+        ps.setdefault("az_report_mod360", False)
+
+    if "rotctld_server" in cfg and isinstance(cfg["rotctld_server"], dict):
+        cfg["rotctld_server"].setdefault("az_shortest_path", False)
+        cfg["rotctld_server"].setdefault("az_report_mod360", False)
+
+    if "ui" in cfg and isinstance(cfg["ui"], dict):
+        cfg["ui"].setdefault("udp_pst_az_shortest_path", False)
+        cfg["ui"].setdefault("udp_pst_az_report_mod360", False)
 
     # Migration: enable flags defaults
     if "rotor_bus" in cfg and isinstance(cfg["rotor_bus"], dict):

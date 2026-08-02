@@ -194,6 +194,16 @@ class SettingsWindow(QDialog):
         self.chk_pst_enabled = QCheckBox(t("settings.chk_pst_enabled"))
         self.chk_pst_enabled.setChecked(bool(cfg["pst_server"].get("enabled", False)))
         self.chk_pst_enabled.setToolTip(tt("settings.chk_pst_enabled_tooltip"))
+        self.chk_pst_az_shortest = QCheckBox(t("settings.chk_az_shortest_path"))
+        self.chk_pst_az_shortest.setChecked(
+            bool(cfg["pst_server"].get("az_shortest_path", False))
+        )
+        self.chk_pst_az_shortest.setToolTip(tt("settings.chk_az_shortest_path_tooltip"))
+        self.chk_pst_az_report_mod360 = QCheckBox(t("settings.chk_az_report_mod360"))
+        self.chk_pst_az_report_mod360.setChecked(
+            bool(cfg["pst_server"].get("az_report_mod360", False))
+        )
+        self.chk_pst_az_report_mod360.setToolTip(tt("settings.chk_az_report_mod360_tooltip"))
         self.ed_listen_host.setToolTip(tt("settings.pst_listen_host_tooltip"))
         self.sp_listen_port_az.setToolTip(tt("settings.pst_port_az_tooltip"))
         self.sp_listen_port_el.setToolTip(tt("settings.pst_port_el_tooltip"))
@@ -203,6 +213,8 @@ class SettingsWindow(QDialog):
         fl_spid_tcp_pst = QFormLayout(w_spid_tcp_pst)
         fl_spid_tcp_pst.setContentsMargins(0, 0, 0, 0)
         fl_spid_tcp_pst.addRow(self.chk_pst_enabled)
+        fl_spid_tcp_pst.addRow(self.chk_pst_az_shortest)
+        fl_spid_tcp_pst.addRow(self.chk_pst_az_report_mod360)
         fl_spid_tcp_pst.addRow(t("settings.pst_listen_host"), self.ed_listen_host)
         fl_spid_tcp_pst.addRow(t("settings.pst_port_az"), self.sp_listen_port_az)
         fl_spid_tcp_pst.addRow(t("settings.pst_port_el"), self.sp_listen_port_el)
@@ -422,6 +434,18 @@ class SettingsWindow(QDialog):
         self.chk_udp_pst = QCheckBox(t("settings.chk_udp_pst"))
         self.chk_udp_pst.setToolTip(tt("settings.chk_udp_pst_tooltip"))
         self.chk_udp_pst.setChecked(bool(_ui0.get("udp_pst_enabled", True)))
+        self.chk_udp_pst_az_shortest = QCheckBox(t("settings.chk_az_shortest_path"))
+        self.chk_udp_pst_az_shortest.setChecked(
+            bool(_ui0.get("udp_pst_az_shortest_path", False))
+        )
+        self.chk_udp_pst_az_shortest.setToolTip(tt("settings.chk_az_shortest_path_tooltip"))
+        self.chk_udp_pst_az_report_mod360 = QCheckBox(t("settings.chk_az_report_mod360"))
+        self.chk_udp_pst_az_report_mod360.setChecked(
+            bool(_ui0.get("udp_pst_az_report_mod360", False))
+        )
+        self.chk_udp_pst_az_report_mod360.setToolTip(
+            tt("settings.chk_az_report_mod360_tooltip")
+        )
         self.ed_udp_pst_listen = QLineEdit()
         self.ed_udp_pst_listen.setText(str(_ui0.get("udp_pst_listen_host", "127.0.0.1")))
         self.ed_udp_pst_listen.setFixedWidth(_udp_ip_field_w)
@@ -567,6 +591,22 @@ class SettingsWindow(QDialog):
         grid_pst.addWidget(self.sp_udp_pst_port, 0, 4, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         grid_pst.addWidget(QLabel(_lbl_tgt), 1, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         grid_pst.addWidget(self.ed_udp_pst_send_host, 1, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid_pst.addWidget(
+            self.chk_udp_pst_az_shortest,
+            2,
+            0,
+            1,
+            5,
+            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        grid_pst.addWidget(
+            self.chk_udp_pst_az_report_mod360,
+            3,
+            0,
+            1,
+            5,
+            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
 
         udp_pst_block_w = QWidget()
         udp_pst_block_w.setLayout(grid_pst)
@@ -592,6 +632,18 @@ class SettingsWindow(QDialog):
         self.chk_rotctld_enabled = QCheckBox(t("settings.chk_rotctld_enabled"))
         self.chk_rotctld_enabled.setChecked(bool(_rc_cfg.get("enabled", False)))
         self.chk_rotctld_enabled.setToolTip(tt("settings.chk_rotctld_enabled_tooltip"))
+        self.chk_rotctld_az_shortest = QCheckBox(t("settings.chk_az_shortest_path"))
+        self.chk_rotctld_az_shortest.setChecked(
+            bool(_rc_cfg.get("az_shortest_path", False))
+        )
+        self.chk_rotctld_az_shortest.setToolTip(tt("settings.chk_az_shortest_path_tooltip"))
+        self.chk_rotctld_az_report_mod360 = QCheckBox(t("settings.chk_az_report_mod360"))
+        self.chk_rotctld_az_report_mod360.setChecked(
+            bool(_rc_cfg.get("az_report_mod360", False))
+        )
+        self.chk_rotctld_az_report_mod360.setToolTip(
+            tt("settings.chk_az_report_mod360_tooltip")
+        )
         self.ed_rotctld_host = QLineEdit(str(_rc_cfg.get("listen_host", "127.0.0.1")))
         self.ed_rotctld_host.setMinimumWidth(_conn_ip_w)
         self.ed_rotctld_host.setToolTip(tt("settings.rotctld_listen_host_tooltip"))
@@ -605,6 +657,8 @@ class SettingsWindow(QDialog):
         fl_rotctld.setContentsMargins(0, 0, 0, 0)
         fl_rotctld.addRow(self._lbl_rotctld_info)
         fl_rotctld.addRow(self.chk_rotctld_enabled)
+        fl_rotctld.addRow(self.chk_rotctld_az_shortest)
+        fl_rotctld.addRow(self.chk_rotctld_az_report_mod360)
         fl_rotctld.addRow(t("settings.rotctld_listen_host"), self.ed_rotctld_host)
         fl_rotctld.addRow(t("settings.rotctld_port"), self.sp_rotctld_port)
 
@@ -664,6 +718,9 @@ class SettingsWindow(QDialog):
             self.chk_udp_pst.setChecked(False)
         self.chk_pst_enabled.stateChanged.connect(self._on_pst_tcp_emulation_toggled)
         self.chk_udp_pst.stateChanged.connect(self._on_udp_pst_emulation_toggled)
+        self.chk_pst_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
+        self.chk_udp_pst_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
+        self.chk_rotctld_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
 
         def _sync_aswatch_aircraft_row():
             en = self.chk_aswatch_udp.isChecked()
@@ -2540,6 +2597,13 @@ class SettingsWindow(QDialog):
         self.cfg["pst_server"]["listen_host"] = self.ed_listen_host.text().strip()
         self.cfg["pst_server"]["listen_port_az"] = int(self.sp_listen_port_az.value())
         self.cfg["pst_server"]["listen_port_el"] = int(self.sp_listen_port_el.value())
+        self.cfg["pst_server"]["az_shortest_path"] = bool(
+            self.chk_pst_az_shortest.isChecked()
+        )
+        self.cfg["pst_server"]["az_report_mod360"] = bool(
+            self.chk_pst_az_report_mod360.isChecked()
+            and self.chk_pst_az_shortest.isChecked()
+        )
         self.cfg.setdefault("ui", {})["udp_pst_enabled"] = bool(self.chk_udp_pst.isChecked())
 
     def _tick_pst_tcp_status(self) -> None:
@@ -2568,6 +2632,11 @@ class SettingsWindow(QDialog):
         rc["enabled"] = bool(self.chk_rotctld_enabled.isChecked())
         rc["listen_host"] = self.ed_rotctld_host.text().strip() or "127.0.0.1"
         rc["listen_port"] = int(self.sp_rotctld_port.value())
+        rc["az_shortest_path"] = bool(self.chk_rotctld_az_shortest.isChecked())
+        rc["az_report_mod360"] = bool(
+            self.chk_rotctld_az_report_mod360.isChecked()
+            and self.chk_rotctld_az_shortest.isChecked()
+        )
 
     def _apply_rotctld_server_live(self) -> None:
         """rotctld-Server anhand der aktuellen Config starten/neu binden/stoppen."""
@@ -2620,6 +2689,11 @@ class SettingsWindow(QDialog):
         ui["udp_pst_port"] = int(self.sp_udp_pst_port.value())
         ui["udp_pst_listen_host"] = self.ed_udp_pst_listen.text().strip()
         ui["udp_pst_send_host"] = self.ed_udp_pst_send_host.text().strip()
+        ui["udp_pst_az_shortest_path"] = bool(self.chk_udp_pst_az_shortest.isChecked())
+        ui["udp_pst_az_report_mod360"] = bool(
+            self.chk_udp_pst_az_report_mod360.isChecked()
+            and self.chk_udp_pst_az_shortest.isChecked()
+        )
 
     def _tick_udp_pst_status(self) -> None:
         """Status-LEDs und Bind-Text für den UDP-PST-Rotator-Emulator."""
@@ -2913,6 +2987,13 @@ class SettingsWindow(QDialog):
         self.cfg["pst_server"]["listen_host"] = self.ed_listen_host.text().strip()
         self.cfg["pst_server"]["listen_port_az"] = int(self.sp_listen_port_az.value())
         self.cfg["pst_server"]["listen_port_el"] = int(self.sp_listen_port_el.value())
+        self.cfg["pst_server"]["az_shortest_path"] = bool(
+            self.chk_pst_az_shortest.isChecked()
+        )
+        self.cfg["pst_server"]["az_report_mod360"] = bool(
+            self.chk_pst_az_report_mod360.isChecked()
+            and self.chk_pst_az_shortest.isChecked()
+        )
 
         self._sync_rotctld_cfg_from_ui()
 
@@ -2967,6 +3048,13 @@ class SettingsWindow(QDialog):
         self.cfg.setdefault("ui", {})["udp_pst_enabled"] = bool(self.chk_udp_pst.isChecked())
         self.cfg.setdefault("ui", {})["udp_pst_port"] = int(self.sp_udp_pst_port.value())
         self.cfg.setdefault("ui", {})["udp_pst_listen_host"] = self.ed_udp_pst_listen.text().strip()
+        self.cfg.setdefault("ui", {})["udp_pst_az_shortest_path"] = bool(
+            self.chk_udp_pst_az_shortest.isChecked()
+        )
+        self.cfg.setdefault("ui", {})["udp_pst_az_report_mod360"] = bool(
+            self.chk_udp_pst_az_report_mod360.isChecked()
+            and self.chk_udp_pst_az_shortest.isChecked()
+        )
         self.cfg.setdefault("ui", {})["udp_pst_send_host"] = self.ed_udp_pst_send_host.text().strip()
         self._sync_pst_target_push_cfg_from_ui()
         new_lang = str(self.cb_language.currentData() or "de")
@@ -3223,6 +3311,35 @@ class SettingsWindow(QDialog):
         """Nach GETENCTYPE: abhängige Controller-/UI-Zeilen aktualisieren."""
         self._update_wind_anemo_row_visibility()
         self._update_enc_zero_button_ui()
+        self._update_az_overlap_checkboxes_ui()
+
+    def _update_az_overlap_checkboxes_ui(self, *_args) -> None:
+        """Kürzerer Weg / 0…360-Ausgabe nur bei Absolut-Encoder Typ 3; Ausgabe nur mit kürzerem Weg.
+
+        Checked-Zustand der 0…360-Box nicht anfassen: Beim Start ist GETENCTYPE oft
+        noch unbekannt (show=False) — ein Force-Uncheck würde den aus der Config
+        geladenen Haken verwerfen, während „Kürzerer Weg“ stehen bleibt.
+        Speichern schreibt ``az_report_mod360`` ohnehin nur wenn kürzerer Weg an ist.
+        """
+        show = self._rotor_has_abs_encoder_type3()
+        pairs = (
+            (getattr(self, "chk_pst_az_shortest", None), getattr(self, "chk_pst_az_report_mod360", None)),
+            (
+                getattr(self, "chk_udp_pst_az_shortest", None),
+                getattr(self, "chk_udp_pst_az_report_mod360", None),
+            ),
+            (
+                getattr(self, "chk_rotctld_az_shortest", None),
+                getattr(self, "chk_rotctld_az_report_mod360", None),
+            ),
+        )
+        for chk_short, chk_mod in pairs:
+            if chk_short is None or chk_mod is None:
+                continue
+            chk_short.setVisible(show)
+            shortest_on = show and bool(chk_short.isChecked())
+            chk_mod.setVisible(shortest_on)
+            chk_mod.setEnabled(shortest_on)
 
     def _update_enc_zero_button_ui(self) -> None:
         """Absolut-Encoder (Typ 3): Nullpunkt-Button hinter der AZ-Achse."""
@@ -3263,7 +3380,9 @@ class SettingsWindow(QDialog):
         ch = self.cfg.get("controller_hw") or {}
         return bool(ch.get("enabled", True))
 
-    def _on_hw_controller_toggled(self, _checked: bool) -> None:
+    def _on_hw_controller_toggled(self, checked: bool) -> None:
+        # Sofort in cfg, damit Backup/Restore ohne „Übernehmen“ den Haken respektiert.
+        self.cfg.setdefault("controller_hw", {})["enabled"] = bool(checked)
         self._apply_controller_enabled_ui()
 
     def _apply_controller_enabled_ui(self) -> None:

@@ -11,3 +11,5 @@ class AntennaSelectionBridge(QObject):
     selection_changed = Signal(int)
     # RS485-Broadcast SETASELECT (Antenne 1–3), vom Reader-Thread → UI per QueuedConnection
     setaselect_from_bus = Signal(int)
+    # ACK_GETASELECT beim Connect: nur UI/Config anpassen (kein Nachdrehen)
+    aselect_from_query = Signal(int)

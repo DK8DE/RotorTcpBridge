@@ -145,6 +145,7 @@ def error_info(code: int) -> tuple[str, str]:
 
 
 # SmoothDamp smoothTime (s): größer = weicher / träger (Unity Mathf.SmoothDamp).
+# Idle-Pfad / Fallback; während Fahrt: Segment-Interpolation zwischen GETPOSDG (ohne Overshoot).
 _SMOOTH_TIME_DYNAMIC_S = 0.20
 _SMOOTH_TIME_IDLE_S = 0.42
 # Max. Geschwindigkeit der Anzeige (0,1°/s); verhindert Ruckler bei großen dt.
@@ -152,19 +153,25 @@ _SMOOTH_MAX_SPEED_DYNAMIC_D10_S = 3200.0
 _SMOOTH_MAX_SPEED_IDLE_D10_S = 900.0
 # Sprung größer als dieses Δ (0,1°-Einheiten) → Anzeige + Geschwindigkeit sofort zurücksetzen.
 _SMOOTH_SNAP_D10 = 500
+# Dauer der Anzeige-Interpolation vom aktuellen Ist zum neuen GETPOSDG-Sample.
+_INTERP_DUR_MIN_S = 0.12
+_INTERP_DUR_MAX_S = 0.55
+_INTERP_SAMPLE_DT_MIN_S = 0.02
+_INTERP_SAMPLE_DT_MAX_S = 1.5
 
 
-def _smooth_delta_d10(wrap_360: bool, smooth_f: float, target_i: int) -> float:
+def _smooth_delta_d10(wrap_360: bool, smooth_f: float, target: float) -> float:
     """Differenz smooth → target; AZ kürzester Kreisweg, EL linear."""
+    target_f = float(target)
     if wrap_360:
         # 360,0° (3600) und 0° (0) sind peilungsgleich, aber nach Homing ohne
         # Rückfahrt meldet die Hardware 360,0 — Glättung darf nicht bei smooth≈0 stehen bleiben.
-        if is_az_pos_at_full_circle_d10(target_i) and smooth_f < 3599.0:
-            return float(target_i) - float(smooth_f)
-        if smooth_f >= 3599.0 and target_i < 3599:
-            return float(target_i) - float(smooth_f)
-        return shortest_delta_deg(smooth_f * 0.1, float(target_i) * 0.1) * 10.0
-    return float(target_i) - float(smooth_f)
+        if is_az_pos_at_full_circle_d10(int(round(target_f))) and smooth_f < 3599.0:
+            return target_f - float(smooth_f)
+        if smooth_f >= 3599.0 and target_f < 3599.0:
+            return target_f - float(smooth_f)
+        return shortest_delta_deg(smooth_f * 0.1, target_f * 0.1) * 10.0
+    return target_f - float(smooth_f)
 
 
 def _smooth_damp_scalar(
@@ -244,8 +251,13 @@ class AxisState:
     # True = AZ (0..360° kürzester Weg); False = EL (linear 0..90°).
     position_wrap_360: bool = True
     _last_smooth_render_ts: float = 0.0
-    # Geschwindigkeit der Anzeige (0,1°/s) für SmoothDamp.
+    # Geschwindigkeit der Anzeige (0,1°/s) für SmoothDamp (Idle/Fallback).
     _smooth_vel_f: float = 0.0
+    # Segment-Interpolation: aktueller Anzeige-Ist → neues GETPOSDG (nie über das Sample hinaus).
+    _interp_from_d10f: float = 0.0
+    _interp_to_d10f: float = 0.0
+    _interp_start_ts: float = 0.0
+    _interp_dur_s: float = 0.0
 
     # GETPOSDG: Coalescing in _poll_pos verhindert, dass sich GETPOSDG während
     # SETPOSDG-Bursts in der TX-Queue stauen (sonst friert der Ist-Zeiger ein
@@ -317,31 +329,58 @@ class AxisState:
         self.pos_reject_last_d10 = nxt
         return int(self.pos_reject_streak) >= 2
 
+    def _clear_interp_segment(self) -> None:
+        self._interp_from_d10f = float(int(self.pos_d10))
+        self._interp_to_d10f = float(int(self.pos_d10))
+        self._interp_start_ts = 0.0
+        self._interp_dur_s = 0.0
+
     def update_position_sample(
         self, new_pos_d10: int, sample_ts: Optional[float] = None, expected_period_s: float = 0.2
     ) -> None:
-        """GETPOSDG: Rohposition setzen; große Sprünge ziehen die Anzeige sofort nach.
-
-        ``expected_period_s`` bleibt in der Signatur (Aufrufer); optional für zukünftige Nutzung.
-        """
-        _ = expected_period_s
+        """GETPOSDG: Rohposition setzen; UI interpoliert vom aktuellen Ist zum Sample (ohne Overshoot)."""
+        try:
+            period = float(expected_period_s)
+        except Exception:
+            period = 0.2
+        if period <= 0.0:
+            period = 0.2
+        self.pos_poll_expected_period_s = period
         self.clear_getposdg_jump_reject()
         prev = int(self.pos_d10)
+        prev_ts = float(self._last_sample_ts)
         try:
             ts = float(sample_ts) if sample_ts is not None else 0.0
         except Exception:
             ts = 0.0
         if ts <= 0.0:
             ts = time.time()
-        self._last_sample_ts = ts
         nxt = int(new_pos_d10)
-        jump = abs(_smooth_delta_d10(self.position_wrap_360, float(prev), nxt))
+        jump = abs(_smooth_delta_d10(self.position_wrap_360, float(prev), float(nxt)))
+        self._last_sample_ts = ts
         self.pos_d10 = nxt
-        if jump >= float(_SMOOTH_SNAP_D10):
+        # Erste Anzeige oder großer Sprung: hart setzen (kein Lerp von 0° über Kurzweg).
+        if jump >= float(_SMOOTH_SNAP_D10) or self._last_smooth_render_ts <= 0.0:
             self.smooth_pos_d10f = float(nxt)
             self.smooth_pos_d10 = int(nxt)
-            self._last_smooth_render_ts = 0.0
             self._smooth_vel_f = 0.0
+            self._clear_interp_segment()
+            if jump >= float(_SMOOTH_SNAP_D10):
+                self._last_smooth_render_ts = 0.0
+            return
+        # Start = aktuelle Anzeige (kein Zurückspringen); Ende = neues Sample (nie darüber hinaus).
+        from_f = float(self.smooth_pos_d10f)
+        dur = period
+        if prev_ts > 0.0:
+            dt_s = float(ts) - prev_ts
+            if _INTERP_SAMPLE_DT_MIN_S <= dt_s <= _INTERP_SAMPLE_DT_MAX_S:
+                dur = dt_s
+        dur = max(float(_INTERP_DUR_MIN_S), min(float(_INTERP_DUR_MAX_S), float(dur)))
+        self._interp_from_d10f = from_f
+        self._interp_to_d10f = float(nxt)
+        self._interp_start_ts = ts
+        self._interp_dur_s = dur
+        self._smooth_vel_f = 0.0
 
     def apply_position_resync(self, new_pos_d10: int, sample_ts: Optional[float] = None) -> None:
         """Homing beendet: Ist/Soll ohne Glättung auf die Hardware-Position setzen."""
@@ -356,6 +395,7 @@ class AxisState:
         self.smooth_pos_d10 = d10
         self._last_smooth_render_ts = 0.0
         self._smooth_vel_f = 0.0
+        self._clear_interp_segment()
         self.target_d10 = d10
         self.last_set_sent_target_d10 = d10
         self.last_set_sent_ts = ts
@@ -384,18 +424,38 @@ class AxisState:
         return vi
 
     def get_smoothed_pos_d10f(self, now_ts: Optional[float] = None) -> float:
-        """Kritisch gedämpftes Nachführen (SmoothDamp) zum Rohwert ``pos_d10``.
+        """Anzeige-Ist: Segment-Lerp zwischen GETPOSDG (ohne Overshoot), sonst SmoothDamp.
 
-        Läuft pro UI-Schritt mit echtem ``dt`` — gleichmäßig auch bei unregelmäßigen GETPOSDG.
         AZ: Ziel entlang kürzestem Kreisbogen; EL: linear, Anzeige 0..90° begrenzt.
         """
         now = float(now_ts) if now_ts is not None else time.time()
-        tgt_i = int(self.pos_d10)
+        tgt_f = float(int(self.pos_d10))
 
-        if self._last_smooth_render_ts <= 0.0:
+        if self._last_smooth_render_ts <= 0.0 and self._interp_dur_s <= 0.0:
             self._last_smooth_render_ts = now
-            self.smooth_pos_d10f = float(tgt_i)
+            self.smooth_pos_d10f = tgt_f
             self._smooth_vel_f = 0.0
+            self.smooth_pos_d10 = int(round(self.smooth_pos_d10f))
+            return self.smooth_pos_d10f
+
+        # Aktives Interpolations-Segment: nur bis zum letzten Sample, nie darüber hinaus.
+        if self._interp_dur_s > 0.0 and self._interp_start_ts > 0.0:
+            u = (now - float(self._interp_start_ts)) / float(self._interp_dur_s)
+            if u <= 0.0:
+                self.smooth_pos_d10f = float(self._interp_from_d10f)
+            elif u >= 1.0:
+                self.smooth_pos_d10f = float(self._interp_to_d10f)
+            else:
+                delta = _smooth_delta_d10(
+                    self.position_wrap_360,
+                    float(self._interp_from_d10f),
+                    float(self._interp_to_d10f),
+                )
+                self.smooth_pos_d10f = float(self._interp_from_d10f) + float(delta) * float(u)
+            self._last_smooth_render_ts = now
+            self._smooth_vel_f = 0.0
+            if not self.position_wrap_360:
+                self.smooth_pos_d10f = max(0.0, min(900.0, float(self.smooth_pos_d10f)))
             self.smooth_pos_d10 = int(round(self.smooth_pos_d10f))
             return self.smooth_pos_d10f
 
@@ -408,9 +468,9 @@ class AxisState:
             self._last_smooth_render_ts = now
 
         cur = float(self.smooth_pos_d10f)
-        err = _smooth_delta_d10(self.position_wrap_360, cur, tgt_i)
+        err = _smooth_delta_d10(self.position_wrap_360, cur, tgt_f)
         if abs(err) >= float(_SMOOTH_SNAP_D10):
-            self.smooth_pos_d10f = float(tgt_i)
+            self.smooth_pos_d10f = tgt_f
             self._smooth_vel_f = 0.0
         else:
             target_lin = cur + float(err)

@@ -100,3 +100,18 @@ def test_apply_position_resync_after_rehoming() -> None:
     assert az.smooth_pos_d10f == pytest.approx(3600.0)
     assert az.target_d10 == 3600
     assert az.pos_resync_pending is False
+
+
+def test_smoothing_lerps_between_getposdg_without_overshoot() -> None:
+    """Zwischen GETPOSDG: monoton zum neuen Sample, nie darüber hinaus (kein Vor/Zurück)."""
+    az = AxisState(position_wrap_360=True)
+    az.moving = True
+    az.update_position_sample(1000, sample_ts=1000.0, expected_period_s=0.25)
+    az.get_smoothed_pos_d10f(1000.0)
+    az.update_position_sample(1030, sample_ts=1000.25, expected_period_s=0.25)
+    vals = [az.get_smoothed_pos_d10f(1000.25 + i * (1.0 / 60.0)) for i in range(20)]
+    assert vals[0] <= vals[-1] <= 1030.0 + 1e-6
+    assert vals[-1] == pytest.approx(1030.0, abs=0.5)
+    # Kein Zurückrudern innerhalb des Segments
+    for a, b in zip(vals, vals[1:]):
+        assert b + 1e-6 >= a

@@ -80,20 +80,25 @@ def test_parse_float_cs_format() -> None:
     assert isinstance(t, Telegram)
 
 
+# Positionen laufen intern in 0,1°-Einheiten (``pos_d10``); ``deg_str_to_d10`` schneidet
+# ab der zweiten Nachkommastelle ab, statt zu runden. Daher 177,53 → 177,5 (nicht 177,6).
+
+
 def test_parse_getposdg_ist_deg_colon_pair() -> None:
     line = build(1, 20, "ACK_GETPOSDG", "177,53:198,53")
     t = parse(line)
     assert t is not None
-    assert parse_getposdg_ist_deg(t.params) == pytest.approx(177.53)
+    assert parse_getposdg_ist_deg(t.params) == pytest.approx(177.5)
 
 
 def test_parse_getposdg_ist_deg_semicolon_pair() -> None:
     line = build(1, 20, "ACK_GETPOSDG", "177,53;198,53")
     t = parse(line)
     assert t is not None
-    assert parse_getposdg_ist_deg(t.params) == pytest.approx(177.53)
+    assert parse_getposdg_ist_deg(t.params) == pytest.approx(177.5)
 
 
 def test_parse_getposdg_ist_deg_single() -> None:
-    assert parse_getposdg_ist_deg("45,12") == pytest.approx(45.12)
+    assert parse_getposdg_ist_deg("45,12") == pytest.approx(45.1)
+    assert parse_getposdg_ist_deg("45,19") == pytest.approx(45.1)
     assert parse_getposdg_ist_deg("") is None

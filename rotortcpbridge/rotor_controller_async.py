@@ -88,6 +88,21 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
             except Exception:
                 pass
             return
+        # Connect-Sync: aktuelle Auswahl vom Controller (GETASELECT → ACK)
+        if cmd_u.startswith("ACK_GETASELECT"):
+            try:
+                n = parse_int(str(tel.params).strip().split(";")[0])
+                if n is not None and 1 <= n <= 3:
+                    fn = getattr(self, "on_aselect_query_result", None)
+                    if callable(fn):
+                        fn(int(n))
+                    else:
+                        fn2 = getattr(self, "on_setaselect_from_bus", None)
+                        if callable(fn2):
+                            fn2(int(n))
+            except Exception:
+                pass
+            return
         # SETPOSDG an unsere Slave-ID: Zielwinkel steht in params (nicht in ACK).
         # Kein Filter src!=master_id: Auf dem Bus kann dieselbe Master-ID wie unsere
         # konfigurierte vorkommen (anderes Gerät); sonst würde der Soll nie gesetzt.
@@ -266,6 +281,20 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 if tel.cmd.startswith("ACK_GETPOSDG") or tel.cmd.startswith("ACK_POSDG"):
                     axis_state.online = True
                     axis_state.last_rx_ts = time.time()
+                    # Pro Sendezyklus nur das erste ACK verwerten. Zweiter Master oder
+                    # verspaetetes ACK wuerde sonst die Ist-Position zurueckspringen lassen
+                    # (Zeiger „ruckt“ zwischen den Abfragen).
+                    try:
+                        sent_ts = float(
+                            getattr(axis_state, "pos_poll_sent_ts", 0.0) or 0.0
+                        )
+                        last_ack = float(
+                            getattr(axis_state, "pos_poll_last_ack_ts", 0.0) or 0.0
+                        )
+                        if sent_ts > 0.0 and last_ack >= (sent_ts - 1e-6):
+                            return
+                    except Exception:
+                        pass
                     # Coalescing-Flag freigeben: nächster Tick darf wieder GETPOSDG enqueuen.
                     try:
                         ack_ts = time.time()

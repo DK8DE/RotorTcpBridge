@@ -4,9 +4,10 @@ import threading
 import queue
 import time
 import socket
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Deque, Optional, Callable
 
 # Direktausführung dieser Datei (Play-Button): sys.path zeigt nur auf dieses Verzeichnis —
 # Projektroot eintragen, damit `import rotortcpbridge…` wie bei `python run.py` funktioniert.
@@ -26,6 +27,10 @@ except Exception:
 # Nach erstem fehlerhaften RX höchstens so viele erneute Sends desselben Telegramms
 _MAX_CHECKSUM_RETRIES = 2
 
+# Reine Log-Zähler (TX-Nummer, RX-Paketnummer) laufen bei 1 wieder los, damit sie im
+# Dauerbetrieb nicht endlos wachsen. Nur zur Diagnose — keine Reihenfolge-Bedeutung.
+_LOG_SEQ_WRAP = 1_000_000
+
 
 @dataclass
 class HwRequest:
@@ -37,6 +42,10 @@ class HwRequest:
     priority: int = 5  # 0 = höchste Priorität (UI), 5 = normal (Polling)
     dont_disconnect_on_timeout: bool = False  # True: bei Timeout nicht trennen (z.B. für Retry)
     checksum_retries_done: int = 0  # fehlerhafte CS → erneut senden (siehe Reader)
+    # Half-Duplex RS485: naechstes TX erst nach RX (oder Timeout).
+    # Default True — Polling-GETs erwarten ACK, auch ohne expect_prefix.
+    # False nur fuer echte Fire-and-Forget-Broadcasts (SETASELECT o.ae.).
+    wait_for_reply: bool = True
 
 
 class HardwareClient:
@@ -82,12 +91,31 @@ class HardwareClient:
         self._pending_reply_dst: int = 0
         self._last_rx_any_ts: float = 0.0
         self._last_tx_any_ts: float = 0.0
+        # Monotone Wire-TX-Nummer: wird nur bei physischem Write erhoeht.
+        # Doppel-Send auf dem Bus waere im Log als zwei aufeinanderfolgende TX# sichtbar.
+        self._wire_tx_seq: int = 0
+        # Kuerzlich gesendete Telegramme — zum Filtern von:
+        # 1) USB-RS485 Lokal-Echo (typisch <20 ms)
+        # 2) Befehlsreflexion zusammen mit dem ACK (~RTT, oft ~200 ms) — KEIN Zweit-Send
+        self._recent_tx: Deque[tuple[str, float, int]] = deque(maxlen=32)
+        self._tx_echo_window_s: float = 0.8
+        # Nur so kurz = echtes Adapter-Loopback; spaeter = Slave/Gateway spiegelt den Befehl.
+        self._tx_adapter_echo_max_s: float = 0.040
+        # Laufende Nummer je physischem Lesevorgang (TCP/UDP-Paket bzw. COM-Read).
+        # Gleiche Nummer bei Reflexion und ACK = beides kam in EINEM Paket, kann also
+        # nicht die Antwort auf zwei getrennte Sendungen sein.
+        self._rx_chunk_seq: int = 0
+        # Half-Duplex: nach TX auf echte RX warten, bevor das naechste Telegramm
+        # gesendet wird (USB-RS485 braucht Zeit fuer DE/RE-Umschaltung).
+        self._reply_gate_active: bool = False
+        self._reply_gate_until: float = 0.0
         self._connected_since_ts: float = 0.0
         self._safe_reconnect_until_ts: float = 0.0
         # TX-Pacing: Controller reagiert unzuverlässig auf eng gebündelte Telegramme.
         # UI-Befehle bleiben etwas schneller, Polling wird klar begrenzt.
         self._tx_min_gap_ui_s: float = 0.05
-        self._tx_min_gap_poll_s: float = 0.09
+        # Mindestabstand Wire-zu-Wire; zusaetzlich serialisiert wait_for_reply den Bus.
+        self._tx_min_gap_poll_s: float = 0.12
         # Bei COM-Modus ohne RS485-Bus kommen keine RX-Daten, auch wenn COM offen ist.
         # Daher für COM einen deutlich großzügigeren no-rx-Timeout nutzen,
         # damit nicht ständig dis/reconnect getriggert wird.
@@ -270,6 +298,26 @@ class HardwareClient:
             self._ser.write(data)
             self._last_tx_any_ts = time.time()
 
+    def _emit_wire_tx(self, line: str, *, priority: int = 5) -> int:
+        """Ein physisches TX auf den Bus: Log + Echo-Merkmal + Write.
+
+        Rueckgabe: Wire-Sequenznummer. Jeder echte Send erhoeht sie genau einmal —
+        ein Doppel-Send waere also als zwei TX# im Log erkennbar.
+        """
+        s = str(line or "").strip()
+        if not s:
+            return 0
+        with self._lock:
+            self._wire_tx_seq = (int(self._wire_tx_seq) % _LOG_SEQ_WRAP) + 1
+            seq = int(self._wire_tx_seq)
+        self.log.write("TX", f"#{seq} {s}")
+        # Vor dem Write merken (sonst kann das Echo schneller da sein als der Eintrag);
+        # danach auf die echte Schreibzeit korrigieren, da _write_with_pacing wartet.
+        self._note_tx_line(s, seq)
+        self._write_with_pacing(s.encode("ascii"), priority=int(priority))
+        self._mark_tx_written(seq)
+        return seq
+
     def _write(self, data: bytes):
         self._write_with_pacing(data, priority=5)
 
@@ -293,6 +341,81 @@ class HardwareClient:
                 time.sleep(wait_s)
             self._write_unlocked(data)
 
+    def _note_tx_line(self, line: str, seq: int = 0) -> None:
+        """Merkt gesendete Telegramme, um RS485-Adapter-Echos zu erkennen."""
+        s = str(line or "").strip()
+        if not s:
+            return
+        now = time.time()
+        with self._lock:
+            self._recent_tx.append((s, now, int(seq)))
+            # Abgelaufene Eintraege entfernen
+            win = float(self._tx_echo_window_s)
+            while self._recent_tx and (now - self._recent_tx[0][1]) > win:
+                self._recent_tx.popleft()
+
+    def _mark_tx_written(self, seq: int) -> None:
+        """Zeitstempel auf den tatsaechlichen Wire-Write setzen (nach der Pacing-Pause)."""
+        if not seq:
+            return
+        now = time.time()
+        with self._lock:
+            for i, (line, _ts, s) in enumerate(self._recent_tx):
+                if int(s) == int(seq):
+                    self._recent_tx[i] = (line, now, int(s))
+                    break
+
+    def _consume_tx_dup_rx(self, raw: str) -> tuple[int, float, str] | None:
+        """RX-Zeile identisch zu einem kuerzlichen TX: (seq, age_s, kind) oder None.
+
+        kind:
+          - ``adapter_echo``: sehr schnell nach TX (USB-Loopback)
+          - ``cmd_reflect``: erst mit der Antwort (~RTT) — Slave/Gateway spiegelt den
+            Befehl; das ist **kein** zweites Senden der Bridge
+        """
+        s = str(raw or "").strip()
+        if not s:
+            return None
+        now = time.time()
+        win = float(self._tx_echo_window_s)
+        adapt_max = float(self._tx_adapter_echo_max_s)
+        with self._lock:
+            while self._recent_tx and (now - self._recent_tx[0][1]) > win:
+                self._recent_tx.popleft()
+            for i, (line, ts, seq) in enumerate(self._recent_tx):
+                if line != s:
+                    continue
+                age = now - float(ts)
+                if age > win:
+                    continue
+                del self._recent_tx[i]
+                kind = "adapter_echo" if age <= adapt_max else "cmd_reflect"
+                return int(seq), float(age), kind
+        return None
+
+    def _arm_reply_gate(self, timeout_s: float) -> None:
+        """Naechstes TX blockieren, bis echte RX kommt oder Timeout."""
+        to = float(max(0.12, min(1.5, timeout_s)))
+        with self._lock:
+            self._reply_gate_active = True
+            self._reply_gate_until = time.time() + to
+
+    def _clear_reply_gate(self) -> None:
+        with self._lock:
+            self._reply_gate_active = False
+            self._reply_gate_until = 0.0
+
+    def _reply_gate_blocks_tx(self) -> bool:
+        """True solange auf Antwort gewartet wird (Half-Duplex-Pause)."""
+        with self._lock:
+            if not self._reply_gate_active:
+                return False
+            if time.time() >= float(self._reply_gate_until or 0.0):
+                self._reply_gate_active = False
+                self._reply_gate_until = 0.0
+                return False
+            return True
+
     def send_line_fire_and_forget(self, line: str) -> None:
         """Sofort senden, ohne Worker-Queue und ohne Pending-Wartezeit.
 
@@ -305,9 +428,9 @@ class HardwareClient:
         if not s:
             return
         try:
-            data = s.encode("ascii")
-            self.log.write("TX", s)
-            self._write_with_pacing(data, priority=1)
+            # Kein wait_for_reply: Broadcasts haben oft kein ACK. Kurze Pause nach
+            # dem Write ueber UI-Pacing (DE/RE-Umschaltung).
+            self._emit_wire_tx(s, priority=1)
         except Exception:
             pass
 
@@ -334,7 +457,26 @@ class HardwareClient:
                 return b""
         elif self._ser:
             try:
-                data = self._ser.read(4096)
+                # pyserial read(n) wartet, bis n Bytes da sind ODER der Timeout ablaeuft.
+                # read(4096) hat deshalb IMMER die vollen 200 ms geblockt: Adapter-Echo und
+                # ACK landeten zusammen in einem Chunk und jede Antwort kam 200 ms zu spaet.
+                # Daher: nur abholen was anliegt, sonst kurz auf das erste Byte warten.
+                n = 0
+                try:
+                    n = int(self._ser.in_waiting or 0)
+                except Exception:
+                    n = 0
+                if n > 0:
+                    data = self._ser.read(min(n, 4096))
+                else:
+                    data = self._ser.read(1)
+                    if data:
+                        try:
+                            n2 = int(self._ser.in_waiting or 0)
+                        except Exception:
+                            n2 = 0
+                        if n2 > 0:
+                            data += self._ser.read(min(n2, 4095))
                 if data:
                     self._last_rx_any_ts = time.time()
                 return data
@@ -385,6 +527,8 @@ class HardwareClient:
         with self._lock:
             pending = self._pending
             self._pending = None
+            self._reply_gate_active = False
+            self._reply_gate_until = 0.0
         if pending and pending.on_done:
             try:
                 pending.on_done(None, reason)
@@ -501,6 +645,8 @@ class HardwareClient:
             try:
                 chunk = self._read_some()
                 if chunk:
+                    self._rx_chunk_seq = (int(self._rx_chunk_seq) % _LOG_SEQ_WRAP) + 1
+                    chunk_id = int(self._rx_chunk_seq)
                     self._rxbuf += chunk
 
                     # Wir extrahieren Telegramme: beginnend mit '#', endend mit '$'
@@ -523,7 +669,27 @@ class HardwareClient:
                         raw = raw_bytes.decode("ascii", errors="ignore").strip()
                         if not raw:
                             continue
-                        self.log.write("RX", raw)
+                        # Identische Zeile zu unserem TX: kein zweiter Bridge-Send
+                        # (Wire-TX# steigt nur in _emit_wire_tx). Entweder schnelles
+                        # USB-Loopback oder Befehlsreflexion kurz vor dem ACK.
+                        dup = self._consume_tx_dup_rx(raw)
+                        if dup is not None:
+                            echo_seq, age_s, kind = dup
+                            age_ms = int(round(age_s * 1000.0))
+                            if kind == "adapter_echo":
+                                self.log.write(
+                                    "ECHO",
+                                    f"adapter of TX#{echo_seq} age={age_ms}ms pkt={chunk_id} {raw}",
+                                )
+                            else:
+                                self.log.write(
+                                    "RX_CMD",
+                                    f"reflect of TX#{echo_seq} age={age_ms}ms pkt={chunk_id} {raw}",
+                                )
+                            continue
+                        self.log.write("RX", f"pkt={chunk_id} {raw}")
+                        # Echte Antwort vom Bus → Half-Duplex-Gate oeffnen
+                        self._clear_reply_gate()
                         tel = parse(raw)
                         if tel is None:
                             continue
@@ -549,9 +715,10 @@ class HardwareClient:
                                         f"RX Checksumme ungültig, erneut senden ({pending.checksum_retries_done}/{_MAX_CHECKSUM_RETRIES})",
                                     )
                                     try:
-                                        data = pending.line.encode("ascii")
-                                        self._write_with_pacing(
-                                            data, priority=int(getattr(pending, "priority", 5))
+                                        # Explizit als neues Wire-TX loggen (kein stiller Zweit-Send).
+                                        self._emit_wire_tx(
+                                            pending.line,
+                                            priority=int(getattr(pending, "priority", 5)),
                                         )
                                         pending.sent_ts = time.time()
                                     except Exception:
@@ -635,6 +802,11 @@ class HardwareClient:
             except Exception:
                 pass
 
+            # Half-Duplex: auf Antwort des letzten Poll-TX warten (nicht nur Pacing-Luecke).
+            if self._reply_gate_blocks_tx():
+                time.sleep(0.01)
+                continue
+
             # Timeout für pending request
             with self._lock:
                 pending = self._pending
@@ -642,6 +814,7 @@ class HardwareClient:
                 if time.time() - pending.sent_ts > pending.timeout_s:
                     with self._lock:
                         self._pending = None
+                    self._clear_reply_gate()
                     if pending.on_done:
                         try:
                             pending.on_done(None, "timeout")
@@ -670,14 +843,15 @@ class HardwareClient:
             try:
                 # Nur das Telegramm (#...$), ohne \\r\\n — Protokoll endet mit $
                 req.checksum_retries_done = 0
-                data = req.line.encode("ascii")
-                self.log.write("TX", req.line)
-                self._write_with_pacing(data, priority=int(getattr(req, "priority", 5)))
+                self._emit_wire_tx(req.line, priority=int(getattr(req, "priority", 5)))
                 req.sent_ts = time.time()
                 if req.expect_prefix:
                     with self._lock:
                         self._pending = req
                 else:
+                    # Polling ohne expect_prefix: trotzdem Half-Duplex serialisieren.
+                    if bool(getattr(req, "wait_for_reply", True)):
+                        self._arm_reply_gate(float(getattr(req, "timeout_s", 0.8) or 0.8))
                     if req.on_done:
                         try:
                             req.on_done(None, None)

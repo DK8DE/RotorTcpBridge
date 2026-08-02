@@ -183,8 +183,12 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._encoder_type_requested: bool = False
         # Weitere Reads passieren explizit in den Einstellungen.
         self._antenna_bootstrap_requested: bool = False
+        # GETASELECT an Controller (cont_id) einmal pro Verbindung → UI an HW-Auswahl
+        self._antenna_selection_bootstrap_requested: bool = False
         # RS485-Broadcast SETASELECT (DST 255): arg = Antenne 1–3 (Hintergrund-Thread → UI per QTimer marshallen)
         self.on_setaselect_from_bus: Optional[Callable[[int], None]] = None
+        # ACK_GETASELECT (Connect-Sync): nur UI/Config, kein Nachdrehen
+        self.on_aselect_query_result: Optional[Callable[[int], None]] = None
         # Callback: wird aufgerufen, wenn SETREF kein ACK erhält (Timeout/NAK). arg=Achsname "AZ"/"EL".
         # Wichtig: wird aus einem Hintergrund-Thread aufgerufen → UI muss QTimer.singleShot nutzen.
         self.on_ref_start_failed: Optional[Callable[[str], None]] = None
@@ -470,6 +474,30 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         priority=4,
                     )
                 )
+
+    def request_antenna_selection(self) -> None:
+        """Aktuelle Antennenauswahl vom Hardware-Controller lesen (GETASELECT).
+
+        Geht an ``controller_hw.cont_id`` (``setposcc_controller_src_id``). Antwort
+        ``ACK_GETASELECT:<1..3>`` aktualisiert die UI über ``on_aselect_query_result``
+        (ohne Rotor-Nachdrehen). Fehlt der Befehl in der Firmware, bleibt die
+        Config-Auswahl unverändert.
+        """
+        try:
+            dst = int(getattr(self, "setposcc_controller_src_id", 0) or 0)
+        except Exception:
+            dst = 0
+        if dst < 1 or dst > 254:
+            return
+        self.hw.send_request(
+            HwRequest(
+                line=build(int(self.master_id), dst, "GETASELECT", "0"),
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=4,
+            )
+        )
 
     def set_antenna_offset(
         self,

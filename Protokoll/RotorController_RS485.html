@@ -1023,6 +1023,10 @@
 <td><code>GETCONCHA</code> / <code>SETCONCHA</code></td>
 <td><code>ACK_GETCONCHA</code> / <code>ACK_SETCONCHA</code> (bzw. <code>NAK_SETCONCHA</code>) — Verhalten beim Antennenwechsel: <code>1</code> = Anzeige‑Soll (<code>taget</code>) beibehalten, <code>SETPOSDG</code> mit neuer Antennen‑Geometrie; <code>0</code> = <code>taget</code> auf die aktuelle Ist‑Anzeige (Kompass) setzen, kein zusätzliches SETPOS. JSON <code>concha</code>.</td>
 </tr>
+<tr>
+<td><code>GETASELECT</code></td>
+<td><code>ACK_GETASELECT</code> / <code>NAK_GETASELECT</code> — aktuell gewählte Antenne <b>1…3</b> lesen (Display‑Controller). PC‑Software fragt das beim Connect ab, damit die UI nach HW‑Wechsel ohne laufende Software nicht die alte Config‑Auswahl zeigt. Beim Antennenwechsel sendet der Controller weiterhin Broadcast <code>SETASELECT</code> an DST&nbsp;255.</td>
+</tr>
 </table>
 
 <div class="note"><b>Pflege (Firmware):</b> Neue Konfig‑Befehle für den Display‑Controller bitte in <code>src/rotor_rs485.cpp</code> (<code>handle_local_config_command</code>), in <code>include/pwm_config.h</code> / <code>src/pwm_config.cpp</code> / <code>data/config.json</code> und <b>in dieser Tabelle</b> parallel ergänzen.</div>

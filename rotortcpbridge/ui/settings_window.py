@@ -65,6 +65,7 @@ from .settings_rig_bridge_tab import RigBridgeTab
 from .settings_com0com_tab import Com0ComTab
 from .settings_shortcuts_tab import ShortcutsTab
 from .settings_weather_tab import WeatherThresholdsTab
+from .settings_network_tab import NetworkModulesTab
 from .led_widget import Led
 from .ui_utils import px_to_dip
 
@@ -144,7 +145,7 @@ class SettingsWindow(QDialog):
         # Breite fix; Höhe frei skalierbar (niedrige Mindesthöhe). Start-Höhe beim Öffnen: _settings_open_height_dip.
         self._settings_base_width_dip = 730
         self._settings_min_height_dip = 320
-        self._settings_open_height_dip = 710
+        self._settings_open_height_dip = 780
         self.setFixedWidth(px_to_dip(self, self._settings_base_width_dip))
         self.setMinimumHeight(px_to_dip(self, self._settings_min_height_dip))
 
@@ -1375,6 +1376,9 @@ class SettingsWindow(QDialog):
         self._settings_stack.addWidget(_scroll_page(self._shortcuts_tab))
         self._weather_tab = WeatherThresholdsTab(self.cfg, self)
         self._settings_stack.addWidget(_scroll_page(self._weather_tab))
+        self._network_tab = NetworkModulesTab(self.cfg, self)
+        self._network_tab.save_requested.connect(self._on_network_modules_save_requested)
+        self._settings_stack.addWidget(_scroll_page(self._network_tab))
         self._tab_antenna_index = 4
         self._tab_statistics_index = 6
         self._tab_controller_index = 7
@@ -1382,6 +1386,7 @@ class SettingsWindow(QDialog):
         self._tab_com0com_index = 9
         self._tab_shortcuts_index = 10
         self._tab_weather_index = 11
+        self._tab_network_index = 12
         self._calvalid_timer = QTimer(self)
         self._calvalid_timer.setInterval(5000)
         self._calvalid_timer.timeout.connect(self._poll_getcalvalid_once)
@@ -1411,6 +1416,7 @@ class SettingsWindow(QDialog):
             t("com0com.tab_title"),
             t("settings.tab_shortcuts"),
             t("settings.tab_weather"),
+            t("settings.tab_network"),
         ):
             self._settings_nav.addItem(_lbl)
         self._settings_nav.currentRowChanged.connect(self._on_settings_nav_changed)
@@ -1501,7 +1507,7 @@ class SettingsWindow(QDialog):
         main.addLayout(btnrow)
 
     def _apply_settings_window_open_size(self) -> None:
-        """Beim Öffnen: Zielhöhe 710 Referenzpixel (skaliert), Breite unverändert."""
+        """Beim Öffnen: Zielhöhe 780 Referenzpixel (skaliert), Breite unverändert."""
         w = self.width()
         if w <= 0:
             w = px_to_dip(self, self._settings_base_width_dip)
@@ -1532,6 +1538,10 @@ class SettingsWindow(QDialog):
         self._update_weather_tab_visibility()
         try:
             self._weather_tab.load_from_cfg()
+        except Exception:
+            pass
+        try:
+            self._network_tab.load_from_cfg()
         except Exception:
             pass
         self._update_antenna_offset_enabled()
@@ -2084,6 +2094,16 @@ class SettingsWindow(QDialog):
                 self.lbl_status.setText(t("settings.stats_heatmap_invalid"))
                 return False
         return True
+
+    def _on_network_modules_save_requested(self) -> None:
+        """Modul hinzugefuegt/uebernommen: sofort in die Config uebernehmen und
+        speichern, ohne dass der Nutzer extra auf "Speichern" klicken muss.
+        """
+        try:
+            self._network_tab.apply_to_cfg(self.cfg)
+            self.save_cfg_cb(self.cfg)
+        except Exception as exc:
+            self.logbuf.write("WARN", f"Netzwerk-Module: Sofort-Speichern fehlgeschlagen: {exc}")
 
     def _apply_pst_emulation_live_from_ui(self) -> None:
         """Checkboxen + Felder → Config speichern; SPID-TCP und UDP-PST sofort starten/stoppen (gegenseitig exklusiv)."""
@@ -3016,6 +3036,11 @@ class SettingsWindow(QDialog):
             self._weather_tab.apply_to_cfg(self.cfg)
         except Exception as exc:
             self.logbuf.write("WARN", f"Wetter-Schwellen: {exc}")
+
+        try:
+            self._network_tab.apply_to_cfg(self.cfg)
+        except Exception as exc:
+            self.logbuf.write("WARN", f"Netzwerk-Module: {exc}")
 
         chw = self.cfg.setdefault("controller_hw", {})
         chw["enabled"] = bool(self.chk_hw_controller_enabled.isChecked())

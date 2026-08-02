@@ -766,8 +766,12 @@ class MainWindow(QMainWindow):
         self._antenna_bridge.selection_changed.connect(self._compass_win.sync_antenna_from_external)
         self._antenna_bridge.selection_changed.connect(self._map_win.sync_antenna_from_external)
         self._antenna_bridge.setaselect_from_bus.connect(self._apply_setaselect_from_bus_ui)
+        self._antenna_bridge.aselect_from_query.connect(self._apply_aselect_from_query_ui)
         self.ctrl.on_setaselect_from_bus = (
             lambda n: self._antenna_bridge.setaselect_from_bus.emit(int(n))
+        )
+        self.ctrl.on_aselect_query_result = (
+            lambda n: self._antenna_bridge.aselect_from_query.emit(int(n))
         )
         self._settings_win = SettingsWindow(
             self.cfg,
@@ -1386,6 +1390,9 @@ class MainWindow(QMainWindow):
             self.ctrl.on_setaselect_from_bus = (
                 lambda n: self._antenna_bridge.setaselect_from_bus.emit(int(n))
             )
+            self.ctrl.on_aselect_query_result = (
+                lambda n: self._antenna_bridge.aselect_from_query.emit(int(n))
+            )
             self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
             self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
             self._warnings_errors_win = WarningsErrorsWindow(self.ctrl, parent=None)
@@ -1633,15 +1640,25 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _apply_setaselect_from_bus_ui(self, antenna_id_1_to_3: int) -> None:
-        """Antenne 1–3 aus Bus übernehmen; cfg + Kompass/Karte, kein selection_changed (kein Echo)."""
+    def _apply_aselect_from_query_ui(self, antenna_id_1_to_3: int) -> None:
+        """GETASELECT beim Connect: nur Anzeige/Config an HW anpassen, Rotor nicht bewegen."""
+        self._apply_setaselect_from_bus_ui(antenna_id_1_to_3, realign=False)
+
+    def _apply_setaselect_from_bus_ui(
+        self, antenna_id_1_to_3: int, *, realign: bool = True
+    ) -> None:
+        """Antenne 1–3 aus Bus übernehmen; cfg + Kompass/Karte, kein selection_changed (kein Echo).
+
+        ``realign=True`` (Live-SETASELECT): optional Nachdrehen laut controller_hw.
+        ``realign=False`` (GETASELECT-Sync): nur UI/Config — Hardware ist bereits korrekt.
+        """
         try:
             idx = max(0, min(2, int(antenna_id_1_to_3) - 1))
             ui = self.cfg.setdefault("ui", {})
             old = int(ui.get("compass_antenna", 0))
             if old == idx:
                 return
-            if hasattr(self.ctrl, "align_az_bearing_after_antenna_switch"):
+            if realign and hasattr(self.ctrl, "align_az_bearing_after_antenna_switch"):
                 try:
                     self.ctrl.align_az_bearing_after_antenna_switch(old, idx, self.cfg)
                 except Exception:
@@ -1654,7 +1671,7 @@ class MainWindow(QMainWindow):
                 pass
             cw = getattr(self, "_compass_win", None)
             if cw is not None:
-                if hasattr(cw, "sync_az_rotor_target_from_controller"):
+                if realign and hasattr(cw, "sync_az_rotor_target_from_controller"):
                     try:
                         cw.sync_az_rotor_target_from_controller()
                     except Exception:

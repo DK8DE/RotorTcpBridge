@@ -2192,9 +2192,11 @@ class CompassWindow(QDialog):
         except Exception:
             pass
 
-        # Linke Info-Karten aktualisieren
-        if cur is not None:
-            cur_display = antenna_bearing_from_rotor_and_offset(cur, off_az)
+        # Linke Info-Karten / Overlay: dieselbe geglättete Ist-Anzeige wie der Zeiger
+        # (Rohwert ``cur`` nur für Bus-Logik/Standzeit, sonst stocken die Gradzahlen).
+        ist_src = cur_smooth if cur_smooth is not None else cur
+        if ist_src is not None:
+            cur_display = antenna_bearing_from_rotor_and_offset(ist_src, off_az)
             self._lbl_left_ist_val.setText(fmt_deg(cur_display))
             if self._selected_antenna_dipole_enabled():
                 self._lbl_left_ist_reverse_val.setText(
@@ -2223,8 +2225,8 @@ class CompassWindow(QDialog):
             self._lbl_wind_unit.setVisible(False)
 
         # Ist-Text im Kompass (Soll = Eingabe oben rechts)
-        if cur is not None:
-            cur_display_ov = antenna_bearing_from_rotor_and_offset(cur, off_az)
+        if ist_src is not None:
+            cur_display_ov = antenna_bearing_from_rotor_and_offset(ist_src, off_az)
             ist_txt = t("compass.ist_prefix") + fmt_deg(cur_display_ov)
         else:
             ist_txt = t("compass.ist_prefix") + "–"

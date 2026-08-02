@@ -178,9 +178,11 @@ class _RotorPollingHost:
     _acc_bins_finalize_until_az: float
     _acc_bins_finalize_until_el: float
     _antenna_bootstrap_requested: bool
+    _antenna_selection_bootstrap_requested: bool
     request_antenna_offsets: Callable[[], None]
     request_antenna_angles: Callable[[], None]
     request_antenna_ranges: Callable[[], None]
+    request_antenna_selection: Callable[[], None]
     # Von ``RotorController`` / Polling-Mixin; für ``RotorControllerAsyncMixin`` (gleicher Host-Stub)
     _apply_local_state_for_ui_command: Callable[..., None]
     set_az_from_spid: Callable[[int], None]
@@ -354,6 +356,10 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     self.request_antenna_angles()
                     self.request_antenna_ranges()
                     self._antenna_bootstrap_requested = True
+                if not bool(getattr(self, "_antenna_selection_bootstrap_requested", False)):
+                    # Unabhängig von AZ: Auswahl liegt am Display-Controller (cont_id).
+                    self.request_antenna_selection()
+                    self._antenna_selection_bootstrap_requested = True
                 if (not bool(getattr(self, "_encoder_type_requested", False))) and self.enable_az:
                     self.request_encoder_type()
                     self._encoder_type_requested = True
@@ -363,6 +369,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             self.encoder_type = None
             self.encoder_type_known = False
             self._encoder_type_requested = False
+            self._antenna_selection_bootstrap_requested = False
             self._setposcc_poll_hold = False
             self._setposcc_hold_until = 0.0
             cb = getattr(self, "on_encoder_type_changed", None)

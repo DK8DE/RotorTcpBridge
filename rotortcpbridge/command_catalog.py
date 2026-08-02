@@ -1533,6 +1533,13 @@ SPECS_DATA: list[dict] = [
         "help_text": "Nachdrehen beim Antennenwechsel (0/1) vom Controller lesen.",
         "help_text_en": "Read antenna realign-on-switch state (0/1) from the controller.",
     },
+    {
+        "name": "GETASELECT",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Aktuell gewählte Antenne (1–3) vom Hardware-Controller lesen.",
+        "help_text_en": "Read currently selected antenna (1–3) from the hardware controller.",
+    },
 ]
 
 

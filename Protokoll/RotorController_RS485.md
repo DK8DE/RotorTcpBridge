@@ -297,6 +297,7 @@ Schreibbefehle speichern in `config.json` (Slow/Fast‑PWM, IDs, Antennen‑Labe
 | `GETCONANO` / `SETCONANO` | `ACK_GETCONANO` / `ACK_SETCONANO` (bzw. `NAK_SETCONANO`) — Anemometer/Wetter‑Tab: `1` = Wind, Außentemperatur und Windrichtung im Wetter‑Tab; `0` = Wetter‑Tab aus, `GETTEMPA` für Außentemp (Rotor\_Info) bleibt. JSON `anemometer`. |
 | `GETCONDELTA` / `SETCONDELTA` | `ACK_GETCONDELTA` / `ACK_SETCONDELTA` (bzw. `NAK_SETCONDELTA`) — Encoder‑Schritt pro Raste: `1` oder `10` Zehntelgrad (0,1° bzw. 1° pro Klick). JSON `encoder_delta`. |
 | `GETCONCHA` / `SETCONCHA` | `ACK_GETCONCHA` / `ACK_SETCONCHA` (bzw. `NAK_SETCONCHA`) — Verhalten beim Antennenwechsel: `1` = Anzeige‑Soll (`taget`) beibehalten, `SETPOSDG` mit neuer Antennen‑Geometrie; `0` = `taget` auf die aktuelle Ist‑Anzeige (Kompass) setzen, kein zusätzliches SETPOS. JSON `concha`. |
+| `GETASELECT` | `ACK_GETASELECT` / `NAK_GETASELECT` — aktuell gewählte Antenne **1…3** lesen (Display‑Controller). PC‑Software fragt das beim Connect ab, damit die UI nach HW‑Wechsel ohne laufende Software nicht die alte Config‑Auswahl zeigt. Beim Antennenwechsel sendet der Controller weiterhin Broadcast `SETASELECT` an DST 255. |
 
 **Pflege (Firmware):** Neue Konfig‑Befehle für den Display‑Controller bitte in `src/rotor_rs485.cpp` (`handle_local_config_command`), in `include/pwm_config.h` / `src/pwm_config.cpp` / `data/config.json` und **in dieser Tabelle** parallel ergänzen.
 

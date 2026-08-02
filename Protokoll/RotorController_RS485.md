@@ -1,11 +1,11 @@
 # Rotor‑Controller – RS485‑Anleitung & Firmware‑Dokumentation (DE)
 
-Stand: 2026-04-16 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler & Warnungen. Die **Befehlstabelle** ist mit dem RotorTcpBridge‑Katalog abgeglichen (`command_catalog.py` / Befehlsfenster). Diese Datei ist mit `RotorTcpBridge/Protokoll/RotorController_RS485.html` abgestimmt.
+Stand: 2026-08-02 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler & Warnungen. Die **Befehlstabelle** ist mit dem RotorTcpBridge‑Katalog abgeglichen (`command_catalog.py` / Befehlsfenster). Diese Datei ist mit `RotorTcpBridge/Protokoll/RotorController_RS485.html` abgestimmt.
 
 ## Inhaltsverzeichnis {#toc}
 
 - [1. RS485‑Protokoll (Format, Dezimal, Checksumme)](#protocol)
-- [2. Encoder‑Varianten (fest in der Firmware)](#encoders)
+- [2. Encoder‑Varianten](#encoders)
 - [3. RS485‑Befehle – Tabelle](#cmd-table)
 - [Hardwarecontroller Configuration (Display‑Controller)](#hw-controller-config)
 - [4. RS485‑Befehle – Erklärung & Empfehlungen](#cmd-details)
@@ -103,19 +103,19 @@ Im Beispiel ist der Fehlercode `16`. Die Checksumme ist `20 + 255 + 16 = 291`. D
 
 ## 2. Encoder‑Varianten {#encoders}
 
-Es gibt zwei Hardware‑Varianten, wie der Encoder montiert ist. Die Auswahl ist über RS485 möglich über **SETENCTYPE 1/2**. Axis hat die Id1 und Ring hat Id2.
-Bei einem Encoder‑Wechsel müss einige andere Werte angepasst werden.
+Es gibt drei Encoder‑Varianten. Die Auswahl ist über RS485 mit **SETENCTYPE 1/2/3** möglich. Bei einem Encoder‑Wechsel müssen Counts, Homing und ggf. Max‑Winkel angepasst werden.
 
-- **Ring‑Encoder an der Ausgangswelle**: typisch ca. **160000 Counts pro 360°**. Sehr feine Positionsauflösung, da direkt an der Rotor‑Achse gemessen wird.
-- **Encoder an der Motorachse**: typisch ca. **50000 Counts pro 360°** (am Motor). Mechanisch oft einfacher, aber das Getriebe kann beim Richtungswechsel Spiel haben.
+- **1 = Encoder an der Motorachse (Axis)**: typisch ca. **50000 Counts pro 360°** (am Motor). Mechanisch oft einfacher, aber das Getriebe kann beim Richtungswechsel Spiel haben.
+- **2 = Ring‑Encoder an der Ausgangswelle**: typisch ca. **160000 Counts pro 360°**. Sehr feine Positionsauflösung, da direkt an der Rotor‑Achse gemessen wird.
+- **3 = Absolutwert‑Encoder R&S**: liefert absolute Winkel; Homing entfällt bzw. ist anders. Nullpunkt über **SETENCZERO**. Max‑Winkel oft **>360°** (z. B. 430) — siehe `SETMAXDG`.
 
-**Auswirkung in der Firmware:** Homing‑Rampen, erwartete Counts pro Umdrehung sowie einige Schutz‑ und Auswertefunktionen verwenden diese feste Counts‑pro‑Umdrehung‑Annahme. Daher ändert sich das Verhalten spürbar, wenn die Encoder‑Variante gewechselt wird.
+**Auswirkung in der Firmware:** Homing‑Rampen, erwartete Counts pro Umdrehung sowie einige Schutz‑ und Auswertefunktionen verwenden die Counts‑pro‑Umdrehung‑Annahme der gewählten Variante. Daher ändert sich das Verhalten spürbar, wenn die Encoder‑Variante gewechselt wird.
 
-**Getriebespiel‑Kompensation beim Motor‑Encoder:** Wenn der Encoder am Motor sitzt, wird das Getriebespiel beim Homing durch die Firmware kompensiert. Dazu wird die Referenz immer mit einer definierten Anfahr‑Richtung und einer definierten Überfahr‑/Rückzugslogik angefahren, damit der Nullpunkt trotz Spiel reproduzierbar bleibt.
+**Getriebespiel‑Kompensation beim Motor‑Encoder:** Wenn der Encoder am Motor sitzt (Typ 1), wird das Getriebespiel beim Homing durch die Firmware kompensiert. Dazu wird die Referenz immer mit einer definierten Anfahr‑Richtung und einer definierten Überfahr‑/Rückzugslogik angefahren, damit der Nullpunkt trotz Spiel reproduzierbar bleibt.
 
 ## 3. RS485‑Befehle – Tabelle {#cmd-table}
 
-Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische Antwort vom Slave. Spalte 3 ist eine Kurzbeschreibung. **Antennenversatz** (`SETANTOFF1..3`/`GET…`), **Öffnungswinkel** (`SETANGLE1..3`/`GET…`), **Dipol-Flag** (`SETANTDP1..3`/`GET…`) und **Reichweite** (`SETANTDIS1..3`/`GET…`) werden im Rotor dauerhaft gespeichert (NVS) – dieselben Befehle stehen im Bridge‑Befehlsfenster zur Verfügung.
+Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische Antwort vom Slave. Spalte 3 ist eine Kurzbeschreibung. **Antennenversatz** (`SETANTOFF1..3`/`GET…`), **Öffnungswinkel** (`SETANGLE1..3`/`GET…`), **Dipol-Flag** (`SETANTDP1..3`/`GET…`), **Reichweite** (`SETANTDIS1..3`/`GET…`) und **Korrekturwinkel** (`SETDGCAL`/`GETDGCAL`) werden im Rotor dauerhaft gespeichert (NVS) – dieselben Befehle stehen im Bridge‑Befehlsfenster zur Verfügung.
 
 | Master → Slave | Slave → Master | Kurzbeschreibung |
 | --- | --- | --- |
@@ -213,6 +213,8 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 | `#0:20:SETMAXDG:...:CS$` | `#20:0:ACK_SETMAXDG:...:<CS>$` oder: `#20:0:NAK_SETMAXDG:REASON:CS$` | **[SETMAXDG](#cmd-SETMAXDG)** Max-Winkel setzen. |
 | `#0:20:GETDGOFFSET:...:CS$` | `#20:0:ACK_GETDGOFFSET:...:<CS>$` oder: `#20:0:NAK_GETDGOFFSET:REASON:CS$` | **[GETDGOFFSET](#cmd-GETDGOFFSET)** Offset (Grad) lesen. |
 | `#0:20:SETDGOFFSET:...:CS$` | `#20:0:ACK_SETDGOFFSET:...:<CS>$` oder: `#20:0:NAK_SETDGOFFSET:REASON:CS$` | **[SETDGOFFSET](#cmd-SETDGOFFSET)** Offset setzen (Grad). |
+| `#0:20:GETDGCAL:0:20$` | `#20:0:ACK_GETDGCAL:<WERT>:<CS>$` oder: `#20:0:NAK_GETDGCAL:REASON:CS$` | **[GETDGCAL](#cmd-GETDGCAL)** Korrekturwinkel (−360…360°) lesen. |
+| `#0:20:SETDGCAL:1,4:CS$` | `#20:0:ACK_SETDGCAL:1:<CS>$` oder: `#20:0:NAK_SETDGCAL:REASON:CS$` | **[SETDGCAL](#cmd-SETDGCAL)** Korrekturwinkel (−360…360°) setzen. |
 | `#0:20:GETHOMEPWM:...:CS$` | `#20:0:ACK_GETHOMEPWM:...:<CS>$` oder: `#20:0:NAK_GETHOMEPWM:REASON:CS$` | **[GETHOMEPWM](#cmd-GETHOMEPWM)** Homing-Max-PWM (%) lesen. |
 | `#0:20:SETHOMEPWM:...:CS$` | `#20:0:ACK_SETHOMEPWM:...:<CS>$` oder: `#20:0:NAK_SETHOMEPWM:REASON:CS$` | **[SETHOMEPWM](#cmd-SETHOMEPWM)** Homing-Max-PWM (%) setzen. |
 | `#0:20:GETHOMEBACKOFF:...:CS$` | `#20:0:ACK_GETHOMEBACKOFF:...:<CS>$` oder: `#20:0:NAK_GETHOMEBACKOFF:REASON:CS$` | **[GETHOMEBACKOFF](#cmd-GETHOMEBACKOFF)** Homing Rückzug (Grad) lesen. |
@@ -264,8 +266,9 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 | `#0:20:SETENCCRI:...:CS$` | `#20:0:ACK_SETENCCRI:...:<CS>$` oder: `#20:0:NAK_SETENCCRI:REASON:CS$` | **[SETENCCRI](#cmd-SETENCCRI)** Counts pro 360° Ring-Encoder setzen (typ. ~160000). |
 | `#0:20:GETENCCAX:...:CS$` | `#20:0:ACK_GETENCCAX:...:<CS>$` oder: `#20:0:NAK_GETENCCAX:REASON:CS$` | **[GETENCCAX](#cmd-GETENCCAX)** Counts pro 360° **Motor-/Achsen**-Encoder lesen. |
 | `#0:20:SETENCCAX:...:CS$` | `#20:0:ACK_SETENCCAX:...:<CS>$` oder: `#20:0:NAK_SETENCCAX:REASON:CS$` | **[SETENCCAX](#cmd-SETENCCAX)** Counts pro 360° Motor-/Achsen-Encoder setzen (typ. ~28600…50000). |
-| `#0:20:GETENCTYPE:...:CS$` | `#20:0:ACK_GETENCTYPE:...:<CS>$` oder: `#20:0:NAK_GETENCTYPE:REASON:CS$` | **[GETENCTYPE](#cmd-GETENCTYPE)** Encoder-Variante lesen: 1 = Achse/Motor, 2 = Ring. |
-| `#0:20:SETENCTYPE:...:CS$` | `#20:0:ACK_SETENCTYPE:...:<CS>$` oder: `#20:0:NAK_SETENCTYPE:REASON:CS$` | **[SETENCTYPE](#cmd-SETENCTYPE)** Encoder-Variante setzen (1 oder 2). Nach Wechsel Homing/Counts prüfen. |
+| `#0:20:GETENCTYPE:...:CS$` | `#20:0:ACK_GETENCTYPE:...:<CS>$` oder: `#20:0:NAK_GETENCTYPE:REASON:CS$` | **[GETENCTYPE](#cmd-GETENCTYPE)** Encoder-Variante lesen: 1 = Achse/Motor, 2 = Ring, 3 = Absolutwert R&S. |
+| `#0:20:SETENCTYPE:...:CS$` | `#20:0:ACK_SETENCTYPE:...:<CS>$` oder: `#20:0:NAK_SETENCTYPE:REASON:CS$` | **[SETENCTYPE](#cmd-SETENCTYPE)** Encoder-Variante setzen (1, 2 oder 3). Nach Wechsel Homing/Counts prüfen. |
+| `#0:20:SETENCZERO:1:CS$` | `#20:0:ACK_SETENCZERO:1:<CS>$` oder: `#20:0:NAK_SETENCZERO:REASON:CS$` | **[SETENCZERO](#cmd-SETENCZERO)** Absolut-Encoder Null an aktueller Position setzen (Param `1`). |
 
 [↑ Inhaltsverzeichnis](#toc)
 
@@ -297,6 +300,7 @@ Schreibbefehle speichern in `config.json` (Slow/Fast‑PWM, IDs, Antennen‑Labe
 | `GETCONANO` / `SETCONANO` | `ACK_GETCONANO` / `ACK_SETCONANO` (bzw. `NAK_SETCONANO`) — Anemometer/Wetter‑Tab: `1` = Wind, Außentemperatur und Windrichtung im Wetter‑Tab; `0` = Wetter‑Tab aus, `GETTEMPA` für Außentemp (Rotor\_Info) bleibt. JSON `anemometer`. |
 | `GETCONDELTA` / `SETCONDELTA` | `ACK_GETCONDELTA` / `ACK_SETCONDELTA` (bzw. `NAK_SETCONDELTA`) — Encoder‑Schritt pro Raste: `1` oder `10` Zehntelgrad (0,1° bzw. 1° pro Klick). JSON `encoder_delta`. |
 | `GETCONCHA` / `SETCONCHA` | `ACK_GETCONCHA` / `ACK_SETCONCHA` (bzw. `NAK_SETCONCHA`) — Verhalten beim Antennenwechsel: `1` = Anzeige‑Soll (`taget`) beibehalten, `SETPOSDG` mit neuer Antennen‑Geometrie; `0` = `taget` auf die aktuelle Ist‑Anzeige (Kompass) setzen, kein zusätzliches SETPOS. JSON `concha`. |
+| `GETCONLEDP` / `SETCONLEDP` | `ACK_GETCONLEDP` / `ACK_SETCONLEDP` (bzw. `NAK_SETCONLEDP`) — LED‑Ring‑Helligkeit am Controller in Prozent (0…100). |
 | `GETASELECT` | `ACK_GETASELECT` / `NAK_GETASELECT` — aktuell gewählte Antenne **1…3** lesen (Display‑Controller). PC‑Software fragt das beim Connect ab, damit die UI nach HW‑Wechsel ohne laufende Software nicht die alte Config‑Auswahl zeigt. Beim Antennenwechsel sendet der Controller weiterhin Broadcast `SETASELECT` an DST 255. |
 
 **Pflege (Firmware):** Neue Konfig‑Befehle für den Display‑Controller bitte in `src/rotor_rs485.cpp` (`handle_local_config_command`), in `include/pwm_config.h` / `src/pwm_config.cpp` / `data/config.json` und **in dieser Tabelle** parallel ergänzen.
@@ -367,7 +371,7 @@ Hier ist jeder Befehl in einem eigenen Absatz beschrieben: Was er macht, wie man
 
 **Was es macht:** Aktuelle Position in Grad (0,01°).
 
-**Details:** Rückgabe ist immer die Offset-korrigierte Position.
+**Details:** Rückgabe ist die korrigierte Position: fester Encoder‑Offset (`SETDGOFFSET`) wird abgezogen, Korrekturwinkel (`SETDGCAL`) wird addiert/subtrahiert. Nach `SETDGCAL` die Position erneut mit `GETPOSDG` lesen.
 
 ---
 
@@ -1073,7 +1077,7 @@ Hier ist jeder Befehl in einem eigenen Absatz beschrieben: Was er macht, wie man
 
 **Was es macht:** Max-Winkel setzen.
 
-**Details:** Typisch 360,00.
+**Details:** Typisch 360,00. Bei Absolut‑Encoder (ENCTYPE 3) oft **>360** (z. B. 430).
 
 ---
 
@@ -1089,7 +1093,31 @@ Hier ist jeder Befehl in einem eigenen Absatz beschrieben: Was er macht, wie man
 
 **Was es macht:** Offset setzen (Grad).
 
-**Details:** Typisch 2,25 oder 2,50. Wird gespeichert.
+**Details:** Typisch 2,25 oder 2,50. Wird gespeichert. Abgrenzung: fester Encoder‑Offset (abgezogen) — nicht zu verwechseln mit dem Korrekturwinkel `SETDGCAL` (addiert/subtrahiert) oder Antennenversatz `SETANTOFF*` (nur Geometrie für den Master).
+
+---
+
+#### `GETDGCAL` {#cmd-GETDGCAL}
+
+**Was es macht:** Liest den gespeicherten Korrekturwinkel (−360…360°).
+
+**Telegramm:** `#0:20:GETDGCAL:0:20$`
+
+**Antwort:** `#20:0:ACK_GETDGCAL:<WERT>:<CS>$`
+
+**Details:** Wird zur Ist‑Position addiert/subtrahiert; der Rotor liefert den korrigierten Winkel (`GETPOSDG`). Standardwert `0,0`. Eine Nachkommastelle.
+
+---
+
+#### `SETDGCAL` {#cmd-SETDGCAL}
+
+**Was es macht:** Setzt den Korrekturwinkel (−360…360°).
+
+**Telegramm:** `#0:20:SETDGCAL:1,4:CS$`
+
+**Antwort:** `#20:0:ACK_SETDGCAL:1:<CS>$`
+
+**Details:** Persistent gespeichert, Bereich `−360,0` bis `360,0` Grad, Standard `0,0`, eine Nachkommastelle. Wird sofort auf die Positionsausgabe angewendet — danach `GETDGCAL` und `GETPOSDG` erneut lesen. In der Bridge‑UI: Peilwinkel eingeben → neuer Wert = aktuell + (Peilung − Ist). Abgrenzung zu `SETDGOFFSET` (Encoder‑Offset) und `SETANTOFF*` (Antennen‑Geometrie).
 
 ---
 
@@ -1383,7 +1411,7 @@ Die Stall-**Timeout**-Zeit (`GETSTALLTIMEOUT`/`SETSTALLTIMEOUT`) steht weiter un
 
 ### Encoder: Counts & Typ (RS485)
 
-Ergänzung zu Abschnitt [„Encoder-Varianten“](#encoders): Ring vs. Motor können hier fein eingestellt und der Typ umgeschaltet werden.
+Ergänzung zu Abschnitt [„Encoder-Varianten“](#encoders): Counts für Ring/Motor können hier fein eingestellt und der Typ (1/2/3) umgeschaltet werden.
 
 #### `GETENCCRI` {#cmd-GETENCCRI}
 
@@ -1411,13 +1439,25 @@ Ergänzung zu Abschnitt [„Encoder-Varianten“](#encoders): Ring vs. Motor kö
 
 #### `GETENCTYPE` {#cmd-GETENCTYPE}
 
-**Was es macht:** Encoder-Variante lesen: `1` = Axis/Motor, `2` = Ring.
+**Was es macht:** Encoder-Variante lesen: `1` = Axis/Motor, `2` = Ring, `3` = Absolutwert Encoder R&S.
 
 ---
 
 #### `SETENCTYPE` {#cmd-SETENCTYPE}
 
-**Was es macht:** Encoder-Variante setzen (`1` oder `2`). Nach Wechsel Homing und Counts prüfen.
+**Was es macht:** Encoder-Variante setzen (`1`, `2` oder `3`). Nach Wechsel Homing und Counts prüfen; bei Typ 3 Max‑Winkel und Nullpunkt (`SETENCZERO`) beachten.
+
+---
+
+#### `SETENCZERO` {#cmd-SETENCZERO}
+
+**Was es macht:** Absolut-Encoder in der aktuellen Position auf 0 setzen.
+
+**Telegramm:** `#0:20:SETENCZERO:1:CS$`
+
+**Antwort:** `#20:0:ACK_SETENCZERO:1:<CS>$`
+
+**Details:** Parameter `1` = ausführen. Vor allem bei ENCTYPE 3 (Absolutwert R&S). Danach Position mit `GETPOSDG` prüfen.
 
 ---
 

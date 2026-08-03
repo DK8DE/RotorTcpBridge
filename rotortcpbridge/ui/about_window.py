@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QDialog,
@@ -32,6 +33,8 @@ _BOX_STYLE = (
     " QFrame#licBox QLabel { background: transparent; border: none; }"
 )
 
+_LABEL_WIDTH = 95
+
 
 def _logo_pixmap(target_dip: int = 84) -> QPixmap:
     """Laedt das InstallerSmall-Logo als QPixmap; leeres QPixmap bei Fehler.
@@ -56,15 +59,29 @@ def _logo_pixmap(target_dip: int = 84) -> QPixmap:
 
 
 class AboutWindow(QDialog):
-    """Info-/About-Fenster mit Logo, Metadaten und Lizenzboxen."""
+    """Info-/About-Fenster mit Logo, Metadaten, HW-Versionen und Lizenzboxen."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    # Reader-Thread → GUI (GETCOVERSION / GETVERSION)
+    sig_hw_version = Signal(str, object)  # key, text|None
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        ctrl: Any | None = None,
+        cfg: dict | None = None,
+    ) -> None:
         super().__init__(parent)
+        self.ctrl = ctrl
+        self.cfg = cfg if isinstance(cfg, dict) else {}
+        self._hw_queue: list[tuple[str, int, str, str]] = []
+        self._hw_labels: dict[str, QLabel] = {}
+        self._query_busy = False
+
         self.setWindowTitle(t("about.title"))
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
-        # Fest 500 dip breit, 500 dip hoch — Layout darf auf diesem Raster
-        # leben, heightForWidth der Rich-Text-QLabels wird dadurch stabil.
-        self.setFixedSize(500, 500)
+        # Etwas höher wegen Controller-/Rotor-Versionszeilen
+        self.setFixedSize(500, 560)
 
         root = QVBoxLayout(self)
         root.setSpacing(10)
@@ -77,6 +94,9 @@ class AboutWindow(QDialog):
         root.addWidget(self._build_com0com_box())
         root.addStretch(1)
         root.addLayout(self._build_button_row())
+
+        self.sig_hw_version.connect(self._on_hw_version)
+        QTimer.singleShot(0, self._start_hw_version_queries)
 
     # ------------------------------------------------------------------
     # Bausteine
@@ -113,12 +133,12 @@ class AboutWindow(QDialog):
 
         v.addSpacing(2)
 
-        def _row(label_key: str, value: str) -> None:
+        def _row(label_key: str, value: str, *, store_key: str | None = None) -> None:
             row = QHBoxLayout()
             row.setSpacing(8)
             lbl = QLabel(t(label_key) + ":")
             lbl.setStyleSheet("font-weight: bold;")
-            lbl.setFixedWidth(70)
+            lbl.setFixedWidth(_LABEL_WIDTH)
             lbl.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
@@ -127,10 +147,15 @@ class AboutWindow(QDialog):
             row.addWidget(lbl)
             row.addWidget(val, 1)
             v.addLayout(row)
+            if store_key:
+                self._hw_labels[store_key] = val
 
         _row("about.lbl_author", APP_AUTHOR)
         _row("about.lbl_version", f"v{APP_VERSION}")
         _row("about.lbl_date", APP_DATE)
+        _row("about.lbl_controller", t("about.ver_na"), store_key="controller")
+        _row("about.lbl_rotor_az", t("about.ver_na"), store_key="az")
+        _row("about.lbl_rotor_el", t("about.ver_na"), store_key="el")
 
         h.addWidget(meta, 1, Qt.AlignmentFlag.AlignTop)
         return header
@@ -200,3 +225,144 @@ class AboutWindow(QDialog):
         row.addStretch(1)
         row.addWidget(btn_ok)
         return row
+
+    # ------------------------------------------------------------------
+    # HW-Versionen (GETCOVERSION / GETVERSION)
+    # ------------------------------------------------------------------
+
+    def _set_hw_text(self, key: str, text: str) -> None:
+        lbl = self._hw_labels.get(key)
+        if lbl is not None:
+            lbl.setText(text)
+
+    def _bus_connected(self) -> bool:
+        try:
+            hw = getattr(self.ctrl, "hw", None)
+            if hw is not None and hasattr(hw, "is_connected"):
+                return bool(hw.is_connected())
+        except Exception:
+            pass
+        return False
+
+    def _start_hw_version_queries(self) -> None:
+        """Controller und Rotor(en) anfragen, sofern konfiguriert/online."""
+        queue: list[tuple[str, int, str, str]] = []
+        bus_ok = self._bus_connected() and self.ctrl is not None
+        send_ok = bus_ok and hasattr(self.ctrl, "send_ui_command")
+
+        chw = self.cfg.get("controller_hw") if isinstance(self.cfg.get("controller_hw"), dict) else {}
+        rb = self.cfg.get("rotor_bus") if isinstance(self.cfg.get("rotor_bus"), dict) else {}
+
+        # Controller
+        if bool(chw.get("enabled", True)):
+            if not send_ok:
+                self._set_hw_text("controller", t("about.ver_no_bus"))
+            else:
+                try:
+                    cont_id = int(chw.get("cont_id", 2) or 2)
+                except Exception:
+                    cont_id = 2
+                self._set_hw_text("controller", t("about.ver_query"))
+                queue.append(("controller", cont_id, "GETCOVERSION", "ACK_GETCOVERSION"))
+        else:
+            self._set_hw_text("controller", t("about.ver_na"))
+
+        # Rotor AZ
+        enable_az = bool(getattr(self.ctrl, "enable_az", rb.get("enable_az", True))) if self.ctrl else bool(rb.get("enable_az", True))
+        if enable_az:
+            az = getattr(self.ctrl, "az", None) if self.ctrl else None
+            online = bool(getattr(az, "online", False)) if az is not None else False
+            if not send_ok:
+                self._set_hw_text("az", t("about.ver_no_bus"))
+            elif not online:
+                self._set_hw_text("az", t("about.ver_offline"))
+            else:
+                try:
+                    dst = int(getattr(self.ctrl, "slave_az", rb.get("slave_az", 20)))
+                except Exception:
+                    dst = int(rb.get("slave_az", 20) or 20)
+                self._set_hw_text("az", t("about.ver_query"))
+                queue.append(("az", dst, "GETVERSION", "ACK_GETVERSION"))
+        else:
+            self._set_hw_text("az", t("about.ver_na"))
+
+        # Rotor EL
+        enable_el = bool(getattr(self.ctrl, "enable_el", rb.get("enable_el", False))) if self.ctrl else bool(rb.get("enable_el", False))
+        if enable_el:
+            el = getattr(self.ctrl, "el", None) if self.ctrl else None
+            online = bool(getattr(el, "online", False)) if el is not None else False
+            if not send_ok:
+                self._set_hw_text("el", t("about.ver_no_bus"))
+            elif not online:
+                self._set_hw_text("el", t("about.ver_offline"))
+            else:
+                try:
+                    dst = int(getattr(self.ctrl, "slave_el", rb.get("slave_el", 21)))
+                except Exception:
+                    dst = int(rb.get("slave_el", 21) or 21)
+                self._set_hw_text("el", t("about.ver_query"))
+                queue.append(("el", dst, "GETVERSION", "ACK_GETVERSION"))
+        else:
+            self._set_hw_text("el", t("about.ver_na"))
+
+        self._hw_queue = queue
+        self._run_next_hw_query()
+
+    def _run_next_hw_query(self) -> None:
+        if self._query_busy:
+            return
+        if not self._hw_queue:
+            return
+        if self.ctrl is None or not hasattr(self.ctrl, "send_ui_command"):
+            return
+
+        key, dst, cmd, expect = self._hw_queue.pop(0)
+        self._query_busy = True
+
+        def done(tel, err) -> None:
+            text: Optional[str] = None
+            if err or tel is None:
+                text = None
+            else:
+                cmd_u = str(getattr(tel, "cmd", "") or "").upper()
+                if cmd_u.startswith("NAK_"):
+                    text = None
+                else:
+                    # ACK_GET… oder Kurzform ACK_… ohne GET
+                    ok = cmd_u.startswith(expect) or (
+                        "GET" in expect
+                        and cmd_u.startswith(expect.replace("GET", "", 1))
+                    )
+                    if ok:
+                        raw = str(getattr(tel, "params", "") or "").strip()
+                        # erster Parameter; Rest (z. B. ;rotor_id) weglassen
+                        text = raw.split(";")[0].strip() or None
+            try:
+                self.sig_hw_version.emit(str(key), text)
+            except RuntimeError:
+                pass
+
+        try:
+            self.ctrl.send_ui_command(
+                int(dst),
+                str(cmd),
+                "0",
+                expect_prefix=str(expect),
+                timeout_s=1.5,
+                priority=1,
+                on_done=done,
+                apply_local_state=False,
+            )
+        except Exception:
+            self._query_busy = False
+            self.sig_hw_version.emit(str(key), None)
+
+    @Slot(str, object)
+    def _on_hw_version(self, key: str, value: object) -> None:
+        self._query_busy = False
+        if value is None or str(value).strip() == "":
+            self._set_hw_text(key, t("about.ver_fail"))
+        else:
+            self._set_hw_text(key, str(value).strip())
+        # Nächste Abfrage erst im GUI-Thread (nach kurzer Bus-Pause)
+        QTimer.singleShot(120, self._run_next_hw_query)

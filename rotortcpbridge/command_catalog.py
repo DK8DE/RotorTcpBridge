@@ -551,6 +551,13 @@ SPECS_DATA: list[dict] = [
         "help_text_en": "Read slave address. Return value 0..255.",
     },
     {
+        "name": "GETVERSION",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Firmware-Version des Rotors lesen.",
+        "help_text_en": "Read rotor firmware version.",
+    },
+    {
         "name": "SETROTORID",
         "kind": "int",
         "min_value": 1.0,
@@ -1353,6 +1360,13 @@ SPECS_DATA: list[dict] = [
         "params_literal": "0",
         "help_text": "Controller-ID vom Gerät lesen.",
         "help_text_en": "Read controller ID from the device.",
+    },
+    {
+        "name": "GETCOVERSION",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Firmware-Version des Display-Controllers lesen (Ziel: Controller-ID).",
+        "help_text_en": "Read display-controller firmware version (destination: controller ID).",
     },
     {
         "name": "SETCONIDF",

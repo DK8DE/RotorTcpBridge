@@ -1088,7 +1088,7 @@ class MainWindow(QMainWindow):
         return super().nativeEvent(eventType, message)
 
     def _open_about(self):
-        dlg = AboutWindow(parent=self)
+        dlg = AboutWindow(parent=self, ctrl=self.ctrl, cfg=self.cfg)
         dlg.exec()
 
     def _tray_available(self) -> bool:

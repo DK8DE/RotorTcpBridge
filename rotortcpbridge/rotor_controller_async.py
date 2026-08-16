@@ -502,6 +502,10 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                 if self._axis_target_pending(axis_state):
                                     axis_state.moving = True
                                     axis_state.stop_confirm_samples = 0
+                                    try:
+                                        axis_state.pos_settle_poll_due_ts = 0.0
+                                    except Exception:
+                                        pass
                                     if had_prev_sample and dpos > 0:
                                         axis_state.last_motion_ts = sample_ts
                                     elif float(
@@ -509,6 +513,9 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                     ) <= 0.0:
                                         axis_state.last_motion_ts = sample_ts
                                     return
+                                # Ankunft: nach kurzer Pause noch einmal GETPOSDG (Settle).
+                                if prev_moving:
+                                    self._schedule_pos_settle_poll(axis_state)
                                 axis_state.moving = False
                                 axis_state.stop_confirm_samples = 0
                                 return
@@ -539,12 +546,18 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             axis_state.stop_confirm_samples = 0
 
                         if axis_state.stop_confirm_samples >= 4:
+                            if prev_moving:
+                                self._schedule_pos_settle_poll(axis_state)
                             axis_state.moving = False
                         else:
                             # Wenn wir eine nennenswerte Positionsänderung sehen, sind wir sicher in Bewegung.
                             if dpos > 1:
                                 axis_state.last_motion_ts = time.time()
                                 axis_state.moving = True
+                                try:
+                                    axis_state.pos_settle_poll_due_ts = 0.0
+                                except Exception:
+                                    pass
                             else:
                                 axis_state.moving = prev_moving
                     return
@@ -560,6 +573,10 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             ok = True
                         if ok:
                             axis_state.moving = True
+                            try:
+                                axis_state.pos_settle_poll_due_ts = 0.0
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                     axis_state.last_rx_ts = time.time()

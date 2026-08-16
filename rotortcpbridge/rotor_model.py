@@ -294,6 +294,8 @@ class AxisState:
     pos_reject_streak: int = 0
     pos_reject_last_d10: Optional[int] = None
     pos_poll_expected_period_s: float = 0.2
+    # Nach Ankunft am Ziel: einmaliges GETPOSDG nach kurzer Pause (Settle-Wert).
+    pos_settle_poll_due_ts: float = 0.0
 
     # Kalibrier-Bins (nur wenn GETCALSTATE=2 DONE): 72 Stromwerte in mV pro Richtung
     cal_state: int = 0  # 0=IDLE, 1=RUNNING, 2=DONE, 3=ABORT

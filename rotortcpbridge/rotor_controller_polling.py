@@ -15,6 +15,8 @@ from .rotor_parse_utils import parse_int
 _POS_POLL_MOTION_MIN_CYCLE_S = 0.25
 _POS_POLL_DEFAULT_RTT_S = 0.20
 _POS_POLL_POST_ACK_GAP_S = 0.05
+# Nach Ankunft: noch einmal GETPOSDG, wenn der Rotor wirklich steht.
+_POS_SETTLE_POLL_DELAY_S = 0.20
 
 
 def bins_block_looks_complete(vals: list[int]) -> bool:
@@ -447,6 +449,9 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             _defer_u = float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
             skip_pos_for_cc = (not poll_restrict) and (now < _defer_u)
             acc_chain = self._acc_bins_chain_in_progress()
+            # Nach Ankunft: Settle-GETPOSDG (~200 ms), auch wenn Idle-Intervall noch lange wäre.
+            if (not homing_active) and (not skip_pos_for_cc) and (not acc_chain):
+                self._tick_pos_settle_polls(now)
             if (
                 (not homing_active)
                 and
@@ -670,7 +675,9 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                         axis_state.target_d10 = 0
                         axis_state.last_set_sent_target_d10 = None
                         axis_state.last_set_sent_ts = 0.0
-                        axis_state.referenced = False
+                        # Absolut-Encoder: Homing-Flag nicht löschen (sonst bleibt SETPOSDG tot)
+                        if not self.abs_encoder_no_homing():
+                            axis_state.referenced = False
                         axis_state.moving = False
                         axis_state.error_code = 0
                         try:
@@ -697,7 +704,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     axis_state.target_d10 = 0
                     axis_state.last_set_sent_target_d10 = None
                     axis_state.last_set_sent_ts = 0.0
-                    axis_state.referenced = False
+                    if not self.abs_encoder_no_homing():
+                        axis_state.referenced = False
                     axis_state.moving = False
                     axis_state.error_code = 0
                     try:
@@ -714,6 +722,13 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                         axis_state.telemetry.pwm_min_pct = None
                     except Exception:
                         pass
+                except Exception:
+                    pass
+            elif (not prev_online) and new_online:
+                # Wieder online: Absolut-Encoder ohne Homing erneut als referenziert markieren
+                try:
+                    if self.abs_encoder_no_homing():
+                        axis_state.referenced = True
                 except Exception:
                     pass
 
@@ -837,6 +852,42 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         )
 
     # -------------------- Poll helpers --------------------
+    def _schedule_pos_settle_poll(self, axis_state: AxisState) -> None:
+        """Einmaliges GETPOSDG nach Ankunft (Settle), siehe ``_POS_SETTLE_POLL_DELAY_S``."""
+        try:
+            axis_state.pos_settle_poll_due_ts = time.time() + float(_POS_SETTLE_POLL_DELAY_S)
+        except Exception:
+            pass
+
+    def _tick_pos_settle_polls(self, now: float) -> None:
+        """Fällige Settle-GETPOSDG senden (nach Ankunft, unabhängig vom Idle-Intervall)."""
+        try:
+            axes: list[tuple[bool, int, AxisState, str]] = []
+            if self.enable_az:
+                axes.append((True, int(self.slave_az), self.az, "AZ"))
+            if self.enable_el:
+                axes.append((True, int(self.slave_el), self.el, "EL"))
+            for _en, dst, axis_state, name in axes:
+                due = float(getattr(axis_state, "pos_settle_poll_due_ts", 0.0) or 0.0)
+                if due <= 0.0 or now < due:
+                    continue
+                # Settle darf das normale Next-Due-Gate überwinden.
+                try:
+                    axis_state.pos_poll_next_due_ts = 0.0
+                except Exception:
+                    pass
+                if self._poll_pos(
+                    dst,
+                    axis_state,
+                    name,
+                    now,
+                    expected_period_s=float(_POS_SETTLE_POLL_DELAY_S),
+                    high_priority=True,
+                ):
+                    axis_state.pos_settle_poll_due_ts = 0.0
+        except Exception:
+            pass
+
     def _motion_pos_min_interval(
         self, axis_state: AxisState, expected_period_s: float, motion_fast: bool
     ) -> float:

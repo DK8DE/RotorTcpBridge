@@ -1496,8 +1496,13 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return
 
         if not self.az.referenced:
-            self.log.write("WARN", "AZ SETPOSDG ignoriert: AZ nicht referenziert (Ziel gemerkt)")
-            return
+            # Absolut-Encoder (Typ 3): Homing entfällt — referenced darf SETPOSDG nicht blockieren
+            # (z. B. nach Offline-Reset ohne erneutes GETREF-Polling).
+            if self.abs_encoder_no_homing():
+                self.az.referenced = True
+            else:
+                self.log.write("WARN", "AZ SETPOSDG ignoriert: AZ nicht referenziert (Ziel gemerkt)")
+                return
 
         self._send_setpos(self.slave_az, az_d10, axis="AZ")
         self.az.last_set_sent_target_d10 = az_d10
@@ -1532,8 +1537,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return
 
         if not self.el.referenced:
-            self.log.write("WARN", "EL SETPOSDG ignoriert: EL nicht referenziert (Ziel gemerkt)")
-            return
+            if self.abs_encoder_no_homing():
+                self.el.referenced = True
+            else:
+                self.log.write("WARN", "EL SETPOSDG ignoriert: EL nicht referenziert (Ziel gemerkt)")
+                return
 
         self._send_setpos(self.slave_el, el_d10, axis="EL")
         self.el.last_set_sent_target_d10 = el_d10

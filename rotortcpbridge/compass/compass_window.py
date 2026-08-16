@@ -134,6 +134,13 @@ class CompassWindow(QDialog):
         # Mausklick + Fahrt: zwischen CC-Paketen letzten Encoder-Soll halten (nicht auf altes Motorziel springen)
         self._cc_display_latch_az_d10: Optional[int] = None
         self._cc_display_latch_el_d10: Optional[int] = None
+        # AZ-SCAN: zwischen zwei Anzeige-Winkeln pendeln bis STOP AZ
+        self._scan_active = False
+        self._scan_leg = 1  # 1 → Winkel 1, 2 → Winkel 2
+        self._scan_a_display: Optional[float] = None
+        self._scan_b_display: Optional[float] = None
+        self._scan_cmd_ts: float = 0.0
+        self._scan_saw_moving = False
         self._az_ref_poll_was_active = False
         self._el_ref_poll_was_active = False
         # Letzte gemeldete Strommap an Controller — nur bei Änderung neu setzen (wie die gezeichneten Ringe)
@@ -631,6 +638,36 @@ class CompassWindow(QDialog):
         _fav_vbox.addLayout(_fav_btn_row)
 
         right_vbox.addWidget(_fav_card)
+
+        # ── SCAN-Card (nur AZ) ────────────────────────────────────────────
+        _scan_card = QFrame()
+        self._apply_compass_card_style(_scan_card)
+        _scan_vbox = QVBoxLayout(_scan_card)
+        _scan_vbox.setContentsMargins(8, 8, 8, 8)
+        _scan_vbox.setSpacing(5)
+
+        self._lbl_scan_h = QLabel(t("compass.scan_header").upper())
+        self._lbl_scan_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_scan_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _scan_vbox.addWidget(self._lbl_scan_h)
+
+        self.ed_scan_a = QLineEdit()
+        self.ed_scan_a.setPlaceholderText(t("compass.scan_a_placeholder"))
+        self.ed_scan_a.setToolTip(format_tooltip(t("compass.scan_angles_tooltip")))
+        _scan_vbox.addWidget(self.ed_scan_a)
+
+        self.ed_scan_b = QLineEdit()
+        self.ed_scan_b.setPlaceholderText(t("compass.scan_b_placeholder"))
+        self.ed_scan_b.setToolTip(format_tooltip(t("compass.scan_angles_tooltip")))
+        _scan_vbox.addWidget(self.ed_scan_b)
+
+        self.btn_scan_start = QPushButton(t("compass.scan_btn_start"))
+        self.btn_scan_start.setAutoDefault(False)
+        self.btn_scan_start.setDefault(False)
+        self.btn_scan_start.setToolTip(format_tooltip(t("compass.scan_btn_start_tooltip")))
+        _scan_vbox.addWidget(self.btn_scan_start)
+
+        right_vbox.addWidget(_scan_card)
         right_vbox.addStretch(1)
 
         # --- Rechts-Panel EL: VERBINDUNG + SOLL + IST + STEUERUNG ---
@@ -777,6 +814,9 @@ class CompassWindow(QDialog):
         self.cb_fav.activated.connect(self._on_fav_activated)
         self.btn_fav_save.clicked.connect(self._on_fav_save)
         self.btn_fav_delete.clicked.connect(self._on_fav_delete)
+        self.btn_scan_start.clicked.connect(self._on_scan_start)
+        self.ed_scan_a.returnPressed.connect(self._on_scan_start)
+        self.ed_scan_b.returnPressed.connect(self._on_scan_start)
         self._refresh_favorites_dropdown()
 
         self._timer = QTimer(self)
@@ -889,6 +929,7 @@ class CompassWindow(QDialog):
 
     def hideEvent(self, event: QHideEvent) -> None:
         """Minimieren: wie schließen für Bus-Polling (closeEvent fehlt bei Minimize)."""
+        self._stop_scan()
         self._antenna_request_timer.stop()
         try:
             if self._rig_freq_poll_timer is not None:
@@ -900,6 +941,7 @@ class CompassWindow(QDialog):
         super().hideEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._stop_scan()
         self._antenna_request_timer.stop()
         try:
             if self._rig_freq_poll_timer is not None:
@@ -1441,9 +1483,122 @@ class CompassWindow(QDialog):
         apply_saved_selection_to_favorites_combo(self.cb_fav, self.cfg)
         self.cb_fav.blockSignals(False)
 
+    def _update_scan_button_text(self) -> None:
+        if self._scan_active:
+            self.btn_scan_start.setText(t("compass.scan_btn_running"))
+        else:
+            self.btn_scan_start.setText(t("compass.scan_btn_start"))
+
+    def _stop_scan(self) -> None:
+        """SCAN beenden (ohne Rotor-Stop — der kommt ggf. separat)."""
+        was = bool(self._scan_active)
+        self._scan_active = False
+        self._scan_leg = 1
+        self._scan_saw_moving = False
+        self._scan_cmd_ts = 0.0
+        if was:
+            self._update_scan_button_text()
+
+    @Slot()
+    def _on_scan_start(self) -> None:
+        """SCAN starten: Winkel 1 → Winkel 2 → Winkel 1 … bis STOP AZ."""
+        if not bool(getattr(self.ctrl, "enable_az", True)):
+            QMessageBox.warning(
+                self, t("compass.scan_err_title"), t("compass.scan_err_no_az")
+            )
+            return
+        a = self._parse_deg_input(self.ed_scan_a.text())
+        b = self._parse_deg_input(self.ed_scan_b.text())
+        if a is None or b is None:
+            QMessageBox.warning(
+                self, t("compass.scan_err_title"), t("compass.scan_err_invalid")
+            )
+            return
+        a_disp = self._normalize_soll_display_input(a)
+        b_disp = self._normalize_soll_display_input(b)
+        if abs(float(a_disp) - float(b_disp)) < 0.05:
+            QMessageBox.warning(
+                self, t("compass.scan_err_title"), t("compass.scan_err_same")
+            )
+            return
+        self._scan_a_display = float(a_disp)
+        self._scan_b_display = float(b_disp)
+        self._scan_active = True
+        self._scan_leg = 1
+        self._update_scan_button_text()
+        self._scan_goto_current_leg()
+
+    def _scan_goto_current_leg(self) -> None:
+        """Aktuelles SCAN-Ziel anfahren (Anzeige-Winkel → Rotor)."""
+        disp = self._scan_a_display if self._scan_leg == 1 else self._scan_b_display
+        if disp is None:
+            self._stop_scan()
+            return
+        off_az = self._get_antenna_offset_az()
+        display_bearing = self._normalize_soll_display_input(float(disp))
+        rotor_deg = self._rotor_from_display_exact(display_bearing, off_az)
+        needle_bearing = wrap_deg(display_bearing)
+        self._stop_az_ts = None
+        self._cc_display_latch_az_d10 = None
+        self._az_soll_display_bearing = display_bearing
+        self._target_az = rotor_deg
+        try:
+            self.az_compass.set_target_deg(needle_bearing)
+            self.ed_az_soll.setText(f"{display_bearing:.1f}")
+        except Exception:
+            pass
+        try:
+            d10 = int(round(float(rotor_deg) * 10.0))
+            self.ctrl.az.target_d10 = d10
+            self.ctrl.az.moving = True
+            self.ctrl.az.last_set_sent_ts = time.time()
+        except Exception:
+            pass
+        try:
+            self.ctrl.set_az_deg(rotor_deg, force=True)
+        except Exception:
+            pass
+        try:
+            self._compass_last_bus_target_d10_az = self._effective_az_bus_target_d10()
+        except Exception:
+            pass
+        self._scan_cmd_ts = time.time()
+        self._scan_saw_moving = False
+
+    def _tick_scan(self) -> None:
+        """Nach Erreichen von Winkel n zum anderen Winkel wechseln."""
+        if not self._scan_active:
+            return
+        try:
+            moving = bool(getattr(self.ctrl.az, "moving", False))
+        except Exception:
+            moving = False
+        now = time.time()
+        # Kurz nach dem Befehl warten, bis moving gesetzt/angefahren wird
+        if (now - float(self._scan_cmd_ts or 0.0)) < 0.45:
+            return
+        if moving:
+            self._scan_saw_moving = True
+            return
+        if not self._scan_saw_moving:
+            # Fallback: schon am Ziel (sehr nah) ohne moving gesehen
+            try:
+                cur = raw_rotor_az_deg_from_axis(getattr(self.ctrl, "az", None))
+                tgt = self._target_az
+                if cur is None or tgt is None:
+                    return
+                if abs(float(cur) - float(tgt)) > 0.6:
+                    return
+            except Exception:
+                return
+        # Ziel erreicht → andere Seite
+        self._scan_leg = 2 if self._scan_leg == 1 else 1
+        self._scan_goto_current_leg()
+
     @Slot(int)
     def _on_fav_activated(self, idx: int) -> None:
         """Favorit ausgewählt → dorthin fahren."""
+        self._stop_scan()
         if idx < 0:
             return
         data = self.cb_fav.itemData(idx)
@@ -1627,6 +1782,7 @@ class CompassWindow(QDialog):
             self._lbl_conn_h,
             self._lbl_ctrl,
             self._lbl_fav_h,
+            self._lbl_scan_h,
             self._lbl_conn_el_h,
             self._lbl_el_soll_h,
             self._lbl_el_ist_h,
@@ -1712,6 +1868,13 @@ class CompassWindow(QDialog):
         self._lbl_ctrl.setText(t("compass.steuerung_label").upper())
         self._lbl_ctrl_el.setText(t("compass.steuerung_label").upper())
         self._lbl_fav_h.setText(t("compass.fav_header").upper())
+        self._lbl_scan_h.setText(t("compass.scan_header").upper())
+        self.ed_scan_a.setPlaceholderText(t("compass.scan_a_placeholder"))
+        self.ed_scan_a.setToolTip(format_tooltip(t("compass.scan_angles_tooltip")))
+        self.ed_scan_b.setPlaceholderText(t("compass.scan_b_placeholder"))
+        self.ed_scan_b.setToolTip(format_tooltip(t("compass.scan_angles_tooltip")))
+        self.btn_scan_start.setToolTip(format_tooltip(t("compass.scan_btn_start_tooltip")))
+        self._update_scan_button_text()
         self._lbl_ist_h.setText(t("compass.ist_label").upper())
         self._lbl_ist_reverse_h.setText(t("compass.ist_reverse_label").upper())
         self._lbl_soll_h.setText(t("compass.soll_label").upper())
@@ -1993,6 +2156,7 @@ class CompassWindow(QDialog):
 
         if bool(self.gb_az.isVisible()):
             self._tick_az()
+            self._tick_scan()
         if bool(self.gb_el.isVisible()):
             self._tick_el()
         # Controller-Flags = gleiche Logik wie Ring-Anzeige (Haken Strommap), sonst falscher ACC-Takt
@@ -2870,6 +3034,7 @@ class CompassWindow(QDialog):
 
     def _apply_az_target_from_display(self, deg: float, *, exact: bool) -> None:
         """deg = Antennenrichtung. exact=True: SOLL-Feld ohne kürzesten Weg."""
+        self._stop_scan()
         self._stop_az_ts = None
         self._cc_display_latch_az_d10 = None
         off_az = self._get_antenna_offset_az()
@@ -2955,6 +3120,7 @@ class CompassWindow(QDialog):
 
     @Slot()
     def _on_stop_az(self) -> None:
+        self._stop_scan()
         now = time.time()
         self._cc_display_latch_az_d10 = None
         self._stop_az_ts = now

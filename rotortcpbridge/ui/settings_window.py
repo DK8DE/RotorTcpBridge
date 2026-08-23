@@ -1615,26 +1615,7 @@ class SettingsWindow(QDialog):
         if self._settings_nav.currentRow() == getattr(self, "_tab_statistics_index", -1):
             self._start_calvalid_timer()
         # Snapshots: nur geänderte Werte gehen auf den Bus (SETANTOFF / SETCON* …)
-        self._snapshot_antoff = [
-            self.sp_az_antoff_1.value(),
-            self.sp_az_antoff_2.value(),
-            self.sp_az_antoff_3.value(),
-        ]
-        self._snapshot_angle = [
-            self.sp_az_angle_1.value(),
-            self.sp_az_angle_2.value(),
-            self.sp_az_angle_3.value(),
-        ]
-        self._snapshot_antdp = [
-            bool(self.chk_az_dipole_1.isChecked()),
-            bool(self.chk_az_dipole_2.isChecked()),
-            bool(self.chk_az_dipole_3.isChecked()),
-        ]
-        self._snapshot_range = [
-            self.sp_az_range_1.value(),
-            self.sp_az_range_2.value(),
-            self.sp_az_range_3.value(),
-        ]
+        self._capture_antenna_snapshots_from_ui()
         # Vergleichsbasis für SETCON* beim Speichern (sonst snap=None → kein Schreiben)
         self._snapshot_controller = self._controller_snapshot_from_ui()
         # Antennennamen vom Hardware-Controller (wie Tab „Controller“)
@@ -2777,6 +2758,40 @@ class SettingsWindow(QDialog):
     def _on_antenna_name_text_changed(self, idx: int) -> None:
         self._push_antenna_names_to_config()
 
+    def _capture_antenna_snapshots_from_ui(self) -> None:
+        """Aktuelle Antennen-Felder als Vergleichsbasis (kein NVS-Schreiben ohne Änderung)."""
+        self._snapshot_antoff = [
+            int(self.sp_az_antoff_1.value()),
+            int(self.sp_az_antoff_2.value()),
+            int(self.sp_az_antoff_3.value()),
+        ]
+        self._snapshot_angle = [
+            int(self.sp_az_angle_1.value()),
+            int(self.sp_az_angle_2.value()),
+            int(self.sp_az_angle_3.value()),
+        ]
+        self._snapshot_antdp = [
+            bool(self.chk_az_dipole_1.isChecked()),
+            bool(self.chk_az_dipole_2.isChecked()),
+            bool(self.chk_az_dipole_3.isChecked()),
+        ]
+        self._snapshot_range = [
+            int(self.sp_az_range_1.value()),
+            int(self.sp_az_range_2.value()),
+            int(self.sp_az_range_3.value()),
+        ]
+
+    def _antenna_value_changed(self, old_val, new_val) -> bool:
+        """True nur wenn Baseline bekannt und Wert wirklich abweicht (sonst kein NVS-Write)."""
+        if old_val is None:
+            return False
+        try:
+            if isinstance(new_val, bool) or isinstance(old_val, bool):
+                return bool(old_val) != bool(new_val)
+            return int(old_val) != int(new_val)
+        except Exception:
+            return old_val != new_val
+
     def _refresh_antenna_data_once(self) -> None:
         """Versatz- und Öffnungswinkel-SpinBoxen aus Controller-State übernehmen."""
         if any(
@@ -2788,83 +2803,89 @@ class SettingsWindow(QDialog):
         ):
             return
         all_loaded = True
+        snap_antoff = list(getattr(self, "_snapshot_antoff", [None, None, None]))
+        snap_angle = list(getattr(self, "_snapshot_angle", [None, None, None]))
+        snap_antdp = list(getattr(self, "_snapshot_antdp", [None, None, None]))
+        snap_range = list(getattr(self, "_snapshot_range", [None, None, None]))
         try:
             if self.chk_enable_az.isChecked():
                 az = self.ctrl.az
-                for attr, sp in [
-                    ("antoff1", self.sp_az_antoff_1),
-                    ("antoff2", self.sp_az_antoff_2),
-                    ("antoff3", self.sp_az_antoff_3),
-                ]:
+                for i, (attr, sp) in enumerate(
+                    [
+                        ("antoff1", self.sp_az_antoff_1),
+                        ("antoff2", self.sp_az_antoff_2),
+                        ("antoff3", self.sp_az_antoff_3),
+                    ]
+                ):
                     v = getattr(az, attr, None)
                     if v is None:
                         all_loaded = False
                     else:
+                        iv = int(round(v))
                         sp.blockSignals(True)
-                        sp.setValue(int(round(v)))
+                        sp.setValue(iv)
                         sp.blockSignals(False)
-                for attr, sp in [
-                    ("angle1", self.sp_az_angle_1),
-                    ("angle2", self.sp_az_angle_2),
-                    ("angle3", self.sp_az_angle_3),
-                ]:
+                        # Vom Gerät geladen = neue Baseline (kein „geändert“ beim Speichern).
+                        snap_antoff[i] = iv
+                for i, (attr, sp) in enumerate(
+                    [
+                        ("angle1", self.sp_az_angle_1),
+                        ("angle2", self.sp_az_angle_2),
+                        ("angle3", self.sp_az_angle_3),
+                    ]
+                ):
                     v = getattr(az, attr, None)
                     if v is None:
                         all_loaded = False
                     else:
+                        iv = int(round(v))
                         sp.blockSignals(True)
-                        sp.setValue(int(round(v)))
+                        sp.setValue(iv)
                         sp.blockSignals(False)
-                for attr, chk in [
-                    ("antdp1", self.chk_az_dipole_1),
-                    ("antdp2", self.chk_az_dipole_2),
-                    ("antdp3", self.chk_az_dipole_3),
-                ]:
+                        snap_angle[i] = iv
+                for i, (attr, chk) in enumerate(
+                    [
+                        ("antdp1", self.chk_az_dipole_1),
+                        ("antdp2", self.chk_az_dipole_2),
+                        ("antdp3", self.chk_az_dipole_3),
+                    ]
+                ):
                     v = getattr(az, attr, None)
-                    if v is not None:
+                    if v is None:
+                        all_loaded = False
+                    else:
+                        bv = bool(v)
                         chk.blockSignals(True)
-                        chk.setChecked(bool(v))
+                        chk.setChecked(bv)
                         chk.blockSignals(False)
-                for attr, sp in [
-                    ("antdis1", self.sp_az_range_1),
-                    ("antdis2", self.sp_az_range_2),
-                    ("antdis3", self.sp_az_range_3),
-                ]:
+                        snap_antdp[i] = bv
+                for i, (attr, sp) in enumerate(
+                    [
+                        ("antdis1", self.sp_az_range_1),
+                        ("antdis2", self.sp_az_range_2),
+                        ("antdis3", self.sp_az_range_3),
+                    ]
+                ):
                     v = getattr(az, attr, None)
                     if v is None:
                         all_loaded = False
                     else:
+                        iv = int(v)
                         sp.blockSignals(True)
-                        sp.setValue(int(v))
+                        sp.setValue(iv)
                         sp.blockSignals(False)
+                        snap_range[i] = iv
+                self._snapshot_antoff = snap_antoff
+                self._snapshot_angle = snap_angle
+                self._snapshot_antdp = snap_antdp
+                self._snapshot_range = snap_range
                 self._push_antenna_offsets_to_config()
                 self._push_antenna_angles_to_config()
-                self._push_antenna_ranges_to_config()
                 self._push_antenna_dipoles_to_config()
+                self._push_antenna_ranges_to_config()
             if all_loaded:
                 self._antenna_refresh_timer.stop()
                 self._antenna_request_timer.stop()
-                # Snapshot nach erstem vollständigen Poll aus Gerät aktualisieren
-                self._snapshot_antoff = [
-                    self.sp_az_antoff_1.value(),
-                    self.sp_az_antoff_2.value(),
-                    self.sp_az_antoff_3.value(),
-                ]
-                self._snapshot_angle = [
-                    self.sp_az_angle_1.value(),
-                    self.sp_az_angle_2.value(),
-                    self.sp_az_angle_3.value(),
-                ]
-                self._snapshot_antdp = [
-                    bool(self.chk_az_dipole_1.isChecked()),
-                    bool(self.chk_az_dipole_2.isChecked()),
-                    bool(self.chk_az_dipole_3.isChecked()),
-                ]
-                self._snapshot_range = [
-                    self.sp_az_range_1.value(),
-                    self.sp_az_range_2.value(),
-                    self.sp_az_range_3.value(),
-                ]
             self._update_antenna_offset_enabled()
         except Exception:
             pass
@@ -3148,11 +3169,13 @@ class SettingsWindow(QDialog):
 
         # AZ-Versatz, Öffnungswinkel, Dipol und Reichweite in den Rotor schreiben
         # (SETANTOFF1–3, SETANGLE1–3, SETANTDP1–3, SETANTDIS1–3).
-        # Nur übertragen wenn Wert sich gegenüber dem Snapshot beim Öffnen tatsächlich geändert hat
-        snapshot_antoff = getattr(self, "_snapshot_antoff", [None, None, None])
-        snapshot_angle = getattr(self, "_snapshot_angle", [None, None, None])
-        snapshot_antdp = getattr(self, "_snapshot_antdp", [None, None, None])
-        snapshot_range = getattr(self, "_snapshot_range", [None, None, None])
+        # Nur übertragen wenn Wert sich gegenüber dem Snapshot tatsächlich geändert hat.
+        # Kein Write wenn Baseline fehlt (None) — schützt NVS vor Blind-Schreiben.
+        snapshot_antoff = list(getattr(self, "_snapshot_antoff", [None, None, None]))
+        snapshot_angle = list(getattr(self, "_snapshot_angle", [None, None, None]))
+        snapshot_antdp = list(getattr(self, "_snapshot_antdp", [None, None, None]))
+        snapshot_range = list(getattr(self, "_snapshot_range", [None, None, None]))
+        wrote_antenna_hw = False
         if self.hw.is_connected() and hasattr(self.ctrl, "set_antenna_offset"):
             all_ok = True
             if self.chk_enable_az.isChecked():
@@ -3163,7 +3186,8 @@ class SettingsWindow(QDialog):
                 ]:
                     new_val = int(sp.value())
                     old_val = snapshot_antoff[slot - 1]
-                    if old_val is None or new_val != int(old_val):
+                    if self._antenna_value_changed(old_val, new_val):
+                        wrote_antenna_hw = True
                         self.lbl_status.setText(t("settings.status_az_saving", slot=slot))
                         QApplication.processEvents()
                         if not self._set_antenna_offset_and_wait("az", slot, float(new_val)):
@@ -3177,7 +3201,8 @@ class SettingsWindow(QDialog):
                 ]:
                     new_val = int(sp.value())
                     old_val = snapshot_angle[slot - 1]
-                    if old_val is None or new_val != int(old_val):
+                    if self._antenna_value_changed(old_val, new_val):
+                        wrote_antenna_hw = True
                         self.lbl_status.setText(t("settings.status_angle_saving", slot=slot))
                         QApplication.processEvents()
                         if hasattr(
@@ -3193,7 +3218,8 @@ class SettingsWindow(QDialog):
                 ]:
                     new_val = bool(chk.isChecked())
                     old_val = snapshot_antdp[slot - 1]
-                    if old_val is None or bool(old_val) != new_val:
+                    if self._antenna_value_changed(old_val, new_val):
+                        wrote_antenna_hw = True
                         self.lbl_status.setText(t("settings.status_dipole_saving", slot=slot))
                         QApplication.processEvents()
                         if hasattr(
@@ -3209,7 +3235,8 @@ class SettingsWindow(QDialog):
                 ]:
                     new_val = int(sp.value())
                     old_val = snapshot_range[slot - 1]
-                    if old_val is None or new_val != int(old_val):
+                    if self._antenna_value_changed(old_val, new_val):
+                        wrote_antenna_hw = True
                         self.lbl_status.setText(t("settings.status_range_saving", slot=slot))
                         QApplication.processEvents()
                         if hasattr(
@@ -3218,18 +3245,24 @@ class SettingsWindow(QDialog):
                             all_ok = False
                         else:
                             snapshot_range[slot - 1] = new_val
-            self.lbl_status.setText(
-                t("settings.status_az_saved") if all_ok else t("settings.status_az_error")
-            )
-            QApplication.processEvents()
+            self._snapshot_antoff = list(snapshot_antoff)
+            self._snapshot_angle = list(snapshot_angle)
             self._snapshot_antdp = list(snapshot_antdp)
             self._snapshot_range = list(snapshot_range)
-            if not all_ok:
-                QMessageBox.warning(
-                    self,
-                    t("settings.msgbox_az_title"),
-                    t("settings.msgbox_az_error"),
+            if wrote_antenna_hw:
+                self.lbl_status.setText(
+                    t("settings.status_az_saved") if all_ok else t("settings.status_az_error")
                 )
+                QApplication.processEvents()
+                if not all_ok:
+                    QMessageBox.warning(
+                        self,
+                        t("settings.msgbox_az_title"),
+                        t("settings.msgbox_az_error"),
+                    )
+            else:
+                self.lbl_status.setText(t("settings.status_saved"))
+                QApplication.processEvents()
         else:
             self.lbl_status.setText(t("settings.status_saved"))
             QApplication.processEvents()

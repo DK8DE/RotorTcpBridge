@@ -25,21 +25,27 @@ from urllib.parse import urlencode
 VENDOR_NE2 = "ne2"
 VENDOR_NA11X = "na11x"
 VENDOR_USR = "usr_dr164"
+VENDOR_DK8DE = "dk8de_wlan"
 VENDOR_GENERIC = "generic"
 
-VALID_VENDORS = (VENDOR_NE2, VENDOR_NA11X, VENDOR_USR, VENDOR_GENERIC)
+VALID_VENDORS = (VENDOR_NE2, VENDOR_NA11X, VENDOR_USR, VENDOR_DK8DE, VENDOR_GENERIC)
 VALID_ROLES = ("server", "client", "bus_gateway")
 
 DEFAULT_AT_PORTS = {
     VENDOR_NE2: 8886,
     VENDOR_NA11X: 8886,  # NA111-M typisch 8886 (aeltere Docs: 8887)
     VENDOR_USR: 8899,
+    VENDOR_DK8DE: 8886,  # Nutzdaten-Port; AT/Discovery auf config_port (8880)
     VENDOR_GENERIC: 8886,
+}
+DEFAULT_CONFIG_PORTS = {
+    VENDOR_DK8DE: 8880,
 }
 DEFAULT_WEB_PORTS = {
     VENDOR_NE2: 80,
     VENDOR_NA11X: 80,
     VENDOR_USR: 80,
+    VENDOR_DK8DE: 80,
     VENDOR_GENERIC: 80,
 }
 
@@ -58,6 +64,9 @@ class NetworkModule:
     cmdpw: str = "USR"
     web_user: str = "admin"
     web_password: str = "admin"
+    uid: str = ""  # DK8DE: 8-stellige Hex-Geraete-ID
+    config_port: int = 8880  # DK8DE: UDP AT/Discovery
+    contact_host: str = ""  # DK8DE: zuletzt erreichbare IP fuer AT (nicht persistiert)
     # Zuletzt gelesene Live-Werte (nicht persistent noetig, aber praktisch)
     last_status: Dict[str, Any] = field(default_factory=dict)
 
@@ -73,11 +82,16 @@ class NetworkModule:
             "cmdpw": str(self.cmdpw or "USR").strip() or "USR",
             "web_user": str(self.web_user or "admin").strip() or "admin",
             "web_password": str(self.web_password or "admin"),
+            "uid": str(self.uid or "").strip().upper(),
+            "config_port": int(self.config_port),
         }
         if d["vendor"] not in VALID_VENDORS:
             d["vendor"] = VENDOR_GENERIC
         if d["role"] not in VALID_ROLES:
             d["role"] = "bus_gateway"
+        if d["vendor"] != VENDOR_DK8DE:
+            d.pop("uid", None)
+            d.pop("config_port", None)
         return d
 
     @classmethod
@@ -98,6 +112,12 @@ class NetworkModule:
         role = str(raw.get("role", "bus_gateway") or "bus_gateway").strip().lower()
         if role not in VALID_ROLES:
             role = "bus_gateway"
+        try:
+            config_port = int(
+                raw.get("config_port", DEFAULT_CONFIG_PORTS.get(vendor, 8880))
+            )
+        except (TypeError, ValueError):
+            config_port = DEFAULT_CONFIG_PORTS.get(vendor, 8880)
         return cls(
             name=str(raw.get("name", "") or ""),
             vendor=vendor,
@@ -109,6 +129,8 @@ class NetworkModule:
             cmdpw=str(raw.get("cmdpw", "USR") or "USR").strip() or "USR",
             web_user=str(raw.get("web_user", "admin") or "admin").strip() or "admin",
             web_password=str(raw.get("web_password", "admin") if raw.get("web_password") is not None else "admin"),
+            uid=str(raw.get("uid", "") or "").strip().upper(),
+            config_port=max(1, min(65535, config_port)),
         )
 
 
@@ -1335,7 +1357,46 @@ def probe_online(host: str, port: int, timeout: float = 0.4) -> bool:
         return False
 
 
+def dk8de_resolve_connect_host(
+    *,
+    contact_host: str = "",
+    configured_host: str = "",
+) -> str:
+    """Erreichbare IP fuer AT/Web — nicht die noch nicht gesetzte Ziel-IP."""
+    from .dk8de_wlan_module import _normalize_contact_ip
+
+    for candidate in (contact_host, configured_host):
+        c = _normalize_contact_ip(candidate)
+        if c:
+            return c
+    return "255.255.255.255"
+
+
+def dk8de_module_connect_host(
+    module: NetworkModule,
+    *,
+    at_host: str = "",
+) -> str:
+    return dk8de_resolve_connect_host(
+        contact_host=str(at_host or module.contact_host or ""),
+        configured_host=str(module.host or ""),
+    )
+
+
 def probe_module(module: NetworkModule, timeout: float = 0.4) -> bool:
+    if module.vendor == VENDOR_DK8DE:
+        from .dk8de_wlan_module import probe_dk8de
+
+        host = dk8de_module_connect_host(module)
+        return probe_dk8de(
+            host,
+            module.uid,
+            config_port=int(module.config_port or 8880),
+            web_port=int(module.web_port or 80),
+            web_user=str(module.web_user or "admin"),
+            web_password=str(module.web_password or "Rotorconfig"),
+            timeout=max(timeout, 0.8),
+        )
     return probe_online(module.host, module.at_port, timeout=timeout)
 
 
@@ -1408,7 +1469,12 @@ def _ok_or_raise(resp: str, cmd: str) -> str:
     return payload
 
 
-def read_status(module: NetworkModule, *, timeout: float = 2.5) -> Dict[str, Any]:
+def read_status(
+    module: NetworkModule,
+    *,
+    timeout: float = 2.5,
+    at_host: str = "",
+) -> Dict[str, Any]:
     """Liest Modell/MAC/WAN/SOCK/Link-Status vom Modul.
 
     NE2/NA11x/USR: primaer Web-API (AT auf dem Daten-Port oft unbrauchbar wegen
@@ -1425,6 +1491,46 @@ def read_status(module: NetworkModule, *, timeout: float = 2.5) -> Dict[str, Any
     }
     vendor = module.vendor
     errors: List[str] = []
+
+    if vendor == VENDOR_DK8DE:
+        from .dk8de_wlan_module import read_status_dk8de, read_status_web_dk8de
+
+        connect = dk8de_module_connect_host(module, at_host=at_host)
+        web_st: Optional[Dict[str, Any]] = None
+        try:
+            web_st = read_status_web_dk8de(
+                connect,
+                web_port=int(module.web_port or 80),
+                user=str(module.web_user or "admin"),
+                password=str(module.web_password or "Rotorconfig"),
+                timeout=max(timeout, 3.0),
+            )
+            if status_has_data(web_st):
+                return web_st
+            errors.append("DK8DE-Web lieferte keine Daten")
+        except Exception as exc:
+            errors.append(f"Web: {exc}")
+
+        uid = (module.uid or "").strip()
+        if not uid and isinstance(web_st, dict):
+            uid = str(web_st.get("uid") or "").strip()
+        if not uid:
+            out["error"] = "; ".join(errors) if errors else "UID fehlt (DK8DE-Modul)"
+            return out
+        try:
+            st = read_status_dk8de(
+                connect,
+                uid,
+                config_port=int(module.config_port or 8880),
+                timeout=max(timeout, 3.0),
+            )
+            if status_has_data(st):
+                return st
+            errors.append("DK8DE-AT lieferte keine Daten")
+        except Exception as exc:
+            errors.append(f"DK8DE-AT: {exc}")
+        out["error"] = "; ".join(errors) if errors else "Keine Konfigurationsdaten empfangen"
+        return out
 
     if vendor == VENDOR_USR:
         try:
@@ -1538,10 +1644,31 @@ def write_config(
     *,
     reboot: bool = True,
     timeout: float = 3.0,
+    at_host: str = "",
 ) -> Dict[str, Any]:
     """Schreibt WAN + SOCK. NE2/NA11x/USR primaer via Web-API."""
     results: Dict[str, Any] = {"commands": [], "ok": True, "error": ""}
     vendor = module.vendor
+
+    if vendor == VENDOR_DK8DE:
+        from .dk8de_wlan_module import write_config_dk8de
+
+        if not (module.uid or "").strip():
+            return {"ok": False, "error": "UID fehlt (DK8DE-Modul)", "commands": []}
+        try:
+            connect = dk8de_module_connect_host(module, at_host=at_host)
+            res = write_config_dk8de(
+                connect,
+                module.uid,
+                wan,
+                sock,
+                config_port=int(module.config_port or 8880),
+                reboot=reboot,
+                timeout=max(timeout, 12.0),
+            )
+            return res
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "commands": []}
 
     if vendor == VENDOR_USR:
         try:
@@ -1755,7 +1882,10 @@ def _ebyte_open_socket(listen_port: int = EBYTE_UDP_LISTEN_PORT) -> socket.socke
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.bind(("0.0.0.0", int(listen_port)))
+    try:
+        sock.bind(("0.0.0.0", int(listen_port)))
+    except OSError:
+        sock.bind(("0.0.0.0", 0))
     sock.settimeout(0.2)
     return sock
 

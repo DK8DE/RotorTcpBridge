@@ -166,9 +166,9 @@ def _smooth_delta_d10(wrap_360: bool, smooth_f: float, target: float) -> float:
     if wrap_360:
         # 360,0° (3600) und 0° (0) sind peilungsgleich, aber nach Homing ohne
         # Rückfahrt meldet die Hardware 360,0 — Glättung darf nicht bei smooth≈0 stehen bleiben.
-        if is_az_pos_at_full_circle_d10(int(round(target_f))) and smooth_f < 3599.0:
+        if is_az_pos_at_full_circle_d10(int(round(target_f))) and smooth_f < 3600.0:
             return target_f - float(smooth_f)
-        if smooth_f >= 3599.0 and target_f < 3599.0:
+        if smooth_f >= 3600.0 and target_f < 3600.0:
             return target_f - float(smooth_f)
         return shortest_delta_deg(smooth_f * 0.1, target_f * 0.1) * 10.0
     return target_f - float(smooth_f)

@@ -105,10 +105,12 @@ def test_dipole_rotor_move_cost_long_ccw() -> None:
 def test_az_pos_deg_from_d10_full_circle() -> None:
     assert az_pos_deg_from_d10(3600) == pytest.approx(360.0)
     assert az_pos_deg_from_d10(3600, 0.0) == pytest.approx(360.0)
-    assert az_pos_deg_from_d10(3599) == pytest.approx(360.0)
+    # 359,9° bleibt 359,9 — nicht auf Homing-Marke 360,0 aufrunden
+    assert az_pos_deg_from_d10(3599) == pytest.approx(359.9)
+    assert is_az_pos_at_full_circle_d10(3599) is False
+    assert is_az_pos_at_full_circle_d10(3600) is True
     assert az_pos_deg_from_d10(0) == pytest.approx(0.0)
     assert az_pos_deg_from_d10(900, 905.0) == pytest.approx(90.5)
-    # Über 360°: nur Homing-Band 3599..3600, nicht alles ab 3599
     assert is_az_pos_at_full_circle_d10(3601) is False
     assert is_az_pos_at_full_circle_d10(4200) is False
 
@@ -165,6 +167,17 @@ def test_pick_nearest_and_shortest_target_extended() -> None:
     assert resolve_external_az_d10(
         3700, current_d10=500, max_d10=4300, shortest_path=True
     ) == 3700
+    # Genau 360° und 720° (Pst/Big RAS) beibehalten
+    assert resolve_external_az_d10(
+        3600, current_d10=100, max_d10=7200, shortest_path=True
+    ) == 3600
+    assert resolve_external_az_d10(
+        7200, current_d10=7000, max_d10=7200, shortest_path=True
+    ) == 7200
+    # Über MAXDG → klemmen
+    assert resolve_external_az_d10(
+        8000, current_d10=100, max_d10=7200, shortest_path=True
+    ) == 7200
     # Klassischer Bereich: Wrap
     assert resolve_external_az_d10(
         3700, current_d10=0, max_d10=3600, shortest_path=False
@@ -172,10 +185,13 @@ def test_pick_nearest_and_shortest_target_extended() -> None:
 
     from rotortcpbridge.angle_utils import az_d10_for_external_report
 
-    # Report: kürzerer Weg ohne 0…360 → Rohwert
+    # Report: kürzerer Weg ohne 0…360 → Rohwert (SPID-Clamp ≤639,9°)
     assert az_d10_for_external_report(
         3700, shortest_path=True, report_mod360=False
     ) == 3700
+    assert az_d10_for_external_report(
+        7200, shortest_path=True, report_mod360=False
+    ) == 6399
     # Report: kürzerer Weg mit 0…360 → wrap
     assert az_d10_for_external_report(
         3700, shortest_path=True, report_mod360=True

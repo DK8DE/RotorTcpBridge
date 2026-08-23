@@ -1,17 +1,22 @@
-"""UDP-Schnittstelle kompatibel zum PstRotatorAz-Protokoll.
+"""UDP-Schnittstelle kompatibel zum PstRotatorAz-Protokoll (AZ) plus EL-Steuerung.
 
 Protokoll-Übersicht:
   Empfang  (auf listen_port, default 12000):
-    <PST><AZIMUTH>85</AZIMUTH></PST>   → Rotor auf 85° fahren
-    <PST><STOP>1</STOP></PST>          → Rotor stoppen
-    <PST><PARK>1</PARK></PST>          → Rotor stoppen
-    <PST>AZ?</PST>                     → aktuelle Position zurückschicken
-    <PST>TGA?</PST>                    → Ziel-Azimut zurückschicken
-    (alle anderen Felder werden geparst, aber ignoriert bzw. geloggt)
+    <PST><AZIMUTH>85</AZIMUTH></PST>       → AZ auf 85° fahren (wenn AZ aktiv)
+    <PST><ELEVATION>25</ELEVATION></PST>   → EL auf 25° fahren (wenn EL aktiv)
+    <PST><STOP>1</STOP></PST>              → Rotor stoppen (AZ+EL)
+    <PST><PARK>1</PARK></PST>              → Rotor stoppen (AZ+EL)
+    <PST>AZ?</PST>                         → aktuelle AZ-Position zurückschicken
+    <PST>TGA?</PST>                        → Ziel-Azimut zurückschicken
+    <PST>EL?</PST>                         → aktuelle EL-Position (wenn EL aktiv)
+    <PST>TGE?</PST>                        → Ziel-Elevation (wenn EL aktiv)
+    (andere bekannte Felder werden geparst, aber ignoriert bzw. geloggt)
 
   Senden  (Ziel konfigurierbar; leer = Subnetz-Broadcast x.y.z.255 : listen_port + 1):
     AZ:xxx<CR>   bei Positionsänderung und auf Anfrage AZ?
     TGA:xxx<CR>  auf Anfrage TGA?
+    EL:xxx<CR>   auf Anfrage EL? (nur bei aktivem EL)
+    TGE:xxx<CR>  auf Anfrage TGE? (nur bei aktivem EL)
 """
 
 from __future__ import annotations
@@ -72,10 +77,11 @@ def _parse_ipv4_send_host(raw: str | None, log) -> str:
 
 
 class UdpPstRotator:
-    """Emuliert die UDP-Schnittstelle von PstRotatorAz.
+    """Emuliert die UDP-Schnittstelle von PstRotatorAz (AZ) und nimmt EL-Befehle an.
 
     Hört auf ``listen_port`` (Standard: 12000) und sendet Positionsmeldungen
     an ``send_host : listen_port + 1`` (nicht konfiguriert: Subnetz-Broadcast x.y.z.255).
+    ``<ELEVATION>`` sowie ``EL?``/``TGE?`` nur, wenn der Controller EL aktiv hat.
     """
 
     def __init__(self, controller, log, cfg: dict | None = None):
@@ -284,6 +290,30 @@ class UdpPstRotator:
             self.log.write("WARN", f"UDP PST-Rotator _target_az_deg: {e}")
         return self._current_az_deg()
 
+    def _current_el_deg(self) -> float:
+        """Aktuelle EL-Position in Grad (0 wenn EL aus oder unbekannt)."""
+        try:
+            if not bool(getattr(self.ctrl, "enable_el", False)):
+                return 0.0
+            d10 = getattr(self.ctrl.el, "pos_d10", None)
+            if d10 is not None:
+                return float(int(d10)) / 10.0
+        except Exception as e:
+            self.log.write("WARN", f"UDP PST-Rotator _current_el_deg: {e}")
+        return 0.0
+
+    def _target_el_deg(self) -> float:
+        """Aktuelles EL-Ziel in Grad."""
+        try:
+            if not bool(getattr(self.ctrl, "enable_el", False)):
+                return 0.0
+            d10 = getattr(self.ctrl.el, "target_d10", None)
+            if d10 is not None:
+                return float(int(d10)) / 10.0
+        except Exception as e:
+            self.log.write("WARN", f"UDP PST-Rotator _target_el_deg: {e}")
+        return self._current_el_deg()
+
     def _loop(self) -> None:
         while self._running and self._sock_rx:
             try:
@@ -323,6 +353,26 @@ class UdpPstRotator:
             reply = f"TGA:{tga:.1f}\r"
             self._send_reply(reply)
             self.log.write("UDP", f"PST TGA? von {sender} → {reply.strip()}")
+            return
+
+        if text == "<PST>EL?</PST>":
+            if not bool(getattr(self.ctrl, "enable_el", False)):
+                self.log.write("UDP", f"PST EL? von {sender} ignoriert (EL aus)")
+                return
+            el = self._current_el_deg()
+            reply = f"EL:{el:.1f}\r"
+            self._send_reply(reply)
+            self.log.write("UDP", f"PST EL? von {sender} → {reply.strip()}")
+            return
+
+        if text == "<PST>TGE?</PST>":
+            if not bool(getattr(self.ctrl, "enable_el", False)):
+                self.log.write("UDP", f"PST TGE? von {sender} ignoriert (EL aus)")
+                return
+            tge = self._target_el_deg()
+            reply = f"TGE:{tge:.1f}\r"
+            self._send_reply(reply)
+            self.log.write("UDP", f"PST TGE? von {sender} → {reply.strip()}")
             return
 
         # Normales PST-XML: muss mit <PST> anfangen und mit </PST> enden
@@ -371,8 +421,27 @@ class UdpPstRotator:
             try:
                 if getattr(self.ctrl, "enable_az", True):
                     self.ctrl.set_az_deg(az_deg, force=True)
+                else:
+                    self.log.write("UDP", f"PST AZIMUTH von {sender} ignoriert (AZ aus)")
             except Exception as e:
                 self.log.write("WARN", f"UDP PST-Rotator set_az_deg: {e}")
+
+        elif tag == "ELEVATION":
+            try:
+                el_deg = float(val)
+            except ValueError:
+                self.log.write(
+                    "WARN", f"UDP PST-Rotator: ungültiger ELEVATION-Wert '{val}' von {sender}"
+                )
+                return
+            if not bool(getattr(self.ctrl, "enable_el", False)):
+                self.log.write("UDP", f"PST ELEVATION von {sender} ignoriert (EL aus)")
+                return
+            self.log.write("UDP", f"PST ELEVATION={el_deg:.1f}° von {sender} → setze Rotor")
+            try:
+                self.ctrl.set_el_deg(el_deg, force=True)
+            except Exception as e:
+                self.log.write("WARN", f"UDP PST-Rotator set_el_deg: {e}")
 
         elif tag in ("STOP", "PARK"):
             self.log.write("UDP", f"PST {tag} von {sender} → SETPOS auf Ist-Position (statt STOP)")

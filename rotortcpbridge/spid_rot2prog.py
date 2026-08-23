@@ -60,9 +60,16 @@ def parse_command_packet(pkt: bytes) -> Rot2ProgCommand | None:
             if p_i in (2, 5, 10):
                 deg = float(raw) / float(p_i) - 360.0
                 return int(round(deg * 10.0))
-            # PH=1 oder unbekannt: 0,1° vs 1° anhand Wertebereich
-            if raw >= 1000:
+            # PH=0/1/unbekannt (PstRotator sendet oft PH=0):
+            # - raw >= 3600: klassisch H≈10*(az+360) → az_d10 = raw−3600
+            #   (10°→3700, Overlap 370°→7300, bis ~639,9° / Big RAS)
+            # - 1000 <= raw < 3600: Pst 720°-Zweig ``tmp = az`` (ohne +360),
+            #   z. B. ASCII "3500" = 350,0° (nicht −10°)
+            # - raw < 1000: 1°-Kodierung H = az+360
+            if raw >= 3600:
                 return raw - 3600
+            if raw >= 1000:
+                return raw
             return (raw - 360) * 10
 
         az_d10 = _decode(H, ph)

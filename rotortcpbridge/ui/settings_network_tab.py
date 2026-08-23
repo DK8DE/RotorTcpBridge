@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -36,7 +37,9 @@ from PySide6.QtWidgets import (
 from ..i18n import t, tt
 from ..network_modules import (
     DEFAULT_AT_PORTS,
+    DEFAULT_CONFIG_PORTS,
     DEFAULT_WEB_PORTS,
+    VENDOR_DK8DE,
     VENDOR_GENERIC,
     VENDOR_NA11X,
     VENDOR_NE2,
@@ -51,6 +54,17 @@ from ..network_modules import (
     read_status,
     status_has_data,
     write_config,
+)
+from ..dk8de_wlan_module import (
+    DK8DE_INFO_STAT_KEYS,
+    DK8DE_STATUS_STAT_KEYS,
+    DK8DE_STATUS_UI_SECTIONS,
+    Dk8deDevice,
+    dk8de_discover,
+    dk8de_netmode_to_sock,
+    parse_dk8de_stats_payload,
+    read_dk8de_statistics,
+    write_wan_dk8de,
 )
 from .led_widget import Led
 from .ui_utils import px_to_dip
@@ -82,13 +96,14 @@ class _ReadWorker(QThread):
     finished_ok = Signal(object)  # dict status
     finished_err = Signal(str)
 
-    def __init__(self, module: NetworkModule, parent=None):
+    def __init__(self, module: NetworkModule, parent=None, *, at_host: str = ""):
         super().__init__(parent)
         self._module = module
+        self._at_host = str(at_host or "").strip()
 
     def run(self) -> None:
         try:
-            st = read_status(self._module)
+            st = read_status(self._module, at_host=self._at_host)
             if not status_has_data(st):
                 self.finished_err.emit(
                     str(st.get("error") or "Keine Konfigurationsdaten empfangen")
@@ -109,15 +124,24 @@ class _WriteWorker(QThread):
         wan: Dict[str, Any],
         sock: Dict[str, Any],
         parent=None,
+        *,
+        at_host: str = "",
     ):
         super().__init__(parent)
         self._module = module
         self._wan = wan
         self._sock = sock
+        self._at_host = str(at_host or "").strip()
 
     def run(self) -> None:
         try:
-            res = write_config(self._module, self._wan, self._sock, reboot=True)
+            res = write_config(
+                self._module,
+                self._wan,
+                self._sock,
+                reboot=True,
+                at_host=self._at_host,
+            )
             if not res.get("ok"):
                 self.finished_err.emit(str(res.get("error") or "write failed"))
             else:
@@ -127,9 +151,9 @@ class _WriteWorker(QThread):
 
 
 class _ScanWorker(QThread):
-    """Ebyte-UDP-Broadcast-Suche (Ports 1901/1902)."""
+    """Ebyte-UDP (1901/1902) + DK8DE-UDP (8880) Broadcast-Suche."""
 
-    finished_ok = Signal(object)  # List[EbyteDevice]
+    finished_ok = Signal(object)  # dict ebyte/dk8de
     finished_err = Signal(str)
 
     def __init__(self, timeout: float = 2.0, parent=None):
@@ -138,8 +162,36 @@ class _ScanWorker(QThread):
 
     def run(self) -> None:
         try:
-            found = ebyte_udp_discover(timeout=self._timeout, read_pages=True)
-            self.finished_ok.emit(found)
+            ebyte = ebyte_udp_discover(timeout=self._timeout, read_pages=True)
+            dk8de = dk8de_discover(timeout=self._timeout, http_fallback=True)
+            self.finished_ok.emit({"ebyte": ebyte, "dk8de": dk8de})
+        except Exception as exc:
+            self.finished_err.emit(str(exc))
+
+
+class _Dk8deStatsWorker(QThread):
+    finished_ok = Signal(object)
+    finished_err = Signal(str)
+
+    def __init__(self, module: NetworkModule, parent=None):
+        super().__init__(parent)
+        self._module = module
+
+    def run(self) -> None:
+        try:
+            st = read_dk8de_statistics(
+                self._module.host,
+                self._module.uid,
+                config_port=int(self._module.config_port or 8880),
+                web_port=int(self._module.web_port or 80),
+                web_user=str(self._module.web_user or "admin"),
+                web_password=str(self._module.web_password or "Rotorconfig"),
+                timeout=3.0,
+            )
+            if st.get("error"):
+                self.finished_err.emit(str(st["error"]))
+            else:
+                self.finished_ok.emit(st)
         except Exception as exc:
             self.finished_err.emit(str(exc))
 
@@ -180,6 +232,53 @@ class _SetIpWorker(QThread):
             )
             if not res.get("ok"):
                 self.finished_err.emit(str(res.get("error") or "UDP write failed"))
+            else:
+                self.finished_ok.emit(res)
+        except Exception as exc:
+            self.finished_err.emit(str(exc))
+
+
+class _Dk8deSetIpWorker(QThread):
+    finished_ok = Signal(object)
+    finished_err = Signal(str)
+
+    def __init__(
+        self,
+        device: Dk8deDevice,
+        ip: str,
+        mask: str,
+        gateway: str,
+        dns: str,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._device = device
+        self._ip = ip
+        self._mask = mask
+        self._gateway = gateway
+        self._dns = dns
+
+    def run(self) -> None:
+        host = str(
+            self._device.info.get("CONTACT_IP") or self._device.ip or ""
+        ).strip()
+        if not host or host in ("0.0.0.0", "-"):
+            host = "255.255.255.255"
+        uid = self._device.uid_norm
+        try:
+            res = write_wan_dk8de(
+                host,
+                uid,
+                ip=self._ip,
+                mask=self._mask,
+                gateway=self._gateway,
+                dns=self._dns,
+                dhcp=False,
+                reboot=True,
+                timeout=12.0,
+            )
+            if not res.get("ok"):
+                self.finished_err.emit(str(res.get("error") or "AT write failed"))
             else:
                 self.finished_ok.emit(res)
         except Exception as exc:
@@ -281,6 +380,94 @@ class _EbyteSetIpDialog(QDialog):
         }
 
 
+class _Dk8deSetIpDialog(QDialog):
+    """IP/Maske/Gateway/DNS per DK8DE-AT (UDP 8880) setzen."""
+
+    def __init__(self, device: Dk8deDevice, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(t("settings.network_discover_set_ip_title_dk8de"))
+        self._device = device
+        lay = QVBoxLayout(self)
+        lay.addWidget(
+            QLabel(
+                t(
+                    "settings.network_discover_set_ip_intro_dk8de",
+                    name=(device.name or device.uid_norm or "?"),
+                    uid=(device.uid_norm or "?"),
+                    mac=(device.mac or "?"),
+                )
+            )
+        )
+        form = QFormLayout()
+        self.ed_ip = QLineEdit(device.ip or "")
+        reported = str(device.info.get("REPORTED_IP") or "").strip()
+        if reported and reported not in ("", "-", "0.0.0.0") and reported != (device.ip or "").strip():
+            self.ed_ip.setPlaceholderText(
+                t("settings.network_discover_dk8de_ip_reported_hint", ip=reported)
+            )
+        self.ed_mask = QLineEdit("255.255.255.0")
+        self.ed_gw = QLineEdit("")
+        self.ed_dns = QLineEdit("")
+        form.addRow(t("settings.network_ip"), self.ed_ip)
+        form.addRow(t("settings.network_mask"), self.ed_mask)
+        form.addRow(t("settings.network_gateway"), self.ed_gw)
+        form.addRow(t("settings.network_dns"), self.ed_dns)
+        lay.addLayout(form)
+        hint = QLabel(t("settings.network_discover_set_ip_hint_dk8de"))
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        self._lbl_gw_warn = QLabel("")
+        self._lbl_gw_warn.setWordWrap(True)
+        self._lbl_gw_warn.setStyleSheet("color: #d9822b; font-weight: bold;")
+        lay.addWidget(self._lbl_gw_warn)
+        self.ed_ip.textChanged.connect(self._check_gateway_subnet)
+        self.ed_mask.textChanged.connect(self._check_gateway_subnet)
+        self.ed_gw.textChanged.connect(self._check_gateway_subnet)
+        bb = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        bb.accepted.connect(self._on_accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self._check_gateway_subnet()
+
+    def _check_gateway_subnet(self) -> None:
+        ip = self.ed_ip.text().strip()
+        mask = self.ed_mask.text().strip()
+        gw = self.ed_gw.text().strip()
+        if not (ip and mask and gw):
+            self._lbl_gw_warn.setText("")
+            return
+        ok = _ip_in_subnet(ip, mask, gw)
+        if ok is False:
+            self._lbl_gw_warn.setText(t("settings.network_discover_gw_subnet_warn"))
+        else:
+            self._lbl_gw_warn.setText("")
+
+    def _on_accept(self) -> None:
+        vals = self.values()
+        if vals["ip"] and vals["mask"] and vals["gateway"]:
+            if _ip_in_subnet(vals["ip"], vals["mask"], vals["gateway"]) is False:
+                resp = QMessageBox.warning(
+                    self,
+                    t("settings.network_discover_title"),
+                    t("settings.network_discover_gw_subnet_warn_confirm"),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if resp != QMessageBox.StandardButton.Yes:
+                    return
+        self.accept()
+
+    def values(self) -> Dict[str, str]:
+        return {
+            "ip": self.ed_ip.text().strip(),
+            "mask": self.ed_mask.text().strip(),
+            "gateway": self.ed_gw.text().strip(),
+            "dns": self.ed_dns.text().strip(),
+        }
+
+
 class _EbyteDiscoverDialog(QDialog):
     """Zeigt per UDP gefundene Ebyte-Module; Uebernehmen / IP setzen."""
 
@@ -292,7 +479,7 @@ class _EbyteDiscoverDialog(QDialog):
         self.setWindowTitle(t("settings.network_discover_title"))
         self.resize(720, 420)
         self._devices = list(devices)
-        self._set_ip_worker: Optional[_SetIpWorker] = None
+        self._set_ip_worker: Optional[QThread] = None
         self._scan_worker: Optional[_ScanWorker] = None
 
         lay = QVBoxLayout(self)
@@ -352,6 +539,7 @@ class _EbyteDiscoverDialog(QDialog):
         self._btn_close = bb.button(QDialogButtonBox.StandardButton.Close)
         bb.rejected.connect(self.reject)
         if self._btn_close is not None:
+            self._btn_close.setText(t("about.btn_close"))
             self._btn_close.clicked.connect(self.reject)
         lay.addWidget(bb)
 
@@ -469,7 +657,7 @@ class _EbyteDiscoverDialog(QDialog):
         if self._btn_close is not None:
             self._btn_close.setEnabled(False)
         self._lbl.setText(t("settings.network_status_scanning"))
-        self._scan_worker = _ScanWorker(timeout=2.0, parent=self)
+        self._scan_worker = _ScanWorker(timeout=5.0, parent=self)
         self._scan_worker.finished_ok.connect(self._on_refresh_ok)
         self._scan_worker.finished_err.connect(self._on_refresh_err)
         self._scan_worker.finished.connect(self._on_refresh_finished)
@@ -490,7 +678,14 @@ class _EbyteDiscoverDialog(QDialog):
                 pass
 
     def _on_refresh_ok(self, found: object) -> None:
-        devices = [d for d in (found if isinstance(found, list) else []) if isinstance(d, EbyteDevice)]
+        if isinstance(found, dict):
+            devices = [
+                d
+                for d in (found.get("ebyte") or [])
+                if isinstance(d, EbyteDevice)
+            ]
+        else:
+            devices = [d for d in (found if isinstance(found, list) else []) if isinstance(d, EbyteDevice)]
         if not devices:
             self._lbl.setText(t("settings.network_status_scan_empty"))
             return
@@ -528,7 +723,7 @@ class _EbyteDiscoverDialog(QDialog):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         vals = dlg.values()
-        if not vals["ip"] or not vals["mask"] or not vals["gateway"]:
+        if not vals["ip"] or not vals["mask"]:
             QMessageBox.warning(
                 self,
                 t("settings.network_discover_title"),
@@ -604,6 +799,675 @@ class _EbyteDiscoverDialog(QDialog):
             t("settings.network_discover_title"),
             t("settings.network_discover_set_ip_failed", err=msg),
         )
+
+
+class _Dk8deStatsDialog(QDialog):
+    """Zeigt AT+INFO? und AT+STATUS? fuer ein DK8DE-Modul (formatiert)."""
+
+    _INFO_LABEL_KEYS = {
+        "UID": "settings.network_dk8de_stat_uid",
+        "NAME": "settings.network_dk8de_stat_name",
+        "AP": "settings.network_dk8de_stat_ap",
+        "MAC": "settings.network_dk8de_stat_mac",
+        "BUS": "settings.network_dk8de_stat_bus",
+        "FW": "settings.network_dk8de_stat_fw",
+        "HW": "settings.network_dk8de_stat_hw",
+        "IP": "settings.network_dk8de_stat_ip",
+        "NETMODE": "settings.network_dk8de_stat_netmode",
+        "WIFIMODE": "settings.network_dk8de_stat_wifimode",
+        "LPORT": "settings.network_dk8de_stat_lport",
+        "DISCOVERY_UDP": "settings.network_dk8de_stat_discovery_udp",
+    }
+    _STATUS_LABEL_KEYS = {
+        "WIFI": "settings.network_dk8de_stat_wifi",
+        "IP": "settings.network_dk8de_stat_ip",
+        "RSSI": "settings.network_dk8de_stat_rssi",
+        "LINK": "settings.network_dk8de_stat_link",
+        "HEAP": "settings.network_dk8de_stat_heap",
+        "PACKETTIME": "settings.network_dk8de_stat_packettime",
+        "PACKETSIZE": "settings.network_dk8de_stat_packetsize",
+        "RS485_RX": "settings.network_dk8de_stat_rs485_rx",
+        "RS485_TX": "settings.network_dk8de_stat_rs485_tx",
+        "NET_RX": "settings.network_dk8de_stat_net_rx",
+        "NET_TX": "settings.network_dk8de_stat_net_tx",
+        "NET_TX_DROPS": "settings.network_dk8de_stat_net_tx_drops",
+        "NET_RX_DROPS": "settings.network_dk8de_stat_net_rx_drops",
+        "RS485_TX_ALLOWED": "settings.network_dk8de_stat_rs485_tx_allowed",
+        "RS485_RX_ALLOWED": "settings.network_dk8de_stat_rs485_rx_allowed",
+        "BRIDGE": "settings.network_dk8de_stat_bridge",
+    }
+
+    def __init__(self, module: NetworkModule, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(t("settings.network_dk8de_stats_title"))
+        self.resize(480, 640)
+        self._module = module
+        self._worker: Optional[_Dk8deStatsWorker] = None
+        self._info_values: Dict[str, QLineEdit] = {}
+        self._status_values: Dict[str, QLineEdit] = {}
+
+        lay = QVBoxLayout(self)
+        intro = QLabel(
+            t(
+                "settings.network_dk8de_stats_intro",
+                host=module.host or "?",
+                uid=(module.uid or "?"),
+            )
+        )
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        content = QWidget()
+        content_l = QVBoxLayout(content)
+        content_l.setContentsMargins(0, 0, 0, 0)
+        content_l.setSpacing(10)
+
+        self._gb_info = QGroupBox(t("settings.network_dk8de_stats_group_info"))
+        form_info = QFormLayout(self._gb_info)
+        form_info.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form_info.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        form_info.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        form_info.setHorizontalSpacing(12)
+        for key in DK8DE_INFO_STAT_KEYS:
+            lbl = self._make_label(t(self._INFO_LABEL_KEYS.get(key, key)))
+            val = self._make_value_field("—")
+            form_info.addRow(lbl, val)
+            self._info_values[key] = val
+        content_l.addWidget(self._gb_info)
+
+        for group_title_key, keys in DK8DE_STATUS_UI_SECTIONS:
+            gb = QGroupBox(t(group_title_key))
+            form = QFormLayout(gb)
+            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+            form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            form.setHorizontalSpacing(12)
+            for key in keys:
+                lbl = self._make_label(t(self._STATUS_LABEL_KEYS.get(key, key)))
+                val = self._make_value_field("—")
+                form.addRow(lbl, val)
+                self._status_values[key] = val
+            content_l.addWidget(gb)
+        content_l.addStretch(1)
+        scroll.setWidget(content)
+        lay.addWidget(scroll, 1)
+
+        self._lbl = QLabel(t("settings.network_dk8de_stats_loading"))
+        lay.addWidget(self._lbl)
+
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        bb.rejected.connect(self.reject)
+        btn_close = bb.button(QDialogButtonBox.StandardButton.Close)
+        if btn_close is not None:
+            btn_close.setText(t("about.btn_close"))
+            btn_close.clicked.connect(self.reject)
+        lay.addWidget(bb)
+
+        self._start_load()
+
+    @staticmethod
+    def _make_label(text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        return lbl
+
+    @staticmethod
+    def _make_value_field(text: str) -> QLineEdit:
+        ed = QLineEdit(text)
+        ed.setReadOnly(True)
+        ed.setMinimumWidth(220)
+        return ed
+
+    @classmethod
+    def _format_value(cls, key: str, raw: str) -> str:
+        k = key.upper()
+        v = str(raw or "").strip()
+        if not v or v in ("-", "?"):
+            return "—"
+        if k == "NETMODE":
+            sock = dk8de_netmode_to_sock(v)
+            label_key = {
+                "TCPS": "settings.network_dk8de_stats_val_netmode_tcps",
+                "TCPC": "settings.network_dk8de_stats_val_netmode_tcpc",
+                "UDPS": "settings.network_dk8de_stats_val_netmode_udps",
+                "UDPC": "settings.network_dk8de_stats_val_netmode_udpc",
+                "DISABLE": "settings.network_dk8de_stats_val_netmode_disable",
+            }.get(sock)
+            return t(label_key) if label_key else v
+        if k == "WIFIMODE":
+            w = v.upper()
+            if w.isdigit():
+                w = {"0": "AP", "1": "STA", "2": "APSTA"}.get(w, w)
+            label_key = {
+                "AP": "settings.network_dk8de_stats_val_wifimode_ap",
+                "STA": "settings.network_dk8de_stats_val_wifimode_sta",
+                "APSTA": "settings.network_dk8de_stats_val_wifimode_apsta",
+            }.get(w)
+            return t(label_key) if label_key else v
+        if k == "LINK":
+            if v in ("1", "UP", "TRUE", "CONNECTED"):
+                return t("settings.network_dk8de_stats_val_link_up")
+            if v in ("0", "DOWN", "FALSE", "DISCONNECTED"):
+                return t("settings.network_dk8de_stats_val_link_down")
+            return v
+        if k == "RSSI":
+            try:
+                return f"{int(v)} dBm"
+            except (TypeError, ValueError):
+                return v if v.endswith("dBm") else f"{v} dBm"
+        if k == "HEAP":
+            try:
+                n = int(v)
+                if n >= 1024:
+                    return t("settings.network_dk8de_stats_val_heap_kib", kb=n / 1024.0)
+                return t("settings.network_dk8de_stats_val_heap_b", bytes=n)
+            except (TypeError, ValueError):
+                return v
+        if k in ("LPORT", "DISCOVERY_UDP", "BUS", "PACKETTIME", "PACKETSIZE"):
+            try:
+                n = int(v)
+                if k == "PACKETTIME":
+                    return t("settings.network_dk8de_stats_val_ms", ms=n)
+                if k == "PACKETSIZE":
+                    return t("settings.network_dk8de_stats_val_bytes", bytes=n)
+                return str(n)
+            except (TypeError, ValueError):
+                return v
+        if k in (
+            "RS485_RX",
+            "RS485_TX",
+            "NET_RX",
+            "NET_TX",
+            "NET_TX_DROPS",
+            "NET_RX_DROPS",
+        ):
+            try:
+                return t("settings.network_dk8de_stats_val_counter", n=int(v))
+            except (TypeError, ValueError):
+                return v
+        if k == "RS485_TX_ALLOWED":
+            if v in ("1", "TRUE", "ON"):
+                return t("settings.network_dk8de_stats_val_dir_ns_on")
+            if v in ("0", "FALSE", "OFF"):
+                return t("settings.network_dk8de_stats_val_dir_ns_off")
+            return v
+        if k == "RS485_RX_ALLOWED":
+            if v in ("1", "TRUE", "ON"):
+                return t("settings.network_dk8de_stats_val_dir_sn_on")
+            if v in ("0", "FALSE", "OFF"):
+                return t("settings.network_dk8de_stats_val_dir_sn_off")
+            return v
+        if k == "BRIDGE":
+            if v in ("1", "TRUE", "ON"):
+                return t("settings.network_dk8de_stats_val_on")
+            if v in ("0", "FALSE", "OFF"):
+                return t("settings.network_dk8de_stats_val_off")
+            return v
+        return v
+
+    def _fill_section(
+        self,
+        keys: Tuple[str, ...],
+        data: Dict[str, str],
+        widgets: Dict[str, QLineEdit],
+    ) -> None:
+        for key in keys:
+            w = widgets.get(key)
+            if w is None:
+                continue
+            w.setText(self._format_value(key, str(data.get(key, "") or "")))
+
+    def _start_load(self) -> None:
+        if self._worker and self._worker.isRunning():
+            return
+        self._worker = _Dk8deStatsWorker(self._module, self)
+        self._worker.finished_ok.connect(self._on_ok)
+        self._worker.finished_err.connect(self._on_err)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.start()
+
+    def _on_finished(self) -> None:
+        w = self._worker
+        self._worker = None
+        if w is not None:
+            try:
+                w.deleteLater()
+            except RuntimeError:
+                pass
+
+    def _on_ok(self, st: object) -> None:
+        data = st if isinstance(st, dict) else {}
+        info_raw = str(data.get("info") or "")
+        status_raw = str(data.get("status") or "")
+        info, status = parse_dk8de_stats_payload(info_raw, status_raw)
+        if not info and not status:
+            self._lbl.setText(t("settings.network_dk8de_stats_empty"))
+            return
+        self._fill_section(DK8DE_INFO_STAT_KEYS, info, self._info_values)
+        self._fill_section(DK8DE_STATUS_STAT_KEYS, status, self._status_values)
+        self._lbl.setText(t("settings.network_dk8de_stats_ok"))
+
+    def _on_err(self, msg: str) -> None:
+        for w in list(self._info_values.values()) + list(self._status_values.values()):
+            w.setText("—")
+        self._lbl.setText(t("settings.network_status_error", err=msg))
+        QMessageBox.warning(
+            self,
+            t("settings.network_dk8de_stats_title"),
+            t("settings.network_dk8de_stats_failed", err=msg),
+        )
+
+
+class _NetworkDiscoverDialog(QDialog):
+    """Gefundene Ebyte- und DK8DE-Module in einer Tabelle."""
+
+    adopt_ebyte = Signal(object)
+    adopt_dk8de = Signal(object)
+    ip_set_done = Signal(object, str, str)
+
+    def __init__(
+        self,
+        ebyte_devices: List[EbyteDevice],
+        dk8de_devices: List[Dk8deDevice],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle(t("settings.network_discover_title"))
+        self.resize(860, 480)
+        self._ebyte = list(ebyte_devices)
+        self._dk8de = list(dk8de_devices)
+        self._rows: List[Tuple[str, object]] = []
+        self._set_ip_worker: Optional[QThread] = None
+        self._scan_worker: Optional[_ScanWorker] = None
+
+        lay = QVBoxLayout(self)
+        intro = QLabel(t("settings.network_discover_intro"))
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+        hint = QLabel(t("settings.network_discover_hint_combined"))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #d9a441;")
+        lay.addWidget(hint)
+
+        self.tbl = QTableWidget(0, 7)
+        self.tbl.setHorizontalHeaderLabels(
+            [
+                t("settings.network_discover_col_type"),
+                t("settings.network_discover_col_name"),
+                t("settings.network_discover_col_uid"),
+                t("settings.network_discover_col_mac"),
+                t("settings.network_discover_col_ip"),
+                t("settings.network_discover_col_fw"),
+                t("settings.network_discover_col_port"),
+            ]
+        )
+        self.tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tbl.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.selectionModel().selectionChanged.connect(self._update_action_buttons)
+        lay.addWidget(self.tbl, 1)
+
+        btn_row = QHBoxLayout()
+        self._btn_adopt = QPushButton(t("settings.network_discover_btn_adopt"))
+        self._btn_adopt.clicked.connect(self._on_adopt)
+        self._btn_set_ip = QPushButton(t("settings.network_discover_btn_set_ip"))
+        self._btn_set_ip.clicked.connect(self._on_set_ip)
+        self._btn_refresh = QPushButton(t("settings.network_discover_btn_refresh"))
+        self._btn_refresh.clicked.connect(self._on_refresh)
+        btn_row.addWidget(self._btn_adopt)
+        btn_row.addWidget(self._btn_set_ip)
+        btn_row.addWidget(self._btn_refresh)
+        btn_row.addStretch(1)
+        lay.addLayout(btn_row)
+
+        self._reload_table()
+
+        self._lbl = QLabel("")
+        lay.addWidget(self._lbl)
+
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        self._btn_close = bb.button(QDialogButtonBox.StandardButton.Close)
+        bb.rejected.connect(self.reject)
+        if self._btn_close is not None:
+            self._btn_close.setText(t("about.btn_close"))
+            self._btn_close.clicked.connect(self.reject)
+        lay.addWidget(bb)
+        self._update_action_buttons()
+
+    def _ip_write_running(self) -> bool:
+        w = self._set_ip_worker
+        if w is None:
+            return False
+        try:
+            return bool(w.isRunning())
+        except RuntimeError:
+            self._set_ip_worker = None
+            return False
+
+    def _scan_running(self) -> bool:
+        w = self._scan_worker
+        if w is None:
+            return False
+        try:
+            return bool(w.isRunning())
+        except RuntimeError:
+            self._scan_worker = None
+            return False
+
+    def reject(self) -> None:  # type: ignore[override]
+        if self._ip_write_running():
+            QMessageBox.information(
+                self,
+                t("settings.network_discover_title"),
+                t("settings.network_discover_wait_write"),
+            )
+            return
+        if self._scan_running():
+            QMessageBox.information(
+                self,
+                t("settings.network_discover_title"),
+                t("settings.network_discover_wait_scan"),
+            )
+            return
+        super().reject()
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        if self._ip_write_running():
+            event.ignore()
+            QMessageBox.information(
+                self,
+                t("settings.network_discover_title"),
+                t("settings.network_discover_wait_write"),
+            )
+            return
+        if self._scan_running():
+            event.ignore()
+            QMessageBox.information(
+                self,
+                t("settings.network_discover_title"),
+                t("settings.network_discover_wait_scan"),
+            )
+            return
+        w = self._set_ip_worker
+        self._set_ip_worker = None
+        if w is not None:
+            try:
+                if w.isRunning():
+                    w.wait(3000)
+            except RuntimeError:
+                pass
+        sw = self._scan_worker
+        self._scan_worker = None
+        if sw is not None:
+            try:
+                if sw.isRunning():
+                    sw.wait(1500)
+            except RuntimeError:
+                pass
+        super().closeEvent(event)
+
+    def _reload_table(self) -> None:
+        self._rows = [("dk8de", dev) for dev in self._dk8de] + [
+            ("ebyte", dev) for dev in self._ebyte
+        ]
+        self.tbl.setRowCount(0)
+        for kind, dev in self._rows:
+            row = self.tbl.rowCount()
+            self.tbl.insertRow(row)
+            if kind == "dk8de" and isinstance(dev, Dk8deDevice):
+                self.tbl.setItem(row, 0, QTableWidgetItem(t("settings.network_discover_type_dk8de")))
+                self.tbl.setItem(row, 1, QTableWidgetItem(dev.name or "—"))
+                self.tbl.setItem(row, 2, QTableWidgetItem(dev.uid_norm or "—"))
+                self.tbl.setItem(row, 3, QTableWidgetItem(dev.mac or "—"))
+                self.tbl.setItem(row, 4, QTableWidgetItem(dev.ip or "—"))
+                self.tbl.setItem(row, 5, QTableWidgetItem(dev.fw or "—"))
+                self.tbl.setItem(row, 6, QTableWidgetItem(str(dev.lport or 8886)))
+            elif kind == "ebyte" and isinstance(dev, EbyteDevice):
+                self.tbl.setItem(row, 0, QTableWidgetItem(dev.vendor or dev.model or "Ebyte"))
+                self.tbl.setItem(row, 1, QTableWidgetItem(dev.model or "—"))
+                self.tbl.setItem(row, 2, QTableWidgetItem("—"))
+                self.tbl.setItem(row, 3, QTableWidgetItem(dev.mac_str))
+                self.tbl.setItem(row, 4, QTableWidgetItem(dev.ip or "—"))
+                self.tbl.setItem(row, 5, QTableWidgetItem(dev.fw or "—"))
+                self.tbl.setItem(row, 6, QTableWidgetItem("—"))
+        if self._rows:
+            self.tbl.selectRow(0)
+        self._update_action_buttons()
+
+    def _selected(self) -> Optional[Tuple[str, object]]:
+        rows = self.tbl.selectionModel().selectedRows()
+        if not rows:
+            return None
+        idx = rows[0].row()
+        if 0 <= idx < len(self._rows):
+            return self._rows[idx]
+        return None
+
+    def _row_index_for_dev(self, dev: object) -> int:
+        for i, (_kind, d) in enumerate(self._rows):
+            if d is dev:
+                return i
+        return -1
+
+    def _update_action_buttons(self, *_args) -> None:
+        if self._ip_write_running():
+            self._btn_adopt.setEnabled(False)
+            self._btn_set_ip.setEnabled(False)
+            return
+        sel = self._selected()
+        if sel is None:
+            self._btn_adopt.setEnabled(False)
+            self._btn_set_ip.setEnabled(False)
+            return
+        kind, dev = sel
+        self._btn_adopt.setEnabled(True)
+        if kind == "ebyte" and isinstance(dev, EbyteDevice):
+            self._btn_set_ip.setEnabled(bool(dev.pages))
+        elif kind == "dk8de" and isinstance(dev, Dk8deDevice):
+            host = str(dev.ip or "").strip()
+            self._btn_set_ip.setEnabled(
+                bool(dev.uid_norm) and bool(host) and host not in ("0.0.0.0", "-")
+            )
+        else:
+            self._btn_set_ip.setEnabled(False)
+
+    def _on_adopt(self) -> None:
+        sel = self._selected()
+        if sel is None:
+            return
+        kind, dev = sel
+        if kind == "ebyte" and isinstance(dev, EbyteDevice):
+            self.adopt_ebyte.emit(dev)
+        elif kind == "dk8de" and isinstance(dev, Dk8deDevice):
+            self.adopt_dk8de.emit(dev)
+
+    def _on_set_ip(self) -> None:
+        if self._ip_write_running():
+            QMessageBox.information(
+                self,
+                t("settings.network_discover_title"),
+                t("settings.network_discover_wait_write"),
+            )
+            return
+        sel = self._selected()
+        if sel is None:
+            return
+        kind, dev = sel
+        if kind == "dk8de" and isinstance(dev, Dk8deDevice):
+            self._start_dk8de_set_ip(dev)
+        elif kind == "ebyte" and isinstance(dev, EbyteDevice):
+            self._start_ebyte_set_ip(dev)
+
+    def _start_dk8de_set_ip(self, dev: Dk8deDevice) -> None:
+        host = str(dev.ip or "").strip()
+        if not host or host in ("0.0.0.0", "-"):
+            QMessageBox.warning(
+                self,
+                t("settings.network_discover_title"),
+                t("settings.network_discover_dk8de_no_contact_ip"),
+            )
+            return
+        if not dev.uid_norm:
+            QMessageBox.warning(
+                self,
+                t("settings.network_discover_title"),
+                t("settings.network_discover_dk8de_no_uid"),
+            )
+            return
+        dlg = _Dk8deSetIpDialog(dev, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        vals = dlg.values()
+        if not vals["ip"] or not vals["mask"]:
+            QMessageBox.warning(
+                self,
+                t("settings.network_discover_title"),
+                t("settings.network_discover_ip_required"),
+            )
+            return
+        self._btn_adopt.setEnabled(False)
+        self._btn_set_ip.setEnabled(False)
+        if self._btn_close is not None:
+            self._btn_close.setEnabled(False)
+        self._lbl.setText(t("settings.network_discover_setting_ip_dk8de"))
+        self._set_ip_worker = _Dk8deSetIpWorker(
+            dev,
+            vals["ip"],
+            vals["mask"],
+            vals["gateway"],
+            vals["dns"],
+            self,
+        )
+        self._pending_ip = vals["ip"]
+        self._pending_dev = dev
+        self._set_ip_worker.finished_ok.connect(self._on_set_ip_ok)
+        self._set_ip_worker.finished_err.connect(self._on_set_ip_err)
+        self._set_ip_worker.finished.connect(self._on_set_ip_finished)
+        self._set_ip_worker.start()
+
+    def _start_ebyte_set_ip(self, dev: EbyteDevice) -> None:
+        if not dev.pages:
+            QMessageBox.warning(
+                self,
+                t("settings.network_discover_title"),
+                t("settings.network_discover_no_pages"),
+            )
+            return
+        dlg = _EbyteSetIpDialog(dev, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        vals = dlg.values()
+        if not vals["ip"] or not vals["mask"]:
+            QMessageBox.warning(
+                self,
+                t("settings.network_discover_title"),
+                t("settings.network_discover_ip_required"),
+            )
+            return
+        self._btn_adopt.setEnabled(False)
+        self._btn_set_ip.setEnabled(False)
+        if self._btn_close is not None:
+            self._btn_close.setEnabled(False)
+        self._lbl.setText(t("settings.network_discover_setting_ip"))
+        self._set_ip_worker = _SetIpWorker(
+            dev,
+            vals["ip"],
+            vals["mask"],
+            vals["gateway"],
+            vals["dns"],
+            vals["dns2"],
+            self,
+        )
+        self._pending_ip = vals["ip"]
+        self._pending_dev = dev
+        self._set_ip_worker.finished_ok.connect(self._on_set_ip_ok)
+        self._set_ip_worker.finished_err.connect(self._on_set_ip_err)
+        self._set_ip_worker.finished.connect(self._on_set_ip_finished)
+        self._set_ip_worker.start()
+
+    def _on_set_ip_finished(self) -> None:
+        if self._btn_close is not None:
+            self._btn_close.setEnabled(True)
+        w = self._set_ip_worker
+        self._set_ip_worker = None
+        if w is not None:
+            try:
+                if w.isRunning():
+                    w.wait(3000)
+            except RuntimeError:
+                pass
+        self._update_action_buttons()
+
+    def _on_set_ip_ok(self, _res: object) -> None:
+        dev = getattr(self, "_pending_dev", None)
+        new_ip = str(getattr(self, "_pending_ip", "") or "")
+        old_ip = ""
+        if isinstance(dev, EbyteDevice):
+            old_ip = str(dev.ip or "")
+            dev.ip = new_ip
+            row = self._row_index_for_dev(dev)
+            if row >= 0:
+                self.tbl.setItem(row, 4, QTableWidgetItem(new_ip or "—"))
+            self.ip_set_done.emit(dev, old_ip, new_ip)
+            self._lbl.setText(t("settings.network_discover_set_ip_ok", ip=new_ip))
+        elif isinstance(dev, Dk8deDevice):
+            old_ip = str(dev.ip or "")
+            dev.ip = new_ip
+            if dev.info.get("REPORTED_IP"):
+                dev.info["REPORTED_IP"] = new_ip
+            row = self._row_index_for_dev(dev)
+            if row >= 0:
+                self.tbl.setItem(row, 4, QTableWidgetItem(new_ip or "—"))
+            self.ip_set_done.emit(dev, old_ip, new_ip)
+            self._lbl.setText(t("settings.network_discover_set_ip_ok", ip=new_ip))
+            QMessageBox.information(
+                self,
+                t("settings.network_discover_title"),
+                t("settings.network_discover_set_ip_ok_detail_dk8de", ip=new_ip),
+            )
+
+    def _on_set_ip_err(self, msg: str) -> None:
+        self._lbl.setText(t("settings.network_status_error", err=msg))
+        QMessageBox.warning(
+            self,
+            t("settings.network_discover_title"),
+            t("settings.network_discover_set_ip_failed", err=msg),
+        )
+
+    def _on_refresh(self) -> None:
+        if self._scan_worker and self._scan_worker.isRunning():
+            return
+        self._btn_refresh.setEnabled(False)
+        self._lbl.setText(t("settings.network_status_scanning"))
+        self._scan_worker = _ScanWorker(timeout=5.0, parent=self)
+        self._scan_worker.finished_ok.connect(self._on_refresh_ok)
+        self._scan_worker.finished_err.connect(self._on_refresh_err)
+        self._scan_worker.finished.connect(lambda: self._btn_refresh.setEnabled(True))
+        self._scan_worker.start()
+
+    def _on_refresh_ok(self, found: object) -> None:
+        ebyte: List[EbyteDevice] = []
+        dk8de: List[Dk8deDevice] = []
+        if isinstance(found, dict):
+            ebyte = [d for d in (found.get("ebyte") or []) if isinstance(d, EbyteDevice)]
+            dk8de = [d for d in (found.get("dk8de") or []) if isinstance(d, Dk8deDevice)]
+        self._ebyte = ebyte
+        self._dk8de = dk8de
+        self._reload_table()
+        total = len(ebyte) + len(dk8de)
+        if total == 0:
+            self._lbl.setText(t("settings.network_status_scan_empty"))
+        else:
+            self._lbl.setText(t("settings.network_status_scan_done", found=total))
+
+    def _on_refresh_err(self, msg: str) -> None:
+        self._lbl.setText(t("settings.network_status_error", err=msg))
 
 
 class NetworkModulesTab(QWidget):
@@ -695,6 +1559,21 @@ class NetworkModulesTab(QWidget):
         self.cb_vendor.setToolTip(tt("settings.network_vendor_tooltip"))
         self._lbl_vendor = QLabel(t("settings.network_vendor"))
         fi.addRow(self._lbl_vendor, self.cb_vendor)
+
+        self.ed_uid = QLineEdit()
+        self.ed_uid.setMaxLength(16)
+        self.ed_uid.editingFinished.connect(self._apply_form_to_current)
+        self.ed_uid.setToolTip(tt("settings.network_uid_tooltip"))
+        self._lbl_uid = QLabel(t("settings.network_uid"))
+        fi.addRow(self._lbl_uid, self.ed_uid)
+
+        self.sp_config_port = QSpinBox()
+        self.sp_config_port.setRange(1, 65535)
+        self.sp_config_port.setValue(8880)
+        self.sp_config_port.valueChanged.connect(self._apply_form_to_current)
+        self.sp_config_port.setToolTip(tt("settings.network_config_port_tooltip"))
+        self._lbl_config_port = QLabel(t("settings.network_config_port"))
+        fi.addRow(self._lbl_config_port, self.sp_config_port)
 
         self.sp_web_port = QSpinBox()
         self.sp_web_port.setRange(1, 65535)
@@ -798,7 +1677,8 @@ class NetworkModulesTab(QWidget):
         # bis _load_form()/_update_sock_fields_visibility() den echten Modus setzt.
         self._update_sock_fields_visibility()
 
-        act = QHBoxLayout()
+        act = QVBoxLayout()
+        act_row1 = QHBoxLayout()
         self._btn_read = QPushButton(t("settings.network_btn_read"))
         self._btn_read.setToolTip(tt("settings.network_btn_read_tooltip"))
         self._btn_read.clicked.connect(self._on_read)
@@ -808,9 +1688,21 @@ class NetworkModulesTab(QWidget):
         self._btn_web = QPushButton(t("settings.network_btn_web"))
         self._btn_web.setToolTip(tt("settings.network_btn_web_tooltip"))
         self._btn_web.clicked.connect(self._on_web)
-        act.addWidget(self._btn_read)
-        act.addWidget(self._btn_write)
-        act.addWidget(self._btn_web)
+        act_row1.addWidget(self._btn_read)
+        act_row1.addWidget(self._btn_write)
+        act_row1.addWidget(self._btn_web)
+        act_row1.addStretch(1)
+        act.addLayout(act_row1)
+
+        self._act_row2_wrap = QWidget()
+        act_row2 = QHBoxLayout(self._act_row2_wrap)
+        act_row2.setContentsMargins(0, 0, 0, 0)
+        self._btn_stats = QPushButton(t("settings.network_btn_stats"))
+        self._btn_stats.setToolTip(tt("settings.network_btn_stats_tooltip"))
+        self._btn_stats.clicked.connect(self._on_stats)
+        act_row2.addWidget(self._btn_stats)
+        act_row2.addStretch(1)
+        act.addWidget(self._act_row2_wrap)
         right_l.addLayout(act)
 
         self._lbl_status = QLabel("")
@@ -822,6 +1714,7 @@ class NetworkModulesTab(QWidget):
         split.setStretchFactor(1, 2)
         root.addWidget(split, 1)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self._update_vendor_fields_visibility()
         # Ohne Auswahl sind Detailfelder wirkungslos (_apply_form_to_current
         # speichert nichts) - daher von Anfang an deaktiviert.
         self._set_detail_enabled(False)
@@ -832,6 +1725,7 @@ class NetworkModulesTab(QWidget):
         self.cb_vendor.addItem(t("settings.network_vendor_ne2"), VENDOR_NE2)
         self.cb_vendor.addItem(t("settings.network_vendor_na11x"), VENDOR_NA11X)
         self.cb_vendor.addItem(t("settings.network_vendor_usr"), VENDOR_USR)
+        self.cb_vendor.addItem(t("settings.network_vendor_dk8de"), VENDOR_DK8DE)
         self.cb_vendor.addItem(t("settings.network_vendor_generic"), VENDOR_GENERIC)
         self.cb_vendor.blockSignals(False)
 
@@ -901,6 +1795,8 @@ class NetworkModulesTab(QWidget):
     def _module_label(self, m: NetworkModule) -> str:
         name = (m.name or "").strip() or t("settings.network_unnamed")
         host = (m.host or "").strip() or "?"
+        if m.vendor == VENDOR_DK8DE and (m.uid or "").strip():
+            return f"{name}  ({host} · {m.uid.strip().upper()})"
         return f"{name}  ({host}:{m.at_port})"
 
     def _on_sel_changed(self, row: int) -> None:
@@ -961,6 +1857,8 @@ class NetworkModulesTab(QWidget):
             self.ed_cmdpw,
             self.ed_web_user,
             self.ed_web_password,
+            self.ed_uid,
+            self.sp_config_port,
             self.cb_wan_mode,
             self.ed_ip,
             self.ed_mask,
@@ -973,6 +1871,7 @@ class NetworkModulesTab(QWidget):
             self._btn_read,
             self._btn_write,
             self._btn_web,
+            self._btn_stats,
             self._btn_remove,
         )
         for w in widgets:
@@ -991,6 +1890,8 @@ class NetworkModulesTab(QWidget):
         self.ed_cmdpw.setText("USR")
         self.ed_web_user.setText("admin")
         self.ed_web_password.setText("admin")
+        self.ed_uid.clear()
+        self.sp_config_port.setValue(8880)
         self.cb_wan_mode.setCurrentIndex(0)
         self.ed_ip.clear()
         self.ed_mask.clear()
@@ -1016,6 +1917,10 @@ class NetworkModulesTab(QWidget):
         self.ed_web_password.setText(
             m.web_password if m.web_password is not None else "admin"
         )
+        self.ed_uid.setText(m.uid or "")
+        self.sp_config_port.setValue(int(m.config_port or DEFAULT_CONFIG_PORTS.get(m.vendor, 8880)))
+        if m.vendor == VENDOR_DK8DE and not (m.contact_host or "").strip() and (m.host or "").strip():
+            m.contact_host = m.host.strip()
         st = m.last_status or {}
         wan = st.get("wan") or {}
         sock = st.get("sock") or {}
@@ -1063,6 +1968,12 @@ class NetworkModulesTab(QWidget):
         m.cmdpw = self.ed_cmdpw.text().strip() or "USR"
         m.web_user = self.ed_web_user.text().strip() or "admin"
         m.web_password = self.ed_web_password.text()
+        if m.vendor == VENDOR_DK8DE:
+            m.uid = self.ed_uid.text().strip().upper()
+            m.config_port = int(self.sp_config_port.value())
+        else:
+            m.uid = ""
+            m.config_port = DEFAULT_CONFIG_PORTS.get(VENDOR_DK8DE, 8880)
         # Liste-Label aktualisieren
         row = self._list.currentRow()
         if 0 <= row < self._list.count():
@@ -1079,21 +1990,33 @@ class NetworkModulesTab(QWidget):
         vendor = str(self.cb_vendor.currentData() or VENDOR_GENERIC)
         self.sp_remote_port.blockSignals(True)
         self.sp_web_port.blockSignals(True)
+        self.sp_config_port.blockSignals(True)
         self.sp_remote_port.setValue(DEFAULT_AT_PORTS.get(vendor, 8886))
         self.sp_web_port.setValue(DEFAULT_WEB_PORTS.get(vendor, 80))
+        self.sp_config_port.setValue(DEFAULT_CONFIG_PORTS.get(vendor, 8880))
+        if vendor == VENDOR_DK8DE:
+            self.ed_web_password.setText("Rotorconfig")
         self.sp_remote_port.blockSignals(False)
         self.sp_web_port.blockSignals(False)
+        self.sp_config_port.blockSignals(False)
         self._update_vendor_fields_visibility()
         self._apply_form_to_current()
 
     def _update_vendor_fields_visibility(self) -> None:
         vendor = str(self.cb_vendor.currentData() or VENDOR_GENERIC)
         is_usr = vendor == VENDOR_USR
-        use_web = vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC, VENDOR_USR)
+        is_dk8de = vendor == VENDOR_DK8DE
+        use_web = vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC, VENDOR_USR, VENDOR_DK8DE)
         self._lbl_cmdpw.setVisible(is_usr)
         self.ed_cmdpw.setVisible(is_usr)
-        self._lbl_netat.setVisible(not is_usr)
-        self.ed_netat.setVisible(not is_usr)
+        self._lbl_netat.setVisible(not is_usr and not is_dk8de)
+        self.ed_netat.setVisible(not is_usr and not is_dk8de)
+        self._lbl_uid.setVisible(is_dk8de)
+        self.ed_uid.setVisible(is_dk8de)
+        self._lbl_config_port.setVisible(is_dk8de)
+        self.sp_config_port.setVisible(is_dk8de)
+        self._btn_stats.setVisible(is_dk8de)
+        self._act_row2_wrap.setVisible(is_dk8de)
         self._lbl_web_user.setVisible(use_web)
         self.ed_web_user.setVisible(use_web)
         self._lbl_web_password.setVisible(use_web)
@@ -1164,18 +2087,28 @@ class NetworkModulesTab(QWidget):
         self._start_read(interactive=True)
 
     def _start_read(self, *, interactive: bool = True) -> None:
+        m = self._current()
+        if m is None:
+            if interactive:
+                QMessageBox.information(self, t("settings.network_tab"), t("settings.network_need_host"))
+            return
+        at_host = str(m.contact_host or m.host or "").strip()
         self._apply_form_to_current()
         m = self._current()
         if m is None or not m.host.strip():
             if interactive:
                 QMessageBox.information(self, t("settings.network_tab"), t("settings.network_need_host"))
             return
+        if m.vendor == VENDOR_DK8DE and not (m.uid or "").strip():
+            if interactive:
+                QMessageBox.information(self, t("settings.network_tab"), t("settings.network_need_uid"))
+            return
         if self._read_worker and self._read_worker.isRunning():
             return
         self._read_interactive = interactive
         self._lbl_status.setText(t("settings.network_status_reading"))
         self._btn_read.setEnabled(False)
-        self._read_worker = _ReadWorker(m, self)
+        self._read_worker = _ReadWorker(m, self, at_host=at_host)
         self._read_worker.finished_ok.connect(self._on_read_ok)
         self._read_worker.finished_err.connect(self._on_read_err)
         self._read_worker.finished.connect(
@@ -1188,6 +2121,15 @@ class NetworkModulesTab(QWidget):
         m = self._current()
         if m is not None:
             m.last_status = status
+            if m.vendor == VENDOR_DK8DE:
+                uid = str(status.get("uid") or "").strip().upper()
+                if uid:
+                    m.uid = uid
+                wan = status.get("wan") if isinstance(status.get("wan"), dict) else {}
+                live_ip = str(wan.get("ip") or m.host or "").strip()
+                if live_ip and live_ip not in ("0.0.0.0", "-"):
+                    m.contact_host = live_ip
+                    m.host = live_ip
             sock = status.get("sock") if isinstance(status.get("sock"), dict) else {}
             try:
                 lp = int(sock.get("remote_port") or sock.get("local_port") or 0)
@@ -1226,20 +2168,14 @@ class NetworkModulesTab(QWidget):
             self.save_requested.emit()
 
     def _on_write(self) -> None:
-        self._apply_form_to_current()
         m = self._current()
         if m is None or not m.host.strip():
             QMessageBox.information(self, t("settings.network_tab"), t("settings.network_need_host"))
             return
-        reply = QMessageBox.question(
-            self,
-            t("settings.network_tab"),
-            t("settings.network_write_confirm"),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        if m.vendor == VENDOR_DK8DE and not (m.uid or "").strip():
+            QMessageBox.information(self, t("settings.network_tab"), t("settings.network_need_uid"))
             return
+        at_host = str(m.contact_host or m.host or "").strip()
         wan = {
             "mode": str(self.cb_wan_mode.currentData() or "STATIC"),
             "ip": self.ed_ip.text().strip(),
@@ -1253,17 +2189,32 @@ class NetworkModulesTab(QWidget):
             "remote_ip": self.ed_remote_ip.text().strip(),
             "remote_port": int(self.sp_remote_port.value()),
         }
+        reply = QMessageBox.question(
+            self,
+            t("settings.network_tab"),
+            t("settings.network_write_confirm"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._apply_form_to_current()
+        m = self._current()
+        if m is None:
+            return
         if self._write_worker and self._write_worker.isRunning():
             return
         self._lbl_status.setText(t("settings.network_status_writing"))
         self._btn_write.setEnabled(False)
-        self._write_worker = _WriteWorker(m, wan, sock, self)
+        self._write_worker = _WriteWorker(m, wan, sock, self, at_host=at_host)
         self._write_worker.finished_ok.connect(self._on_write_ok)
         self._write_worker.finished_err.connect(self._on_write_err)
-        self._write_worker.finished.connect(
-            lambda: self._btn_write.setEnabled(self._form_enabled)
-        )
+        self._write_worker.finished.connect(self._on_write_finished)
         self._write_worker.start()
+
+    def _on_write_finished(self) -> None:
+        self._btn_write.setEnabled(self._form_enabled)
+        self._write_worker = None
 
     def _on_write_ok(self, _res: object) -> None:
         # Nach Reboot: Host ggf. auf neue IP setzen
@@ -1271,6 +2222,8 @@ class NetworkModulesTab(QWidget):
         m = self._current()
         if m is not None and new_ip and str(self.cb_wan_mode.currentData()) == "STATIC":
             m.host = new_ip
+            if m.vendor == VENDOR_DK8DE:
+                m.contact_host = new_ip
             self._rebuild_list()
         self._lbl_status.setText(t("settings.network_status_write_ok"))
         # NE2 startet laut Mitschnitt des Original-Tools nach dem Schreiben
@@ -1283,31 +2236,60 @@ class NetworkModulesTab(QWidget):
                 t("settings.network_tab"),
                 t("settings.network_write_ok_manual_reboot_ne2"),
             )
+        elif m is not None and m.vendor == VENDOR_DK8DE:
+            QMessageBox.information(
+                self,
+                t("settings.network_tab"),
+                t("settings.network_write_ok_dk8de_reboot"),
+            )
+
+    def _on_stats(self) -> None:
+        self._apply_form_to_current()
+        m = self._current()
+        if m is None or m.vendor != VENDOR_DK8DE:
+            return
+        if not m.host.strip():
+            QMessageBox.information(self, t("settings.network_tab"), t("settings.network_need_host"))
+            return
+        if not (m.uid or "").strip():
+            QMessageBox.information(self, t("settings.network_tab"), t("settings.network_need_uid"))
+            return
+        dlg = _Dk8deStatsDialog(m, self)
+        dlg.exec()
 
     def _on_write_err(self, msg: str) -> None:
         self._lbl_status.setText(t("settings.network_status_error", err=msg))
         QMessageBox.warning(self, t("settings.network_tab"), t("settings.network_write_failed", err=msg))
 
     def _on_scan(self) -> None:
-        if self._scan_worker and self._scan_worker.isRunning():
-            return
+        w = self._scan_worker
+        if w is not None:
+            try:
+                if w.isRunning():
+                    return
+            except RuntimeError:
+                self._scan_worker = None
         self._lbl_status.setText(t("settings.network_status_scanning"))
         self._btn_scan.setEnabled(False)
-        # Sofortiges visuelles Feedback: die Suche dauert ~2s und wirkte
-        # ohne diese Anzeige, als wuerde beim Klick nichts passieren.
+        parent_win = self.window()
+        # Fortschritt an Hauptfenster haengen — in QScrollArea sonst oft sofort wieder weg.
         self._scan_progress = QProgressDialog(
-            t("settings.network_status_scanning"), "", 0, 0, self
+            t("settings.network_status_scanning"), "", 0, 0, parent_win
         )
-        self._scan_progress.setWindowTitle(t("settings.network_discover_title"))
+        self._scan_progress.setWindowTitle(t("settings.network_discover_scan_title"))
         self._scan_progress.setCancelButton(None)
-        self._scan_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self._scan_progress.setWindowModality(Qt.WindowModality.ApplicationModal)
         self._scan_progress.setMinimumDuration(0)
         self._scan_progress.show()
-        self._scan_worker = _ScanWorker(timeout=2.0, parent=self)
+        self._scan_worker = _ScanWorker(timeout=5.0, parent=self)
         self._scan_worker.finished_ok.connect(self._on_scan_ok)
         self._scan_worker.finished_err.connect(self._on_scan_err)
-        self._scan_worker.finished.connect(lambda: self._btn_scan.setEnabled(True))
+        self._scan_worker.finished.connect(self._on_scan_finished)
         self._scan_worker.start()
+
+    def _on_scan_finished(self) -> None:
+        self._btn_scan.setEnabled(True)
+        self._scan_worker = None
 
     def _close_scan_progress(self) -> None:
         dlg = getattr(self, "_scan_progress", None)
@@ -1320,16 +2302,36 @@ class NetworkModulesTab(QWidget):
 
     def _on_scan_ok(self, found: object) -> None:
         self._close_scan_progress()
-        devices = [d for d in (found if isinstance(found, list) else []) if isinstance(d, EbyteDevice)]
-        if not devices:
+        ebyte: List[EbyteDevice] = []
+        dk8de: List[Dk8deDevice] = []
+        if isinstance(found, dict):
+            ebyte = [d for d in (found.get("ebyte") or []) if isinstance(d, EbyteDevice)]
+            dk8de = [d for d in (found.get("dk8de") or []) if isinstance(d, Dk8deDevice)]
+        if not ebyte and not dk8de:
             self._lbl_status.setText(t("settings.network_status_scan_empty"))
+            QMessageBox.information(
+                self.window(),
+                t("settings.network_discover_scan_title"),
+                t("settings.network_status_scan_empty"),
+            )
             return
-        self._lbl_status.setText(t("settings.network_status_scan_done", found=len(devices)))
-        self._discover_dlg = _EbyteDiscoverDialog(devices, self)
-        self._discover_dlg.adopt_requested.connect(self._adopt_ebyte_device)
-        self._discover_dlg.ip_set_done.connect(self._on_discover_ip_set)
-        self._discover_dlg.exec()
-        self._discover_dlg = None
+        self._lbl_status.setText(
+            t("settings.network_status_scan_done", found=len(ebyte) + len(dk8de))
+        )
+        try:
+            self._discover_dlg = _NetworkDiscoverDialog(ebyte, dk8de, self.window())
+            self._discover_dlg.adopt_ebyte.connect(self._adopt_ebyte_device)
+            self._discover_dlg.adopt_dk8de.connect(self._adopt_dk8de_device)
+            self._discover_dlg.ip_set_done.connect(self._on_discover_ip_set)
+            self._discover_dlg.exec()
+        except Exception as exc:
+            QMessageBox.critical(
+                self.window(),
+                t("settings.network_discover_title"),
+                t("settings.network_discover_set_ip_failed", err=str(exc)),
+            )
+        finally:
+            self._discover_dlg = None
 
     def _adopt_ebyte_device(self, device: object) -> None:
         if not isinstance(device, EbyteDevice):
@@ -1376,22 +2378,88 @@ class NetworkModulesTab(QWidget):
         self._start_read(interactive=False)
         self.save_requested.emit()
 
-    def _on_discover_ip_set(self, device: object, old_ip: str, new_ip: str) -> None:
-        if not isinstance(device, EbyteDevice):
+    def _adopt_dk8de_device(self, device: object) -> None:
+        if not isinstance(device, Dk8deDevice):
             return
+        host = (device.ip or "").strip()
+        uid = device.uid_norm
+        if not host or host in ("0.0.0.0", "-"):
+            QMessageBox.warning(
+                self,
+                t("settings.network_discover_title"),
+                t("settings.network_discover_dk8de_no_ip"),
+            )
+            return
+        if not uid:
+            QMessageBox.warning(
+                self,
+                t("settings.network_discover_title"),
+                t("settings.network_discover_dk8de_no_uid"),
+            )
+            return
+        existing = {(m.host.strip(), m.uid.strip().upper()) for m in self._modules if m.vendor == VENDOR_DK8DE}
+        if (host, uid) in existing:
+            self._lbl_status.setText(t("settings.network_discover_already", host=host))
+            return
+        label = (device.name or f"DK8DE {uid}").strip()
+        m = NetworkModule(
+            name=f"{label} {host}",
+            vendor=VENDOR_DK8DE,
+            host=host,
+            contact_host=host,
+            uid=uid,
+            at_port=int(device.lport or DEFAULT_AT_PORTS[VENDOR_DK8DE]),
+            config_port=DEFAULT_CONFIG_PORTS[VENDOR_DK8DE],
+            web_port=DEFAULT_WEB_PORTS[VENDOR_DK8DE],
+            web_user="admin",
+            web_password="Rotorconfig",
+            role="bus_gateway",
+        )
+        self._modules.append(m)
+        self._online.append(True)
+        self._offline_streak.append(0)
+        self._rebuild_list()
+        self._list.setCurrentRow(len(self._modules) - 1)
+        self._lbl_status.setText(
+            t("settings.network_discover_adopted_dk8de", name=label, ip=host, uid=uid)
+        )
+        self._save_after_read = True
+        self._start_read(interactive=False)
+        self.save_requested.emit()
+
+    def _on_discover_ip_set(self, device: object, old_ip: str, new_ip: str) -> None:
         ip = str(new_ip or "").strip()
         prev = str(old_ip or "").strip()
         if not ip:
             return
-        for m in self._modules:
-            if (prev and m.host == prev) or m.host == ip:
-                m.host = ip
-        device.ip = ip
-        self._rebuild_list()
+        if isinstance(device, EbyteDevice):
+            for m in self._modules:
+                if (prev and m.host == prev) or m.host == ip:
+                    m.host = ip
+            device.ip = ip
+            self._rebuild_list()
+        elif isinstance(device, Dk8deDevice):
+            uid = device.uid_norm
+            for m in self._modules:
+                if m.vendor != VENDOR_DK8DE:
+                    continue
+                if uid and m.uid.strip().upper() == uid:
+                    m.host = ip
+                    m.contact_host = ip
+                elif (prev and m.host == prev) or m.host == ip:
+                    m.host = ip
+                    m.contact_host = ip
+            device.ip = ip
+            self._rebuild_list()
 
     def _on_scan_err(self, msg: str) -> None:
         self._close_scan_progress()
         self._lbl_status.setText(t("settings.network_status_error", err=msg))
+        QMessageBox.warning(
+            self.window(),
+            t("settings.network_discover_scan_title"),
+            t("settings.network_discover_set_ip_failed", err=msg),
+        )
 
     # ----------------------------------------------------------- probe
     def _tick_probe(self) -> None:
@@ -1465,6 +2533,8 @@ class NetworkModulesTab(QWidget):
         self._btn_write.setToolTip(tt("settings.network_btn_write_tooltip"))
         self._btn_web.setText(t("settings.network_btn_web"))
         self._btn_web.setToolTip(tt("settings.network_btn_web_tooltip"))
+        self._btn_stats.setText(t("settings.network_btn_stats"))
+        self._btn_stats.setToolTip(tt("settings.network_btn_stats_tooltip"))
         self._lbl_vendor.setText(t("settings.network_vendor"))
         self.cb_vendor.setToolTip(tt("settings.network_vendor_tooltip"))
         self._lbl_name.setText(t("settings.network_name"))

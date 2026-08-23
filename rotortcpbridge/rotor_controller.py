@@ -1158,7 +1158,9 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 break
             time.sleep(0)  # GIL freigeben, damit der Reader-Thread on_done ausführen kann
             if app is not None:
-                app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+                # Nur Flags übergeben — (flags, 50) ist in PySide6 6.7+ mehrdeutig
+                # (maxtime vs. QDeadlineTimer) und kann OverflowError auslösen.
+                app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents)
             else:
                 time.sleep(0.005)
         return result[0]
@@ -1443,7 +1445,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         Kompass-Manual-Eingabe hat 10s Vorrang (PST-SET wird ignoriert).
         Bei MAXDG > 360°: standardmäßig Kompassrichtung 0…360° (auch wenn der
         Client Overlap 370° sendet); mit ``shortest_path=True`` die
-        nächstgelegene Repräsentation zum Ist.
+        nächstgelegene Repräsentation zum Ist bzw. explizite Pst-SPID-Ziele
+        ≥360° bis MAXDG (0…720°-Betrieb).
         """
         if (time.time() - self._compass_manual_az_ts) < 10.0:
             return

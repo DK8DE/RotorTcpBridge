@@ -20,6 +20,26 @@ def test_decode_ph10_tenth_degree() -> None:
     assert cmd.az_d10 == 3700
 
 
+def test_decode_ph0_pst_720_branches() -> None:
+    """PstRotator (Autor): PH=0, ASCII-H; 720-Zweige az+360 / az+720 / tmp=az."""
+    # tmp = az+360.5 → 10°
+    cmd = parse_command_packet(_pkt("3700", 0, "3600", 0))
+    assert cmd is not None
+    assert cmd.az_d10 == 100
+    # tmp = az+720.5 → Overlap 370°
+    cmd = parse_command_packet(_pkt("7300", 0, "3600", 0))
+    assert cmd is not None
+    assert cmd.az_d10 == 3700
+    # tmp = az (ohne +360) → 350° (nicht −10°)
+    cmd = parse_command_packet(_pkt("3500", 0, "3600", 0))
+    assert cmd is not None
+    assert cmd.az_d10 == 3500
+    # 0°
+    cmd = parse_command_packet(_pkt("3600", 0, "3600", 0))
+    assert cmd is not None
+    assert cmd.az_d10 == 0
+
+
 def test_decode_ph2_half_degree() -> None:
     # 120° → H = 2*(120+360) = 960
     cmd = parse_command_packet(_pkt("0960", 2, "0720", 2))

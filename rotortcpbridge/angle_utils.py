@@ -122,9 +122,12 @@ def fmt_deg_d10(d10: int) -> str:
 
 
 def is_az_pos_at_full_circle_d10(pos_d10: int) -> bool:
-    """True wenn GETPOSDG genau die Homing-Ende-Marke 360,0° meldet (nicht >360°)."""
-    p = int(pos_d10)
-    return 3599 <= p <= 3600
+    """True wenn GETPOSDG genau die Homing-Ende-Marke 360,0° meldet (nicht >360°).
+
+    Nur 3600 (360,0°) — nicht 3599 (359,9°), sonst springt die Anzeige von 359,9→360
+    und Fahrten in diesem Zehntelgrad bleiben aus.
+    """
+    return int(pos_d10) == 3600
 
 
 def az_max_d10_from_axis(az_axis) -> int:
@@ -239,7 +242,8 @@ def resolve_external_az_d10(
     - ``shortest_path=False`` (Standard): immer die 0…360°-Richtung anfahren
       (370° → 10°), auch wenn der Rotor gerade im Überlappungsbereich steht.
     - ``shortest_path=True`` und ``max_d10 > 3600``: nächstgelegene
-      Rotorstellung zum Ist (10° bei Ist 355° → 370°).
+      Rotorstellung zum Ist (10° bei Ist 355° → 370°). Explizite Ziele
+      ≥360° (PstRotator SPID/720: Overlap bis MAXDG/720°) werden übernommen.
     """
     try:
         v = int(az_d10)
@@ -255,9 +259,9 @@ def resolve_external_az_d10(
     if mx <= 3600:
         return int(round(bearing_deg * 10.0))
     if shortest_path:
-        # Client hat Overlap-Winkel schon gewählt (z. B. 370°): beibehalten.
-        if v > 3600 and v <= mx:
-            return v
+        # Pst SPID/720: absolutes Ziel inkl. Overlap (360°…MAXDG) beibehalten.
+        if v >= 3600:
+            return int(min(max(v, 0), mx))
         try:
             cur = float(int(current_d10)) / 10.0
         except Exception:
@@ -277,6 +281,7 @@ def az_d10_for_external_report(
     """AZ-Ist/Soll (0,1°) für Status an externe Programme.
 
     - Kürzerer Weg **ohne** 0…360-Ausgabe: Rohwert (kann >360° sein, z. B. 370).
+      SPID-Status ist auf H≤9999 begrenzt (~639,9°); darüber wird geklemmt.
     - Sonst (Exact, oder kürzerer Weg + 0…360-Ausgabe): auf 0…360° wickeln
       (355→360→370 wird als 355→0→10 gemeldet).
     """
@@ -285,7 +290,8 @@ def az_d10_for_external_report(
     except Exception:
         v = 0
     if bool(shortest_path) and not bool(report_mod360):
-        return v
+        # ROT2PROG-Status: PH=10 → max. H=9999 → az ≤ 639,9°.
+        return int(min(max(v, 0), 6399))
     return int(round(wrap_deg(float(v) / 10.0) * 10.0))
 
 

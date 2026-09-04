@@ -226,6 +226,36 @@ def pick_nearest_az_deg(target_mod360: float, current: float, max_deg: float) ->
     return min(valid, key=lambda c: abs(c - cur))
 
 
+def az_d10_equivalent_position(
+    a_d10: int, b_d10: int, *, max_d10: int = 3600, tol_d10: int = 1
+) -> bool:
+    """True wenn zwei AZ-Soll/Ist-Werte dieselbe Rotorstellung meinen.
+
+    Nach Homing mit SETHOMERETURN=0 meldet die Hardware oft genau 360,0°
+    (``3600``). ``wrap_deg(360)`` ergibt 0 — 0° und 360,0° sind dann dieselbe
+    Stellung und dürfen keine erneute Fahrt auslösen.
+    """
+    try:
+        a = int(a_d10)
+        b = int(b_d10)
+        tol = max(0, int(tol_d10))
+        mx = int(max_d10)
+    except Exception:
+        return False
+    if mx <= 0:
+        mx = 3600
+    if abs(a - b) <= tol:
+        return True
+    if mx > 3600:
+        return False
+    # Homing-Marke 360,0° ≡ 0° (klassischer 360°-Bereich).
+    if (a <= tol and is_az_pos_at_full_circle_d10(b)) or (
+        b <= tol and is_az_pos_at_full_circle_d10(a)
+    ):
+        return True
+    return False
+
+
 def resolve_external_az_d10(
     az_d10: int,
     *,
@@ -241,6 +271,8 @@ def resolve_external_az_d10(
 
     - ``shortest_path=False`` (Standard): immer die 0…360°-Richtung anfahren
       (370° → 10°), auch wenn der Rotor gerade im Überlappungsbereich steht.
+      Genau 360,0° (Homing-Marke) bleibt 3600 — ``wrap_deg(360)=0`` würde sonst
+      nach Homing mit SETHOMERETURN=0 fälschlich SETPOSDG:0 auslösen.
     - ``shortest_path=True`` und ``max_d10 > 3600``: nächstgelegene
       Rotorstellung zum Ist (10° bei Ist 355° → 370°). Explizite Ziele
       ≥360° (PstRotator SPID/720: Overlap bis MAXDG/720°) werden übernommen.
@@ -255,9 +287,13 @@ def resolve_external_az_d10(
         mx = 3600
     if mx <= 0:
         mx = 3600
-    bearing_deg = wrap_deg(float(v) / 10.0)
     if mx <= 3600:
+        # Homing-Ende 360,0° nicht auf 0 wickeln (SETHOMERETURN=0).
+        if is_az_pos_at_full_circle_d10(v):
+            return 3600
+        bearing_deg = wrap_deg(float(v) / 10.0)
         return int(round(bearing_deg * 10.0))
+    bearing_deg = wrap_deg(float(v) / 10.0)
     if shortest_path:
         # Pst SPID/720: absolutes Ziel inkl. Overlap (360°…MAXDG) beibehalten.
         if v >= 3600:
@@ -269,6 +305,9 @@ def resolve_external_az_d10(
         tgt = pick_nearest_az_deg(bearing_deg, cur, float(mx) / 10.0)
         return int(round(tgt * 10.0))
     # Exact: Primärbereich 0…360° (nicht die Overlap-Repräsentation).
+    # Auch hier 360,0° erhalten (sonst Homing-Soll → 0°).
+    if is_az_pos_at_full_circle_d10(v):
+        return 3600
     return int(round(bearing_deg * 10.0))
 
 
@@ -284,6 +323,8 @@ def az_d10_for_external_report(
       SPID-Status ist auf H≤9999 begrenzt (~639,9°); darüber wird geklemmt.
     - Sonst (Exact, oder kürzerer Weg + 0…360-Ausgabe): auf 0…360° wickeln
       (355→360→370 wird als 355→0→10 gemeldet).
+      Genau 360,0° bleibt 3600 (nicht 0), damit PST-Ziel-Push nach Homing
+      nicht 0 meldet und den Rotor zurück auf Null schickt.
     """
     try:
         v = int(az_d10)
@@ -292,6 +333,8 @@ def az_d10_for_external_report(
     if bool(shortest_path) and not bool(report_mod360):
         # ROT2PROG-Status: PH=10 → max. H=9999 → az ≤ 639,9°.
         return int(min(max(v, 0), 6399))
+    if is_az_pos_at_full_circle_d10(v):
+        return 3600
     return int(round(wrap_deg(float(v) / 10.0) * 10.0))
 
 

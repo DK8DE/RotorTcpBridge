@@ -100,14 +100,52 @@ class TestUid(unittest.TestCase):
         self.assertFalse(uid_is_valid("SHORT"))
 
 
+class TestBuildWanCmds(unittest.TestCase):
+    def test_factory_sta_join(self):
+        from rotortcpbridge.dk8de_wlan_module import build_wan_cmds_dk8de
+
+        cmds = build_wan_cmds_dk8de(
+            ip="192.168.0.148",
+            mask="255.255.255.0",
+            gateway="192.168.0.1",
+            dns="192.168.0.1",
+            ssid="FritzBox",
+            password="secret",
+            wifi_band="5G",
+            wifi_mode="STA",
+            reboot=True,
+        )
+        self.assertEqual(cmds[0], 'SSID="FritzBox"')
+        self.assertEqual(cmds[1], 'PASS="secret"')
+        self.assertIn("WIFIBAND=5G", cmds)
+        self.assertIn("DHCP=0", cmds)
+        self.assertIn("IP=192.168.0.148", cmds)
+        save_i = cmds.index("SAVE")
+        sta_i = cmds.index("WIFIMODE=STA")
+        self.assertLess(save_i, sta_i)
+        self.assertEqual(cmds[-1], "REBOOT")
+
+    def test_dhcp_skips_static(self):
+        from rotortcpbridge.dk8de_wlan_module import build_wan_cmds_dk8de
+
+        cmds = build_wan_cmds_dk8de(dhcp=True, ssid="x", wifi_band="2G", reboot=False)
+        self.assertIn("DHCP=1", cmds)
+        self.assertFalse(any(c.startswith("IP=") for c in cmds))
+        self.assertNotIn("REBOOT", cmds)
+        self.assertNotIn("WIFIMODE=STA", cmds)
+
+
 class TestAtUdpFilter(unittest.TestCase):
     def test_ignores_discover_binary_frame(self):
         text = b"UID=C5E632AC\nIP=192.168.0.148\n"
         raw = config_frame_encode(0x02, seq=1, payload=text)
         self.assertEqual(_at_udp_to_text(raw), "")
 
-    def test_ignores_discover_info_text(self):
-        self.assertEqual(_at_udp_to_text(b"UID=C5E632AC\nIP=192.168.0.148\n"), "")
+    def test_keeps_info_kv_text(self):
+        # AT+INFO? kann als eigenes Datagramm ohne @OK ankommen — nicht verwerfen.
+        pkt = b"UID=C5E632AC\nNAME=Rotor\nIP=192.168.0.148\n"
+        self.assertIn("UID=C5E632AC", _at_udp_to_text(pkt))
+        self.assertIn("NAME=Rotor", _at_udp_to_text(pkt))
 
     def test_accepts_config_ready(self):
         pkt = b"@C5E632AC:CONFIG,READY\r\n"
@@ -117,6 +155,12 @@ class TestAtUdpFilter(unittest.TestCase):
     def test_accepts_at_ok(self):
         pkt = b"+NETMODE:1\r\n@C5E632AC:OK\r\n"
         self.assertIn("@C5E632AC:OK", _at_udp_to_text(pkt))
+
+    def test_save_gets_longer_timeout(self):
+        from rotortcpbridge.dk8de_wlan_module import _at_command_timeout
+
+        self.assertGreaterEqual(_at_command_timeout("SAVE", 3.0), 12.0)
+        self.assertEqual(_at_command_timeout("NETMODE?", 3.0), 3.0)
 
 
 class TestStatsPayload(unittest.TestCase):
@@ -131,6 +175,18 @@ class TestStatsPayload(unittest.TestCase):
         self.assertEqual(status["RSSI"], "-36")
         self.assertEqual(status["RS485_RX"], "1000")
         self.assertEqual(status["RS485_TX_ALLOWED"], "1")
+
+    def test_parse_plus_kv_via_helper(self):
+        from rotortcpbridge.dk8de_wlan_module import _at_response_to_kv_text
+
+        text = _at_response_to_kv_text(
+            ["UID=C5E632AC"],
+            ["+NAME:Rotor", "+FW:1.5.0"],
+        )
+        info = parse_dk8de_kv_text(text)
+        self.assertEqual(info["UID"], "C5E632AC")
+        self.assertEqual(info["NAME"], "Rotor")
+        self.assertEqual(info["FW"], "1.5.0")
 
 
 if __name__ == "__main__":

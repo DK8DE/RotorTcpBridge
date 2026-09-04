@@ -182,8 +182,24 @@ def test_pick_nearest_and_shortest_target_extended() -> None:
     assert resolve_external_az_d10(
         3700, current_d10=0, max_d10=3600, shortest_path=False
     ) == 100
+    # Homing-Marke 360,0° darf nicht auf 0 gewickelt werden (SETHOMERETURN=0)
+    assert resolve_external_az_d10(
+        3600, current_d10=3600, max_d10=3600, shortest_path=False
+    ) == 3600
+    assert resolve_external_az_d10(
+        3600, current_d10=100, max_d10=3600, shortest_path=False
+    ) == 3600
 
-    from rotortcpbridge.angle_utils import az_d10_for_external_report
+    from rotortcpbridge.angle_utils import (
+        az_d10_equivalent_position,
+        az_d10_for_external_report,
+    )
+
+    assert az_d10_equivalent_position(3600, 0) is True
+    assert az_d10_equivalent_position(0, 3600) is True
+    assert az_d10_equivalent_position(3600, 3600) is True
+    assert az_d10_equivalent_position(3600, 10) is False
+    assert az_d10_equivalent_position(3600, 0, max_d10=7200) is False
 
     # Report: kürzerer Weg ohne 0…360 → Rohwert (SPID-Clamp ≤639,9°)
     assert az_d10_for_external_report(
@@ -196,10 +212,13 @@ def test_pick_nearest_and_shortest_target_extended() -> None:
     assert az_d10_for_external_report(
         3700, shortest_path=True, report_mod360=True
     ) == 100
-    # Report: Exact → immer wrap
+    # Report: Exact → immer wrap — außer Homing-Marke 360,0°
     assert az_d10_for_external_report(
         3700, shortest_path=False, report_mod360=False
     ) == 100
+    assert az_d10_for_external_report(
+        3600, shortest_path=False, report_mod360=False
+    ) == 3600
 
 
 def test_shortest_delta_az_rotor_deg_homing() -> None:

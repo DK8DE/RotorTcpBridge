@@ -76,3 +76,10 @@ def test_inactive_push_sends_nothing() -> None:
     push._send = lambda msg: sent.append(msg)  # type: ignore[method-assign]
     push.notify_target(1730, 250, now=100.0)
     assert sent == []
+
+
+def test_full_circle_target_pushed_as_360_not_0() -> None:
+    """Nach Homing (SETHOMERETURN=0) Ist/Soll=360° — Push darf nicht 0.0 melden."""
+    push, sent = _make_push()
+    push.notify_target(3600, None, now=100.0, el_enabled=False)
+    assert sent == ["<PST><AZIMUTH>360.0</AZIMUTH></PST>"]

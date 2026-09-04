@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import struct
 import unittest
 from pathlib import Path
 
@@ -377,6 +378,31 @@ class TestEbyteUdpProtocol(unittest.TestCase):
         self.assertEqual(dev.dns, "114.114.114.114")
         self.assertEqual(dev.dns2, "8.8.8.8")
 
+    def test_map_ebyte_device_to_status(self):
+        from rotortcpbridge.network_modules import (
+            EbyteDevice,
+            ebyte_apply_pages,
+            ebyte_page_from_payload,
+            map_ebyte_device_to_status,
+            status_has_data,
+        )
+
+        p0 = ebyte_page_from_payload(_fx("ne2_page0.bin"))
+        p1 = ebyte_page_from_payload(_fx("ne2_page1.bin"))
+        assert p0 is not None and p1 is not None
+        dev = EbyteDevice(mac=_fx("ne2_page0.bin")[2:8])
+        ebyte_apply_pages(dev, {0: p0, 1: p1})
+        st = map_ebyte_device_to_status(dev)
+        self.assertTrue(status_has_data(st))
+        self.assertEqual(st["model"], "NE2-D11")
+        self.assertEqual(st["wan"]["ip"], "192.168.0.245")
+        self.assertEqual(st["sock"]["mode"], "TCPS")
+        self.assertEqual(st["sock"]["remote_port"], "8886")
+        self.assertEqual(st["source"], "udp")
+        from rotortcpbridge.network_modules import ebyte_device_data_port
+
+        self.assertEqual(ebyte_device_data_port(dev), 8886)
+
     def test_parse_na111_identity_and_net(self):
         from rotortcpbridge.network_modules import (
             EbyteDevice,
@@ -396,6 +422,11 @@ class TestEbyteUdpProtocol(unittest.TestCase):
         self.assertEqual(dev.gateway, "192.168.0.1")
         self.assertEqual(dev.mask, "255.255.255.0")
         self.assertEqual(dev.dns, "192.168.0.1")
+        from rotortcpbridge.network_modules import ebyte_device_data_port, map_ebyte_device_to_status
+
+        st = map_ebyte_device_to_status(dev)
+        self.assertEqual(st["sock"]["mode"], "TCPS")
+        self.assertEqual(ebyte_device_data_port(dev), 8886)
 
     def test_ne2_patch_ip_matches_capture_checksum(self):
         from rotortcpbridge.network_modules import (
@@ -419,6 +450,117 @@ class TestEbyteUdpProtocol(unittest.TestCase):
         self.assertEqual(bodies[1], write[14:])
         self.assertEqual(p1.checksum_bytes(bodies[1]), write[10:14])
 
+    def test_ne2_patch_sock_mode_and_port(self):
+        import struct
+
+        from rotortcpbridge.network_modules import (
+            VENDOR_NE2,
+            _NE2_SOCK0_HOST_LEN,
+            _NE2_SOCK0_HOST_OFF,
+            _NE2_SOCK0_IP_OFF,
+            _c_str_at,
+            _ne2_sock_from_page1,
+            ebyte_at_to_sock_mode,
+            ebyte_page_from_payload,
+            ebyte_patch_net_pages,
+        )
+
+        p1 = ebyte_page_from_payload(_fx("ne2_page1.bin"))
+        assert p1 is not None
+        bodies = ebyte_patch_net_pages(
+            {1: p1},
+            ip="192.168.0.245",
+            mask="255.255.255.0",
+            gateway="192.168.0.1",
+            vendor=VENDOR_NE2,
+            sock_cfg={
+                "mode": "TCPC",
+                "remote_ip": "192.168.0.50",
+                "remote_port": 9999,
+            },
+        )
+        b = bodies[1]
+        tcpc = ebyte_at_to_sock_mode("TCPC")
+        self.assertEqual(b[10], tcpc)
+        self.assertEqual(b[779], tcpc)
+        self.assertEqual(struct.unpack("<H", b[782:784])[0], 9999)
+        self.assertEqual(struct.unpack("<H", b[786:788])[0], 9999)
+        # Wirksame Ziel-IP: ASCII (Web sock_desname); Binaer @768 wird geleert.
+        self.assertEqual(_c_str_at(b, _NE2_SOCK0_HOST_OFF, _NE2_SOCK0_HOST_LEN), "192.168.0.50")
+        self.assertEqual(b[_NE2_SOCK0_IP_OFF : _NE2_SOCK0_IP_OFF + 4], bytes(4))
+        after = _ne2_sock_from_page1(b)
+        self.assertEqual(after["mode"], "TCPC")
+        self.assertEqual(after["remote_ip"], "192.168.0.50")
+        self.assertEqual(after["remote_port"], "9999")
+
+    def test_ne2_sock_reads_ascii_dest_over_binary(self):
+        """NE2-T1M/D11: ASCII-Ziel hat Vorrang vor Rest-Binaer-IP @768."""
+        from rotortcpbridge.network_modules import (
+            _NE2_SOCK0_HOST_LEN,
+            _NE2_SOCK0_HOST_OFF,
+            _NE2_SOCK0_IP_OFF,
+            _ne2_sock_from_page1,
+            _put_c_str,
+            ebyte_at_to_sock_mode,
+            ebyte_page_from_payload,
+        )
+
+        p1 = ebyte_page_from_payload(_fx("ne2_page1.bin"))
+        assert p1 is not None
+        b = bytearray(p1.body)
+        b[10] = ebyte_at_to_sock_mode("TCPC")
+        b[779] = ebyte_at_to_sock_mode("TCPC")
+        _put_c_str(b, _NE2_SOCK0_HOST_OFF, _NE2_SOCK0_HOST_LEN, "192.168.0.148")
+        # Veraltete/andere Binaer-IP darf ASCII nicht ueberstimmen.
+        b[_NE2_SOCK0_IP_OFF : _NE2_SOCK0_IP_OFF + 4] = bytes([192, 168, 0, 99])
+        sock = _ne2_sock_from_page1(bytes(b))
+        self.assertEqual(sock["remote_ip"], "192.168.0.148")
+
+    def test_na111_patch_sock_mode_client(self):
+        from rotortcpbridge.network_modules import (
+            VENDOR_NA11X,
+            _NA111_SOCK_MODE_OFF,
+            _NA111_SOCK_MODE_OFF2,
+            _NA111_SOCK_REMOTE_HOST_OFF,
+            _NA111_SOCK_REMOTE_PORT_OFF,
+            _c_str_at,
+            ebyte_page_from_payload,
+            ebyte_patch_net_pages,
+            na111_at_to_sock_mode,
+            _na111_sock_from_page0,
+        )
+
+        p0 = ebyte_page_from_payload(_fx("na111_page0.bin"))
+        p3 = ebyte_page_from_payload(_fx("na111_page3.bin"))
+        assert p0 is not None and p3 is not None
+        before = _na111_sock_from_page0(p0.body)
+        self.assertEqual(before["mode"], "TCPS")
+        bodies = ebyte_patch_net_pages(
+            {0: p0, 3: p3},
+            ip="192.168.0.248",
+            mask="255.255.255.0",
+            gateway="192.168.0.1",
+            dns="192.168.0.1",
+            vendor=VENDOR_NA11X,
+            sock_cfg={
+                "mode": "TCPC",
+                "remote_ip": "192.168.0.50",
+                "remote_port": 9999,
+            },
+        )
+        b = bodies[0]
+        self.assertEqual(b[_NA111_SOCK_MODE_OFF], na111_at_to_sock_mode("TCPC"))
+        self.assertEqual(b[_NA111_SOCK_MODE_OFF2], na111_at_to_sock_mode("TCPC"))
+        self.assertEqual(
+            struct.unpack("<H", b[_NA111_SOCK_REMOTE_PORT_OFF : _NA111_SOCK_REMOTE_PORT_OFF + 2])[0],
+            9999,
+        )
+        self.assertEqual(_c_str_at(b, _NA111_SOCK_REMOTE_HOST_OFF, 32), "192.168.0.50")
+        after = _na111_sock_from_page0(b)
+        self.assertEqual(after["mode"], "TCPC")
+        self.assertEqual(after["remote_ip"], "192.168.0.50")
+        self.assertEqual(after["remote_port"], "9999")
+
     def test_na111_patch_ip_matches_capture_checksum(self):
         from rotortcpbridge.network_modules import (
             VENDOR_NA11X,
@@ -441,6 +583,83 @@ class TestEbyteUdpProtocol(unittest.TestCase):
         self.assertEqual(bodies[0], write[14:])
         self.assertEqual(p0.checksum_bytes(bodies[0]), write[10:14])
         self.assertEqual(bodies[3][0], 0x1E)
+
+    def test_ebyte_directed_broadcast(self):
+        from rotortcpbridge.network_modules import _ebyte_directed_broadcast
+
+        self.assertEqual(
+            _ebyte_directed_broadcast("10.10.100.50", "255.255.255.0"),
+            "10.10.100.255",
+        )
+        self.assertEqual(
+            _ebyte_directed_broadcast("192.168.0.245", "255.255.255.0"),
+            "192.168.0.255",
+        )
+
+    def test_ebyte_merge_page_maps_keeps_full_cache(self):
+        from rotortcpbridge.network_modules import EbytePage, _ebyte_merge_page_maps
+
+        p0 = EbytePage(page=0, body=b"a" * 80)
+        p1 = EbytePage(page=1, body=b"b" * 200)
+        cached = {0: p0, 1: p1}
+        fresh = {0: EbytePage(page=0, body=b"x" * 80)}
+        merged = _ebyte_merge_page_maps(cached, fresh)
+        self.assertIn(1, merged)
+        self.assertEqual(merged[0].body, b"x" * 80)
+        self.assertEqual(merged[1].body, b"b" * 200)
+
+    def test_ebyte_pages_complete_for_ne2(self):
+        from rotortcpbridge.network_modules import (
+            EbytePage,
+            VENDOR_NE2,
+            _ebyte_pages_complete_for_write,
+        )
+
+        p0 = EbytePage(page=0, body=b"x" * 80)
+        p1 = EbytePage(page=1, body=b"y" * 400)
+        self.assertFalse(_ebyte_pages_complete_for_write({0: p0}, VENDOR_NE2))
+        self.assertFalse(_ebyte_pages_complete_for_write({0: p0, 1: p1}, VENDOR_NE2))
+        p6 = EbytePage(page=6, body=b"z" * 180)
+        self.assertTrue(
+            _ebyte_pages_complete_for_write({0: p0, 1: p1, 6: p6}, VENDOR_NE2)
+        )
+
+    def test_ebyte_reboot_payload(self):
+        from rotortcpbridge.network_modules import (
+            EBYTE_UDP_REBOOT_TAIL,
+            EBYTE_UDP_REBOOT_TAIL_NA111,
+            EBYTE_UDP_REBOOT_TAIL_NE2,
+            VENDOR_NA11X,
+            VENDOR_NE2,
+            ebyte_udp_reboot_tail,
+        )
+
+        mac = bytes.fromhex("b0cbd84ec5b7")
+        payload = bytes([0xFE, 0x03]) + mac + EBYTE_UDP_REBOOT_TAIL
+        self.assertEqual(payload.hex(), "fe03b0cbd84ec5b71101")
+        self.assertEqual(EBYTE_UDP_REBOOT_TAIL_NE2, b"\x11\x01")
+        self.assertEqual(EBYTE_UDP_REBOOT_TAIL_NA111, b"\x03\x01")
+        # NA111 reboot.pcapng: fe 03 + MAC + 03 01
+        na_mac = bytes.fromhex("0c3d5e88ff86")
+        na_payload = bytes([0xFE, 0x03]) + na_mac + ebyte_udp_reboot_tail(VENDOR_NA11X)
+        self.assertEqual(na_payload.hex(), "fe030c3d5e88ff860301")
+        self.assertEqual(ebyte_udp_reboot_tail(VENDOR_NE2), b"\x11\x01")
+        self.assertEqual(ebyte_udp_reboot_tail(model="NA111-M"), b"\x03\x01")
+
+    def test_ebyte_write_session_payload(self):
+        from rotortcpbridge.network_modules import _ebyte_udp_write_session_payload
+
+        mac1 = bytes.fromhex("b0cbd84ec5b7")
+        mac2 = bytes.fromhex("b0cbd84ec017")
+        for mac in (mac1, mac2):
+            self.assertEqual(
+                _ebyte_udp_write_session_payload(mac, 0x30).hex(),
+                f"fe0b{mac.hex()}0000bf5430",
+            )
+            self.assertEqual(
+                _ebyte_udp_write_session_payload(mac, 0x31).hex(),
+                f"fe0b{mac.hex()}00007e9431",
+            )
 
     def test_discover_ping_constant(self):
         from rotortcpbridge.network_modules import EBYTE_DISCOVER_PING

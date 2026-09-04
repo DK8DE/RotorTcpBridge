@@ -1,7 +1,8 @@
 """RS485-Netzwerk-Konverter: AT/Web-APIs, Ebyte-UDP-Discovery und Legacy-TCP-Scan.
 
 Unterstuetzte Hersteller:
-  * Ebyte NE2 / NA11x – Web-API, optional AT; Suche/IP-Vergabe per UDP 1901/1902
+  * Ebyte NE2 – Auslesen/Schreiben per UDP-Broadcast (1901/1902), wie Original-Tool
+  * Ebyte NA11x – Web-API bzw. UDP; Suche/IP-Vergabe per UDP 1901/1902
   * USR-DR164 – Web (HTTP Basic) bzw. Transparent-AT
 """
 
@@ -67,6 +68,7 @@ class NetworkModule:
     uid: str = ""  # DK8DE: 8-stellige Hex-Geraete-ID
     config_port: int = 8880  # DK8DE: UDP AT/Discovery
     contact_host: str = ""  # DK8DE: zuletzt erreichbare IP fuer AT (nicht persistiert)
+    mac: str = ""  # Ebyte: MAC fuer UDP-Schreiben (1901/1902)
     # Zuletzt gelesene Live-Werte (nicht persistent noetig, aber praktisch)
     last_status: Dict[str, Any] = field(default_factory=dict)
 
@@ -84,6 +86,7 @@ class NetworkModule:
             "web_password": str(self.web_password or "admin"),
             "uid": str(self.uid or "").strip().upper(),
             "config_port": int(self.config_port),
+            "mac": str(self.mac or "").strip().upper(),
         }
         if d["vendor"] not in VALID_VENDORS:
             d["vendor"] = VENDOR_GENERIC
@@ -92,6 +95,8 @@ class NetworkModule:
         if d["vendor"] != VENDOR_DK8DE:
             d.pop("uid", None)
             d.pop("config_port", None)
+        if not d["mac"]:
+            d.pop("mac", None)
         return d
 
     @classmethod
@@ -131,6 +136,7 @@ class NetworkModule:
             web_password=str(raw.get("web_password", "admin") if raw.get("web_password") is not None else "admin"),
             uid=str(raw.get("uid", "") or "").strip().upper(),
             config_port=max(1, min(65535, config_port)),
+            mac=str(raw.get("mac", "") or "").strip().upper(),
         )
 
 
@@ -1383,6 +1389,83 @@ def dk8de_module_connect_host(
     )
 
 
+def probe_ebyte_udp(module: NetworkModule, *, timeout: float = 0.5) -> bool:
+    """Erreichbarkeit per TCP und/oder UDP-Discovery (1901/1902)."""
+    host = str(module.host or "").strip()
+    mac_text = str(module.mac or "").strip().upper().replace("-", ":")
+    if not host and not mac_text:
+        return False
+    # Zuerst kurzer TCP-Connect (Server-Modus) — spart die volle Discovery-Wartezeit.
+    if host:
+        try:
+            port = int(module.at_port or DEFAULT_AT_PORTS.get(module.vendor, 8886))
+        except (TypeError, ValueError):
+            port = 8886
+        if probe_online(host, port, timeout=min(0.25, float(timeout))):
+            return True
+    # Client-Modus / kein TCP: kurzer UDP-Ping mit Early-Exit bei Treffer.
+    if _ebyte_udp_probe_announce(
+        host=host,
+        mac_text=mac_text,
+        timeout=max(0.25, float(timeout)),
+    ):
+        return True
+    return False
+
+
+def _ebyte_udp_probe_announce(
+    *,
+    host: str = "",
+    mac_text: str = "",
+    timeout: float = 0.35,
+) -> bool:
+    """Ein Discovery-Ping; True sobald passende MAC/IP-Antwort kommt (kein Full-Wait)."""
+    host_n = str(host or "").strip()
+    mac_n = str(mac_text or "").strip().upper().replace("-", ":")
+    if not host_n and not mac_n:
+        return False
+    mac_bytes = b""
+    if mac_n:
+        try:
+            mac_bytes = ebyte_mac_from_str(mac_n)
+        except ValueError:
+            mac_bytes = b""
+    sock: Optional[socket.socket] = None
+    try:
+        sock = _ebyte_open_socket()
+        deadline = time.time() + max(0.2, float(timeout))
+        for _ in range(2):
+            _ebyte_send_broadcast(sock, EBYTE_DISCOVER_PING)
+            time.sleep(0.03)
+        while time.time() < deadline:
+            try:
+                data, addr = sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if len(data) < 8 or data[0] != 0xFD:
+                continue
+            reply_mac = data[2:8]
+            reply_ip = str(addr[0] or "").strip() if isinstance(addr, tuple) else ""
+            if mac_bytes and reply_mac == mac_bytes:
+                return True
+            if host_n and reply_ip == host_n:
+                return True
+            # Ident-Antwort mit Netzseite kann IP im Body tragen — reicht MAC/Peer.
+            if data[1] == 0x06 and mac_bytes and reply_mac == mac_bytes:
+                return True
+        return False
+    except Exception:
+        return False
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
 def probe_module(module: NetworkModule, timeout: float = 0.4) -> bool:
     if module.vendor == VENDOR_DK8DE:
         from .dk8de_wlan_module import probe_dk8de
@@ -1397,7 +1480,34 @@ def probe_module(module: NetworkModule, timeout: float = 0.4) -> bool:
             web_password=str(module.web_password or "Rotorconfig"),
             timeout=max(timeout, 0.8),
         )
+    if module.vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC):
+        return probe_ebyte_udp(module, timeout=max(timeout, 0.5))
     return probe_online(module.host, module.at_port, timeout=timeout)
+
+
+def probe_module_quick(module: NetworkModule, timeout: float = 0.35) -> bool:
+    """Schnelle Erreichbarkeitspruefung vor dem Auslesen (kurze Timeouts)."""
+    if module.vendor == VENDOR_DK8DE:
+        from .dk8de_wlan_module import probe_dk8de
+
+        host = dk8de_module_connect_host(module)
+        # Nur kurzer Web-Check — volles AT wuerde den Klick unnoetig verzoegern.
+        return probe_dk8de(
+            host,
+            module.uid,
+            config_port=int(module.config_port or 8880),
+            web_port=int(module.web_port or 80),
+            web_user=str(module.web_user or "admin"),
+            web_password=str(module.web_password or "Rotorconfig"),
+            timeout=max(0.25, min(0.45, float(timeout))),
+        )
+    if module.vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC):
+        return probe_ebyte_udp(module, timeout=max(0.25, min(0.45, float(timeout))))
+    return probe_online(
+        module.host,
+        module.at_port,
+        timeout=max(0.2, min(0.4, float(timeout))),
+    )
 
 
 def _tcp_transact(
@@ -1477,8 +1587,8 @@ def read_status(
 ) -> Dict[str, Any]:
     """Liest Modell/MAC/WAN/SOCK/Link-Status vom Modul.
 
-    NE2/NA11x/USR: primaer Web-API (AT auf dem Daten-Port oft unbrauchbar wegen
-    transparentem RS485-Verkehr). USR: HTTP Basic Auth (admin/admin).
+    NE2: nur UDP-Broadcast (1901/1902), wie Original-Tool – kein Web.
+    NA11x/USR: Web-API; USR zusaetzlich AT-Fallback.
     """
     out: Dict[str, Any] = {
         "model": "",
@@ -1540,7 +1650,15 @@ def read_status(
             errors.append("USR-Web lieferte keine Daten")
         except Exception as exc:
             errors.append(f"Web: {exc}")
-    elif vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC):
+    elif vendor == VENDOR_NE2:
+        try:
+            udp_st = read_status_ebyte_udp(module, timeout=min(max(timeout, 1.0), 1.8))
+            if status_has_data(udp_st):
+                return udp_st
+            errors.append("UDP-Auslesen lieferte keine Daten")
+        except Exception as exc:
+            errors.append(f"UDP: {exc}")
+    elif vendor in (VENDOR_NA11X, VENDOR_GENERIC):
         try:
             web_st = read_status_web(module, timeout=max(timeout, 4.0))
             if status_has_data(web_st):
@@ -1548,6 +1666,13 @@ def read_status(
             errors.append("Web-API lieferte keine Daten")
         except Exception as exc:
             errors.append(f"Web: {exc}")
+        try:
+            udp_st = read_status_ebyte_udp(module, timeout=max(timeout, 3.0))
+            if status_has_data(udp_st):
+                return udp_st
+            errors.append("UDP-Auslesen lieferte keine Daten")
+        except Exception as exc:
+            errors.append(f"UDP: {exc}")
 
     def _q(cmd: str) -> str:
         resp = _send_at(module, cmd, timeout=timeout)
@@ -1600,7 +1725,7 @@ def read_status(
                     pass
             if status_has_data(out):
                 out["source"] = "at"
-        elif vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC):
+        elif vendor in (VENDOR_NA11X, VENDOR_GENERIC):
             for key, cmd in (("model", "AT+MODEL"), ("mac", "AT+MAC"), ("ver", "AT+VER")):
                 try:
                     out[key] = _q(cmd)
@@ -1646,7 +1771,11 @@ def write_config(
     timeout: float = 3.0,
     at_host: str = "",
 ) -> Dict[str, Any]:
-    """Schreibt WAN + SOCK. NE2/NA11x/USR primaer via Web-API."""
+    """Schreibt WAN + SOCK.
+
+    NE2/NA11x: Netz + Socket per UDP-Broadcast (wie Original-Tool / Suche→IP setzen).
+    USR/DK8DE: Web bzw. AT wie bisher.
+    """
     results: Dict[str, Any] = {"commands": [], "ok": True, "error": ""}
     vendor = module.vendor
 
@@ -1685,14 +1814,9 @@ def write_config(
 
     if vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC):
         try:
-            web_res = write_config_web(module, wan, sock, timeout=max(timeout, 4.0))
-            results.update(web_res)
-            results["ok"] = True
-            return results
+            return write_config_ebyte_udp(module, wan, sock, reboot=reboot)
         except Exception as exc:
-            results["ok"] = False
-            results["error"] = f"Web-Schreiben fehlgeschlagen: {exc}"
-            return results
+            return {"ok": False, "error": str(exc), "commands": []}
 
     def _w(cmd: str) -> None:
         resp = _send_at(module, cmd, timeout=timeout)
@@ -1740,6 +1864,233 @@ def write_config(
     return results
 
 
+def _ne2_sock_from_page1(body: bytes) -> Dict[str, str]:
+    """Socket A aus NE2-Seite 1 (Offsets aus Mitschnitt ne2_page1.bin / NE2-T1M)."""
+    sock: Dict[str, str] = {
+        "mode": "",
+        "remote_ip": "",
+        "remote_port": "",
+        "link_id": "0",
+    }
+    if len(body) > _NE2_SOCKA_MODE_OFF:
+        sock["mode"] = ebyte_sock_mode_to_at(body[_NE2_SOCKA_MODE_OFF])
+    mode = str(sock.get("mode") or "").upper()
+    if mode in ("TCPC", "UDPC"):
+        # Primär: ASCII-Ziel (Web sock_desname); Fallback: alte Binaer-IPv4 @768.
+        host = _c_str_at(body, _NE2_SOCK0_HOST_OFF, _NE2_SOCK0_HOST_LEN)
+        if host and host not in ("0.0.0.0", "-", "—"):
+            sock["remote_ip"] = host
+        elif len(body) >= _NE2_SOCK0_IP_OFF + 4:
+            rip = _ipv4_at(body, _NE2_SOCK0_IP_OFF)
+            if rip and rip != "0.0.0.0":
+                sock["remote_ip"] = rip
+    if len(body) >= _NE2_SOCK0_PORT_OFF + 2:
+        port = struct.unpack("<H", body[_NE2_SOCK0_PORT_OFF : _NE2_SOCK0_PORT_OFF + 2])[0]
+        if 1 <= port <= 65535:
+            sock["remote_port"] = str(port)
+    return sock
+
+
+def _na111_sock_from_page0(body: bytes) -> Dict[str, str]:
+    """Socket/Arbeitsmodus aus NA111-Seite 0 (Offsets aus Fixture/Mitschnitt)."""
+    sock: Dict[str, str] = {
+        "mode": "",
+        "remote_ip": "",
+        "remote_port": "",
+        "link_id": "0",
+        "local_port": "",
+    }
+    if len(body) > _NA111_SOCK_MODE_OFF:
+        sock["mode"] = na111_sock_mode_to_at(body[_NA111_SOCK_MODE_OFF])
+    mode = str(sock.get("mode") or "").upper()
+    host = _c_str_at(body, _NA111_SOCK_REMOTE_HOST_OFF, _NA111_SOCK_REMOTE_HOST_LEN)
+    if host and host not in ("0.0.0.0", "-", "—"):
+        sock["remote_ip"] = host
+    if len(body) >= _NA111_SOCK_LOCAL_PORT_OFF + 2:
+        lp = struct.unpack(
+            "<H", body[_NA111_SOCK_LOCAL_PORT_OFF : _NA111_SOCK_LOCAL_PORT_OFF + 2]
+        )[0]
+        if 1 <= lp <= 65535:
+            sock["local_port"] = str(lp)
+            if mode in ("TCPS", "UDPS"):
+                sock["remote_port"] = str(lp)
+    if len(body) >= _NA111_SOCK_REMOTE_PORT_OFF + 2:
+        rp = struct.unpack(
+            "<H", body[_NA111_SOCK_REMOTE_PORT_OFF : _NA111_SOCK_REMOTE_PORT_OFF + 2]
+        )[0]
+        if 1 <= rp <= 65535 and mode in ("TCPC", "UDPC", "MQTTC", "HTTPC"):
+            sock["remote_port"] = str(rp)
+        elif 1 <= rp <= 65535 and not sock.get("remote_port"):
+            sock["remote_port"] = str(rp)
+    return sock
+
+
+def map_ebyte_device_to_status(dev: EbyteDevice) -> Dict[str, Any]:
+    """Mappt UDP-Discovery/Seitenlesen auf das einheitliche Status-Dict."""
+    wan = {
+        "mode": "STATIC",
+        "ip": str(dev.ip or "").strip(),
+        "mask": str(dev.mask or "").strip(),
+        "gateway": str(dev.gateway or "").strip(),
+        "dns": str(dev.dns or "").strip(),
+        "dns2": str(dev.dns2 or "").strip(),
+    }
+    sock: Dict[str, str] = {
+        "mode": "",
+        "remote_ip": "",
+        "remote_port": "",
+        "link_id": "0",
+    }
+    if dev.vendor == VENDOR_NE2 or (dev.model or "").upper().startswith("NE2"):
+        p1 = (dev.pages or {}).get(1)
+        if p1 is not None:
+            sock = _ne2_sock_from_page1(p1.body)
+    elif dev.vendor == VENDOR_NA11X or (dev.model or "").upper().startswith("NA11"):
+        p0 = (dev.pages or {}).get(0)
+        if p0 is not None:
+            sock = _na111_sock_from_page0(p0.body)
+    return {
+        "model": str(dev.model or "").strip(),
+        "mac": dev.mac_str,
+        "ver": str(dev.fw or "").strip(),
+        "wan": wan,
+        "sock": sock,
+        "link": "",
+        "raw": {"page_count": len(dev.pages or {})},
+        "source": "udp",
+    }
+
+
+def ebyte_device_data_port(dev: EbyteDevice) -> int:
+    """Daten-/Listen-Port aus UDP-Seiten (NE2 Seite 1, NA11 Seite 0)."""
+    st = map_ebyte_device_to_status(dev)
+    sock = st.get("sock") if isinstance(st.get("sock"), dict) else {}
+    for key in ("remote_port", "local_port"):
+        try:
+            port = int(str(sock.get(key) or "").strip() or 0)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= port <= 65535:
+            return port
+    return 0
+
+
+def read_status_ebyte_udp(
+    module: NetworkModule,
+    *,
+    timeout: float = 1.5,
+) -> Dict[str, Any]:
+    """Liest NE2/NA11x-Konfiguration per UDP-Broadcast (1901/1902)."""
+    host = str(module.host or "").strip()
+    mac_bytes: Optional[bytes] = None
+    mac_text = str(module.mac or "").strip()
+    if mac_text:
+        try:
+            mac_bytes = ebyte_mac_from_str(mac_text)
+        except ValueError:
+            mac_bytes = None
+    if mac_bytes is None and host:
+        mac_bytes = ebyte_find_mac_for_host(host, timeout=min(0.8, max(0.4, float(timeout) * 0.5)))
+    if mac_bytes is None:
+        raise RuntimeError(
+            "MAC unbekannt – Modul bitte zuerst über „Netzwerk-Suche“ finden "
+            "und „Übernehmen“."
+        )
+
+    vendor = str(module.vendor or "").strip().lower()
+    # NE2: nur Seite 0 (Ident) + 1 (Netz/Socket) – reicht und ist deutlich schneller.
+    page_count = 2 if vendor == VENDOR_NE2 else None
+    per_page_timeout = min(0.4, max(0.22, float(timeout) * 0.28))
+    pages = ebyte_udp_read_pages(
+        mac_bytes,
+        timeout=per_page_timeout,
+        unicast_ip=host,
+        page_count=page_count,
+    )
+    if not pages:
+        raise RuntimeError("Keine Konfigurationsseiten per UDP empfangen")
+    dev = EbyteDevice(mac=mac_bytes)
+    ebyte_apply_pages(dev, pages)
+    st = map_ebyte_device_to_status(dev)
+    if not status_has_data(st):
+        raise RuntimeError("UDP-Seiten ohne auswertbare Konfigurationsdaten")
+    return st
+
+
+def ebyte_find_mac_for_host(host: str, *, timeout: float = 2.0) -> Optional[bytes]:
+    """Findet die MAC eines Ebyte-Moduls per UDP-Discovery zur aktuellen Host-IP."""
+    ip = str(host or "").strip()
+    if not ip or ip in ("0.0.0.0", "255.255.255.255"):
+        return None
+    try:
+        devices = ebyte_udp_discover(timeout=max(0.4, float(timeout)), read_pages=False)
+    except Exception:
+        return None
+    for dev in devices:
+        if str(dev.ip or "").strip() == ip:
+            return bytes(dev.mac)
+    return None
+
+
+def write_config_ebyte_udp(
+    module: NetworkModule,
+    wan: Dict[str, Any],
+    sock: Dict[str, Any],
+    *,
+    reboot: bool = True,
+) -> Dict[str, Any]:
+    """Schreibt WAN + Socket per Ebyte-UDP (Broadcast 1901/1902, wie Original-Tool)."""
+    host = str(module.host or "").strip()
+    new_ip = str(wan.get("ip") or host).strip()
+    mask = str(wan.get("mask") or "255.255.255.0").strip()
+    gateway = str(wan.get("gateway") or "").strip()
+    dns = str(wan.get("dns") or "").strip()
+    dns2 = str(wan.get("dns2") or "").strip()
+    if not new_ip:
+        return {"ok": False, "error": "IP fehlt", "commands": [], "source": "udp"}
+
+    mac_bytes: Optional[bytes] = None
+    mac_text = str(module.mac or "").strip()
+    if mac_text:
+        try:
+            mac_bytes = ebyte_mac_from_str(mac_text)
+        except ValueError:
+            mac_bytes = None
+    if mac_bytes is None and host:
+        mac_bytes = ebyte_find_mac_for_host(host, timeout=2.5)
+    if mac_bytes is None:
+        return {
+            "ok": False,
+            "error": (
+                "MAC unbekannt – Modul bitte zuerst über „Netzwerk-Suche“ finden "
+                "und „Übernehmen“, oder Auslesen (liefert oft die MAC)."
+            ),
+            "commands": [],
+            "source": "udp",
+        }
+
+    udp_res = ebyte_set_network(
+        mac_bytes,
+        ip=new_ip,
+        mask=mask or "255.255.255.0",
+        gateway=gateway or "0.0.0.0",
+        dns=dns,
+        dns2=dns2,
+        vendor=str(module.vendor or ""),
+        sock_cfg=sock,
+    )
+    return {
+        "ok": bool(udp_res.get("ok")),
+        "error": str(udp_res.get("error") or ""),
+        "commands": [],
+        "source": "udp",
+        "mac": ebyte_mac_str(mac_bytes),
+        "rebooted": bool(udp_res.get("rebooted")),
+        "reboot_failed": bool(udp_res.get("reboot_failed")),
+        "acked": list(udp_res.get("acked") or []),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Ebyte UDP-Discovery / Read / Write (Ports 1901/1902)
 # ---------------------------------------------------------------------------
@@ -1747,12 +2098,35 @@ def write_config(
 EBYTE_UDP_CMD_PORT = 1901  # PC → Geraet (Broadcast)
 EBYTE_UDP_LISTEN_PORT = 1902  # Geraet → PC
 EBYTE_DISCOVER_PING = b"www.cdebyte.comwww.cdebyte.com"
+# Reboot-Tail nach fe 03 + MAC — vendor-spezifisch (Mitschnitte):
+#   NE2-D11: 11 01   |   NA111-M: 03 01
+EBYTE_UDP_REBOOT_TAIL = b"\x11\x01"
+EBYTE_UDP_REBOOT_TAIL_NE2 = b"\x11\x01"
+EBYTE_UDP_REBOOT_TAIL_NA111 = b"\x03\x01"
+# Mitschnitt: CRC nach 00 00 ist pro Schritt fest (nicht MAC-abhaengig)
+EBYTE_UDP_WRITE_SESSION_CRC: Dict[int, bytes] = {0x30: b"\xbf\x54", 0x31: b"\x7e\x94"}
+EBYTE_UDP_WRITE_SESSION_STEPS = (0x30, 0x31)
 EBYTE_CRC16_INIT = 0xB001
 EBYTE_CRC16_POLY = 0xA001
 
 # Netzfeld-Offsets im Seiten-Body (nach dem 14-Byte-UDP-Header)
 _NE2_NET_OFF = 154  # Seite 1: IP, GW, Mask, DNS1, DNS2 (je 4 B)
+_NE2_SOCKA_MODE_OFF = 10  # Seite 1: Socket-A-Modus (0–4, siehe ebyte_sock_mode_to_at)
+# Ziel-Host/IP Socket A als ASCII (Web sock_desname) — Mitschnitt NE2-T1M Config-Tool
+# und NE2-D11 Fixture; Feld bis zur alten Binaer-IP bei 768.
+_NE2_SOCK0_HOST_OFF = 522
+_NE2_SOCK0_HOST_LEN = 246
+_NE2_SOCK0_IP_OFF = 768  # veraltete Binaer-Ziel-IP (Tool loescht sie beim ASCII-Schreiben)
+_NE2_SOCK0_MODE_OFF = 779  # Seite 1: Socket-A-Modus (zweite Kopie, Mitschnitt)
+_NE2_SOCK0_PORT_OFF = 782  # Seite 1: Listen-/Ziel-Port Socket A
+_NE2_SOCK0_PORT2_OFF = 786  # Seite 1: Port-Duplikat (Mitschnitt)
 _NA111_NET_OFF = 14  # Seite 0: IP, GW, Mask, DNS (je 4 B)
+_NA111_SOCK_REMOTE_HOST_OFF = 30  # Seite 0: Ziel-Host/IP als ASCII (wie Web __0E)
+_NA111_SOCK_REMOTE_HOST_LEN = 32
+_NA111_SOCK_MODE_OFF = 159  # Seite 0: Arbeitsmodus (0=TCPC …, siehe _NA111_SOCK_MODE_TO_AT)
+_NA111_SOCK_MODE_OFF2 = 3  # zweite Mode-Kopie (Mitschnitt Server=1)
+_NA111_SOCK_LOCAL_PORT_OFF = 162  # Seite 0: lokaler Port (LE u16)
+_NA111_SOCK_REMOTE_PORT_OFF = 166  # Seite 0: Ziel-Port (LE u16)
 _NA111_SAVE_FLAG_OFF = 171  # Tool setzt 0x0A beim Speichern
 _NA111_SAVE_PAGE3_FLAG = 0x1E
 
@@ -1803,6 +2177,16 @@ def _c_str_at(body: bytes, off: int, max_len: int = 32) -> str:
         return chunk.decode("ascii", errors="ignore").strip()
     except Exception:
         return ""
+
+
+def _put_c_str(body: bytearray, off: int, max_len: int, text: str) -> None:
+    """Schreibt einen ASCII-C-String (NUL-aufgefuellt) in ein festes Feld."""
+    if off < 0 or max_len <= 0 or off + max_len > len(body):
+        return
+    raw = str(text or "").encode("ascii", errors="ignore")[: max(0, max_len - 1)]
+    field = bytearray(max_len)
+    field[: len(raw)] = raw
+    body[off : off + max_len] = field
 
 
 @dataclass
@@ -1879,15 +2263,76 @@ def ebyte_page_from_payload(payload: bytes) -> Optional[EbytePage]:
 
 
 def _ebyte_open_socket(listen_port: int = EBYTE_UDP_LISTEN_PORT) -> socket.socket:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    """UDP-Socket an Port 1902 — Geraete antworten dorthin (Mitschnitt).
+
+    Kein Fallback auf Port 0: Antworten gingen sonst verloren (kein RX / kein ACK).
+    """
+    last_err: Optional[OSError] = None
+    for _ in range(5):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            sock.bind(("0.0.0.0", int(listen_port)))
+            sock.settimeout(0.2)
+            return sock
+        except OSError as exc:
+            last_err = exc
+            try:
+                sock.close()
+            except OSError:
+                pass
+            time.sleep(0.08)
+    raise OSError(
+        f"UDP port {listen_port} belegt — Ebyte UDP (Suche/IP setzen) braucht diesen Port. "
+        "Andere Programme schließen oder kurz warten."
+    ) from last_err
+
+
+def _ebyte_directed_broadcast(ip: str, mask: str) -> str:
+    """Subnetz-Broadcast (z. B. 192.168.0.255) fuer Factory-IPs wie 10.10.100.x."""
     try:
-        sock.bind(("0.0.0.0", int(listen_port)))
-    except OSError:
-        sock.bind(("0.0.0.0", 0))
-    sock.settimeout(0.2)
-    return sock
+        addr = int(ipaddress.IPv4Address(str(ip or "").strip()))
+        mask_i = int(ipaddress.IPv4Address(str(mask or "").strip()))
+    except (ValueError, ipaddress.AddressValueError):
+        return ""
+    if mask_i == 0:
+        return ""
+    bcast = (addr & mask_i) | (~mask_i & 0xFFFFFFFF)
+    return str(ipaddress.IPv4Address(bcast))
+
+
+def _ebyte_merge_page_maps(
+    cached: Dict[int, EbytePage], fresh: Dict[int, EbytePage]
+) -> Dict[int, EbytePage]:
+    """Vollstaendigen Cache nicht durch partielles Re-Read ersetzen."""
+    if not cached:
+        return dict(fresh)
+    if not fresh:
+        return dict(cached)
+    if len(fresh) >= len(cached):
+        return dict(fresh)
+    merged = dict(cached)
+    merged.update(fresh)
+    return merged
+
+
+def _ebyte_pages_complete_for_write(
+    pages: Dict[int, EbytePage], vendor: str
+) -> bool:
+    """True wenn Discovery-Seiten fuer UDP-Schreiben ausreichen (Re-Read entbehrlich)."""
+    if not pages:
+        return False
+    v = str(vendor or "").strip().lower()
+    if v == VENDOR_NE2:
+        if 0 not in pages or 1 not in pages:
+            return False
+        return 6 in pages or any(
+            p > 0 and len(pages[p].body) < 200 for p in pages
+        )
+    if v == VENDOR_NA11X:
+        return 0 in pages and 3 in pages
+    return 0 in pages
 
 
 def _ebyte_send_broadcast(sock: socket.socket, payload: bytes) -> None:
@@ -1945,6 +2390,27 @@ def ebyte_udp_discover(
                     ebyte_apply_pages(dev, pages)
                 except Exception:
                     pass
+                # NA111: komplette 0..5 Seiten nachziehen (Save braucht Seite 3).
+                if (
+                    pages
+                    and (
+                        str(dev.vendor or "").lower() == VENDOR_NA11X
+                        or (dev.model or "").upper().startswith("NA11")
+                    )
+                    and (0 not in pages or 3 not in pages or max(pages) < 5)
+                ):
+                    try:
+                        more = ebyte_udp_read_pages(
+                            mac, sock=sock, page_count=6, timeout=1.0
+                        )
+                    except Exception:
+                        more = {}
+                    if more:
+                        pages = _ebyte_merge_page_maps(pages, more)
+                        try:
+                            ebyte_apply_pages(dev, pages)
+                        except Exception:
+                            pass
     finally:
         try:
             sock.close()
@@ -1961,6 +2427,7 @@ def ebyte_udp_read_pages(
     timeout: float = 0.8,
     page_count: Optional[int] = None,
     unicast_ip: str = "",
+    netmask: str = "",
 ) -> Dict[int, EbytePage]:
     """Liest Konfigurationsseiten ``fe 00`` / ``fd 00`` fuer eine MAC."""
     if len(mac) != 6:
@@ -1984,7 +2451,11 @@ def ebyte_udp_read_pages(
             for _try in range(3):
                 _ebyte_drain(sock)
                 extra_socks = _ebyte_send_cmd(
-                    sock, req, unicast_ip=unicast_ip, all_interfaces=_try > 0
+                    sock,
+                    req,
+                    unicast_ip=unicast_ip,
+                    netmask=netmask,
+                    all_interfaces=_try > 0,
                 )
                 try:
                     all_socks = [sock] + extra_socks
@@ -2134,6 +2605,7 @@ def _ebyte_send_cmd(
     unicast_ip: str = "",
     netmask: str = "",
     all_interfaces: bool = False,
+    broadcast_only: bool = False,
 ) -> List[socket.socket]:
     """Wie Mitschnitt: limited Broadcast an 255.255.255.255:1901 (Source-Port 1902).
 
@@ -2156,21 +2628,32 @@ def _ebyte_send_cmd(
     einem erneuten Versuch (nach einem bereits fehlgeschlagenen einfachen
     Broadcast) zugeschaltet, als Fallback fuer den Mehrfach-Subnetz-Fall.
 
+    ``broadcast_only=True`` (Schreiben/Session/Reboot): nur ``255.255.255.255``,
+    kein Unicast und kein Subnetz-Broadcast. Das Original-Tool sendet so;
+    zusaetzliche Kopien (v. a. bei ~1-KB-Seiten) fuehren oft zu „kein RX“.
+
     Gibt die dabei zusaetzlich erzeugten (noch offenen) Sockets zurueck (leer,
     wenn ``all_interfaces=False``). Der Aufrufer MUSS diese zusammen mit
     ``sock`` auf eine Antwort abhorchen (``_ebyte_recv_from_any``) und danach
     schliessen - sonst kann eine schnell eintreffende Antwort verloren gehen
     (siehe ``_ebyte_send_from_all_interfaces``).
     """
-    del netmask  # API-Kompatibilitaet; Mitschnitt nutzt nur limited Broadcast
     n = sock.sendto(payload, ("255.255.255.255", EBYTE_UDP_CMD_PORT))
     if n != len(payload):
         raise OSError(f"UDP broadcast truncated ({n}/{len(payload)})")
     extra_socks: List[socket.socket] = []
-    if all_interfaces:
+    if all_interfaces and not broadcast_only:
         extra_socks = _ebyte_send_from_all_interfaces(payload, EBYTE_UDP_CMD_PORT)
-    # Zusaetzlicher Unicast schadet nicht, wenn Geraet erreichbar ist
+    if broadcast_only:
+        return extra_socks
     ip = str(unicast_ip or "").strip()
+    m = str(netmask or "").strip()
+    directed = _ebyte_directed_broadcast(ip, m) if ip and m else ""
+    if directed and directed not in ("255.255.255.255", "0.0.0.0"):
+        try:
+            sock.sendto(payload, (directed, EBYTE_UDP_CMD_PORT))
+        except OSError:
+            pass
     if ip and ip not in ("0.0.0.0", "255.255.255.255"):
         try:
             sock.sendto(payload, (ip, EBYTE_UDP_CMD_PORT))
@@ -2192,7 +2675,7 @@ def ebyte_udp_write_pages(
     sock: Optional[socket.socket] = None,
 ) -> Dict[str, Any]:
     """Schreibt Seiten per ``fe 01`` wie im Mitschnitt (Broadcast, Seiten 0..N)."""
-    del priority_last, netmask
+    del priority_last
     if len(mac) != 6:
         raise ValueError("mac must be 6 bytes")
     result: Dict[str, Any] = {"ok": True, "acked": [], "error": ""}
@@ -2223,11 +2706,18 @@ def ebyte_udp_write_pages(
             last_rx = b""
             wait = max(0.6, float(timeout))
             for attempt in range(max(1, int(retries))):
+                if attempt:
+                    time.sleep(0.2 * attempt)
                 _ebyte_drain(sock)
-                # Ein Send wie im Mitschnitt (kein Doppel-Send); Multi-Interface
-                # erst ab dem zweiten Versuch (siehe _ebyte_send_cmd)
+                # Mitschnitt: genau EIN Broadcast; kein Unicast/kein Multi-NIC
+                # (sonst „kein RX“ bei ~1-KB-Seiten wie page 1).
                 extra_socks = _ebyte_send_cmd(
-                    sock, payload, unicast_ip=unicast_ip, all_interfaces=attempt > 0
+                    sock,
+                    payload,
+                    unicast_ip=unicast_ip,
+                    netmask=netmask,
+                    all_interfaces=False,
+                    broadcast_only=True,
                 )
                 try:
                     all_socks = [sock] + extra_socks
@@ -2256,14 +2746,207 @@ def ebyte_udp_write_pages(
                             pass
                 if acked:
                     break
-                time.sleep(0.15 * (attempt + 1))
             if not acked:
                 result["ok"] = False
                 detail = last_rx[:16].hex() if last_rx else "kein RX"
                 result["error"] = f"no ACK for page {page} ({detail})"
                 break
             result["acked"].append(page)
-            time.sleep(0.02)
+            # Nach grossen Seiten etwas laenger warten (NE2-Stack)
+            time.sleep(0.08 if len(payload) < 200 else 0.15)
+    except Exception as exc:
+        result["ok"] = False
+        result["error"] = str(exc)
+    finally:
+        if own:
+            try:
+                sock.close()
+            except OSError:
+                pass
+    return result
+
+
+def _ebyte_udp_write_session_payload(mac: bytes, step: int) -> bytes:
+    """Baut ``fe 0b`` Schreib-Session (Mitschnitt vor page writes)."""
+    step_i = int(step) & 0xFF
+    crc = EBYTE_UDP_WRITE_SESSION_CRC.get(step_i)
+    if crc is None:
+        raise ValueError(f"unsupported write-session step: 0x{step_i:02x}")
+    return bytes([0xFE, 0x0B]) + mac + b"\x00\x00" + crc + bytes([step_i])
+
+
+def ebyte_udp_write_session(
+    mac: bytes,
+    *,
+    timeout: float = 1.2,
+    retries: int = 4,
+    unicast_ip: str = "",
+    netmask: str = "",
+    sock: Optional[socket.socket] = None,
+) -> Dict[str, Any]:
+    """Schreib-Session oeffnen (``fe 0b`` x2) — im Original-Tool vor dem Speichern."""
+    if len(mac) != 6:
+        raise ValueError("mac must be 6 bytes")
+    result: Dict[str, Any] = {"ok": True, "error": ""}
+    own = sock is None
+    if own:
+        sock = _ebyte_open_socket()
+    assert sock is not None
+    try:
+        wait = max(0.8, float(timeout))
+        for step in EBYTE_UDP_WRITE_SESSION_STEPS:
+            payload = _ebyte_udp_write_session_payload(mac, step)
+            acked = False
+            last_rx = b""
+            for attempt in range(max(1, int(retries))):
+                if attempt:
+                    time.sleep(0.15 * attempt)
+                _ebyte_drain(sock)
+                extra_socks = _ebyte_send_cmd(
+                    sock,
+                    payload,
+                    unicast_ip=unicast_ip,
+                    netmask=netmask,
+                    all_interfaces=False,
+                    broadcast_only=True,
+                )
+                try:
+                    all_socks = [sock] + extra_socks
+                    end = time.time() + wait
+                    while time.time() < end:
+                        entry = _ebyte_recv_from_any(all_socks, end - time.time())
+                        if entry is None:
+                            continue
+                        data, _addr = entry
+                        last_rx = data
+                        if (
+                            len(data) >= 10
+                            and data[0] == 0xFD
+                            and data[1] == 0x0B
+                            and data[2:8] == mac
+                        ):
+                            acked = True
+                            break
+                finally:
+                    for es in extra_socks:
+                        try:
+                            es.close()
+                        except OSError:
+                            pass
+                if acked:
+                    break
+            if not acked:
+                result["ok"] = False
+                detail = last_rx[:16].hex() if last_rx else "kein RX"
+                result["error"] = f"no write-session ACK step 0x{step:02x} ({detail})"
+                return result
+            time.sleep(0.05)
+    except Exception as exc:
+        result["ok"] = False
+        result["error"] = str(exc)
+    finally:
+        if own:
+            try:
+                sock.close()
+            except OSError:
+                pass
+    return result
+
+
+def ebyte_udp_reboot_tail(vendor: str = "", model: str = "") -> bytes:
+    """Reboot-Tail laut Vendor (NA111: 03 01, NE2: 11 01)."""
+    v = str(vendor or "").strip().lower()
+    m = str(model or "").strip().upper()
+    if v == VENDOR_NA11X or m.startswith("NA11"):
+        return EBYTE_UDP_REBOOT_TAIL_NA111
+    if v == VENDOR_NE2 or m.startswith("NE2"):
+        return EBYTE_UDP_REBOOT_TAIL_NE2
+    return EBYTE_UDP_REBOOT_TAIL
+
+
+def ebyte_udp_reboot(
+    mac: bytes,
+    *,
+    timeout: float = 1.5,
+    retries: int = 4,
+    unicast_ip: str = "",
+    netmask: str = "",
+    sock: Optional[socket.socket] = None,
+    broadcast_only: bool = True,
+    reboot_tail: bytes = b"",
+    vendor: str = "",
+    model: str = "",
+) -> Dict[str, Any]:
+    """Modul-Neustart per ``fe 03`` (Mitschnitt Original-Tool nach Konfig-Schreiben)."""
+    if len(mac) != 6:
+        raise ValueError("mac must be 6 bytes")
+    tail = bytes(reboot_tail) if reboot_tail else ebyte_udp_reboot_tail(vendor, model)
+    if len(tail) != 2:
+        raise ValueError(f"reboot_tail must be 2 bytes, got {tail!r}")
+    payload = bytes([0xFE, 0x03]) + mac + tail
+    result: Dict[str, Any] = {"ok": False, "error": "", "tail": tail.hex()}
+    own = sock is None
+    if own:
+        sock = _ebyte_open_socket()
+    assert sock is not None
+    try:
+        acked = False
+        last_rx = b""
+        wait = max(0.6, float(timeout))
+        for attempt in range(max(1, int(retries))):
+            if attempt:
+                time.sleep(0.2 * attempt)
+            _ebyte_drain(sock)
+            # Erst Broadcast (wie Tool); ab Retry 1 optional Unicast/Multi-NIC.
+            use_bcast_only = bool(broadcast_only) and attempt == 0
+            extra_socks = _ebyte_send_cmd(
+                sock,
+                payload,
+                unicast_ip=unicast_ip,
+                netmask=netmask,
+                all_interfaces=attempt > 0,
+                broadcast_only=use_bcast_only,
+            )
+            try:
+                all_socks = [sock] + extra_socks
+                end = time.time() + wait
+                while time.time() < end:
+                    entry = _ebyte_recv_from_any(all_socks, end - time.time())
+                    if entry is None:
+                        continue
+                    data, _addr = entry
+                    last_rx = data
+                    if (
+                        len(data) >= 10
+                        and data[0] == 0xFD
+                        and data[1] == 0x03
+                        and data[2:8] == mac
+                        and data[8:10] == tail
+                    ):
+                        acked = True
+                        break
+                    # Manche Module bestaetigen Reboot nur mit fd 03 + MAC.
+                    if (
+                        len(data) >= 8
+                        and data[0] == 0xFD
+                        and data[1] == 0x03
+                        and data[2:8] == mac
+                    ):
+                        acked = True
+                        break
+            finally:
+                for es in extra_socks:
+                    try:
+                        es.close()
+                    except OSError:
+                        pass
+            if acked:
+                break
+        if acked:
+            result["ok"] = True
+        else:
+            detail = last_rx[:16].hex() if last_rx else "kein RX"
+            result["error"] = f"no reboot ACK ({detail})"
     except Exception as exc:
         result["ok"] = False
         result["error"] = str(exc)
@@ -2354,6 +3037,63 @@ def ebyte_parse_net_fields(dev: EbyteDevice) -> None:
                     dev.vendor = VENDOR_NA11X
 
 
+def _ebyte_patch_ne2_sock_page1(buf: bytearray, sock: Dict[str, Any]) -> None:
+    """Patcht Socket-A (Modus/Port/Ziel-IP) in NE2-Seite 1.
+
+    Die wirksame Client-Zieladresse ist das ASCII-Feld (Web ``sock_desname``),
+    nicht die Binaer-IPv4 bei Offset 768. Das Hersteller-Tool (NE2-T1M) schreibt
+    nur ASCII und setzt die Binaer-Adresse auf 0.0.0.0.
+    """
+    mode_str = str(sock.get("mode") or "TCPS").strip().upper()
+    mode_i = ebyte_at_to_sock_mode(mode_str)
+    try:
+        port = int(sock.get("remote_port") or 8886)
+    except (TypeError, ValueError):
+        port = 8886
+    port = max(1, min(65535, port))
+
+    for off in (_NE2_SOCKA_MODE_OFF, _NE2_SOCK0_MODE_OFF):
+        if len(buf) > off:
+            buf[off] = mode_i
+    for off in (_NE2_SOCK0_PORT_OFF, _NE2_SOCK0_PORT2_OFF):
+        if len(buf) >= off + 2:
+            struct.pack_into("<H", buf, off, port)
+    if mode_str in ("TCPC", "UDPC"):
+        host = str(sock.get("remote_ip") or "0.0.0.0").strip() or "0.0.0.0"
+        _put_c_str(buf, _NE2_SOCK0_HOST_OFF, _NE2_SOCK0_HOST_LEN, host)
+        # Veraltete Binaer-Ziel-IP leeren (sonst weicht sie vom Web-Soll ab).
+        if len(buf) >= _NE2_SOCK0_IP_OFF + 4:
+            _put_ipv4(buf, _NE2_SOCK0_IP_OFF, "0.0.0.0")
+
+
+def _ebyte_patch_na111_sock_page0(buf: bytearray, sock: Dict[str, Any]) -> None:
+    """Patcht Arbeitsmodus/Ports/Ziel-Host in NA111-Seite 0."""
+    mode_str = str(sock.get("mode") or "TCPS").strip().upper()
+    mode_i = na111_at_to_sock_mode(mode_str)
+    try:
+        port = int(sock.get("remote_port") or 8886)
+    except (TypeError, ValueError):
+        port = 8886
+    port = max(1, min(65535, port))
+
+    if len(buf) > _NA111_SOCK_MODE_OFF:
+        buf[_NA111_SOCK_MODE_OFF] = mode_i
+    if len(buf) > _NA111_SOCK_MODE_OFF2:
+        buf[_NA111_SOCK_MODE_OFF2] = mode_i
+    if len(buf) >= _NA111_SOCK_LOCAL_PORT_OFF + 2:
+        struct.pack_into("<H", buf, _NA111_SOCK_LOCAL_PORT_OFF, port)
+    if len(buf) >= _NA111_SOCK_REMOTE_PORT_OFF + 2:
+        struct.pack_into("<H", buf, _NA111_SOCK_REMOTE_PORT_OFF, port)
+
+    # Ziel-Host/IP als ASCII-Feld (Web __0E) — auch im Server-Modus setzen,
+    # damit ein spaeterer Client-Wechsel die Zieladresse schon hat.
+    if len(buf) >= _NA111_SOCK_REMOTE_HOST_OFF + _NA111_SOCK_REMOTE_HOST_LEN:
+        host = str(sock.get("remote_ip") or "").strip()
+        if mode_str in ("TCPS", "UDPS") and not host:
+            host = "0.0.0.0"
+        _put_c_str(buf, _NA111_SOCK_REMOTE_HOST_OFF, _NA111_SOCK_REMOTE_HOST_LEN, host)
+
+
 def ebyte_patch_net_pages(
     pages: Dict[int, EbytePage],
     *,
@@ -2363,6 +3103,7 @@ def ebyte_patch_net_pages(
     dns: str = "",
     dns2: str = "",
     vendor: str = "",
+    sock_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, bytes]:
     """Gibt geaenderte Seiten-Bodies zurueck (CRC wird beim Write neu berechnet)."""
     v = (vendor or "").strip().lower()
@@ -2385,6 +3126,8 @@ def ebyte_patch_net_pages(
             _put_ipv4(buf, off + 12, dns)
         if dns2:
             _put_ipv4(buf, off + 16, dns2)
+        if sock_cfg:
+            _ebyte_patch_ne2_sock_page1(buf, sock_cfg)
         bodies[1] = bytes(buf)
         return bodies
 
@@ -2401,6 +3144,11 @@ def ebyte_patch_net_pages(
     _put_ipv4(buf, off + 8, mask)
     if dns:
         _put_ipv4(buf, off + 12, dns)
+    if sock_cfg and (
+        v == VENDOR_NA11X
+        or ebyte_detect_vendor("", pages) == VENDOR_NA11X
+    ):
+        _ebyte_patch_na111_sock_page0(buf, sock_cfg)
     # Speichern-Flag wie im offiziellen Tool (Byte 171 = 0x0A)
     if len(buf) > _NA111_SAVE_FLAG_OFF:
         buf[_NA111_SAVE_FLAG_OFF] = 0x0A
@@ -2423,29 +3171,38 @@ def ebyte_set_network(
     dns2: str = "",
     vendor: str = "",
     pages: Optional[Dict[int, EbytePage]] = None,
+    sock_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Setzt Netzdaten per UDP wie im Mitschnitt: Ping → alle Seiten lesen → alle schreiben."""
+    """Setzt Netzdaten per UDP wie im Mitschnitt: Ping → Seiten → alle schreiben."""
+    cached: Dict[int, EbytePage] = dict(pages or {})
     hint_ip = ""
-    if pages:
+    hint_mask = ""
+    if cached:
         probe = EbyteDevice(mac=mac)
-        ebyte_apply_pages(probe, pages)
+        ebyte_apply_pages(probe, cached)
         hint_ip = probe.ip or ""
+        hint_mask = probe.mask or ""
         if not vendor:
             vendor = probe.vendor
 
-    sock = _ebyte_open_socket()
+    udp_sock = _ebyte_open_socket()
     try:
-        # Geraet „wecken“ wie bei Discovery
         for _ in range(2):
-            _ebyte_send_broadcast(sock, EBYTE_DISCOVER_PING)
+            _ebyte_send_broadcast(udp_sock, EBYTE_DISCOVER_PING)
             time.sleep(0.05)
-        _ebyte_drain(sock)
+        _ebyte_drain(udp_sock)
 
-        page_map = ebyte_udp_read_pages(
-            mac, sock=sock, timeout=0.8, unicast_ip=hint_ip
+        v = str(vendor or "").strip().lower()
+        page_count = 7 if v == VENDOR_NE2 else (6 if v == VENDOR_NA11X else None)
+        fresh = ebyte_udp_read_pages(
+            mac,
+            sock=udp_sock,
+            timeout=1.2,
+            unicast_ip=hint_ip,
+            netmask=hint_mask,
+            page_count=page_count,
         )
-        if not page_map and pages:
-            page_map = pages
+        page_map = _ebyte_merge_page_maps(cached, fresh)
         if not page_map:
             return {"ok": False, "error": "no pages read"}
 
@@ -2453,7 +3210,27 @@ def ebyte_set_network(
         ebyte_apply_pages(tmp, page_map)
         if not vendor:
             vendor = tmp.vendor
-        current_ip = tmp.ip or hint_ip
+
+        v = str(vendor or "").strip().lower()
+        is_ne2 = v == VENDOR_NE2 or (tmp.model or "").upper().startswith("NE2")
+        is_na111 = v == VENDOR_NA11X or (tmp.model or "").upper().startswith("NA11")
+
+        # NA111 braucht Seite 0 (Netz) + Seite 3 (Save-Flag 0x1E) wie im Original-Tool.
+        if is_na111 and (0 not in page_map or 3 not in page_map):
+            fresh2 = ebyte_udp_read_pages(
+                mac,
+                sock=udp_sock,
+                timeout=1.2,
+                unicast_ip=hint_ip or tmp.ip,
+                netmask=hint_mask or tmp.mask,
+                page_count=6,
+            )
+            page_map = _ebyte_merge_page_maps(page_map, fresh2)
+            ebyte_apply_pages(tmp, page_map)
+        if is_na111 and 0 not in page_map:
+            return {"ok": False, "error": "NA111 page 0 missing"}
+        if is_na111 and 3 not in page_map:
+            return {"ok": False, "error": "NA111 page 3 missing – bitte Suche wiederholen"}
 
         try:
             bodies = ebyte_patch_net_pages(
@@ -2464,23 +3241,60 @@ def ebyte_set_network(
                 dns=dns,
                 dns2=dns2,
                 vendor=vendor,
+                sock_cfg=sock_cfg,
             )
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
-        # Mitschnitt: ALLE gelesenen Seiten zurueckschreiben (nicht nur Diff)
-        return ebyte_udp_write_pages(
+        if is_ne2:
+            time.sleep(0.2)
+            session_res = ebyte_udp_write_session(
+                mac,
+                timeout=2.0,
+                retries=6,
+                sock=udp_sock,
+            )
+            if not session_res.get("ok"):
+                return session_res
+
+        time.sleep(0.15)
+        write_res = ebyte_udp_write_pages(
             mac,
             page_map,
             bodies=bodies,
-            unicast_ip=current_ip,
-            timeout=1.2,
-            retries=4,
-            sock=sock,
+            timeout=2.5,
+            retries=5,
+            sock=udp_sock,
         )
+        if not write_res.get("ok"):
+            return write_res
+
+        # Nach dem Schreiben kurz warten (NA111 commitet Save-Flags), dann
+        # explizit fe 03 — die Flags allein starten das Modul oft nicht neu.
+        time.sleep(1.0 if is_na111 else 0.8)
+        old_ip = str(hint_ip or tmp.ip or "").strip()
+        old_mask = str(hint_mask or tmp.mask or "").strip()
+        reboot_res = ebyte_udp_reboot(
+            mac,
+            timeout=2.0 if is_na111 else 1.8,
+            retries=6 if is_na111 else 5,
+            unicast_ip=old_ip,
+            netmask=old_mask,
+            sock=udp_sock,
+            broadcast_only=True,
+            vendor=vendor,
+            model=str(tmp.model or ""),
+        )
+        write_res["rebooted"] = bool(reboot_res.get("ok"))
+        if not reboot_res.get("ok"):
+            write_res["reboot_failed"] = True
+            write_res["reboot_error"] = str(reboot_res.get("error") or "")
+        else:
+            write_res["reboot_failed"] = False
+        return write_res
     finally:
         try:
-            sock.close()
+            udp_sock.close()
         except OSError:
             pass
 

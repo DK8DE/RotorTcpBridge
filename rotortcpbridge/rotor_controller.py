@@ -7,6 +7,7 @@ from typing import Callable, Optional
 
 from .angle_utils import (
     antenna_dipole_enabled,
+    az_d10_equivalent_position,
     az_max_d10_from_axis,
     az_pos_deg_from_d10,
     current_rotor_az_deg,
@@ -1487,8 +1488,18 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         if not self.enable_az:
             return
 
-        # Wenn wir bereits am Ziel sind (Toleranz 0,1°) und nicht fahren -> nichts senden
-        if (not self.az.moving) and (abs(self.az.pos_d10 - az_d10) <= 1):
+        # Bereits am Ziel (inkl. 0° ↔ Homing-Marke 360,0°) und nicht fahren → nichts senden.
+        # Sonst: nach Homing mit SETHOMERETURN=0 (Ist=360) und PST/SPID-Echo 0° → SETPOSDG:0.
+        try:
+            at_target = az_d10_equivalent_position(
+                int(self.az.pos_d10),
+                int(az_d10),
+                max_d10=az_max_d10_from_axis(self.az),
+                tol_d10=1,
+            )
+        except Exception:
+            at_target = abs(int(self.az.pos_d10) - int(az_d10)) <= 1
+        if (not self.az.moving) and at_target:
             return
 
         # Gleiches Ziel wie zuletzt gesendet? -> nicht erneut senden

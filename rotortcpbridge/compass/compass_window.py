@@ -67,7 +67,7 @@ class CompassWindow(QDialog):
     sig_dgcal_set_done = Signal(str, bool, str, float)  # axis, ok, err, value
 
     _MIN_WIDTH = 870
-    _MIN_HEIGHT = 620
+    _MIN_HEIGHT = 710
     _VAL_COLOR_SOLL = "#ff6b6b"
     _VAL_COLOR_IST = "#5ee07a"
     _VAL_COLOR_IST_REVERSE = "#da9a5c"
@@ -113,7 +113,7 @@ class CompassWindow(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
         self.setMinimumSize(self._MIN_WIDTH, self._MIN_HEIGHT)
-        self.resize(940, max(640, self._MIN_HEIGHT))
+        self.resize(940, self._MIN_HEIGHT)
 
         self._target_az: Optional[float] = None
         self._target_el: Optional[float] = None
@@ -1973,7 +1973,7 @@ class CompassWindow(QDialog):
         self._last_axes_vis = vis
 
         if az_on and el_on:
-            min_w, min_h = self._MIN_WIDTH, max(self._MIN_HEIGHT, 640)
+            min_w, min_h = self._MIN_WIDTH, self._MIN_HEIGHT
             open_w = 1680
         else:
             min_w, min_h = self._MIN_WIDTH, self._MIN_HEIGHT
@@ -1981,7 +1981,7 @@ class CompassWindow(QDialog):
 
         self.setMinimumSize(min_w, min_h)
         # Bei Sichtbarkeitswechsel Fenster auf Öffnungsgröße setzen.
-        # Mindestgröße bleibt davon unabhängig kleiner, damit der User es einziehen kann.
+        # Höhe: Öffnungs- und Mindesthöhe = _MIN_HEIGHT (nicht kleiner ziehbar).
         try:
             if self.isMaximized():
                 self.showNormal()

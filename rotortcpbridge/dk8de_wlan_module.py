@@ -140,6 +140,24 @@ def parse_dk8de_kv_text(text: str) -> Dict[str, str]:
     return out
 
 
+def _at_response_to_kv_text(info_lines: List[str], kv_lines: List[str]) -> str:
+    """Vereinheitlicht KEY=VALUE- und +KEY:-Zeilen fuer Stats/Parser."""
+    parts: List[str] = []
+    for line in info_lines:
+        s = str(line or "").strip()
+        if s:
+            parts.append(s)
+    for line in kv_lines:
+        s = str(line or "").strip()
+        if not s.startswith("+") or ":" not in s:
+            continue
+        name, val = s[1:].split(":", 1)
+        key = name.strip().upper()
+        if key:
+            parts.append(f"{key}={val.strip()}")
+    return "\n".join(parts)
+
+
 DK8DE_INFO_STAT_KEYS = (
     "UID",
     "NAME",
@@ -184,6 +202,12 @@ def _web_json_to_stats_kv(data: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[st
         "HW": str(data.get("hw") or ""),
         "IP": str(data.get("sta_ip") or ""),
         "NETMODE": str(data.get("net_mode") if data.get("net_mode") is not None else ""),
+        "WIFIMODE": str(
+            data.get("wifi_mode_name")
+            or data.get("wifi_mode")
+            or data.get("wifimode")
+            or ""
+        ),
         "LPORT": str(data.get("local_port") or ""),
         "DISCOVERY_UDP": str(data.get("discovery_udp_port") or DK8DE_CONFIG_PORT),
     }
@@ -378,17 +402,50 @@ def _open_at_udp_socket() -> socket.socket:
     """AT-Session auf Discovery-Client-Port (8889) — gleicher Empfang wie Discovery.
 
     Ephemeral Ports werden unter Windows oft von der Firewall blockiert; Discovery
-    funktioniert bereits auf 8889.
+    funktioniert bereits auf 8889. Kein Fallback auf Port 0 — sonst kommt
+    ``CONFIG,READY`` nie an.
     """
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    except OSError:
-        pass
-    _bind_udp_listen(sock, "0.0.0.0", DK8DE_DISCOVERY_CLIENT_PORT)
-    sock.settimeout(0.2)
-    return sock
+    last_err: Optional[OSError] = None
+    for _ in range(8):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        except OSError:
+            pass
+        try:
+            sock.bind(("0.0.0.0", DK8DE_DISCOVERY_CLIENT_PORT))
+            sock.settimeout(0.2)
+            return sock
+        except OSError as exc:
+            last_err = exc
+            try:
+                sock.close()
+            except OSError:
+                pass
+            time.sleep(0.05)
+    raise OSError(
+        f"DK8DE AT: UDP-Port {DK8DE_DISCOVERY_CLIENT_PORT} belegt "
+        f"(Firewall/anderer Prozess?): {last_err}"
+    )
+
+
+def _at_listen_socks(session: "Dk8deAtSession") -> List[socket.socket]:
+    socks: List[socket.socket] = []
+    if session._sock is not None:
+        socks.append(session._sock)
+    socks.extend(session._extra_socks)
+    return socks
+
+
+def _at_command_timeout(body: str, default: float) -> float:
+    """SAVE/NVS braucht auf dem ESP laenger; sonst Timeout → Modul bleibt in AT."""
+    b = str(body or "").strip().upper()
+    if b in ("SAVE", "AT+SAVE") or b.startswith("SAVE"):
+        return max(float(default), 12.0)
+    if b in ("REBOOT", "AT+REBOOT", "FACTORY", "AT+FACTORY"):
+        return max(float(default), 4.0)
+    return float(default)
 
 
 def _at_session_targets(host: str, config_port: int) -> List[Tuple[str, int]]:
@@ -506,17 +563,17 @@ def _looks_like_config_frame(data: bytes) -> bool:
 
 
 def _at_udp_to_text(data: bytes) -> str:
-    """AT-Antworten aus UDP extrahieren; Discovery-Binärframes/-INFO ignorieren."""
+    """AT-Antworten aus UDP extrahieren; Discovery-Binärframes ignorieren.
+
+    KEY=VALUE-Text (auch UID=…) wird bewusst durchgelassen: AT+INFO? liefert
+    dieselben Zeilen wie eine Discovery-Ankuendigung, oft in einem eigenen
+    UDP-Datagramm vor ``@UID:OK``. Frueher wurden reine ``UID=``-Pakete
+    verworfen — dann blieb der INFO-Bereich in der Statistik leer, waehrend
+    STATUS? (andere Schluessel) weiterhin funktionierte.
+    """
     if not data or _looks_like_config_frame(data):
         return ""
-    text = data.decode("utf-8", errors="replace")
-    upper = text.upper()
-    if "@" in text or "CONFIG,READY" in upper:
-        return text
-    # Periodische DISCOVER-Antwort / Ankuendigung (UID=… ohne @UID:)
-    if re.search(r"(?m)^UID=", text.strip()):
-        return ""
-    return text
+    return data.decode("utf-8", errors="replace")
 
 
 def _at_error_snippet(buf: str, limit: int = 160) -> str:
@@ -555,9 +612,9 @@ def _udp_recv_until_socks(
             if done_fn(buf):
                 return buf, peer_ip, active_sock
         elif buf and last_rx and (time.time() - last_rx) >= idle_s:
+            # Siehe _udp_recv_until: ohne @OK/@ERROR weiter bis Deadline warten.
             if done_fn(buf):
                 return buf, peer_ip, active_sock
-            break
     return buf, peer_ip, active_sock
 
 
@@ -956,10 +1013,12 @@ def _udp_recv_until(
             if done_fn(buf):
                 return buf
         except socket.timeout:
+            # Nur bei fertiger AT-Antwort vorzeitig beenden. Unvollstaendige
+            # KEY=VALUE-Fragmente (z. B. INFO-Zeilen vor @OK, oder Discovery-
+            # Rauschen) duerfen die Wartezeit nicht abbrechen.
             if buf and last_rx and (time.time() - last_rx) >= idle_s:
                 if done_fn(buf):
                     return buf
-                break
         except OSError:
             break
     return buf
@@ -1029,9 +1088,41 @@ class Dk8deAtSession:
     def _recv_until(self, deadline: float, done_fn: Callable[[str], bool]) -> None:
         self._rx = _udp_recv_until(self._sock, deadline, done_fn)  # type: ignore[arg-type]
 
+    def _all_socks(self) -> List[socket.socket]:
+        return _at_listen_socks(self)
+
+    def _send_to_targets(self, payload: bytes, socks: Optional[List[socket.socket]] = None) -> None:
+        targets = _at_session_targets(self.host, self.config_port)
+        for sock in socks or self._all_socks():
+            for target in targets:
+                try:
+                    sock.sendto(payload, target)
+                except OSError:
+                    continue
+
+    def _clear_stale_at_mode(self) -> None:
+        """Falls das Modul noch in einer AT-Session haengt: EXIT, sonst bleibt +++CFG tot.
+
+        Firmware: im AT-Modus wird ``+++CFG`` nicht mehr ausgewertet (nur AT-Zeilen).
+        Nach Timeout (z. B. SAVE) ohne EXIT schlaegt jede neue Session mit leerer Antwort fehl.
+        """
+        socks = self._all_socks()
+        if not socks:
+            return
+        for _ in range(2):
+            self._send_to_targets(b"AT+EXIT\r", socks)
+            deadline = time.time() + 0.6
+            _udp_recv_until_socks(
+                socks,
+                deadline,
+                lambda buf: "OK" in str(buf or "").upper() or "ERROR" in str(buf or "").upper(),
+                idle_s=0.2,
+            )
+        time.sleep(0.35)
+
     def _open_session(self) -> None:
         assert self._sock is not None
-        targets = _at_session_targets(self.host, self.config_port)
+        socks = self._all_socks()
         escapes = (
             f"+++CFG:{self.uid}\r".encode("ascii"),
             f"+++CFG:ROTOR-{self.uid}\r".encode("ascii"),
@@ -1039,55 +1130,70 @@ class Dk8deAtSession:
         ready_fn = lambda buf: _at_session_ready(buf, self.uid)
         last_rx = ""
 
-        def _send_escapes(sock: socket.socket) -> None:
-            for esc in escapes:
-                for target in targets:
-                    try:
-                        sock.sendto(esc, target)
-                    except OSError:
-                        continue
+        # Zombie-Session beenden, bevor +++CFG erneut gesendet wird.
+        self._clear_stale_at_mode()
 
-        # Pro Socket senden und auf derselben Quelle warten — Firmware merkt sich
-        # den Peer-Port des +++CFG-Senders; paralleles Senden von mehreren Ports
-        # fuehrt sonst zu „CONFIG,READY“ auf dem falschen Socket.
-        for sock in [self._sock] + self._extra_socks:
-            for attempt in range(2):
-                time.sleep(0.55 if attempt == 0 else 0.35)
-                _send_escapes(sock)
-                deadline = time.time() + max(2.5, self.timeout)
-                rx, peer_ip, _active = _udp_recv_until_socks(
-                    [sock],
-                    deadline,
-                    ready_fn,
-                    idle_s=0.45,
-                )
-                last_rx = rx or last_rx
-                if not ready_fn(rx):
-                    continue
-                contact = _normalize_contact_ip(peer_ip)
-                if contact:
-                    self.host = contact
-                self._active_sock = sock
-                self._rx = rx
-                return
+        # Ein Versuch nach dem anderen, aber Antworten auf ALLEN Sockets lesen —
+        # unter Windows kann SO_REUSEADDR die Unicast-Antwort einem anderen
+        # Interface-Socket zustellen als dem Sender.
+        for attempt in range(3):
+            time.sleep(0.55 if attempt == 0 else 0.4)
+            for esc in escapes:
+                self._send_to_targets(esc, socks)
+            deadline = time.time() + max(2.5, min(self.timeout, 6.0))
+            rx, peer_ip, active = _udp_recv_until_socks(
+                socks,
+                deadline,
+                ready_fn,
+                idle_s=0.45,
+            )
+            last_rx = rx or last_rx
+            if not ready_fn(rx):
+                continue
+            contact = _normalize_contact_ip(peer_ip)
+            if contact:
+                self.host = contact
+            self._active_sock = active or self._sock
+            self._rx = rx
+            return
         raise RuntimeError(f"AT-Session nicht bereit: {_at_error_snippet(last_rx)!r}")
 
     def command(self, body: str) -> str:
         """Sendet AT+<body> und liefert die komplette Antwort."""
-        sock = self._active_sock or self._sock
-        assert sock is not None
+        socks = self._all_socks()
+        if not socks:
+            raise RuntimeError("AT-Socket nicht offen")
         b = str(body or "").strip()
         if b.upper().startswith("AT+"):
             line = f"{b}\r"
+            cmd_name = b[3:]
         elif b.upper() == "AT":
             line = "AT\r"
+            cmd_name = "AT"
         else:
             line = f"AT+{b}\r"
+            cmd_name = b
+        payload = line.encode("ascii", errors="ignore")
+        # Primär vom aktiven Peer-Socket; Fallback: alle Sockets (Windows-Demux).
+        send_socks = [self._active_sock] if self._active_sock is not None else socks
+        send_socks = [s for s in send_socks if s is not None]
+        if not send_socks:
+            send_socks = socks
         target = (self.host, self.config_port)
-        sock.sendto(line.encode("ascii", errors="ignore"), target)
-        deadline = time.time() + self.timeout
+        for sock in send_socks:
+            try:
+                sock.sendto(payload, target)
+            except OSError:
+                continue
+        wait_s = _at_command_timeout(cmd_name, self.timeout)
+        deadline = time.time() + wait_s
         done_fn = lambda buf: _at_command_done(buf, self.uid)
-        self._rx, _peer, _sock = _udp_recv_until_socks([sock], deadline, done_fn, idle_s=0.35)
+        self._rx, peer_ip, active = _udp_recv_until_socks(socks, deadline, done_fn, idle_s=0.35)
+        if active is not None:
+            self._active_sock = active
+        contact = _normalize_contact_ip(peer_ip)
+        if contact:
+            self.host = contact
         if not _at_command_done(self._rx, self.uid):
             raise RuntimeError(f"Keine AT-Antwort fuer {body}: {self._rx!r}")
         err = _parse_at_response(self._rx, self.uid)[2]
@@ -1132,8 +1238,8 @@ def read_status_dk8de(
         "source": "dk8de_at",
     }
     with Dk8deAtSession(host, uid, config_port=config_port, timeout=timeout) as ses:
-        info_lines, _ = ses.query_lines("INFO?")
-        info = parse_dk8de_kv_text("\n".join(info_lines))
+        info_lines, info_kv = ses.query_lines("INFO?")
+        info = parse_dk8de_kv_text(_at_response_to_kv_text(info_lines, info_kv))
         out["raw"]["INFO?"] = info
 
         kv_all: Dict[str, str] = {}
@@ -1277,6 +1383,59 @@ def write_config_dk8de(
     return results
 
 
+def _at_quoted_assign(name: str, value: str) -> str:
+    """AT-Zuweisung mit Anführungszeichen (SSID/Passwort, Firmware parse_quoted)."""
+    return f'{name}="{str(value or "")}"'
+
+
+def build_wan_cmds_dk8de(
+    *,
+    ip: str = "",
+    mask: str = "",
+    gateway: str = "",
+    dns: str = "",
+    dhcp: bool = False,
+    ssid: str = "",
+    password: Optional[str] = None,
+    wifi_band: str = "",
+    wifi_mode: str = "",
+    reboot: bool = True,
+) -> List[str]:
+    """AT-Kommandos fuer SoftAP-Erstinbetriebnahme und IP-Wechsel.
+
+    Reihenfolge: Zugangsdaten und IP zuerst, dann SAVE, zuletzt WIFIMODE=STA
+    (Firmware speichert STA in NVS und wendet WLAN an — SoftAP bricht ab).
+    """
+    cmds: List[str] = []
+    ssid_s = str(ssid or "").strip()
+    if ssid_s:
+        cmds.append(_at_quoted_assign("SSID", ssid_s))
+    if password is not None:
+        cmds.append(_at_quoted_assign("PASS", str(password)))
+    band = str(wifi_band or "").strip().upper()
+    if band in ("AUTO", "2G", "5G"):
+        cmds.append(f"WIFIBAND={band}")
+    if dhcp:
+        cmds.append("DHCP=1")
+    else:
+        cmds.append("DHCP=0")
+        if ip:
+            cmds.append(_at_quoted_assign("IP", ip) if " " in ip else f"IP={ip}")
+        if mask:
+            cmds.append(_at_quoted_assign("MASK", mask) if " " in mask else f"MASK={mask}")
+        if gateway:
+            cmds.append(_at_quoted_assign("GW", gateway) if " " in gateway else f"GW={gateway}")
+        if dns:
+            cmds.append(_at_quoted_assign("DNS", dns) if " " in dns else f"DNS={dns}")
+    cmds.append("SAVE")
+    mode = str(wifi_mode or "").strip().upper()
+    if mode in ("AP", "STA", "APSTA"):
+        cmds.append(f"WIFIMODE={mode}")
+    if reboot:
+        cmds.append("REBOOT")
+    return cmds
+
+
 def write_wan_dk8de(
     host: str,
     uid: str,
@@ -1286,28 +1445,28 @@ def write_wan_dk8de(
     gateway: str,
     dns: str = "",
     dhcp: bool = False,
+    ssid: str = "",
+    password: Optional[str] = None,
+    wifi_band: str = "",
+    wifi_mode: str = "",
     config_port: int = DK8DE_CONFIG_PORT,
     reboot: bool = True,
     timeout: float = 12.0,
 ) -> Dict[str, Any]:
-    """Schreibt nur WLAN/IP (AT+DHCP/IP/MASK/GW/DNS, SAVE, optional REBOOT)."""
+    """Schreibt WLAN/IP per AT (SSID/PASS/Band, DHCP/IP/MASK/GW/DNS, SAVE, optional STA+REBOOT)."""
     results: Dict[str, Any] = {"commands": [], "ok": True, "error": ""}
-    cmds: List[str] = []
-    if dhcp:
-        cmds.append("DHCP=1")
-    else:
-        cmds.append("DHCP=0")
-        if ip:
-            cmds.append(f'IP="{ip}"' if " " in ip else f"IP={ip}")
-        if mask:
-            cmds.append(f'MASK="{mask}"' if " " in mask else f"MASK={mask}")
-        if gateway:
-            cmds.append(f'GW="{gateway}"' if " " in gateway else f"GW={gateway}")
-        if dns:
-            cmds.append(f'DNS="{dns}"' if " " in dns else f"DNS={dns}")
-    cmds.append("SAVE")
-    if reboot:
-        cmds.append("REBOOT")
+    cmds = build_wan_cmds_dk8de(
+        ip=ip,
+        mask=mask,
+        gateway=gateway,
+        dns=dns,
+        dhcp=dhcp,
+        ssid=ssid,
+        password=password,
+        wifi_band=wifi_band,
+        wifi_mode=wifi_mode,
+        reboot=reboot,
+    )
 
     try:
         with Dk8deAtSession(host, uid, config_port=config_port, timeout=timeout) as ses:
@@ -1343,10 +1502,10 @@ def read_dk8de_statistics(
     if uid_is_valid(uid):
         try:
             with Dk8deAtSession(host, uid, config_port=config_port, timeout=timeout) as ses:
-                info_lines, _ = ses.query_lines("INFO?")
-                out["info"] = "\n".join(info_lines)
-                stat_lines, _ = ses.query_lines("STATUS?")
-                out["status"] = "\n".join(stat_lines)
+                info_lines, info_kv = ses.query_lines("INFO?")
+                out["info"] = _at_response_to_kv_text(info_lines, info_kv)
+                stat_lines, stat_kv = ses.query_lines("STATUS?")
+                out["status"] = _at_response_to_kv_text(stat_lines, stat_kv)
             return out
         except Exception as exc:
             out["error"] = str(exc)

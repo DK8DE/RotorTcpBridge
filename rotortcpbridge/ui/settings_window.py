@@ -2370,6 +2370,8 @@ class SettingsWindow(QDialog):
         if row < 0 or row >= self._settings_stack.count():
             return
         self._settings_stack.setCurrentIndex(row)
+        if row == getattr(self, "_tab_network_index", -1):
+            self._network_tab.on_tab_shown()
         if row == getattr(self, "_tab_statistics_index", -1):
             self._start_calvalid_timer()
         else:

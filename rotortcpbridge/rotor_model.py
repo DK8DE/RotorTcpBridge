@@ -175,18 +175,19 @@ def _smooth_delta_d10(wrap_360: bool, smooth_f: float, target: float) -> float:
 
 
 def _clamp_smooth_d10f(axis: "AxisState", value: float) -> float:
-    """Anzeige-Glättung begrenzen: EL 0..90°, AZ erweitert 0..pos_max, sonst unverändert."""
+    """Anzeige-Glättung begrenzen: EL 0..pos_max (90°/180°), AZ erweitert 0..pos_max, sonst unverändert."""
     if bool(getattr(axis, "position_wrap_360", True)):
         return float(value)
     try:
         mx = int(getattr(axis, "pos_max_d10", 3600) or 3600)
     except Exception:
         mx = 3600
-    # EL: typisch max 90°; wenn pos_max_d10 noch Default 3600 und wrap aus → EL-Clamp.
     # AZ mit erweitertem Bereich: pos_max_d10 > 3600.
     if mx > 3600:
         return max(0.0, min(float(mx), float(value)))
-    return max(0.0, min(900.0, float(value)))
+    # EL / Nicht-Wrap: pos_max_d10 900 (90°) oder 1800 (180°); Default 3600 → 90°.
+    el_limit = float(mx) if 0 < mx <= 1800 else 900.0
+    return max(0.0, min(el_limit, float(value)))
 
 
 def _smooth_damp_scalar(
@@ -247,6 +248,9 @@ class AxisState:
     compass_target_d10: Optional[int] = None
     # SETPOSDG vom externen Controller (z. B. Bus-Master #2): während Fahrt kein Soll in UI, nur Ist.
     external_panel_move_active: bool = False
+    # Anderer PC-/App-Master führt diese Achse: eigenes Polling pausieren bis Ziel erreicht.
+    foreign_follow_active: bool = False
+    foreign_follow_last_rx_ts: float = 0.0
     referenced: bool = False
     moving: bool = False
     error_code: int = 0
@@ -267,6 +271,8 @@ class AxisState:
     position_wrap_360: bool = True
     # GETMAXDG als 0,1°-Einheiten (Default 360,0°). Bei >3600: erweiterter Bereich.
     pos_max_d10: int = 3600
+    # GETHOMEPOS / Parkposition (0,1°). None = noch nicht vom Rotor gelesen.
+    home_pos_d10: Optional[int] = None
     _last_smooth_render_ts: float = 0.0
     # Geschwindigkeit der Anzeige (0,1°/s) für SmoothDamp (Idle/Fallback).
     _smooth_vel_f: float = 0.0
@@ -324,6 +330,10 @@ class AxisState:
     antdis1: Optional[int] = None
     antdis2: Optional[int] = None
     antdis3: Optional[int] = None
+    # Antennen-Anzeigenamen (GETANTNAME1–3), max. 9 Zeichen
+    antname1: Optional[str] = None
+    antname2: Optional[str] = None
+    antname3: Optional[str] = None
 
     def clear_getposdg_jump_reject(self) -> None:
         self.pos_reject_streak = 0

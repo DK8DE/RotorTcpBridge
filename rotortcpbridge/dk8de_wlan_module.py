@@ -1531,14 +1531,20 @@ def probe_dk8de(
     web_user: str = DK8DE_DEFAULT_WEB_USER,
     web_password: str = DK8DE_DEFAULT_WEB_PASSWORD,
     timeout: float = 0.8,
+    allow_at: bool = True,
 ) -> bool:
-    st = _http_get_json(host, "/api/status", port=web_port, user=web_user, password=web_password, timeout=timeout)
+    http_t = max(0.2, min(float(timeout), 0.6))
+    st = _http_get_json(host, "/api/status", port=web_port, user=web_user, password=web_password, timeout=http_t)
     if st and uid_is_valid(str(st.get("uid") or "")):
         return True
+    if not allow_at:
+        return bool(st)
     if not host.strip() or not uid_is_valid(uid):
         return False
     try:
-        with Dk8deAtSession(host, uid, config_port=config_port, timeout=max(timeout, 1.5)) as ses:
+        # AT-Fallback nur mit begrenzter Wartezeit (Offline sonst sehr langsam).
+        at_t = max(0.35, min(float(timeout), 0.8))
+        with Dk8deAtSession(host, uid, config_port=config_port, timeout=at_t) as ses:
             ses.command("UID?")
         return True
     except Exception:

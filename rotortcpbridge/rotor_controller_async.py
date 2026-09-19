@@ -140,7 +140,24 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         pass
                     if should_restrict:
                         try:
-                            self.note_setposdg_poll_restrict()
+                            if int(tel.src) != int(self.master_id):
+                                self.note_foreign_master_activity(
+                                    self.az if dst == saz else self.el,
+                                    set_target=True,
+                                )
+                            else:
+                                self.note_setposdg_poll_restrict()
+                        except Exception:
+                            try:
+                                self.note_setposdg_poll_restrict()
+                            except Exception:
+                                pass
+                    elif int(tel.src) != int(self.master_id):
+                        try:
+                            self.note_foreign_master_activity(
+                                self.az if dst == saz else self.el,
+                                set_target=True,
+                            )
                         except Exception:
                             pass
                     self._apply_local_state_for_ui_command(
@@ -281,56 +298,70 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 if tel.cmd.startswith("ACK_GETPOSDG") or tel.cmd.startswith("ACK_POSDG"):
                     axis_state.online = True
                     axis_state.last_rx_ts = time.time()
-                    # Pro Sendezyklus nur das erste ACK verwerten. Zweiter Master oder
-                    # verspaetetes ACK wuerde sonst die Ist-Position zurueckspringen lassen
-                    # (Zeiger „ruckt“ zwischen den Abfragen).
+                    # Eigenes ACK (DST=unsere Master-ID): Poll-Coalescing / erstes ACK pro Zyklus.
+                    # Fremdes ACK (#20:7:…): anderer Master spricht denselben Rotor — Ist mitübernehmen,
+                    # aber unsere Poll-Flags/RTT nicht anfassen (sonst blockiert sein ACK unseres).
+                    is_own_pos_ack = True
                     try:
-                        sent_ts = float(
-                            getattr(axis_state, "pos_poll_sent_ts", 0.0) or 0.0
-                        )
-                        last_ack = float(
-                            getattr(axis_state, "pos_poll_last_ack_ts", 0.0) or 0.0
-                        )
-                        if sent_ts > 0.0 and last_ack >= (sent_ts - 1e-6):
-                            return
+                        is_own_pos_ack = int(tel.dst) == int(self.master_id)
                     except Exception:
-                        pass
-                    # Coalescing-Flag freigeben: nächster Tick darf wieder GETPOSDG enqueuen.
-                    try:
-                        ack_ts = time.time()
-                        sent_ts = float(
-                            getattr(axis_state, "pos_poll_sent_ts", 0.0) or 0.0
-                        )
-                        if sent_ts > 0.0:
-                            rtt = max(0.05, float(ack_ts - sent_ts))
-                            axis_state.pos_poll_last_rtt_s = rtt
-                            try:
-                                ema = float(
-                                    getattr(axis_state, "pos_poll_rtt_ema_s", 0.0) or 0.0
-                                )
-                                axis_state.pos_poll_rtt_ema_s = (
-                                    rtt if ema <= 0.0 else (ema * 0.75 + rtt * 0.25)
-                                )
-                            except Exception:
-                                axis_state.pos_poll_rtt_ema_s = rtt
-                        axis_state.pos_poll_last_ack_ts = ack_ts
+                        is_own_pos_ack = True
+                    if is_own_pos_ack:
                         try:
-                            exp = float(
-                                getattr(axis_state, "pos_poll_expected_period_s", 0.2)
-                                or 0.2
+                            sent_ts = float(
+                                getattr(axis_state, "pos_poll_sent_ts", 0.0) or 0.0
                             )
-                            motion_fast = bool(
-                                getattr(axis_state, "pos_poll_motion_fast", False)
+                            last_ack = float(
+                                getattr(axis_state, "pos_poll_last_ack_ts", 0.0) or 0.0
                             )
-                            min_iv = self._motion_pos_min_interval(
-                                axis_state, exp, motion_fast
-                            )
-                            axis_state.pos_poll_next_due_ts = float(ack_ts + min_iv)
+                            if sent_ts > 0.0 and last_ack >= (sent_ts - 1e-6):
+                                return
                         except Exception:
                             pass
-                        axis_state.pos_poll_inflight = False
-                    except Exception:
-                        pass
+                        try:
+                            ack_ts = time.time()
+                            sent_ts = float(
+                                getattr(axis_state, "pos_poll_sent_ts", 0.0) or 0.0
+                            )
+                            if sent_ts > 0.0:
+                                rtt = max(0.05, float(ack_ts - sent_ts))
+                                axis_state.pos_poll_last_rtt_s = rtt
+                                try:
+                                    ema = float(
+                                        getattr(axis_state, "pos_poll_rtt_ema_s", 0.0)
+                                        or 0.0
+                                    )
+                                    axis_state.pos_poll_rtt_ema_s = (
+                                        rtt
+                                        if ema <= 0.0
+                                        else (ema * 0.75 + rtt * 0.25)
+                                    )
+                                except Exception:
+                                    axis_state.pos_poll_rtt_ema_s = rtt
+                            axis_state.pos_poll_last_ack_ts = ack_ts
+                            try:
+                                exp = float(
+                                    getattr(axis_state, "pos_poll_expected_period_s", 0.2)
+                                    or 0.2
+                                )
+                                motion_fast = bool(
+                                    getattr(axis_state, "pos_poll_motion_fast", False)
+                                )
+                                min_iv = self._motion_pos_min_interval(
+                                    axis_state, exp, motion_fast
+                                )
+                                axis_state.pos_poll_next_due_ts = float(ack_ts + min_iv)
+                            except Exception:
+                                pass
+                            axis_state.pos_poll_inflight = False
+                        except Exception:
+                            pass
+                    else:
+                        # Fremder Master pollt denselben Rotor → unser Polling pausieren.
+                        try:
+                            self.note_foreign_master_activity(axis_state, set_target=False)
+                        except Exception:
+                            pass
                     d10 = parse_getposdg_ist_d10(tel.params)
                     if d10 is None:
                         v = parse_getposdg_ist_deg(tel.params)
@@ -561,22 +592,64 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             else:
                                 axis_state.moving = prev_moving
                     return
-                # SETPOSDG-Bestätigung (z. B. anderer Master mit separater Controller-ID)
+                # SETPOSDG-Bestätigung an beliebigen Master (SRC = unser Rotor).
+                # Firmware liefert oft den Zielwinkel (#20:7:ACK_SETPOSDG:323,28:…$) —
+                # dann Soll übernehmen und mitlaufen, auch wenn das SETPOSDG selbst
+                # nicht mitgeschnitten wurde. Master-ID (hier DST) ist egal.
                 if tel.cmd.startswith("ACK_SETPOSDG"):
                     try:
-                        # ACK-Parameter ist typischerweise "1" (übernommen), nicht der Zielwinkel.
-                        # Ziel setzen wir über mitgeschnittenes SETPOSDG; hier nur Bewegung spiegeln.
-                        p0 = str(tel.params).strip().split(";")[0]
+                        raw = str(tel.params or "").strip()
+                        p0 = raw.split(";")[0].split(":")[0].strip()
+                        angle_deg: float | None
                         try:
-                            ok = int(float(p0.replace(",", "."))) != 0
+                            angle_deg = float(p0.replace(",", ".").replace(" ", ""))
                         except Exception:
-                            ok = True
-                        if ok:
-                            axis_state.moving = True
+                            angle_deg = None
+                        # "0"/"1" = reines OK-Flag; Winkel typisch mit Dezimal oder >1,5°
+                        looks_like_angle = bool(
+                            angle_deg is not None
+                            and (
+                                ("," in p0 or "." in p0)
+                                or abs(float(angle_deg)) > 1.5
+                            )
+                        )
+                        if looks_like_angle and angle_deg is not None:
                             try:
-                                axis_state.pos_settle_poll_due_ts = 0.0
+                                self.note_foreign_master_activity(
+                                    axis_state, set_target=True
+                                )
                             except Exception:
                                 pass
+                            # bus_src = fremder Master (DST des ACK)
+                            self._apply_local_state_for_ui_command(
+                                int(tel.src),
+                                "SETPOSDG",
+                                p0,
+                                from_bus_sniff=True,
+                                bus_src=int(tel.dst),
+                            )
+                        else:
+                            try:
+                                ok = (
+                                    int(float(p0.replace(",", "."))) != 0
+                                    if p0
+                                    else True
+                                )
+                            except Exception:
+                                ok = True
+                            if ok:
+                                try:
+                                    if int(tel.dst) != int(self.master_id):
+                                        self.note_foreign_master_activity(
+                                            axis_state, set_target=True
+                                        )
+                                except Exception:
+                                    pass
+                                axis_state.moving = True
+                                try:
+                                    axis_state.pos_settle_poll_due_ts = 0.0
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
                     axis_state.last_rx_ts = time.time()
@@ -733,6 +806,45 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             except Exception:
                                 pass
                     return
+                # Rotortyp (GETROTORTYPE am EL-Slave): 2=90°, 3=180°
+                if axis_name == "EL" and tel.cmd.startswith("ACK_GETROTORTYPE"):
+                    v = parse_int(tel.params.strip())
+                    if v is not None:
+                        new_type = int(v)
+                        if new_type not in (1, 2, 3):
+                            return
+                        changed = (not self.el_rotor_type_known) or (
+                            int(self.el_rotor_type or -1) != new_type
+                        )
+                        self.el_rotor_type = new_type
+                        self.el_rotor_type_known = True
+                        try:
+                            # Soft-Clamp / Glättung: 90° bzw. 180° in 0,1°-Einheiten
+                            self.el.pos_max_d10 = 1800 if new_type == 3 else 900
+                        except Exception:
+                            pass
+                        if changed and callable(self.on_rotor_type_changed):
+                            try:
+                                self.on_rotor_type_changed()
+                            except Exception:
+                                pass
+                    return
+                if axis_name == "EL" and tel.cmd.startswith("ACK_SETROTORTYPE"):
+                    # ACK bestätigt Speichern; Typ sofort übernehmen + per GET bestätigen.
+                    try:
+                        self.apply_el_rotor_type_from_value(
+                            str(tel.params or "").strip(),
+                            dst=int(tel.src),
+                            reread=True,
+                        )
+                    except Exception:
+                        try:
+                            self._el_rotor_type_requested = False
+                            self.request_el_rotor_type()
+                            self._el_rotor_type_requested = True
+                        except Exception:
+                            pass
+                    return
                 # Max-Winkel (GETMAXDG) — Wire: Grad mit Komma; intern 0,1°-Einheiten
                 if axis_name == "AZ" and tel.cmd.startswith("ACK_GETMAXDG"):
                     v = parse_float(tel.params.strip())
@@ -748,6 +860,45 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         axis_state.pos_max_d10 = max_d10
                         # Erweiterter Bereich (>360°): lineare Positionsrechnung, kein Kreis-Wrap
                         axis_state.position_wrap_360 = max_d10 <= 3600
+                    return
+                # Hom-/Parkwinkel (GETHOMEPOS) — Wire: Grad; intern 0,1°
+                if tel.cmd.startswith("ACK_GETHOMEPOS"):
+                    v = parse_float(tel.params.strip())
+                    if v is not None:
+                        try:
+                            self.remember_home_pos_deg(axis_state, float(v))
+                        except Exception:
+                            pass
+                        # Parken wartete auf Cache → jetzt per SETPOSDG anfahren
+                        try:
+                            if axis_name == "AZ" and bool(
+                                getattr(self, "_park_pending_az", False)
+                            ):
+                                self._park_pending_az = False
+                                self._drive_to_home_pos("AZ")
+                            elif axis_name == "EL" and bool(
+                                getattr(self, "_park_pending_el", False)
+                            ):
+                                self._park_pending_el = False
+                                self._drive_to_home_pos("EL")
+                        except Exception:
+                            pass
+                    return
+                if tel.cmd.startswith("ACK_SETHOMEPOS"):
+                    v = parse_float(tel.params.strip())
+                    if v is not None:
+                        try:
+                            self.remember_home_pos_deg(axis_state, float(v))
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            self.request_home_pos(
+                                az=(axis_name == "AZ"),
+                                el=(axis_name == "EL"),
+                            )
+                        except Exception:
+                            pass
                     return
                 # Antennen-Versätze (GETANTOFF1–3)
                 if tel.cmd.startswith("ACK_GETANTOFF1"):
@@ -780,6 +931,31 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     v = parse_float(tel.params.strip())
                     if v is not None:
                         axis_state.angle3 = max(0.0, min(360.0, v))
+                    return
+                # Antennen-Anzeigenamen (GETANTNAME1–3 / ACK_ANTNAME*)
+                if tel.cmd.startswith("ACK_GETANTNAME") or tel.cmd.startswith("ACK_ANTNAME"):
+                    raw = str(tel.params or "").strip().split(";")[0].strip()
+                    bad = "#:$"
+                    name = "".join(c for c in raw[:9] if c not in bad)[:9]
+                    cmd_u = str(tel.cmd or "").upper()
+                    slot = None
+                    for s in (3, 2, 1):
+                        if cmd_u.endswith(f"ANTNAME{s}"):
+                            slot = s
+                            break
+                    if slot == 1:
+                        axis_state.antname1 = name
+                    elif slot == 2:
+                        axis_state.antname2 = name
+                    elif slot == 3:
+                        axis_state.antname3 = name
+                    if slot is not None:
+                        try:
+                            cb = getattr(self, "on_antenna_names_changed", None)
+                            if callable(cb):
+                                cb()
+                        except Exception:
+                            pass
                     return
                 # Antennen-Dipol-Flags (GETANTDP1–3)
                 if tel.cmd.startswith("ACK_GETANTDP1"):

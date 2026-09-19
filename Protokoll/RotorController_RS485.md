@@ -54,6 +54,7 @@ Das Protokoll ist als **Frage/Antwort** aufgebaut:
 ### IDs (SRC/DST)
 
 - **Slave‑ID**: ist die Zieladresse (`DST`) und kann mit **`SETID`** gezielt an diese Adresse geändert werden. Zusätzlich gibt es **`SETROTORID`**: derselbe Parameter (neue ID 1…254), aber **`DST = 255` (Broadcast)** — damit kann ein Rotor seine Adresse setzen, **ohne** dass der Master die alte Slave-ID kennen muss (sinnvoll nur, wenn **genau ein** Rotor am Bus hängt, sonst erhalten alle dieselbe ID).
+- **Rotortyp**: mit **`SETROTORTYPE` / `GETROTORTYPE`** (1 = Rotation/Azimut, 2 = Elevation 90°, 3 = Elevation 180°), dauerhaft im Rotor‑NVS.
 - **Master‑ID**: ist immer die Quelladresse (`SRC`) der Anfrage. Der Slave antwortet an genau diese ID (die Antwort hat dann `SRC=Slave` und `DST=Master`).
 - Die Master‑ID muss also nicht `0` sein. Wenn mehrere Master existieren, antwortet der Slave jeweils an den Master, der die Anfrage geschickt hat.
 - **Zwei Master auf derselben RS485‑Leitung** (z.B. PC mit eigenem USB‑RS485‑Adapter am gleichen Bus wie der Display‑Controller — der Datenverkehr des PC muss dafür **nicht** „durch den Controller“ geroutet sein): Der PC soll eine **andere Master‑ID** nutzen als der Controller (`config.json` `master_id` am Display). Sonst sind `ACK_GETPOSDG`/`ACK_SETPOSDG` mit gleichem `DST` nicht dem richtigen Gerät zuordenbar — Pending und Ist‑Anzeige können stolpern, wenn beide viel abfragen.
@@ -115,7 +116,7 @@ Es gibt drei Encoder‑Varianten. Die Auswahl ist über RS485 mit **SETENCTYPE 1
 
 ## 3. RS485‑Befehle – Tabelle {#cmd-table}
 
-Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische Antwort vom Slave. Spalte 3 ist eine Kurzbeschreibung. **Antennenversatz** (`SETANTOFF1..3`/`GET…`), **Öffnungswinkel** (`SETANGLE1..3`/`GET…`), **Dipol-Flag** (`SETANTDP1..3`/`GET…`), **Reichweite** (`SETANTDIS1..3`/`GET…`) und **Korrekturwinkel** (`SETDGCAL`/`GETDGCAL`) werden im Rotor dauerhaft gespeichert (NVS) – dieselben Befehle stehen im Bridge‑Befehlsfenster zur Verfügung.
+Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische Antwort vom Slave. Spalte 3 ist eine Kurzbeschreibung. **Antennenversatz** (`SETANTOFF1..3`/`GET…`), **Öffnungswinkel** (`SETANGLE1..3`/`GET…`), **Dipol-Flag** (`SETANTDP1..3`/`GET…`), **Reichweite** (`SETANTDIS1..3`/`GET…`), **Anzeigenamen** (`SETANTNAME1..3`/`GET…`) und **Korrekturwinkel** (`SETDGCAL`/`GETDGCAL`) werden im Rotor dauerhaft gespeichert (NVS) – dieselben Befehle stehen im Bridge‑Befehlsfenster zur Verfügung. Der Display‑Controller holt die Namen später selbst vom Rotor (`GETANTNAME*`); es gibt keine `GETCONANTNAME*`/`SETCONANTNAME*` mehr.
 
 | Master → Slave | Slave → Master | Kurzbeschreibung |
 | --- | --- | --- |
@@ -160,6 +161,12 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 | `#0:20:SETANTDIS2:500:20,500$` | `#20:0:ACK_SETANTDIS2:1:<CS>$` oder: `#20:0:NAK_SETANTDIS2:REASON:CS$` | **[SETANTDIS2](#cmd-SETANTDIS2)** Reichweite der Antenne 2 speichern. |
 | `#0:20:GETANTDIS3:1:20,01$` | `#20:0:ACK_GETANTDIS3:<WERT>:<CS>$` oder: `#20:0:NAK_GETANTDIS3:REASON:CS$` | **[GETANTDIS3](#cmd-GETANTDIS3)** Reichweite der Antenne 3 lesen. |
 | `#0:20:SETANTDIS3:500:20,500$` | `#20:0:ACK_SETANTDIS3:1:<CS>$` oder: `#20:0:NAK_SETANTDIS3:REASON:CS$` | **[SETANTDIS3](#cmd-SETANTDIS3)** Reichweite der Antenne 3 speichern. |
+| `#0:20:GETANTNAME1:0:20$` | `#20:0:ACK_GETANTNAME1:<NAME>;0:<CS>$` oder: `#20:0:NAK_GETANTNAME1:REASON:CS$` | **[GETANTNAME1](#cmd-GETANTNAME1)** Anzeigename der Antenne 1 lesen. |
+| `#0:20:SETANTNAME1:Yagi:20$` | `#20:0:ACK_SETANTNAME1:1:<CS>$` oder: `#20:0:NAK_SETANTNAME1:REASON:CS$` | **[SETANTNAME1](#cmd-SETANTNAME1)** Anzeigename der Antenne 1 speichern. |
+| `#0:20:GETANTNAME2:0:20$` | `#20:0:ACK_GETANTNAME2:<NAME>;0:<CS>$` oder: `#20:0:NAK_GETANTNAME2:REASON:CS$` | **[GETANTNAME2](#cmd-GETANTNAME2)** Anzeigename der Antenne 2 lesen. |
+| `#0:20:SETANTNAME2:Yagi:20$` | `#20:0:ACK_SETANTNAME2:1:<CS>$` oder: `#20:0:NAK_SETANTNAME2:REASON:CS$` | **[SETANTNAME2](#cmd-SETANTNAME2)** Anzeigename der Antenne 2 speichern. |
+| `#0:20:GETANTNAME3:0:20$` | `#20:0:ACK_GETANTNAME3:<NAME>;0:<CS>$` oder: `#20:0:NAK_GETANTNAME3:REASON:CS$` | **[GETANTNAME3](#cmd-GETANTNAME3)** Anzeigename der Antenne 3 lesen. |
+| `#0:20:SETANTNAME3:Yagi:20$` | `#20:0:ACK_SETANTNAME3:1:<CS>$` oder: `#20:0:NAK_SETANTNAME3:REASON:CS$` | **[SETANTNAME3](#cmd-SETANTNAME3)** Anzeigename der Antenne 3 speichern. |
 | `#0:20:GETTEMPAW:...:CS$` | `#20:0:ACK_GETTEMPAW:...:<CS>$` oder: `#20:0:NAK_GETTEMPAW:REASON:CS$` | **[GETTEMPAW](#cmd-GETTEMPAW)** Warnschwelle Umgebungstemperatur lesen. |
 | `#0:20:GETTEMPMW:...:CS$` | `#20:0:ACK_GETTEMPMW:...:<CS>$` oder: `#20:0:NAK_GETTEMPMW:REASON:CS$` | **[GETTEMPMW](#cmd-GETTEMPMW)** Warnschwelle Motortemperatur lesen. |
 | `#0:20:SETTEMPA:...:CS$` | `#20:0:ACK_SETTEMPA:...:<CS>$` oder: `#20:0:NAK_SETTEMPA:REASON:CS$` | **[SETTEMPA](#cmd-SETTEMPA)** Warnschwelle Umgebungstemperatur setzen. |
@@ -207,6 +214,8 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 | `#0:20:GETID:...:CS$` | `#20:0:ACK_GETID:...:<CS>$` oder: `#20:0:NAK_GETID:REASON:CS$` | **[GETID](#cmd-GETID)** Slave-ID lesen. |
 | `#0:20:SETID:...:CS$` | `#20:0:ACK_SETID:...:<CS>$` oder: `#20:0:NAK_SETID:REASON:CS$` | **[SETID](#cmd-SETID)** Slave-ID setzen und speichern. |
 | `#0:255:SETROTORID:<neue_id>:CS$` | z. B. `#<neue_id>:0:ACK_SETROTORID:...:<CS>$` oder: `#<neue_id>:0:NAK_SETROTORID:REASON:CS$` (je nach Firmware) | **[SETROTORID](#cmd-SETROTORID)** Neue Slave-ID per **Broadcast** setzen und speichern — gleiche NV‑Wirkung wie `SETID`, aber **ohne** die bisherige `DST` zu kennen. |
+| `#0:20:GETROTORTYPE:0:20$` | `#20:0:ACK_GETROTORTYPE:<1|2|3>:<CS>$` oder: `#20:0:NAK_GETROTORTYPE:REASON:CS$` | **[GETROTORTYPE](#cmd-GETROTORTYPE)** Rotortyp lesen: 1 = Rotation, 2 = Elevation 90°, 3 = Elevation 180°. |
+| `#0:20:SETROTORTYPE:1:21$` | `#20:0:ACK_SETROTORTYPE:1:<CS>$` oder: `#20:0:NAK_SETROTORTYPE:REASON:CS$` | **[SETROTORTYPE](#cmd-SETROTORTYPE)** Rotortyp setzen und speichern (1…3). |
 | `#0:20:GETBEGINDG:...:CS$` | `#20:0:ACK_GETBEGINDG:...:<CS>$` oder: `#20:0:NAK_GETBEGINDG:REASON:CS$` | **[GETBEGINDG](#cmd-GETBEGINDG)** Min-Winkel (Achsenanfang) lesen. |
 | `#0:20:SETBEGINDG:...:CS$` | `#20:0:ACK_SETBEGINDG:...:<CS>$` oder: `#20:0:NAK_SETBEGINDG:REASON:CS$` | **[SETBEGINDG](#cmd-SETBEGINDG)** Min-Winkel setzen. |
 | `#0:20:GETMAXDG:...:CS$` | `#20:0:ACK_GETMAXDG:...:<CS>$` oder: `#20:0:NAK_GETMAXDG:REASON:CS$` | **[GETMAXDG](#cmd-GETMAXDG)** Max-Winkel lesen. |
@@ -217,6 +226,8 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 | `#0:20:SETDGCAL:1,4:CS$` | `#20:0:ACK_SETDGCAL:1:<CS>$` oder: `#20:0:NAK_SETDGCAL:REASON:CS$` | **[SETDGCAL](#cmd-SETDGCAL)** Korrekturwinkel (−360…360°) setzen. |
 | `#0:20:GETHOMEPWM:...:CS$` | `#20:0:ACK_GETHOMEPWM:...:<CS>$` oder: `#20:0:NAK_GETHOMEPWM:REASON:CS$` | **[GETHOMEPWM](#cmd-GETHOMEPWM)** Homing-Max-PWM (%) lesen. |
 | `#0:20:SETHOMEPWM:...:CS$` | `#20:0:ACK_SETHOMEPWM:...:<CS>$` oder: `#20:0:NAK_SETHOMEPWM:REASON:CS$` | **[SETHOMEPWM](#cmd-SETHOMEPWM)** Homing-Max-PWM (%) setzen. |
+| `#0:20:GETHOMEPOS:...:CS$` | `#20:0:ACK_GETHOMEPOS:...:<CS>$` oder: `#20:0:NAK_GETHOMEPOS:REASON:CS$` | **[GETHOMEPOS](#cmd-GETHOMEPOS)** Hom-Winkel / Parkposition lesen. |
+| `#0:20:SETHOMEPOS:...:CS$` | `#20:0:ACK_SETHOMEPOS:...:<CS>$` oder: `#20:0:NAK_SETHOMEPOS:REASON:CS$` | **[SETHOMEPOS](#cmd-SETHOMEPOS)** Hom-Winkel / Parkposition setzen. |
 | `#0:20:GETHOMEBACKOFF:...:CS$` | `#20:0:ACK_GETHOMEBACKOFF:...:<CS>$` oder: `#20:0:NAK_GETHOMEBACKOFF:REASON:CS$` | **[GETHOMEBACKOFF](#cmd-GETHOMEBACKOFF)** Homing Rückzug (Grad) lesen. |
 | `#0:20:SETHOMEBACKOFF:...:CS$` | `#20:0:ACK_SETHOMEBACKOFF:...:<CS>$` oder: `#20:0:NAK_SETHOMEBACKOFF:REASON:CS$` | **[SETHOMEBACKOFF](#cmd-SETHOMEBACKOFF)** Homing Rückzug (Grad) setzen. |
 | `#0:20:GETHOMEBLSCALE:...:CS$` | `#20:0:ACK_GETHOMEBLSCALE:...:<CS>$` oder: `#20:0:NAK_GETHOMEBLSCALE:REASON:CS$` | **[GETHOMEBLSCALE](#cmd-GETHOMEBLSCALE)** Homing: Backlash-Skalierung (0–1) lesen. |
@@ -274,7 +285,7 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 
 ## Hardwarecontroller Configuration {#hw-controller-config}
 
-**Falsche Adresse = Antwort vom Rotor, nicht vom Controller:** Wenn Sie `DST = rotor_id` verwenden (z. B. `20`), geht das Telegramm an den **Antriebs‑Slave**. Der Rotor kennt `GETCONTID`, `GETCONANTNAME*` usw. nicht und antwortet mit `#<RotorID>:<SRC>:NAK_…:NOTIMPL:…$` — das ist **kein** Checksummenfehler auf dem Controller. Richtig ist `DST = master_id` aus der `config.json` des Display‑Controllers (typ. `2`), **nicht** die Rotor‑Slave‑ID.
+**Falsche Adresse = Antwort vom Rotor, nicht vom Controller:** Wenn Sie `DST = rotor_id` verwenden (z. B. `20`), geht das Telegramm an den **Antriebs‑Slave**. Der Rotor kennt `GETCONTID`, `SETCONSPWM` usw. nicht und antwortet mit `#<RotorID>:<SRC>:NAK_…:NOTIMPL:…$` — das ist **kein** Checksummenfehler auf dem Controller. Richtig ist `DST = master_id` aus der `config.json` des Display‑Controllers (typ. `2`), **nicht** die Rotor‑Slave‑ID. Antennen‑Anzeigenamen gehören **nicht** hierher: `GETANTNAME1…3` / `SETANTNAME1…3` gehen an den Rotor (`DST = rotor_id`).
 
 Diese Befehle richten sich **nicht** an den Rotor‑Slave (Antrieb), sondern an den **Display‑/Hardware‑Controller** (ESP32 mit UI). Zieladresse `DST` ist die im Gerät konfigurierte **Master‑ID** des Controllers (entspricht `master_id` in `config.json` auf der FFat‑Partition). `SRC` ist die ID des sendenden Clients (z. B. PC‑Software).
 
@@ -282,7 +293,7 @@ Diese Befehle richten sich **nicht** an den Rotor‑Slave (Antrieb), sondern an 
 
 Die gleichen Telegramme können über **USB‑Seriell** und über **RS485** eingehen; Antworten (`ACK_*`/`NAK_*`) gehen über `hw_send` ebenfalls auf den Bus **und** zum USB‑Monitor (Spiegelung). Checksumme `CS` wie gewohnt: `SRC + DST + letzter Zahlenwert in PARAMS` (siehe Abschnitt 1).
 
-Schreibbefehle speichern in `config.json` (Slow/Fast‑PWM, IDs, Antennen‑Labels, Touch‑Pieps, Anemometer, Encoder‑Schritt, Antennenwechsel‑Verhalten `concha` u. a.); die UI wird danach aktualisiert (u. a. Labels, RS485‑IDs, Slow/Fast‑`SETPWM` zum Rotor).
+Schreibbefehle speichern in `config.json` (Slow/Fast‑PWM, IDs, Touch‑Pieps, Anemometer, Encoder‑Schritt, Antennenwechsel‑Verhalten `concha` u. a.); die UI wird danach aktualisiert (u. a. RS485‑IDs, Slow/Fast‑`SETPWM` zum Rotor). Antennen‑Labels liegen im Rotor‑NVS (`SETANTNAME*` / `GETANTNAME*`); der Controller liest sie von dort.
 
 | Befehl | Antwort |
 | --- | --- |
@@ -291,8 +302,6 @@ Schreibbefehle speichern in `config.json` (Slow/Fast‑PWM, IDs, Antennen‑Labe
 | `GETCONTID` | `ACK_GETCONTID` (Parameter = `master_id` des Controllers) |
 | `SETCONTID` | `ACK_SETCONTID` / `NAK_SETCONTID` (1…254) — Ziel `DST = master_id` (unicast). |
 | `SETCONIDF` oder `SETCONTID` mit `DST = 255` (Broadcast) | `ACK_SETCONIDF` bzw. `ACK_SETCONTID` / `NAK_SETCONTID` — setzt die **neue** Controller‑`master_id` in `config.json`, wenn die bisherige ID unbekannt ist. Checksumme: `CS = SRC + 255 + <neue ID>` (z. B. `#1:255:SETCONIDF:5:261$` mit `1+255+5=261`). |
-| `GETCONANTNAME1` … `GETCONANTNAME3` | `ACK_GETCONANTNAME1` … / `NAK_GETCONANTNAME*` — Antworttext enthält den Namen, für eine stabile CS wird `;0` angehängt (letzter Zahlenwert 0). |
-| `SETCONANTNAME1` … `SETCONANTNAME3` | `ACK_SETCONANTNAME1` … / `NAK_SETCONANTNAME*` — ein `:` im Namen ist unzulässig (`NAK` mit Code 1). |
 | `GETCONSPWM` / `SETCONSPWM` | `ACK_GETCONSPWM` / `ACK_SETCONSPWM` (bzw. `NAK_SETCONSPWM`) — Slow‑PWM in % (0…100), entspricht `slow_pwm` in der JSON. |
 | `GETCONFPWM` / `SETCONFPWM` | `ACK_GETCONFPWM` / `ACK_SETCONFPWM` (bzw. `NAK_SETCONFPWM`) — Fast‑PWM in % (0…100), entspricht `fast_pwm`. |
 | `GETCONFRQ` / `SETCONFRQ` | `ACK_GETCONFRQ` / `ACK_SETCONFRQ` — Touch‑Pieps‑Frequenz in Hz (200…4000), in `config.json` als `confrq`. |
@@ -305,7 +314,7 @@ Schreibbefehle speichern in `config.json` (Slow/Fast‑PWM, IDs, Antennen‑Labe
 
 **Pflege (Firmware):** Neue Konfig‑Befehle für den Display‑Controller bitte in `src/rotor_rs485.cpp` (`handle_local_config_command`), in `include/pwm_config.h` / `src/pwm_config.cpp` / `data/config.json` und **in dieser Tabelle** parallel ergänzen.
 
-**NAK‑Codes (typisch):** `1` = ungültiger Wertebereich oder verbotenes Zeichen im Namen; `2` = Checksumme/Format passt nicht.
+**NAK‑Codes (typisch):** `1` = ungültiger Wertebereich; `2` = Checksumme/Format passt nicht.
 
 **GET‑Anfragen** verwenden wie üblich z. B. `PARAMS = 0` (letzter Zahlenwert für die CS‑Bildung).
 
@@ -346,6 +355,35 @@ Hier ist jeder Befehl in einem eigenen Absatz beschrieben: Was er macht, wie man
 **Was es macht:** Neue RS485‑Slave‑ID **setzen und speichern** — Inhalt wie bei **`SETID`**, aber Anfrage an **`DST = 255` (Broadcast)**.
 
 **Details:** Derselbe NV‑Speicher wie bei `g_slaveId` / `SETID`. **Wofür:** Wenn der Master die **aktuelle** Slave‑ID nicht kennt, oder nur **ein** Rotor am Strang hängt, kann so trotzdem eine neue Adresse **1…254** vergeben werden (der Slave wertet den Broadcast wie ein normales ID‑Kommando aus). **Parameter:** eine ganze Zahl **1…254**. **Bus‑Sicherheit:** Sind **mehrere** Rotoren am Bus und alle führen den Befehl aus, erhalten **alle dieselbe** neue ID → schwerer Konflikt; praktisch nur mit **einem** angeschlossenen Rotor verwenden; danach alle Telegramme mit der **neuen** `DST` senden. **Antwort:** typisch `ACK_SETROTORID` / `NAK_SETROTORID` (je nach Firmware, vergleichbar `SETID`). PC‑Software (z. B. RotorTcpBridge) kann nach erfolgreichem ACK die lokale Konfiguration (`slave_az` / `slave_el`) an die neue ID anpassen. **Rahmen:** gezielt `#<master>:<alte_id>:SETID:<neu>:…$` vs. Broadcast `#<master>:255:SETROTORID:<neu>:…$`.
+
+---
+
+#### `GETROTORTYPE` {#cmd-GETROTORTYPE}
+
+**Was es macht:** Rotortyp lesen (Achsenfunktion).
+
+**Telegramm:** `#0:20:GETROTORTYPE:0:20$`
+
+**Antwort:** `#20:0:ACK_GETROTORTYPE:<1|2|3>:<CS>$`
+
+**Details:** Rückgabe `1` = Rotation (Azimut), `2` = Elevation mit 90°, `3` = Elevation mit 180°. Wert wird im Rotor gespeichert (NVS).
+
+---
+
+#### `SETROTORTYPE` {#cmd-SETROTORTYPE}
+
+**Was es macht:** Rotortyp setzen und speichern.
+
+**Telegramm:** `#0:20:SETROTORTYPE:1:21$`
+
+**Antwort:** `#20:0:ACK_SETROTORTYPE:1:<CS>$`
+
+**Details:** Zulässig `1`…`3`:
+- `1` = Rotation (Azimut)
+- `2` = Elevation mit 90°
+- `3` = Elevation mit 180°
+
+Ungültige Werte → `NAK_SETROTORTYPE`. In der Bridge‑UI unter Parameter direkt nach der Rotor‑ID.
 
 ---
 
@@ -919,6 +957,78 @@ Hier ist jeder Befehl in einem eigenen Absatz beschrieben: Was er macht, wie man
 
 ---
 
+#### `GETANTNAME1` {#cmd-GETANTNAME1}
+
+**Was es macht:** Liest den im Rotor gespeicherten Anzeigenamen der Antenne 1.
+
+**Telegramm:** `#0:20:GETANTNAME1:0:20$`
+
+**Antwort:** `#20:0:ACK_GETANTNAME1:<NAME>;0:<CS>$`
+
+**Details:** Textname aus dem Rotor‑NVS. Ohne Zahl im Namen wird für die CS `;0` angehängt (letzter Zahlenwert 0). Max. 9 Zeichen; `#`, `:`, `$` sind unzulässig.
+
+---
+
+#### `SETANTNAME1` {#cmd-SETANTNAME1}
+
+**Was es macht:** Speichert den Anzeigenamen der Antenne 1 im Rotor.
+
+**Telegramm:** `#0:20:SETANTNAME1:Yagi:20$`
+
+**Antwort:** `#20:0:ACK_SETANTNAME1:1:<CS>$`
+
+**Details:** Persistent im NVS. Reiner Text → CS mit letztem Zahlenwert 0 (`SRC+DST+0`). Ein `:` im Namen ist unzulässig (`NAK` mit Code 1). Der Display‑Controller kann denselben Namen später per `GETANTNAME1` vom Rotor holen.
+
+---
+
+#### `GETANTNAME2` {#cmd-GETANTNAME2}
+
+**Was es macht:** Liest den gespeicherten Anzeigenamen der Antenne 2.
+
+**Telegramm:** `#0:20:GETANTNAME2:0:20$`
+
+**Antwort:** `#20:0:ACK_GETANTNAME2:<NAME>;0:<CS>$`
+
+**Details:** Verhalten wie bei `GETANTNAME1`.
+
+---
+
+#### `SETANTNAME2` {#cmd-SETANTNAME2}
+
+**Was es macht:** Speichert den Anzeigenamen der Antenne 2 im Rotor.
+
+**Telegramm:** `#0:20:SETANTNAME2:Yagi:20$`
+
+**Antwort:** `#20:0:ACK_SETANTNAME2:1:<CS>$`
+
+**Details:** Wie `SETANTNAME1`.
+
+---
+
+#### `GETANTNAME3` {#cmd-GETANTNAME3}
+
+**Was es macht:** Liest den gespeicherten Anzeigenamen der Antenne 3.
+
+**Telegramm:** `#0:20:GETANTNAME3:0:20$`
+
+**Antwort:** `#20:0:ACK_GETANTNAME3:<NAME>;0:<CS>$`
+
+**Details:** Verhalten wie bei `GETANTNAME1`.
+
+---
+
+#### `SETANTNAME3` {#cmd-SETANTNAME3}
+
+**Was es macht:** Speichert den Anzeigenamen der Antenne 3 im Rotor.
+
+**Telegramm:** `#0:20:SETANTNAME3:Yagi:20$`
+
+**Antwort:** `#20:0:ACK_SETANTNAME3:1:<CS>$`
+
+**Details:** Wie `SETANTNAME1`.
+
+---
+
 #### `SETCAL` {#cmd-SETCAL}
 
 **Was es macht:** Kalibrierfahrt starten (0→360→0) und Stromprofil lernen.
@@ -1136,6 +1246,22 @@ Hier ist jeder Befehl in einem eigenen Absatz beschrieben: Was er macht, wie man
 **Was es macht:** Homing-Max-PWM (%) setzen.
 
 **Details:** Typisch 60..100%.
+
+---
+
+#### `GETHOMEPOS` {#cmd-GETHOMEPOS}
+
+**Was es macht:** Hom-Winkel / Parkposition lesen (Grad).
+
+**Details:** Gespeicherter Winkel; die Bridge fährt ihn beim Parken per `SETPOSDG` an.
+
+---
+
+#### `SETHOMEPOS` {#cmd-SETHOMEPOS}
+
+**Was es macht:** Hom-Winkel / Parkposition setzen (Grad).
+
+**Details:** Darf nicht größer als der Rotorwinkel (`SETMAXDG`) sein. Parken in der Bridge nutzt `SETPOSDG` (nicht einen eigenen HOME-Befehl), damit andere Bus-Teilnehmer das Ziel mitbekommen.
 
 ---
 
@@ -1712,10 +1838,12 @@ Diese Tabelle listet die wichtigsten Einstellungen aus der `.ino`. „Kurzname�
 | Variablenname | Kurzname | EEPROM | RS485 | Kurzbeschreibung |
 | --- | --- | --- | --- | --- |
 | `g_slaveId` | `id` | ja | SETID/GETID, SETROTORID (Broadcast) | Slave-Adresse (RS485) |
+| `g_rotorType` | `rtype` | ja | SETROTORTYPE/GETROTORTYPE | Rotortyp: 1=Rotation, 2=EL 90°, 3=EL 180° |
 | `g_axisMinDeg01` | `amin` | ja | SETBEGINDG/GETBEGINDG | Min-Winkel (0,01°) |
 | `g_axisMaxDeg01` | `amax` | ja | SETMAXDG/GETMAXDG | Max-Winkel (0,01°) |
 | `g_dgOffsetDeg01` | `dgo` | ja | SETDGOFFSET/GETDGOFFSET | Offset in Grad (0,01°) |
 | `g_homeFastPwmPercent` | `hfp` | ja | SETHOMEPWM/GETHOMEPWM | Homing: Max-PWM (%) |
+| `g_homePosDeg` | `hpos` | ja | SETHOMEPOS/GETHOMEPOS | Hom-Winkel / Parkposition (Grad) |
 | `g_homeSeekMinPwmPercent` | `-` | nein | - | Homing Phase A: Ziel-PWM (%) zum linken Endschalter |
 | `g_homeBackoff` | `hbo` | ja | SETHOMEBACKOFF/GETHOMEBACKOFF | Homing: Rückzug vom Endschalter (Grad) |
 | `g_homeBacklashScale` | `hbl` | ja | SETHOMEBLSCALE/GETHOMEBLSCALE | Homing: Backlash-Berechnung (0–1) |
@@ -1772,6 +1900,19 @@ Hier sind die Variablen in einfachen Worten erklärt. Wenn „gut“ genannt wir
 
 ---
 
+### `g_rotorType`
+
+**Kurz:** Rotortyp / Achsenfunktion
+
+**Default:** typisch `1` (Rotation)
+
+**Speicherung:** Ja (Key `rtype`). Ändern über RS485: **SETROTORTYPE/GETROTORTYPE**.
+- `1` = Rotation (Azimut)
+- `2` = Elevation mit 90°
+- `3` = Elevation mit 180°
+
+---
+
 ### `g_axisMinDeg01`
 
 **Kurz:** Min-Winkel (0,01°)
@@ -1809,6 +1950,14 @@ Hier sind die Variablen in einfachen Worten erklärt. Wenn „gut“ genannt wir
 **Default:** `static float g_homeFastPwmPercent = 100.0f;`
 
 **Speicherung:** Ja (Key `hfp`). Ändern über RS485: **SETHOMEPWM/GETHOMEPWM**.
+
+---
+
+### `g_homePosDeg`
+
+**Kurz:** Hom-Winkel / Parkposition (Grad)
+
+**Speicherung:** Ja (Key `hpos`). Ändern über RS485: **SETHOMEPOS/GETHOMEPOS**. Parken in der Bridge: **SETPOSDG** auf diesen Winkel.
 
 ---
 

@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QFormLayout,
 )
-from PySide6.QtGui import QAction, QFont, QGuiApplication
+from PySide6.QtGui import QAction, QActionGroup, QFont, QGuiApplication
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 
 from .antenna_sync import AntennaSelectionBridge
@@ -117,7 +117,7 @@ class _JogRepeatController:
             return False
 
 from ..app_icon import get_app_icon
-from ..i18n import t
+from ..i18n import t, tt
 from ..shortcut_actions import (
     antenna_offset_for_compass_slot,
     bump_antenna_target_deg,
@@ -156,6 +156,7 @@ from .axis_widget import (
 
 class MainWindow(QMainWindow):
     _encoder_type_changed_ui = Signal()
+    _rotor_type_changed_ui = Signal()
 
     @staticmethod
     def _hamlib_listener_ports_sorted(ham_cfg: dict) -> list[int]:
@@ -377,6 +378,10 @@ class MainWindow(QMainWindow):
         self._act_delwarn.triggered.connect(self.ctrl.clear_warnings_all)
         self._menu_setup.addAction(self._act_delwarn)
 
+        self._menu_profile = menubar.addMenu(t("main.menu_profile"))
+        self._profile_action_group = None
+        self._refresh_profile_menu()
+
         self._menu_window = menubar.addMenu(t("main.menu_window"))
         self._act_win_compass = QAction(t("main.btn_compass"), self)
         self._act_win_compass.triggered.connect(self._open_compass)
@@ -414,6 +419,7 @@ class MainWindow(QMainWindow):
         menubar.setStyleSheet("QMenuBar { font-weight: bold; }")
         _menu_bold = "QMenu { font-weight: bold; }"
         self._menu_setup.setStyleSheet(_menu_bold)
+        self._menu_profile.setStyleSheet(_menu_bold)
         self._menu_window.setStyleSheet(_menu_bold)
         self._menu_help.setStyleSheet(_menu_bold)
 
@@ -431,15 +437,15 @@ class MainWindow(QMainWindow):
             pass
         self.btn_open_compass = QPushButton(t("main.btn_compass"))
         self.btn_open_map = QPushButton(t("main.btn_map"))
+        self.btn_park = QPushButton(t("main.btn_park"))
         self.btn_ref = QPushButton(t("main.btn_ref"))
         top.addWidget(self.btn_open_compass, 1)
         top.addWidget(self.btn_open_map, 1)
+        top.addWidget(self.btn_park, 1)
         top.addWidget(self.btn_ref, 1)
 
-        # Funkgeraet-Zeile: Aktives-Rig-Dropdown + Frequenzanzeige in einer
-        # Zeile. Label und Combobox werden nur sichtbar, wenn mehrere Profile
-        # vorhanden sind; der Funkgeraete-Name unterhalb der Frequenz entfaellt
-        # bewusst, weil der Profilname im Dropdown denselben Kontext liefert.
+        # Funkgeraet-Zeile: Frequenz + Name des aktiven Rig-Profils (nur Anzeige).
+        # Welches Profil aktiv ist, wird in den Einstellungen (Rig-Bridge) gesetzt.
         self._rig_freq_row = QGroupBox(t("main.group_radio"))
         self._rig_freq_row.setVisible(False)
         vl_rf = QVBoxLayout(self._rig_freq_row)
@@ -452,14 +458,6 @@ class MainWindow(QMainWindow):
         vl_rf.setSpacing(px_to_dip(self, 4))
         hl_rf = QHBoxLayout()
         hl_rf.setSpacing(px_to_dip(self, 6))
-        self._lbl_active_rig = QLabel(t("main.active_rig_label"))
-        self._cb_active_rig = QComboBox()
-        self._cb_active_rig.setMinimumWidth(px_to_dip(self, 140))
-        self._cb_active_rig.currentIndexChanged.connect(self._on_active_rig_changed)
-        self._lbl_active_rig.setVisible(False)
-        self._cb_active_rig.setVisible(False)
-        hl_rf.addWidget(self._lbl_active_rig, 0)
-        hl_rf.addWidget(self._cb_active_rig, 0)
         self._ed_rig_freq = QLineEdit()
         self._ed_rig_freq.setPlaceholderText(t("main.rig_freq_placeholder"))
         _rf_font = QFont(self._ed_rig_freq.font())
@@ -471,6 +469,11 @@ class MainWindow(QMainWindow):
         hl_rf.addWidget(self._ed_rig_freq, 1)
         hl_rf.addWidget(self._lbl_rig_freq_unit, 0)
         vl_rf.addLayout(hl_rf)
+        self._lbl_active_rig_name = QLabel("")
+        self._lbl_active_rig_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_active_rig_name.setVisible(False)
+        self._last_active_rig_id = ""
+        vl_rf.addWidget(self._lbl_active_rig_name)
         main.addWidget(self._rig_freq_row)
 
         self.gb_antenna = QGroupBox(t("main.group_antenna_select"))
@@ -716,13 +719,21 @@ class MainWindow(QMainWindow):
         self.el_fields = _make_axis_panel(self.gb_el, "el", self.ctrl)
 
         self.btn_ref.clicked.connect(lambda: self.ctrl.reference_all(True))
+        self.btn_park.clicked.connect(self._on_park_clicked)
+        try:
+            self.btn_park.setToolTip(tt("main.btn_park_tooltip"))
+        except Exception:
+            pass
 
         # Referenzierungs-Fehler-Callback: Controller ruft dies aus Hintergrundthread auf
         self.ctrl.on_ref_start_failed = self._on_ref_start_failed
         self._homing_ui_hidden_for_abs_enc = False
         self._encoder_type_changed_ui.connect(self._on_encoder_type_changed_ui)
         self.ctrl.on_encoder_type_changed = self._on_encoder_type_changed
+        self._rotor_type_changed_ui.connect(self._on_rotor_type_changed_ui)
+        self.ctrl.on_rotor_type_changed = self._on_rotor_type_changed
         QTimer.singleShot(0, self._update_homing_buttons_visibility)
+        QTimer.singleShot(0, self._on_rotor_type_changed_ui)
 
         self.t = QTimer(self)
         self.t.timeout.connect(self._tick)
@@ -789,6 +800,8 @@ class MainWindow(QMainWindow):
             udp_pst=self._udp_pst,
             pst_target_push=self._pst_target_push,
             rotctld_server=self._rotctld_server,
+            switch_profile_cb=self._switch_rotor_profile,
+            profiles_changed_cb=self._refresh_profile_menu,
             parent=None,
         )
         self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
@@ -1190,13 +1203,195 @@ class MainWindow(QMainWindow):
         QAction-Texte in den geöffneten Menüs sind dagegen korrekt.
         """
         mb = self.menuBar()
-        menus = (self._menu_setup, self._menu_window, self._menu_help)
+        menus = (self._menu_setup, self._menu_profile, self._menu_window, self._menu_help)
         for m in menus:
             act = m.menuAction()
             if act is not None:
                 mb.removeAction(act)
         for m in menus:
             mb.addMenu(m)
+
+    def _refresh_profile_menu(self) -> None:
+        """Menü „Profil“ mit allen Profilen und Haken am aktiven neu aufbauen."""
+        from ..profile_store import get_active_profile_id, list_profiles
+
+        menu = getattr(self, "_menu_profile", None)
+        if menu is None:
+            return
+        menu.clear()
+        menu.setTitle(t("main.menu_profile"))
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        self._profile_action_group = group
+        active = get_active_profile_id()
+        for p in list_profiles():
+            pid = str(p.get("id") or "")
+            name = str(p.get("name") or pid)
+            act = QAction(name, self)
+            act.setCheckable(True)
+            act.setChecked(pid == active)
+            act.setData(pid)
+            act.triggered.connect(partial(self._on_profile_menu_triggered, pid))
+            group.addAction(act)
+            menu.addAction(act)
+
+    def _on_profile_menu_triggered(self, profile_id: str, checked: bool = False) -> None:
+        if not checked:
+            return
+        self._switch_rotor_profile(profile_id)
+
+    def _switch_rotor_profile(self, profile_id: str) -> None:
+        """Aktives Profil speichern, neues laden, HW/Server anwenden, Bus-Caches neu lesen."""
+        from ..i18n import load_lang
+        from ..profile_store import get_active_profile_id, save_active_config, switch_profile
+
+        pid = str(profile_id or "").strip()
+        if not pid:
+            return
+        if pid == get_active_profile_id():
+            self._refresh_profile_menu()
+            sw = getattr(self, "_settings_win", None)
+            if sw is not None and hasattr(sw, "refresh_profiles_list"):
+                try:
+                    sw.refresh_profiles_list()
+                except Exception:
+                    pass
+            return
+
+        old_lang = str((self.cfg.get("ui") or {}).get("language") or "")
+        try:
+            save_active_config(self.cfg)
+            new_cfg = switch_profile(pid)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                t("app.title"),
+                t("main.profile_switch_error", err=str(exc)),
+            )
+            self._refresh_profile_menu()
+            return
+
+        self.cfg.clear()
+        self.cfg.update(new_cfg)
+
+        try:
+            self.ctrl.update_polling(self.cfg.get("polling_ms", {}))
+        except Exception as e:
+            self._log_exception("_switch_rotor_profile update_polling", e)
+        try:
+            self.hw.update_cfg(self.cfg.get("hardware_link") or {})
+        except Exception as e:
+            self._log_exception("_switch_rotor_profile hw.update_cfg", e)
+
+        rb = self.cfg.get("rotor_bus") or {}
+        try:
+            self.ctrl.update_ids(
+                int(rb.get("master_id", 0)),
+                int(rb.get("slave_az", 1)),
+                int(rb.get("slave_el", 1)),
+                bool(rb.get("enable_az", True)),
+                bool(rb.get("enable_el", False)),
+            )
+        except Exception as e:
+            self._log_exception("_switch_rotor_profile update_ids", e)
+
+        try:
+            if hasattr(self.ctrl, "reset_bus_discovery_state"):
+                self.ctrl.reset_bus_discovery_state()
+        except Exception as e:
+            self._log_exception("_switch_rotor_profile reset_bus_discovery_state", e)
+
+        pst = self.cfg.get("pst_server") or {}
+        try:
+            if bool(pst.get("enabled", False)):
+                self.pst.restart(
+                    str(pst.get("listen_host", "0.0.0.0")),
+                    int(pst.get("listen_port_az", 4001)),
+                    int(pst.get("listen_port_el", 4002)),
+                )
+            elif getattr(self.pst, "running", False):
+                self.pst.stop()
+        except Exception as e:
+            self._log_exception("_switch_rotor_profile pst.restart", e)
+
+        if self._rotctld_server is not None:
+            try:
+                rc = self.cfg.get("rotctld_server") or {}
+                if bool(rc.get("enabled", False)):
+                    if hasattr(self._rotctld_server, "restart"):
+                        self._rotctld_server.restart(
+                            str(rc.get("listen_host", "127.0.0.1")),
+                            int(rc.get("listen_port", 4533)),
+                        )
+                    elif not getattr(self._rotctld_server, "running", False):
+                        self._rotctld_server.start()
+                elif getattr(self._rotctld_server, "running", False):
+                    self._rotctld_server.stop()
+            except Exception as e:
+                self._log_exception("_switch_rotor_profile rotctld", e)
+
+        try:
+            if self._rig_bridge_manager is not None and "rig_bridge" in self.cfg:
+                self._rig_bridge_manager.update_config(self.cfg["rig_bridge"])
+        except Exception as e:
+            self._log_exception("_switch_rotor_profile rig_bridge", e)
+
+        new_lang = str((self.cfg.get("ui") or {}).get("language") or "")
+        lang_changed = bool(new_lang) and new_lang != old_lang
+        if lang_changed:
+            try:
+                load_lang(new_lang)
+            except Exception:
+                pass
+
+        settings_was_visible = False
+        sw = getattr(self, "_settings_win", None)
+        try:
+            settings_was_visible = bool(sw is not None and sw.isVisible())
+        except Exception:
+            settings_was_visible = False
+
+        self._after_settings_applied()
+        self._update_groupbox_titles()
+        self._update_axis_visibility()
+        self._update_homing_buttons_visibility()
+        self._update_encoder_dependent_settings_ui()
+        try:
+            self._on_rotor_type_changed_ui()
+        except Exception:
+            pass
+
+        self._refresh_profile_menu()
+
+        try:
+            self._rebuild_settings_win()
+            if settings_was_visible:
+                QTimer.singleShot(50, self._open_settings)
+        except Exception as e:
+            self._log_exception("_switch_rotor_profile rebuild settings", e)
+
+        if lang_changed:
+            try:
+                self._rebuild_all_windows()
+            except Exception as e:
+                self._log_exception("_switch_rotor_profile rebuild_all_windows", e)
+            return
+
+        try:
+            if hasattr(self, "_map_win") and self._map_win is not None:
+                self._map_win.reload_for_settings_change()
+        except Exception:
+            pass
+        try:
+            cw = getattr(self, "_compass_win", None)
+            if cw is not None and hasattr(cw, "refresh_visibility"):
+                cw.refresh_visibility()
+            if cw is not None and hasattr(cw, "update_el_rotor_type_display"):
+                cw.update_el_rotor_type_display()
+        except Exception:
+            pass
+
+        self._retranslate_ui()
 
     def _retranslate_ui(self):
         """Alle Texte des Hauptfensters auf die aktuelle Sprache aktualisieren."""
@@ -1207,6 +1402,8 @@ class MainWindow(QMainWindow):
         self._act_commands.setText(t("main.btn_commands"))
         self._act_statistics.setText(t("main.menu_statistics"))
         self._act_delwarn.setText(t("main.menu_delwarn"))
+        self._menu_profile.setTitle(t("main.menu_profile"))
+        self._refresh_profile_menu()
         self._menu_window.setTitle(t("main.menu_window"))
         self._act_win_compass.setText(t("main.btn_compass"))
         self._act_win_map.setText(t("main.btn_map"))
@@ -1237,6 +1434,11 @@ class MainWindow(QMainWindow):
         self._refresh_menubar_top_level()
         self.btn_open_compass.setText(t("main.btn_compass"))
         self.btn_open_map.setText(t("main.btn_map"))
+        self.btn_park.setText(t("main.btn_park"))
+        try:
+            self.btn_park.setToolTip(tt("main.btn_park_tooltip"))
+        except Exception:
+            pass
         self.btn_ref.setText(t("main.btn_ref"))
         try:
             self.gb_control.setTitle(t("main.group_control"))
@@ -1434,6 +1636,8 @@ class MainWindow(QMainWindow):
                 udp_pst=self._udp_pst,
                 pst_target_push=self._pst_target_push,
                 rotctld_server=self._rotctld_server,
+                switch_profile_cb=self._switch_rotor_profile,
+                profiles_changed_cb=self._refresh_profile_menu,
                 parent=None,
             )
         except Exception:
@@ -1495,7 +1699,7 @@ class MainWindow(QMainWindow):
         if self._udp_pst is not None:
             ui = self.cfg.get("ui", {})
             self._udp_pst.start(
-                enabled=bool(ui.get("udp_pst_enabled", True)),
+                enabled=bool(ui.get("udp_pst_enabled", False)),
                 port=int(ui.get("udp_pst_port", 12000)),
                 listen_host=str(ui.get("udp_pst_listen_host", "127.0.0.1")),
             )
@@ -1691,11 +1895,9 @@ class MainWindow(QMainWindow):
 
     def _get_antenna_dropdown_labels(self) -> list[str]:
         """Wie Kompass: Namen mit AZ-Versatz in Klammern."""
-        names = list(
-            self.cfg.get("ui", {}).get("antenna_names", ["Antenne 1", "Antenne 2", "Antenne 3"])
-        )
-        while len(names) < 3:
-            names.append(f"Antenne {len(names) + 1}")
+        from ..app_config import normalized_antenna_names
+
+        names = normalized_antenna_names(self.cfg)
         offsets: list[float] = []
         for slot in (1, 2, 3):
             v = getattr(self.ctrl.az, f"antoff{slot}", None)
@@ -1811,12 +2013,22 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _on_park_clicked(self) -> None:
+        """Parken: Hom-Winkel per SETPOSDG anfahren (aus GETHOMEPOS-Cache)."""
+        try:
+            self.ctrl.park_all()
+        except Exception:
+            pass
+
     def _open_commands(self):
         if not bool(getattr(self._act_commands, "isEnabled", lambda: True)()):
             return
         try:
             if hasattr(self._commands_win, "_refresh_dst_dropdown"):
                 self._commands_win._refresh_dst_dropdown()
+            # Falls Fenster schon sichtbar war: showEvent läuft nicht erneut → Params hier laden.
+            if hasattr(self._commands_win, "_read_all_params"):
+                QTimer.singleShot(0, self._commands_win._read_all_params)
             self._commands_win.show()
             self._commands_win.raise_()
             self._commands_win.activateWindow()
@@ -1887,6 +2099,12 @@ class MainWindow(QMainWindow):
                 self._compass_win.refresh_visibility()
         except Exception:
             pass
+        try:
+            mw = getattr(self, "_map_win", None)
+            if mw is not None and hasattr(mw, "refresh_antenna_visibility"):
+                mw.refresh_antenna_visibility()
+        except Exception:
+            pass
 
     def _update_srv_rows_visibility(self) -> None:
         """Server-GroupBox-Zeilen je nach aktivierten Diensten ein-/ausblenden."""
@@ -1894,7 +2112,7 @@ class MainWindow(QMainWindow):
         pst_on = bool(self.cfg.get("pst_server", {}).get("enabled", False))
         rotctld_on = bool(self.cfg.get("rotctld_server", {}).get("enabled", False))
         ucxlog_on = bool(ui.get("udp_ucxlog_enabled", False))
-        pst_udp_on = bool(ui.get("udp_pst_enabled", True))
+        pst_udp_on = bool(ui.get("udp_pst_enabled", False))
         aswatch_on = bool(ui.get("aswatch_udp_enabled", False))
         rb = self._active_rig_view()
         rig_mod = bool(rb.get("enabled", False))
@@ -2014,90 +2232,47 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
 
-    def _refresh_active_rig_combo(self) -> None:
-        """Fuellt die QComboBox fuer den aktiven Rig-Profil-Wechsel aus den
-        Profilen des RigBridgeManagers. Combobox und Label werden nur
-        sichtbar, sobald mindestens zwei Profile existieren — sonst waere
-        die Auswahl sinnlos und wuerde die Zeile im Funkgeraete-Kasten
-        unnoetig breit machen."""
-        cb = getattr(self, "_cb_active_rig", None)
-        lbl = getattr(self, "_lbl_active_rig", None)
-        if cb is None or lbl is None:
+    def _refresh_active_rig_display(self) -> None:
+        """Zeigt den Namen des aktiven Rig-Profils (nur Info, keine Auswahl).
+
+        Profilwechsel erfolgt in den Einstellungen (Rig-Bridge → „Aktiv setzen“).
+        Aendert sich die aktive Profil-ID, werden CAT-Listener-Responder neu gebaut.
+        """
+        lbl = getattr(self, "_lbl_active_rig_name", None)
+        if lbl is None:
             return
         rbm = getattr(self, "_rig_bridge_manager", None)
-        profiles: list[dict] = []
         active_id = ""
+        active_name = ""
         if rbm is not None:
             try:
-                profiles = list(rbm.list_profiles() or [])
                 active_id = str(rbm.active_rig_id() or "")
+                pr = rbm.get_profile(active_id) if active_id else None
+                if isinstance(pr, dict):
+                    active_name = str(pr.get("name", "") or "")
             except Exception:
-                profiles = []
                 active_id = ""
-        show = len(profiles) >= 2
-        lbl.setVisible(show)
-        cb.setVisible(show)
-        # Vergleich ueber Signatur, um nur bei echter Aenderung neu zu bauen.
-        sig = tuple((str(p.get("id", "")), str(p.get("name", ""))) for p in profiles)
-        if getattr(self, "_active_rig_combo_sig", None) != sig:
-            cb.blockSignals(True)
-            cb.clear()
-            for p in profiles:
-                pid = str(p.get("id", ""))
-                name = str(p.get("name", "") or pid)
-                cb.addItem(name, pid)
-            cb.blockSignals(False)
-            self._active_rig_combo_sig = sig
-        # Aktuelle Auswahl angleichen.
-        if active_id:
-            for i in range(cb.count()):
-                if str(cb.itemData(i)) == active_id:
-                    if cb.currentIndex() != i:
-                        cb.blockSignals(True)
-                        cb.setCurrentIndex(i)
-                        cb.blockSignals(False)
-                    break
-
-    def _on_active_rig_changed(self, idx: int) -> None:
-        """User hat ein anderes Profil gewaehlt → im Manager aktiv schalten
-        und Rig-Listener zwingen, den neuen CatResponder einzusetzen."""
-        if idx < 0:
-            return
-        cb = getattr(self, "_cb_active_rig", None)
-        rbm = getattr(self, "_rig_bridge_manager", None)
-        if cb is None or rbm is None:
-            return
-        new_id = str(cb.itemData(idx) or "")
-        if not new_id:
-            return
-        try:
-            cur = str(rbm.active_rig_id() or "")
-        except Exception:
-            cur = ""
-        if new_id == cur:
-            return
-        try:
-            ok, _ = rbm.set_active_profile(new_id)
-        except Exception:
-            ok = False
-        if not ok:
-            return
-        # Konfig mitschreiben, damit der Wechsel persistent bleibt.
-        try:
-            rb_cfg = dict(self.cfg.get("rig_bridge", {}) or {})
-            rb_cfg["active_rig_id"] = new_id
-            self.cfg["rig_bridge"] = rb_cfg
-            if callable(self.save_cfg_cb):
-                self.save_cfg_cb(self.cfg)
-        except Exception:
-            pass
-        # Rig-Listener (CAT-Sim) umbinden.
-        try:
-            pst = getattr(self, "pst_serial", None)
-            if pst is not None and hasattr(pst, "refresh_rig_listeners"):
-                pst.refresh_rig_listeners()
-        except Exception:
-            pass
+                active_name = ""
+        if not active_name and active_id:
+            active_name = active_id
+        if active_name:
+            lbl.setText(t("main.active_rig_name", name=active_name))
+            lbl.setVisible(True)
+        else:
+            lbl.clear()
+            lbl.setVisible(False)
+        prev = str(getattr(self, "_last_active_rig_id", "") or "")
+        if active_id and active_id != prev:
+            self._last_active_rig_id = active_id
+            if prev:
+                try:
+                    pst = getattr(self, "pst_serial", None)
+                    if pst is not None and hasattr(pst, "refresh_rig_listeners"):
+                        pst.refresh_rig_listeners()
+                except Exception:
+                    pass
+        elif not prev and active_id:
+            self._last_active_rig_id = active_id
 
     def _on_rig_freq_poll_timer(self) -> None:
         rbm = getattr(self, "_rig_bridge_manager", None)
@@ -2251,6 +2426,40 @@ class MainWindow(QMainWindow):
             self._encoder_type_changed_ui.emit()
         except Exception:
             QTimer.singleShot(0, self._on_encoder_type_changed_ui)
+
+    def _on_rotor_type_changed(self) -> None:
+        """GETROTORTYPE gelesen — EL-Grafik 90°/180° (Callback aus HW-Thread)."""
+        try:
+            self._rotor_type_changed_ui.emit()
+        except Exception:
+            QTimer.singleShot(0, self._on_rotor_type_changed_ui)
+
+    def _on_rotor_type_changed_ui(self) -> None:
+        """UI-Thread: Elevations-Kompass an Rotortyp anpassen."""
+        cw = getattr(self, "_compass_win", None)
+        if cw is not None and hasattr(cw, "update_el_rotor_type_display"):
+            try:
+                cw.update_el_rotor_type_display()
+            except Exception:
+                pass
+        mw = getattr(self, "_map_win", None)
+        if mw is not None and hasattr(mw, "update_el_rotor_type_display"):
+            try:
+                mw.update_el_rotor_type_display()
+            except Exception:
+                pass
+        sw = getattr(self, "_statistics_win", None)
+        if sw is not None and hasattr(sw, "update_el_rotor_type_display"):
+            try:
+                sw.update_el_rotor_type_display()
+            except Exception:
+                pass
+        set_win = getattr(self, "_settings_win", None)
+        if set_win is not None and hasattr(set_win, "sync_el_rotor_type_display"):
+            try:
+                set_win.sync_el_rotor_type_display()
+            except Exception:
+                pass
 
     def _on_encoder_type_changed_ui(self) -> None:
         """UI-Thread: Home-Elemente nach GETENCTYPE ein-/ausblenden."""
@@ -2478,9 +2687,9 @@ class MainWindow(QMainWindow):
         rbm = getattr(self, "_rig_bridge_manager", None)
         rb_cfg = self._active_rig_view()
         rig_mod = bool(rb_cfg.get("enabled", False))
-        # Auswahl-Combobox mit aktuellen Profilen synchron halten.
+        # Anzeige des aktiven Rig-Profils synchron halten (Auswahl nur in Einstellungen).
         try:
-            self._refresh_active_rig_combo()
+            self._refresh_active_rig_display()
         except Exception:
             pass
         s_act = False

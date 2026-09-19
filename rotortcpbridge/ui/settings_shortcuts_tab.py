@@ -204,7 +204,7 @@ class ShortcutsTab(QWidget):
         self._g_el = QGroupBox(t("settings.shortcuts_group_el_target_step"))
         f_el = QFormLayout(self._g_el)
         self.sp_el_step = QDoubleSpinBox()
-        self.sp_el_step.setRange(0.1, 90.0)
+        self.sp_el_step.setRange(0.1, 180.0)
         self.sp_el_step.setDecimals(1)
         self.sp_el_step.setSingleStep(1.0)
         self.sp_el_step.setSuffix("°")
@@ -242,29 +242,36 @@ class ShortcutsTab(QWidget):
         return None
 
     def _antenna_display_names_three(self) -> list[str]:
+        from ..app_config import normalized_antenna_names
+
         sw = self._settings_window()
-        out: list[str] = []
-        for i in range(3):
-            name = ""
-            if sw is not None:
+        # Mit AZ und offenen Einstellungsfeldern: Live-Text bevorzugen.
+        if sw is not None and bool(
+            getattr(sw, "chk_enable_az", None) and sw.chk_enable_az.isChecked()
+        ):
+            out: list[str] = []
+            for i in range(3):
+                name = ""
                 try:
                     eds = getattr(sw, "_antenna_name_edits_az", None)
                     if eds and i < len(eds):
                         name = eds[i].text().strip()
                 except Exception:
                     name = ""
-            if not name:
-                ui = self._cfg.get("ui") or {}
-                names = list(ui.get("antenna_names") or [])
-                if i < len(names):
-                    name = str(names[i]).strip()
-            if not name:
-                name = t(f"settings.antenna_{i + 1}")
-            out.append(name)
-        return out
+                out.append(name)
+            if all(out):
+                return out
+        return normalized_antenna_names(
+            self._cfg,
+            defaults=[
+                t("settings.antenna_1"),
+                t("settings.antenna_2"),
+                t("settings.antenna_3"),
+            ],
+        )
 
     def refresh_antenna_shortcut_row_labels(self) -> None:
-        """Zeilenbeschriftung: gewählte Taste + Antennenname (Controller/Config)."""
+        """Zeilenbeschriftung: gewählte Taste + Antennenname (Rotor/Config)."""
         names = self._antenna_display_names_three()
         for i, (lbl, cb) in enumerate(
             zip(self._lbl_ant_shortcut, (self.cb_ant1, self.cb_ant2, self.cb_ant3))

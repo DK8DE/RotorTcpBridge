@@ -1478,20 +1478,21 @@ def probe_module(module: NetworkModule, timeout: float = 0.4) -> bool:
             web_port=int(module.web_port or 80),
             web_user=str(module.web_user or "admin"),
             web_password=str(module.web_password or "Rotorconfig"),
-            timeout=max(timeout, 0.8),
+            timeout=max(0.25, min(float(timeout), 0.7)),
+            allow_at=True,
         )
     if module.vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC):
-        return probe_ebyte_udp(module, timeout=max(timeout, 0.5))
+        return probe_ebyte_udp(module, timeout=max(0.2, min(float(timeout), 0.5)))
     return probe_online(module.host, module.at_port, timeout=timeout)
 
 
 def probe_module_quick(module: NetworkModule, timeout: float = 0.35) -> bool:
-    """Schnelle Erreichbarkeitspruefung vor dem Auslesen (kurze Timeouts)."""
+    """Schnelle Erreichbarkeitspruefung (kurze Timeouts, kein langer AT-Fallback)."""
     if module.vendor == VENDOR_DK8DE:
         from .dk8de_wlan_module import probe_dk8de
 
         host = dk8de_module_connect_host(module)
-        # Nur kurzer Web-Check — volles AT wuerde den Klick unnoetig verzoegern.
+        # Nur HTTP — AT wuerde Offline-Module unnoetig verzoegern.
         return probe_dk8de(
             host,
             module.uid,
@@ -1499,14 +1500,15 @@ def probe_module_quick(module: NetworkModule, timeout: float = 0.35) -> bool:
             web_port=int(module.web_port or 80),
             web_user=str(module.web_user or "admin"),
             web_password=str(module.web_password or "Rotorconfig"),
-            timeout=max(0.25, min(0.45, float(timeout))),
+            timeout=max(0.2, min(0.4, float(timeout))),
+            allow_at=False,
         )
     if module.vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC):
-        return probe_ebyte_udp(module, timeout=max(0.25, min(0.45, float(timeout))))
+        return probe_ebyte_udp(module, timeout=max(0.2, min(0.35, float(timeout))))
     return probe_online(
         module.host,
         module.at_port,
-        timeout=max(0.2, min(0.4, float(timeout))),
+        timeout=max(0.15, min(0.3, float(timeout))),
     )
 
 

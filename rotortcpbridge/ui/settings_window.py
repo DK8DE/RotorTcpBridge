@@ -35,8 +35,10 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QLineEdit,
     QMessageBox,
     QProgressBar,
@@ -117,6 +119,8 @@ class SettingsWindow(QDialog):
         udp_pst=None,
         pst_target_push=None,
         rotctld_server=None,
+        switch_profile_cb=None,
+        profiles_changed_cb=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -132,12 +136,16 @@ class SettingsWindow(QDialog):
         self.after_apply_cb = after_apply_cb
         self.rig_bridge_manager = rig_bridge_manager
         self.rebuild_ui_cb = rebuild_ui_cb
+        self._switch_profile_cb = switch_profile_cb
+        self._profiles_changed_cb = profiles_changed_cb
         self._map_window = map_window
         self.pst_serial = pst_serial
         self._antenna_giveup_done = False
         # Nur ein Controller-Bus-Load gleichzeitig (sonst verschachteln sich QEventLoops → doppelte TX)
         self._controller_load_busy = False
         self._controller_load_queued = False
+        self._antenna_names_load_busy = False
+        self._profile_list_busy = False
 
         self.setWindowTitle(t("settings.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
@@ -318,7 +326,27 @@ class SettingsWindow(QDialog):
         _lay_enable_az.addWidget(self.chk_enable_az, 1)
         _lay_enable_az.addWidget(self.btn_set_enc_zero_az, 0)
         form_axes.addRow(_row_enable_az)
-        form_axes.addRow(self.chk_enable_el)
+
+        self.cb_el_rotor_type = QComboBox()
+        self.cb_el_rotor_type.setToolTip(tt("settings.el_rotor_type_tooltip"))
+        for _val, _key in (
+            (1, "cmd.opt_rotor_type_1"),
+            (2, "cmd.opt_rotor_type_2"),
+            (3, "cmd.opt_rotor_type_3"),
+        ):
+            self.cb_el_rotor_type.addItem(t(_key), int(_val))
+        self.cb_el_rotor_type.setMinimumWidth(px_to_dip(self, 130))
+        _row_enable_el = QWidget()
+        _lay_enable_el = QHBoxLayout(_row_enable_el)
+        _lay_enable_el.setContentsMargins(0, 0, 0, 0)
+        _lay_enable_el.setSpacing(8)
+        _lay_enable_el.addWidget(self.chk_enable_el, 1)
+        _lay_enable_el.addWidget(self.cb_el_rotor_type, 0)
+        form_axes.addRow(_row_enable_el)
+        self._sync_el_rotor_type_combo_from_ctrl()
+        self.cb_el_rotor_type.currentIndexChanged.connect(self._on_el_rotor_type_combo_changed)
+        self.chk_enable_el.stateChanged.connect(lambda _s: self._update_el_rotor_type_combo_enabled())
+        self._update_el_rotor_type_combo_enabled()
 
         self.chk_force_dark_mode = QCheckBox(t("settings.chk_dark_mode"))
         self.chk_force_dark_mode.setChecked(bool(cfg.get("ui", {}).get("force_dark_mode", True)))
@@ -433,7 +461,7 @@ class SettingsWindow(QDialog):
 
         self.chk_udp_pst = QCheckBox(t("settings.chk_udp_pst"))
         self.chk_udp_pst.setToolTip(tt("settings.chk_udp_pst_tooltip"))
-        self.chk_udp_pst.setChecked(bool(_ui0.get("udp_pst_enabled", True)))
+        self.chk_udp_pst.setChecked(bool(_ui0.get("udp_pst_enabled", False)))
         self.chk_udp_pst_az_shortest = QCheckBox(t("settings.chk_az_shortest_path"))
         self.chk_udp_pst_az_shortest.setChecked(
             bool(_ui0.get("udp_pst_az_shortest_path", False))
@@ -1182,9 +1210,9 @@ class SettingsWindow(QDialog):
         self._lbl_antenna_names_led.setFixedSize(_led_ant, _led_ant)
         self._set_antenna_names_led_ok(False)
         _lay_ant_bus.addWidget(self._lbl_antenna_names_led, 0, Qt.AlignmentFlag.AlignVCenter)
-        self._lbl_antenna_names_wait = QLabel(t("settings.controller_wait"))
+        self._lbl_antenna_names_wait = QLabel(t("settings.antenna_names_wait"))
         self._lbl_antenna_names_wait.setVisible(False)
-        self._lbl_antenna_names_wait.setToolTip(tt("settings.controller_wait_tooltip"))
+        self._lbl_antenna_names_wait.setToolTip(tt("settings.antenna_names_wait_tooltip"))
         _lay_ant_bus.addWidget(self._lbl_antenna_names_wait, 0, Qt.AlignmentFlag.AlignVCenter)
         _lay_ant_bus.addStretch(1)
         form_az.addRow(t("settings.antenna_names_bus_row"), _row_ant_bus)
@@ -1358,6 +1386,12 @@ class SettingsWindow(QDialog):
         _cp_pad = px_to_dip(self, 5)
         vl_compass.setContentsMargins(_cp_pad, _cp_pad, _cp_pad, _cp_pad)
         vl_compass.setSpacing(10)
+        self.chk_compass_antenna_overlay = QCheckBox(t("settings.compass_antenna_overlay"))
+        self.chk_compass_antenna_overlay.setToolTip(tt("settings.compass_antenna_overlay_tooltip"))
+        self.chk_compass_antenna_overlay.setChecked(
+            bool(cfg.get("ui", {}).get("compass_antenna_overlay", True))
+        )
+        vl_compass.addWidget(self.chk_compass_antenna_overlay)
         gb_compass_om = QGroupBox(t("settings.compass_om_radar_group"))
         fl_compass_om = QFormLayout(gb_compass_om)
         self.sp_compass_om_sectors = QSpinBox()
@@ -1412,6 +1446,8 @@ class SettingsWindow(QDialog):
             self.save_cfg_cb,
             self,
         )
+        pg_profiles = self._build_rotor_profiles_page()
+        self._settings_stack.addWidget(_scroll_page(pg_profiles))
         self._settings_stack.addWidget(_scroll_page(pg_ui))
         self._settings_stack.addWidget(_scroll_page(pg_links))
         self._settings_stack.addWidget(_scroll_page(pg_rotor_emulation))
@@ -1436,14 +1472,15 @@ class SettingsWindow(QDialog):
         self._network_tab = NetworkModulesTab(self.cfg, self)
         self._network_tab.save_requested.connect(self._on_network_modules_save_requested)
         self._settings_stack.addWidget(_scroll_page(self._network_tab))
-        self._tab_antenna_index = 4
-        self._tab_statistics_index = 6
-        self._tab_controller_index = 7
-        self._tab_rig_bridge_index = 8
-        self._tab_com0com_index = 9
-        self._tab_shortcuts_index = 10
-        self._tab_weather_index = 11
-        self._tab_network_index = 12
+        self._tab_profiles_index = 0
+        self._tab_antenna_index = 5
+        self._tab_statistics_index = 7
+        self._tab_controller_index = 8
+        self._tab_rig_bridge_index = 9
+        self._tab_com0com_index = 10
+        self._tab_shortcuts_index = 11
+        self._tab_weather_index = 12
+        self._tab_network_index = 13
         self._calvalid_timer = QTimer(self)
         self._calvalid_timer.setInterval(5000)
         self._calvalid_timer.timeout.connect(self._poll_getcalvalid_once)
@@ -1461,6 +1498,7 @@ class SettingsWindow(QDialog):
         self._prev_cal_led_blink_az: bool = False
         self._prev_cal_led_blink_el: bool = False
         for _lbl in (
+            t("settings.tab_rotor_profile"),
             t("settings.group_ui"),
             t("settings.tab_connections"),
             t("settings.tab_rotor_emulation"),
@@ -1531,7 +1569,7 @@ class SettingsWindow(QDialog):
         self._antenna_giveup_timer.setSingleShot(True)
         self._antenna_giveup_timer.setInterval(1200)  # 1,2 s – schneller als offline_timeout (2 s)
         self._antenna_giveup_timer.timeout.connect(self._on_antenna_giveup)
-        # Hardware-Verbindung: Start CAL / Reset CAL / Reset log CAL; Antennennamen (HW-Controller)
+        # Hardware-Verbindung: Start CAL / Reset CAL / Reset log CAL; Antennennamen (Rotor)
         self._hw_link_timer = QTimer(self)
         self._hw_link_timer.setInterval(500)
         self._hw_link_timer.timeout.connect(self._tick_hw_link_state)
@@ -1604,6 +1642,7 @@ class SettingsWindow(QDialog):
         self._update_antenna_offset_enabled()
         self.update_encoder_dependent_ui()
         self._update_status_on_open()
+        self._sync_el_rotor_type_combo_from_ctrl()
         self._request_antenna_offsets_if_needed()
         self._antenna_refresh_timer.start()
         self._antenna_request_timer.start()
@@ -1618,8 +1657,14 @@ class SettingsWindow(QDialog):
         self._capture_antenna_snapshots_from_ui()
         # Vergleichsbasis für SETCON* beim Speichern (sonst snap=None → kein Schreiben)
         self._snapshot_controller = self._controller_snapshot_from_ui()
-        # Antennennamen vom Hardware-Controller (wie Tab „Controller“)
-        QTimer.singleShot(0, self._load_controller_antenna_names_from_bus)
+        # Antennennamen vom Rotor (GETANTNAME1–3 am AZ-Slave, nicht Display-Controller)
+        try:
+            self.ctrl.on_antenna_names_changed = lambda: QTimer.singleShot(
+                0, self._apply_rotor_antenna_names_from_cache
+            )
+        except Exception:
+            pass
+        QTimer.singleShot(0, self._load_rotor_antenna_names_from_bus)
         self._apply_settings_window_open_size()
         QTimer.singleShot(0, self._apply_settings_window_open_size)
 
@@ -1660,6 +1705,11 @@ class SettingsWindow(QDialog):
         self._hw_link_timer.stop()
         self._pst_tcp_status_timer.stop()
         self._stop_calvalid_timer()
+        try:
+            if getattr(self.ctrl, "on_antenna_names_changed", None) is not None:
+                self.ctrl.on_antenna_names_changed = None
+        except Exception:
+            pass
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(False)
         super().hideEvent(event)
@@ -2259,16 +2309,23 @@ class SettingsWindow(QDialog):
             pass
 
     def _request_antenna_offsets_if_needed(self) -> None:
-        """GETANTOFF/GETANGLE erneut anfordern (wichtig wenn Fenster vor HW-Verbindung geöffnet wurde)."""
-        if self.hw.is_connected():
-            if hasattr(self.ctrl, "request_antenna_offsets"):
-                self.ctrl.request_antenna_offsets()
-            if hasattr(self.ctrl, "request_antenna_angles"):
-                self.ctrl.request_antenna_angles()
-            if hasattr(self.ctrl, "request_antenna_dipoles"):
-                self.ctrl.request_antenna_dipoles()
-            if hasattr(self.ctrl, "request_antenna_ranges"):
-                self.ctrl.request_antenna_ranges()
+        """GETANTOFF/GETANGLE/GETANTNAME erneut anfordern (wichtig wenn Fenster vor HW-Verbindung geöffnet wurde)."""
+        if not self.hw.is_connected():
+            return
+        # Ohne AZ-Rotor: keine Antennen-Bus-Befehle (Namen bleiben in der Config).
+        if not self.chk_enable_az.isChecked():
+            self._apply_antenna_names_from_config_only()
+            return
+        if hasattr(self.ctrl, "request_antenna_offsets"):
+            self.ctrl.request_antenna_offsets()
+        if hasattr(self.ctrl, "request_antenna_angles"):
+            self.ctrl.request_antenna_angles()
+        if hasattr(self.ctrl, "request_antenna_dipoles"):
+            self.ctrl.request_antenna_dipoles()
+        if hasattr(self.ctrl, "request_antenna_ranges"):
+            self.ctrl.request_antenna_ranges()
+        if hasattr(self.ctrl, "request_antenna_names"):
+            self.ctrl.request_antenna_names()
 
     def _set_antenna_offset_and_wait(self, axis: str, slot: int, value_deg: float) -> bool:
         """SETANTOFF senden und auf ACK warten. Gibt True nur bei gültigem ACK zurück."""
@@ -2365,11 +2422,298 @@ class SettingsWindow(QDialog):
                     return True
         return super().eventFilter(obj, event)
 
+    def _build_rotor_profiles_page(self) -> QWidget:
+        """Erster Settings-Tab: Rotor-Profile verwalten und aktivieren."""
+        page = QWidget()
+        vl = QVBoxLayout(page)
+        gb = QGroupBox(t("settings.group_rotor_profile"))
+        self._gb_rotor_profile = gb
+        form = QVBoxLayout(gb)
+        self.lbl_profile_active = QLabel("")
+        form.addWidget(self.lbl_profile_active)
+        self.lst_profiles = QListWidget()
+        self.lst_profiles.setMinimumHeight(px_to_dip(self, 180))
+        self.lst_profiles.currentRowChanged.connect(self._on_profile_list_row_changed)
+        form.addWidget(self.lst_profiles)
+        row = QHBoxLayout()
+        self.btn_profile_new = QPushButton(t("settings.profile_btn_new"))
+        self.btn_profile_copy = QPushButton(t("settings.profile_btn_copy"))
+        self.btn_profile_rename = QPushButton(t("settings.profile_btn_rename"))
+        self.btn_profile_delete = QPushButton(t("settings.profile_btn_delete"))
+        self.btn_profile_activate = QPushButton(t("settings.profile_btn_activate"))
+        self.btn_profile_new.setToolTip(tt("settings.profile_btn_new_tooltip"))
+        self.btn_profile_copy.setToolTip(tt("settings.profile_btn_copy_tooltip"))
+        self.btn_profile_rename.setToolTip(tt("settings.profile_btn_rename_tooltip"))
+        self.btn_profile_delete.setToolTip(tt("settings.profile_btn_delete_tooltip"))
+        self.btn_profile_activate.setToolTip(tt("settings.profile_btn_activate_tooltip"))
+        self.btn_profile_new.clicked.connect(self._on_profile_new)
+        self.btn_profile_copy.clicked.connect(self._on_profile_copy)
+        self.btn_profile_rename.clicked.connect(self._on_profile_rename)
+        self.btn_profile_delete.clicked.connect(self._on_profile_delete)
+        self.btn_profile_activate.clicked.connect(self._on_profile_activate)
+        row.addWidget(self.btn_profile_new)
+        row.addWidget(self.btn_profile_copy)
+        row.addWidget(self.btn_profile_rename)
+        row.addWidget(self.btn_profile_delete)
+        row.addWidget(self.btn_profile_activate)
+        row.addStretch(1)
+        form.addLayout(row)
+        vl.addWidget(gb)
+        vl.addStretch(1)
+        self.refresh_profiles_list()
+        return page
+
+    def refresh_profiles_list(self) -> None:
+        """Profil-Liste und Aktiv-Label aus dem Index neu aufbauen."""
+        from ..profile_store import get_active_profile_id, list_profiles
+
+        if not hasattr(self, "lst_profiles"):
+            return
+        self._profile_list_busy = True
+        try:
+            active = get_active_profile_id()
+            cur_id = None
+            item = self.lst_profiles.currentItem()
+            if item is not None:
+                cur_id = item.data(Qt.ItemDataRole.UserRole)
+            self.lst_profiles.clear()
+            select_row = 0
+            for i, p in enumerate(list_profiles()):
+                pid = str(p.get("id") or "")
+                name = str(p.get("name") or pid)
+                mark = t("settings.profile_active_suffix") if pid == active else ""
+                text = f"{name}{mark}"
+                it = QListWidgetItem(text)
+                it.setData(Qt.ItemDataRole.UserRole, pid)
+                it.setData(Qt.ItemDataRole.UserRole + 1, bool(p.get("is_default")))
+                self.lst_profiles.addItem(it)
+                if cur_id and pid == cur_id:
+                    select_row = i
+                elif not cur_id and pid == active:
+                    select_row = i
+            if self.lst_profiles.count() > 0:
+                self.lst_profiles.setCurrentRow(select_row)
+            active_meta = next(
+                (p for p in list_profiles() if p.get("id") == active), None
+            )
+            aname = str((active_meta or {}).get("name") or active)
+            self.lbl_profile_active.setText(
+                t("settings.profile_active_label", name=aname)
+            )
+            self._update_profile_buttons()
+        finally:
+            self._profile_list_busy = False
+
+    def _selected_profile_id(self) -> str | None:
+        item = self.lst_profiles.currentItem() if hasattr(self, "lst_profiles") else None
+        if item is None:
+            return None
+        pid = item.data(Qt.ItemDataRole.UserRole)
+        return str(pid) if pid else None
+
+    def _selected_profile_is_default(self) -> bool:
+        item = self.lst_profiles.currentItem() if hasattr(self, "lst_profiles") else None
+        if item is None:
+            return True
+        return bool(item.data(Qt.ItemDataRole.UserRole + 1))
+
+    def _on_profile_list_row_changed(self, _row: int) -> None:
+        if self._profile_list_busy:
+            return
+        self._update_profile_buttons()
+
+    def _update_profile_buttons(self) -> None:
+        from ..profile_store import get_active_profile_id
+
+        pid = self._selected_profile_id()
+        is_def = self._selected_profile_is_default()
+        active = get_active_profile_id()
+        self.btn_profile_rename.setEnabled(bool(pid))
+        self.btn_profile_copy.setEnabled(bool(pid))
+        self.btn_profile_delete.setEnabled(bool(pid) and not is_def)
+        self.btn_profile_activate.setEnabled(bool(pid) and pid != active)
+
+    def _on_profile_new(self) -> None:
+        from ..profile_store import create_profile
+
+        name, ok = QInputDialog.getText(
+            self,
+            t("settings.profile_dlg_new_title"),
+            t("settings.profile_dlg_name_label"),
+        )
+        if not ok:
+            return
+        name = str(name or "").strip()
+        if not name:
+            QMessageBox.warning(
+                self, t("settings.title"), t("settings.profile_err_empty_name")
+            )
+            return
+        try:
+            create_profile(name, clone_active=False)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                t("settings.title"),
+                t("settings.profile_err_create", err=str(exc)),
+            )
+            return
+        self.refresh_profiles_list()
+        if callable(self._profiles_changed_cb):
+            try:
+                self._profiles_changed_cb()
+            except Exception:
+                pass
+
+    def _on_profile_copy(self) -> None:
+        from ..profile_store import (
+            copy_profile,
+            get_active_profile_id,
+            get_profile_meta,
+            save_active_config,
+        )
+
+        src_id = self._selected_profile_id()
+        if not src_id:
+            return
+        meta = get_profile_meta(src_id) or {}
+        src_name = str(meta.get("name") or src_id)
+        suggested = t("settings.profile_copy_name_suggest", name=src_name)
+        name, ok = QInputDialog.getText(
+            self,
+            t("settings.profile_dlg_copy_title"),
+            t("settings.profile_dlg_name_label"),
+            text=suggested,
+        )
+        if not ok:
+            return
+        name = str(name or "").strip()
+        if not name:
+            QMessageBox.warning(
+                self, t("settings.title"), t("settings.profile_err_empty_name")
+            )
+            return
+        try:
+            # Aktives Profil: aktuelle In-Memory-Config mitkopieren
+            if src_id == get_active_profile_id():
+                save_active_config(self.cfg)
+            new_id = copy_profile(src_id, name)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                t("settings.title"),
+                t("settings.profile_err_copy", err=str(exc)),
+            )
+            return
+        self.refresh_profiles_list()
+        # Neue Kopie in der Liste anwählen
+        for i in range(self.lst_profiles.count()):
+            it = self.lst_profiles.item(i)
+            if it is not None and it.data(Qt.ItemDataRole.UserRole) == new_id:
+                self.lst_profiles.setCurrentRow(i)
+                break
+        if callable(self._profiles_changed_cb):
+            try:
+                self._profiles_changed_cb()
+            except Exception:
+                pass
+
+    def _on_profile_rename(self) -> None:
+        from ..profile_store import get_profile_meta, rename_profile
+
+        pid = self._selected_profile_id()
+        if not pid:
+            return
+        meta = get_profile_meta(pid) or {}
+        old = str(meta.get("name") or pid)
+        name, ok = QInputDialog.getText(
+            self,
+            t("settings.profile_dlg_rename_title"),
+            t("settings.profile_dlg_name_label"),
+            text=old,
+        )
+        if not ok:
+            return
+        name = str(name or "").strip()
+        if not name:
+            QMessageBox.warning(
+                self, t("settings.title"), t("settings.profile_err_empty_name")
+            )
+            return
+        try:
+            rename_profile(pid, name)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                t("settings.title"),
+                t("settings.profile_err_rename", err=str(exc)),
+            )
+            return
+        self.refresh_profiles_list()
+        if callable(self._profiles_changed_cb):
+            try:
+                self._profiles_changed_cb()
+            except Exception:
+                pass
+
+    def _on_profile_delete(self) -> None:
+        from ..profile_store import delete_profile, get_active_profile_id, get_profile_meta
+
+        pid = self._selected_profile_id()
+        if not pid or self._selected_profile_is_default():
+            return
+        meta = get_profile_meta(pid) or {}
+        name = str(meta.get("name") or pid)
+        ret = QMessageBox.question(
+            self,
+            t("settings.profile_dlg_delete_title"),
+            t("settings.profile_dlg_delete_text", name=name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        was_active = pid == get_active_profile_id()
+        try:
+            delete_profile(pid)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                t("settings.title"),
+                t("settings.profile_err_delete", err=str(exc)),
+            )
+            return
+        self.refresh_profiles_list()
+        if was_active and callable(self._switch_profile_cb):
+            from ..profile_store import DEFAULT_PROFILE_ID
+
+            self._switch_profile_cb(DEFAULT_PROFILE_ID)
+        elif callable(self._profiles_changed_cb):
+            try:
+                self._profiles_changed_cb()
+            except Exception:
+                pass
+
+    def _on_profile_activate(self) -> None:
+        from ..profile_store import get_active_profile_id
+
+        pid = self._selected_profile_id()
+        if not pid or pid == get_active_profile_id():
+            return
+        if callable(self._switch_profile_cb):
+            self._switch_profile_cb(pid)
+        else:
+            QMessageBox.information(
+                self, t("settings.title"), t("settings.profile_err_no_switch_cb")
+            )
+
     def _on_settings_nav_changed(self, row: int) -> None:
         """Linke Liste → rechten Stacked-Inhalt umschalten."""
         if row < 0 or row >= self._settings_stack.count():
             return
         self._settings_stack.setCurrentIndex(row)
+        if row == getattr(self, "_tab_profiles_index", -1):
+            self.refresh_profiles_list()
         if row == getattr(self, "_tab_network_index", -1):
             self._network_tab.on_tab_shown()
         if row == getattr(self, "_tab_statistics_index", -1):
@@ -2377,7 +2721,7 @@ class SettingsWindow(QDialog):
         else:
             self._stop_calvalid_timer()
         if row == getattr(self, "_tab_antenna_index", -1):
-            QTimer.singleShot(0, self._load_controller_antenna_names_from_bus)
+            QTimer.singleShot(0, self._load_rotor_antenna_names_from_bus)
         if row == getattr(self, "_tab_controller_index", -1):
             QTimer.singleShot(0, self._load_controller_from_bus)
         if row == getattr(self, "_tab_shortcuts_index", -1):
@@ -2491,13 +2835,19 @@ class SettingsWindow(QDialog):
         except Exception:
             pass
         self._update_antenna_offset_enabled()
+        if not show:
+            # Nur EL: keine GETANTNAME — Namen aus Config/Defaults halten.
+            self._apply_antenna_names_from_config_only()
+        else:
+            # AZ wieder aktiv: Bus-Namen neu laden dürfen.
+            self._antenna_names_bus_read_ok = False
+            QTimer.singleShot(0, self._load_rotor_antenna_names_from_bus)
 
     def _update_antenna_offset_enabled(self) -> None:
-        """Versatz-Felder aktivieren: online+Daten ODER Giveup (Rotor offline). Nur AZ."""
+        """Versatz-Felder aktivieren: Daten vom Rotor ODER Giveup. Nur AZ."""
         if not hasattr(self, "_antenna_offset_spinboxes_az"):
             return
         az_ready = False
-        az_online = False
         try:
             if self.chk_enable_az.isChecked():
                 az = self.ctrl.az
@@ -2512,11 +2862,10 @@ class SettingsWindow(QDialog):
                         "angle3",
                     )
                 )
-                az_online = bool(getattr(az, "online", False))
         except Exception:
             pass
-        az_enabled = (
-            self.chk_enable_az.isChecked() and az_online and (az_ready or self._antenna_giveup_done)
+        az_enabled = self.chk_enable_az.isChecked() and (
+            az_ready or bool(getattr(self, "_antenna_giveup_done", False))
         )
         for sp in self._antenna_offset_spinboxes_az:
             sp.setEnabled(az_enabled)
@@ -2526,20 +2875,13 @@ class SettingsWindow(QDialog):
             sp.setEnabled(az_enabled)
         for chk in getattr(self, "_antenna_dipole_checkboxes_az", []):
             chk.setEnabled(az_enabled)
-        if self._controller_hw_enabled():
-            names_en = (
-                self.chk_enable_az.isChecked()
-                and bool(self.hw and self.hw.is_connected())
-                and self._controller_bus_read_enabled()
-                and bool(getattr(self, "_antenna_names_bus_read_ok", False))
-            )
-        else:
-            names_en = az_enabled
+        # Namen: editierbar sobald AZ aktiv (Speichern → SETANTNAME am Rotor)
+        names_en = bool(self.chk_enable_az.isChecked())
         for ed in self._antenna_name_edits_az:
             ed.setEnabled(names_en)
 
     def _tick_hw_link_state(self) -> None:
-        """Periodisch: Verbindungsabhängige Buttons + Antennennamen (HW-Controller)."""
+        """Periodisch: Verbindungsabhängige Buttons + Antennennamen (Rotor)."""
         self._update_strom_cal_buttons_enabled()
         self._update_antenna_offset_enabled()
         self.update_encoder_dependent_ui()
@@ -2733,7 +3075,7 @@ class SettingsWindow(QDialog):
             pass
 
     def _push_antenna_names_to_config(self) -> None:
-        """Antennennamen (Kompass/Karte) — gleiche Quelle wie Hardware-Controller."""
+        """Antennennamen (Kompass/Karte) — gleiche Quelle wie Rotor (GET/SETANTNAME)."""
         try:
             self.cfg.setdefault("ui", {})["antenna_names"] = [
                 self.ed_antenna_name_1.text().strip() or t("settings.antenna_1"),
@@ -2744,14 +3086,14 @@ class SettingsWindow(QDialog):
             pass
 
     def _antenna_display_name(self, idx: int) -> str:
-        """Anzeige-/Controller-Name (max. 9 Zeichen, ohne # : $)."""
+        """Anzeige-/Rotor-Name (max. 9 Zeichen, ohne # : $)."""
         fb = (t("settings.antenna_1"), t("settings.antenna_2"), t("settings.antenna_3"))
         return self._sanitize_controller_name(
             self._antenna_name_edits_az[idx].text().strip() or fb[idx],
         )
 
     def _wire_antenna_name_sync(self) -> None:
-        """Namen nur unter Tab „Antennen“; Config bei Änderung (Controller-Bus erst beim Speichern)."""
+        """Namen unter Tab „Antennen“; Config bei Änderung (Rotor-Bus erst beim Speichern)."""
         for i in range(3):
             self._antenna_name_edits_az[i].textChanged.connect(
                 lambda _txt="", idx=i: self._on_antenna_name_text_changed(idx),
@@ -2781,6 +3123,11 @@ class SettingsWindow(QDialog):
             int(self.sp_az_range_1.value()),
             int(self.sp_az_range_2.value()),
             int(self.sp_az_range_3.value()),
+        ]
+        self._snapshot_antname = [
+            self._antenna_display_name(0),
+            self._antenna_display_name(1),
+            self._antenna_display_name(2),
         ]
 
     def _antenna_value_changed(self, old_val, new_val) -> bool:
@@ -2877,6 +3224,29 @@ class SettingsWindow(QDialog):
                         sp.setValue(iv)
                         sp.blockSignals(False)
                         snap_range[i] = iv
+                # Antennennamen aus Rotor-Cache (nicht Display-Controller)
+                if not any(ed.hasFocus() for ed in self._antenna_name_edits_az):
+                    name_ok = True
+                    for i, attr in enumerate(("antname1", "antname2", "antname3")):
+                        v = getattr(az, attr, None)
+                        if v is None:
+                            name_ok = False
+                        else:
+                            self._antenna_name_edits_az[i].blockSignals(True)
+                            self._antenna_name_edits_az[i].setText(
+                                self._sanitize_controller_name(str(v))
+                            )
+                            self._antenna_name_edits_az[i].blockSignals(False)
+                    if name_ok:
+                        self._snapshot_antname = [
+                            self._antenna_display_name(0),
+                            self._antenna_display_name(1),
+                            self._antenna_display_name(2),
+                        ]
+                        self._push_antenna_names_to_config()
+                        self._set_antenna_names_led_ok(True)
+                    else:
+                        self._set_antenna_names_led_ok(False)
                 self._snapshot_antoff = snap_antoff
                 self._snapshot_angle = snap_angle
                 self._snapshot_antdp = snap_antdp
@@ -2988,6 +3358,96 @@ class SettingsWindow(QDialog):
         self.sp_slave_el.setValue(_cl(rb.get("slave_el")))
         self.chk_enable_az.setChecked(bool(rb.get("enable_az", True)))
         self.chk_enable_el.setChecked(bool(rb.get("enable_el", False)))
+        self._sync_el_rotor_type_combo_from_ctrl()
+
+    def _el_rotor_type_from_ui(self) -> int:
+        try:
+            v = int(self.cb_el_rotor_type.currentData())
+        except (TypeError, ValueError):
+            v = 2
+        return v if v in (1, 2, 3) else 2
+
+    def _update_el_rotor_type_combo_enabled(self) -> None:
+        on = bool(self.chk_enable_el.isChecked())
+        self.cb_el_rotor_type.setEnabled(on)
+
+    def sync_el_rotor_type_display(self) -> None:
+        """Von außen (GETROTORTYPE): Dropdown an Controller-Stand anpassen."""
+        self._sync_el_rotor_type_combo_from_ctrl()
+
+    def _sync_el_rotor_type_combo_from_ctrl(self) -> None:
+        """Rotortyp-Dropdown aus Controller oder Config setzen (ohne SET auszulösen)."""
+        typ = None
+        try:
+            if bool(getattr(self.ctrl, "el_rotor_type_known", False)):
+                typ = int(getattr(self.ctrl, "el_rotor_type", None) or 0)
+        except (TypeError, ValueError):
+            typ = None
+        if typ not in (1, 2, 3):
+            try:
+                typ = int((self.cfg.get("rotor_bus") or {}).get("el_rotor_type", 2))
+            except (TypeError, ValueError):
+                typ = 2
+        if typ not in (1, 2, 3):
+            typ = 2
+        self.cb_el_rotor_type.blockSignals(True)
+        try:
+            idx = self.cb_el_rotor_type.findData(int(typ))
+            if idx >= 0:
+                self.cb_el_rotor_type.setCurrentIndex(idx)
+        finally:
+            self.cb_el_rotor_type.blockSignals(False)
+        self._update_el_rotor_type_combo_enabled()
+
+    def _on_el_rotor_type_combo_changed(self, _index: int = 0) -> None:
+        """Dropdown: GUI sofort umstellen und SETROTORTYPE an EL-Slave senden."""
+        if not self.chk_enable_el.isChecked():
+            return
+        typ = self._el_rotor_type_from_ui()
+        try:
+            self.cfg.setdefault("rotor_bus", {})["el_rotor_type"] = int(typ)
+        except Exception:
+            pass
+        if hasattr(self.ctrl, "apply_el_rotor_type_from_value"):
+            try:
+                self.ctrl.apply_el_rotor_type_from_value(
+                    typ,
+                    dst=int(self.sp_slave_el.value()),
+                    reread=False,
+                )
+            except Exception:
+                pass
+        try:
+            dst = int(self.sp_slave_el.value())
+        except Exception:
+            dst = int(getattr(self.ctrl, "slave_el", 0) or 0)
+        if dst <= 0:
+            return
+        if not bool(getattr(self.hw, "is_connected", lambda: False)()):
+            return
+
+        def _done(tel, err):
+            if err or tel is None:
+                return
+            val = str(getattr(tel, "params", "") or typ)
+            if hasattr(self.ctrl, "apply_el_rotor_type_from_value"):
+                try:
+                    self.ctrl.apply_el_rotor_type_from_value(val, dst=dst, reread=True)
+                except Exception:
+                    pass
+
+        try:
+            self.ctrl.send_ui_command(
+                dst,
+                "SETROTORTYPE",
+                str(int(typ)),
+                expect_prefix="ACK_SETROTORTYPE",
+                timeout_s=1.0,
+                priority=0,
+                on_done=_done,
+            )
+        except Exception:
+            pass
 
     def _save_clicked(self) -> bool:
         self.lbl_status.setText(t("settings.status_saving"))
@@ -3025,6 +3485,7 @@ class SettingsWindow(QDialog):
         self.cfg["rotor_bus"]["slave_el"] = int(self.sp_slave_el.value())
         self.cfg["rotor_bus"]["enable_az"] = bool(self.chk_enable_az.isChecked())
         self.cfg["rotor_bus"]["enable_el"] = bool(self.chk_enable_el.isChecked())
+        self.cfg["rotor_bus"]["el_rotor_type"] = int(self._el_rotor_type_from_ui())
 
         self.cfg["hardware_link"]["mode"] = str(
             self.cb_hw_mode.currentData() or self.cb_hw_mode.currentText()
@@ -3089,11 +3550,25 @@ class SettingsWindow(QDialog):
             self.ed_location_locator.text() or ""
         ).strip()
         self.cfg.setdefault("ui", {})["antenna_height_m"] = float(self.sp_antenna_height.value())
-        self.cfg.setdefault("ui", {})["antenna_names"] = [
-            self.ed_antenna_name_1.text().strip() or t("settings.antenna_1"),
-            self.ed_antenna_name_2.text().strip() or t("settings.antenna_2"),
-            self.ed_antenna_name_3.text().strip() or t("settings.antenna_3"),
-        ]
+        # Mit AZ: Namen aus den Feldern (werden auch per SETANTNAME geschrieben).
+        # Nur EL: Felder sind ausgeblendet — bestehende Config behalten bzw. normalisieren.
+        if self.chk_enable_az.isChecked():
+            self.cfg.setdefault("ui", {})["antenna_names"] = [
+                self.ed_antenna_name_1.text().strip() or t("settings.antenna_1"),
+                self.ed_antenna_name_2.text().strip() or t("settings.antenna_2"),
+                self.ed_antenna_name_3.text().strip() or t("settings.antenna_3"),
+            ]
+        else:
+            from ..app_config import normalized_antenna_names
+
+            self.cfg.setdefault("ui", {})["antenna_names"] = normalized_antenna_names(
+                self.cfg,
+                defaults=[
+                    t("settings.antenna_1"),
+                    t("settings.antenna_2"),
+                    t("settings.antenna_3"),
+                ],
+            )
         self.cfg.setdefault("ui", {})["antenna_offsets_az"] = [
             float(self.sp_az_antoff_1.value()),
             float(self.sp_az_antoff_2.value()),
@@ -3128,6 +3603,7 @@ class SettingsWindow(QDialog):
         uih["compass_om_radar_sectors"] = int(self.sp_compass_om_sectors.value())
         uih["compass_dwell_sectors"] = int(self.sp_compass_dwell_sectors.value())
         uih["compass_dwell_full_minutes"] = float(self.sp_compass_dwell_minutes.value())
+        uih["compass_antenna_overlay"] = bool(self.chk_compass_antenna_overlay.isChecked())
         try:
             self.cfg["rig_bridge"] = self._rig_bridge_tab.to_config()
         except Exception as exc:
@@ -3169,14 +3645,15 @@ class SettingsWindow(QDialog):
         chw["encoder_delta"] = int(self.cb_cont_encoder_delta.currentData())
         chw["antenna_realign_on_switch"] = bool(self.chk_cont_antenna_realign.isChecked())
 
-        # AZ-Versatz, Öffnungswinkel, Dipol und Reichweite in den Rotor schreiben
-        # (SETANTOFF1–3, SETANGLE1–3, SETANTDP1–3, SETANTDIS1–3).
+        # AZ-Versatz, Öffnungswinkel, Dipol, Reichweite und Namen in den Rotor schreiben
+        # (SETANTOFF1–3, SETANGLE1–3, SETANTDP1–3, SETANTDIS1–3, SETANTNAME1–3).
         # Nur übertragen wenn Wert sich gegenüber dem Snapshot tatsächlich geändert hat.
         # Kein Write wenn Baseline fehlt (None) — schützt NVS vor Blind-Schreiben.
         snapshot_antoff = list(getattr(self, "_snapshot_antoff", [None, None, None]))
         snapshot_angle = list(getattr(self, "_snapshot_angle", [None, None, None]))
         snapshot_antdp = list(getattr(self, "_snapshot_antdp", [None, None, None]))
         snapshot_range = list(getattr(self, "_snapshot_range", [None, None, None]))
+        snapshot_antname = list(getattr(self, "_snapshot_antname", [None, None, None]))
         wrote_antenna_hw = False
         if self.hw.is_connected() and hasattr(self.ctrl, "set_antenna_offset"):
             all_ok = True
@@ -3247,10 +3724,35 @@ class SettingsWindow(QDialog):
                             all_ok = False
                         else:
                             snapshot_range[slot - 1] = new_val
+                if hasattr(self.ctrl, "sync_ui_command_response"):
+                    dst_az = int(self.sp_slave_az.value())
+                    for slot in (1, 2, 3):
+                        new_name = self._antenna_display_name(slot - 1)
+                        old_name = snapshot_antname[slot - 1]
+                        # None = noch nie vom Rotor gelesen → trotzdem schreiben, wenn Wert gesetzt
+                        if old_name is not None and str(old_name) == str(new_name):
+                            continue
+                        wrote_antenna_hw = True
+                        self.lbl_status.setText(t("settings.status_antname_saving", slot=slot))
+                        QApplication.processEvents()
+                        cmd = f"SETANTNAME{slot}"
+                        r = self.ctrl.sync_ui_command_response(
+                            dst_az, cmd, new_name, f"ACK_{cmd}", timeout_s=1.5
+                        )
+                        if not _sync_got_ack_value(r):
+                            all_ok = False
+                        else:
+                            snapshot_antname[slot - 1] = new_name
+                            try:
+                                az = self.ctrl.az
+                                setattr(az, f"antname{slot}", new_name)
+                            except Exception:
+                                pass
             self._snapshot_antoff = list(snapshot_antoff)
             self._snapshot_angle = list(snapshot_angle)
             self._snapshot_antdp = list(snapshot_antdp)
             self._snapshot_range = list(snapshot_range)
+            self._snapshot_antname = list(snapshot_antname)
             if wrote_antenna_hw:
                 self.lbl_status.setText(
                     t("settings.status_az_saved") if all_ok else t("settings.status_az_error")
@@ -3491,12 +3993,9 @@ class SettingsWindow(QDialog):
 
     def _controller_snapshot_from_ui(
         self,
-    ) -> tuple[int, str, str, str, int, int, int, int, int, int, int, int, int, int, int]:
+    ) -> tuple[int, int, int, int, int, int, int, int, int, int, int, int]:
         return (
             int(self.sp_controller_id.value()),
-            self._antenna_display_name(0),
-            self._antenna_display_name(1),
-            self._antenna_display_name(2),
             int(self.sp_cont_pwm_slow.value()),
             int(self.sp_cont_pwm_fast.value()),
             int(self.sp_cont_beep_freq.value()),
@@ -3518,13 +4017,6 @@ class SettingsWindow(QDialog):
                 self.sp_controller_id.setValue(max(0, min(245, int(ch.get("cont_id", 2)))))
             except (TypeError, ValueError):
                 self.sp_controller_id.setValue(2)
-            _ui_n = self.cfg.get("ui") or {}
-            _names = list(_ui_n.get("antenna_names", []))
-            while len(_names) < 3:
-                _names.append("")
-            for _i, _ed in enumerate(self._antenna_name_edits_az):
-                _ed.setText(self._sanitize_controller_name(str(_names[_i] or "")))
-            self._set_antenna_names_led_ok(False)
             try:
                 self.sp_cont_pwm_slow.setValue(max(0, min(100, int(ch.get("slow_pwm", 30)))))
             except (TypeError, ValueError):
@@ -3599,7 +4091,7 @@ class SettingsWindow(QDialog):
         self._lbl_antenna_names_wait.setVisible(bool(visible))
 
     def _set_antenna_names_led_ok(self, ok: bool) -> None:
-        """LED Tab Antennen: grün = GETCONANTNAME1–3 alle OK."""
+        """LED Tab Antennen: grün = GETANTNAME1–3 alle OK."""
         self._antenna_names_bus_read_ok = bool(ok)
         if hasattr(self, "_lbl_antenna_names_led"):
             d = px_to_dip(self, 6)
@@ -3633,86 +4125,122 @@ class SettingsWindow(QDialog):
                 QTimer.singleShot(0, self._load_controller_from_bus)
 
     def maybe_refresh_antenna_names_for_shortcuts_tab(self) -> None:
-        """Controller-Antennennamen lesen, falls noch kein erfolgreicher GETCONANTNAME-Lauf."""
+        """Rotor-Antennennamen lesen, falls noch kein erfolgreicher GETANTNAME-Lauf."""
+        if not self.chk_enable_az.isChecked():
+            self._apply_antenna_names_from_config_only()
+            return
         if bool(getattr(self, "_antenna_names_bus_read_ok", False)):
             return
-        QTimer.singleShot(0, self._load_controller_antenna_names_from_bus)
+        QTimer.singleShot(0, self._load_rotor_antenna_names_from_bus)
 
-    def _load_controller_antenna_names_from_bus(self) -> None:
-        """Nur GETCONANTNAME1–3 → Felder unter Tab „Antennen“ (+ LED)."""
-        if getattr(self, "_controller_load_busy", False):
-            QTimer.singleShot(150, self._load_controller_antenna_names_from_bus)
+    def _apply_antenna_names_from_config_only(self) -> None:
+        """Ohne AZ: Namen aus Config/Defaults (kein GETANTNAME)."""
+        from ..app_config import normalized_antenna_names
+
+        defaults = [
+            t("settings.antenna_1"),
+            t("settings.antenna_2"),
+            t("settings.antenna_3"),
+        ]
+        names = normalized_antenna_names(self.cfg, defaults=defaults)
+        self.cfg.setdefault("ui", {})["antenna_names"] = list(names)
+        if not hasattr(self, "_antenna_name_edits_az"):
             return
-        self._controller_load_busy = True
+        self._controller_suppress_dirty = True
         try:
-            self._load_controller_antenna_names_from_bus_impl()
+            for i, ed in enumerate(self._antenna_name_edits_az):
+                ed.blockSignals(True)
+                ed.setText(names[i])
+                ed.blockSignals(False)
+            self._snapshot_antname = list(names)
+            # Kein Bus — LED aus, aber Shortcuts sollen nicht ewig nachladen.
+            self._antenna_names_bus_read_ok = True
+            self._set_antenna_names_wait_visible(False)
+            if hasattr(self, "_lbl_antenna_names_led"):
+                self._lbl_antenna_names_led.setStyleSheet(
+                    "QLabel#antennaNamesReadLed { background:#888; border-radius:6px; }"
+                )
         finally:
-            self._controller_load_busy = False
-            if self._controller_load_queued:
-                QTimer.singleShot(0, self._load_controller_from_bus)
+            self._controller_suppress_dirty = False
+        try:
+            st = getattr(self, "_shortcuts_tab", None)
+            if st is not None:
+                st.refresh_antenna_shortcut_row_labels()
+        except Exception:
+            pass
 
-    def _read_controller_conant_names_into_ui(self, dst: int) -> list[bool]:
-        """GETCONANTNAME1–3 → Namensfelder unter Tab „Antennen“."""
-        c = self.ctrl
-        acks: list[bool] = []
-        eds = self._antenna_name_edits_az
-        for i, (cmd, exp) in enumerate(
-            (
-                ("GETCONANTNAME1", "ACK_GETCONANTNAME1"),
-                ("GETCONANTNAME2", "ACK_GETCONANTNAME2"),
-                ("GETCONANTNAME3", "ACK_GETCONANTNAME3"),
-            ),
-            start=1,
-        ):
-            rp = c.sync_ui_command_response(dst, cmd, "0", exp)
-            acks.append(_sync_got_ack_value(rp))
-            if rp is not None and _sync_got_ack_value(rp):
-                eds[i - 1].setText(self._sanitize_controller_name(rp.split(";")[0]))
-        return acks
-
-    def _merge_snapshot_controller_antenna_names(self) -> None:
-        """Nach Antennen-Lesezugriff: Snapshot der Controller-Namen an UI anpassen."""
-        cur = self._controller_snapshot_from_ui()
-        snap = getattr(self, "_snapshot_controller", None)
-        if snap is None or len(snap) < len(cur):
-            self._snapshot_controller = cur
+    def _load_rotor_antenna_names_from_bus(self) -> None:
+        """GETANTNAME1–3 am AZ-Rotor anfordern (asynchron); UI über Refresh/Callback."""
+        if getattr(self, "_antenna_names_load_busy", False):
             return
-        s = list(snap)
-        s[1], s[2], s[3] = cur[1], cur[2], cur[3]
-        self._snapshot_controller = tuple(s)
-
-    def _load_controller_antenna_names_from_bus_impl(self) -> None:
+        if not self.chk_enable_az.isChecked():
+            self._apply_antenna_names_from_config_only()
+            return
+        if not self.hw.is_connected():
+            self._set_antenna_names_led_ok(False)
+            self._set_antenna_names_wait_visible(False)
+            return
+        self._antenna_names_load_busy = True
+        self._set_antenna_names_wait_visible(True)
         try:
-            if not self._controller_hw_enabled():
-                self._set_antenna_names_led_ok(False)
-                return
-            if not hasattr(self.ctrl, "sync_ui_command_response"):
-                self._set_antenna_names_led_ok(False)
-                return
-            if not self.hw.is_connected():
-                self._set_antenna_names_led_ok(False)
-                return
-            if not self._controller_bus_read_enabled():
-                self._set_antenna_names_led_ok(False)
-                return
-            dst = self._controller_bus_dst()
-            self._set_antenna_names_wait_visible(True)
-            QApplication.processEvents()
-            self._controller_suppress_dirty = True
-            try:
-                name_acks = self._read_controller_conant_names_into_ui(dst)
-                self._set_antenna_names_led_ok(len(name_acks) == 3 and all(name_acks))
-                self._merge_snapshot_controller_antenna_names()
-            finally:
-                self._controller_suppress_dirty = False
-                self._set_antenna_names_wait_visible(False)
+            if hasattr(self.ctrl, "request_antenna_names"):
+                self.ctrl.request_antenna_names()
+            # Kurz warten, dann Cache in die Felder übernehmen (ohne Controller-DST)
+            QTimer.singleShot(400, self._apply_rotor_antenna_names_from_cache)
+            QTimer.singleShot(1200, self._apply_rotor_antenna_names_from_cache)
+            QTimer.singleShot(2000, self._finish_antenna_names_bus_load)
+        except Exception:
+            self._antenna_names_load_busy = False
+            self._set_antenna_names_wait_visible(False)
+            self._set_antenna_names_led_ok(False)
+
+    def _finish_antenna_names_bus_load(self) -> None:
+        try:
+            self._apply_rotor_antenna_names_from_cache()
         finally:
-            try:
-                st = getattr(self, "_shortcuts_tab", None)
-                if st is not None:
-                    st.refresh_antenna_shortcut_row_labels()
-            except Exception:
-                pass
+            self._antenna_names_load_busy = False
+            self._set_antenna_names_wait_visible(False)
+
+    def _apply_rotor_antenna_names_from_cache(self) -> None:
+        """Namen aus Rotor-Cache (ctrl.az.antname*) in die Einstellungsfelder."""
+        if not hasattr(self, "_antenna_name_edits_az"):
+            return
+        try:
+            az = self.ctrl.az
+        except Exception:
+            self._set_antenna_names_led_ok(False)
+            return
+        names = [
+            getattr(az, "antname1", None),
+            getattr(az, "antname2", None),
+            getattr(az, "antname3", None),
+        ]
+        ok = all(n is not None for n in names)
+        if any(ed.hasFocus() for ed in self._antenna_name_edits_az):
+            self._set_antenna_names_led_ok(ok)
+            return
+        self._controller_suppress_dirty = True
+        try:
+            for i, n in enumerate(names):
+                if n is None:
+                    continue
+                self._antenna_name_edits_az[i].setText(self._sanitize_controller_name(str(n)))
+            if ok:
+                self._snapshot_antname = [
+                    self._antenna_display_name(0),
+                    self._antenna_display_name(1),
+                    self._antenna_display_name(2),
+                ]
+                self._push_antenna_names_to_config()
+            self._set_antenna_names_led_ok(ok)
+        finally:
+            self._controller_suppress_dirty = False
+        try:
+            st = getattr(self, "_shortcuts_tab", None)
+            if st is not None:
+                st.refresh_antenna_shortcut_row_labels()
+        except Exception:
+            pass
 
     def _load_controller_from_bus_impl(self) -> None:
         if not self._controller_hw_enabled():
@@ -3744,9 +4272,6 @@ class SettingsWindow(QDialog):
                     v = self._parse_hw_int(str(p).split(";")[0].strip())
                 if v is not None:
                     self.sp_controller_id.setValue(max(0, min(245, v)))
-            name_acks = self._read_controller_conant_names_into_ui(dst)
-            acks.extend(name_acks)
-            self._set_antenna_names_led_ok(len(name_acks) == 3 and all(name_acks))
             for sp, cmd, exp, lo, hi in (
                 (self.sp_cont_pwm_slow, "GETCONSPWM", "ACK_GETCONSPWM", 0, 100),
                 (self.sp_cont_pwm_fast, "GETCONFPWM", "ACK_GETCONFPWM", 0, 100),
@@ -3817,8 +4342,9 @@ class SettingsWindow(QDialog):
                     if w is not None:
                         self.chk_cont_antenna_realign.setChecked(bool(int(w)))
             # LED: alle Kern-Abfragen mit ACK; Piep/LED-Ring (GETCONFRQ/GETLSL/GETCONLEDP): NAK NOTIMPL zählt als Bus-OK.
-            # Anzahl = 1 (GETCONTID) + 3 Namen + 5 PWM/Beep/LED-Ring + GETCONANO + GETCONDELTA + GETCONCHA
-            _n_ctrl_reads = 1 + 3 + 5 + 1 + 1 + 1
+            # Anzahl = 1 (GETCONTID) + 5 PWM/Beep/LED-Ring + GETCONANO + GETCONDELTA + GETCONCHA
+            # (Antennennamen: GETANTNAME1–3 am Rotor, nicht am Controller.)
+            _n_ctrl_reads = 1 + 5 + 1 + 1 + 1
             all_ok = len(acks) == _n_ctrl_reads and all(acks)
             self.lbl_status.setText(t("settings.controller_status_saved"))
             self._set_controller_led_ok(all_ok)
@@ -3856,42 +4382,36 @@ class SettingsWindow(QDialog):
             r = c.sync_ui_command_response(id_dst, "SETCONTID", str(int(cur[0])), "ACK_SETCONTID")
             if not _sync_got_ack_value(r):
                 all_ok = False
-        for i in range(3):
-            if snap[1 + i] != cur[1 + i]:
-                cmd = f"SETCONANTNAME{i + 1}"
-                r = c.sync_ui_command_response(dst, cmd, cur[1 + i], f"ACK_{cmd}")
-                if not _sync_got_ack_value(r):
-                    all_ok = False
+        if snap[1] != cur[1]:
+            r = c.sync_ui_command_response(dst, "SETCONSPWM", str(int(cur[1])), "ACK_SETCONSPWM")
+            if not _sync_got_ack_value(r):
+                all_ok = False
+        if snap[2] != cur[2]:
+            r = c.sync_ui_command_response(dst, "SETCONFPWM", str(int(cur[2])), "ACK_SETCONFPWM")
+            if not _sync_got_ack_value(r):
+                all_ok = False
+        if snap[3] != cur[3]:
+            r = c.sync_ui_command_response(dst, "SETCONFRQ", str(int(cur[3])), "ACK_SETCONFRQ")
+            if not _sync_got_ack_value(r):
+                all_ok = False
         if snap[4] != cur[4]:
-            r = c.sync_ui_command_response(dst, "SETCONSPWM", str(int(cur[4])), "ACK_SETCONSPWM")
+            r = c.sync_ui_command_response(dst, "SETLSL", str(int(cur[4])), "ACK_SETLSL")
             if not _sync_got_ack_value(r):
                 all_ok = False
         if snap[5] != cur[5]:
-            r = c.sync_ui_command_response(dst, "SETCONFPWM", str(int(cur[5])), "ACK_SETCONFPWM")
+            r = c.sync_ui_command_response(dst, "SETCONLEDP", str(int(cur[5])), "ACK_SETCONLEDP")
             if not _sync_got_ack_value(r):
                 all_ok = False
-        if snap[6] != cur[6]:
-            r = c.sync_ui_command_response(dst, "SETCONFRQ", str(int(cur[6])), "ACK_SETCONFRQ")
+        if snap[6] != cur[6] and not self._rotor_has_abs_encoder_type3():
+            r = c.sync_ui_command_response(dst, "SETCONANO", str(int(cur[6])), "ACK_SETCONANO")
             if not _sync_got_ack_value(r):
                 all_ok = False
         if snap[7] != cur[7]:
-            r = c.sync_ui_command_response(dst, "SETLSL", str(int(cur[7])), "ACK_SETLSL")
+            r = c.sync_ui_command_response(dst, "SETCONDELTA", str(int(cur[7])), "ACK_SETCONDELTA")
             if not _sync_got_ack_value(r):
                 all_ok = False
         if snap[8] != cur[8]:
-            r = c.sync_ui_command_response(dst, "SETCONLEDP", str(int(cur[8])), "ACK_SETCONLEDP")
-            if not _sync_got_ack_value(r):
-                all_ok = False
-        if snap[9] != cur[9] and not self._rotor_has_abs_encoder_type3():
-            r = c.sync_ui_command_response(dst, "SETCONANO", str(int(cur[9])), "ACK_SETCONANO")
-            if not _sync_got_ack_value(r):
-                all_ok = False
-        if snap[10] != cur[10]:
-            r = c.sync_ui_command_response(dst, "SETCONDELTA", str(int(cur[10])), "ACK_SETCONDELTA")
-            if not _sync_got_ack_value(r):
-                all_ok = False
-        if snap[11] != cur[11]:
-            r = c.sync_ui_command_response(dst, "SETCONCHA", str(int(cur[11])), "ACK_SETCONCHA")
+            r = c.sync_ui_command_response(dst, "SETCONCHA", str(int(cur[8])), "ACK_SETCONCHA")
             if not _sync_got_ack_value(r):
                 all_ok = False
         if all_ok:

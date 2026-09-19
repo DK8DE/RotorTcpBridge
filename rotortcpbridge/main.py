@@ -190,7 +190,7 @@ def main():
     # UDP PST-Rotator-Emulation (wenn aktiviert)
     udp_pst = UdpPstRotator(ctrl, log, cfg=cfg)
     udp_pst.start(
-        enabled=bool(ui_cfg.get("udp_pst_enabled", True)),
+                enabled=bool(ui_cfg.get("udp_pst_enabled", False)),
         port=int(ui_cfg.get("udp_pst_port", 12000)),
         listen_host=str(ui_cfg.get("udp_pst_listen_host", "127.0.0.1")),
     )

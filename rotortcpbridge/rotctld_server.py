@@ -15,11 +15,21 @@ DEFAULT_ROTCTLD_PORT = 4533
 _PROT_VER = 1
 _MODEL_NAME = "RotorTcpBridge"
 
-# AZ-Bereich (zirkulaer 0..360), EL-Bereich (0..90).
+# AZ-Bereich (zirkulaer 0..360), EL-Bereich (0..90 bzw. 0..180 je nach GETROTORTYPE).
 _MIN_AZ = 0.0
 _MAX_AZ = 360.0
 _MIN_EL = 0.0
-_MAX_EL = 90.0
+_MAX_EL_DEFAULT = 90.0
+
+
+def _max_el_from_ctrl(ctrl) -> float:
+    """EL-Maximum für rotctld: Typ 3 → 180°, sonst 90°."""
+    try:
+        from .angle_utils import el_max_deg_from_rotor_type
+
+        return float(el_max_deg_from_rotor_type(getattr(ctrl, "el_rotor_type", None)))
+    except Exception:
+        return _MAX_EL_DEFAULT
 
 
 def _fmt_deg_from_d10(d10: Optional[int]) -> str:
@@ -30,7 +40,12 @@ def _fmt_deg_from_d10(d10: Optional[int]) -> str:
         return "0.000000"
 
 
-def build_dump_state(*, az_enabled: bool = True, el_enabled: bool = True) -> str:
+def build_dump_state(
+    *,
+    az_enabled: bool = True,
+    el_enabled: bool = True,
+    max_el: float = _MAX_EL_DEFAULT,
+) -> str:
     """dump_state-Block im netrotctl-Format (Protokollversion 1, tag=value).
 
     Aufbau (siehe Hamlib rigs/dummy/netrotctl.c ``netrotctl_open``):
@@ -38,6 +53,14 @@ def build_dump_state(*, az_enabled: bool = True, el_enabled: bool = True) -> str
       Zeile 2: rot_model (wird vom Client verworfen)
       danach : ``key=value``-Zeilen, abgeschlossen mit ``done``
     """
+    try:
+        max_el_f = float(max_el)
+    except Exception:
+        max_el_f = _MAX_EL_DEFAULT
+    if max_el_f < 90.0:
+        max_el_f = 90.0
+    if max_el_f > 180.0:
+        max_el_f = 180.0
     if el_enabled and az_enabled:
         rot_type = "AzEl"
     elif el_enabled and not az_enabled:
@@ -50,7 +73,7 @@ def build_dump_state(*, az_enabled: bool = True, el_enabled: bool = True) -> str
         f"min_az={_MIN_AZ:.6f}",
         f"max_az={_MAX_AZ:.6f}",
         f"min_el={_MIN_EL:.6f}",
-        f"max_el={_MAX_EL:.6f}",
+        f"max_el={max_el_f:.6f}",
         f"rot_type={rot_type}",
         "south_zero=0",
         "done",
@@ -124,6 +147,9 @@ def process_rotctld_line(
                     int(round(az_deg * 10.0)), shortest_path=bool(shortest_path)
                 )
             if el_enabled:
+                from .angle_utils import clamp_el
+
+                el_deg = clamp_el(el_deg, _max_el_from_ctrl(ctrl))
                 ctrl.set_el_from_spid(int(round(el_deg * 10.0)))
             if log is not None:
                 log.write("ROTCTLD", f"set_pos AZ={az_deg:.2f} EL={el_deg:.2f}")
@@ -171,7 +197,14 @@ def process_rotctld_line(
 
     # --- dump_state ---------------------------------------------------------
     if cmd in ("\\dump_state", "dump_state"):
-        return (build_dump_state(az_enabled=az_enabled, el_enabled=el_enabled), False)
+        return (
+            build_dump_state(
+                az_enabled=az_enabled,
+                el_enabled=el_enabled,
+                max_el=_max_el_from_ctrl(ctrl),
+            ),
+            False,
+        )
 
     # --- dump_caps: 1 (nur Bestaetigung) -----------------------------------
     if cmd in ("1", "\\dump_caps", "dump_caps"):

@@ -37,6 +37,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QLabel, QWidget
 
 from ..angle_utils import shortest_delta_deg, wrap_deg
+from ..geo_utils import ANTENNA_BEAM_COLORS
 from ..i18n import t
 from ..ui.led_widget import Led
 from ..ui.ui_utils import px_to_dip
@@ -163,6 +164,12 @@ class CompassWidget(QWidget):
         self._overlay_soll: str = ""
         self._text_overlay_visible: bool = True
         self._dipole_active: bool = False
+        # Antennen-Öffnungswinkel-Overlay (wie Karten-Beam, schwach transparent)
+        self._beam_overlay_enabled: bool = False
+        self._beam_antenna_idx: int = 0
+        self._beam_center_deg: Optional[float] = None
+        self._beam_opening_deg: float = 30.0
+        self._beam_dipole: bool = False
         self._windrose_pixmap = _load_windrose_pixmap()
         self._windrose_scaled_px: int = 0
         self._windrose_scaled_pm: Optional[QPixmap] = None
@@ -378,6 +385,45 @@ class CompassWidget(QWidget):
         if self._dipole_active != on:
             self._dipole_active = on
             self.update()
+
+    def set_antenna_beam_overlay(
+        self,
+        *,
+        enabled: bool,
+        antenna_idx: int = 0,
+        center_deg: Optional[float] = None,
+        opening_deg: float = 30.0,
+        dipole: bool = False,
+    ) -> None:
+        """Öffnungswinkel-Sektor wie Karten-Beam (Farbe Antenne 1–3), schwach transparent."""
+        on = bool(enabled) and center_deg is not None
+        try:
+            idx = max(0, min(2, int(antenna_idx)))
+        except (TypeError, ValueError):
+            idx = 0
+        try:
+            op = float(opening_deg)
+        except (TypeError, ValueError):
+            op = 30.0
+        if op <= 0.0:
+            op = 30.0
+        op = min(360.0, max(1.0, op))
+        cen = None if center_deg is None else wrap_deg(float(center_deg))
+        dip = bool(dipole)
+        if (
+            on == self._beam_overlay_enabled
+            and idx == self._beam_antenna_idx
+            and cen == self._beam_center_deg
+            and abs(op - self._beam_opening_deg) < 0.05
+            and dip == self._beam_dipole
+        ):
+            return
+        self._beam_overlay_enabled = on
+        self._beam_antenna_idx = idx
+        self._beam_center_deg = cen
+        self._beam_opening_deg = op
+        self._beam_dipole = dip
+        self.update()
 
     def set_bins(self, cw: Optional[List[int]], ccw: Optional[List[int]]) -> None:
         """ACCBINS für 5px Heatmap-Ring. 72 Werte je Richtung."""
@@ -659,6 +705,9 @@ class CompassWidget(QWidget):
             ):
                 draw_label(label, angle)
 
+            # Öffnungswinkel-Overlay (wie Karte, innerhalb des Kreises, schwach)
+            self._draw_antenna_beam_overlay(painter, cx, cy, r)
+
             # Heatmap-Ringe: Farbring 7px, dazwischen 1px schwarz; innen nach außen = Strom → OM-Radar → Standzeit
             ring_w = 7.0
             gap_w = 1.0
@@ -790,6 +839,51 @@ class CompassWidget(QWidget):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(self.palette().color(QPalette.ColorRole.WindowText))
             painter.drawEllipse(QRectF(cx - 5.0, cy - 5.0, 10.0, 10.0))
+
+    def _draw_antenna_beam_overlay(
+        self, painter: QPainter, cx: float, cy: float, r: float
+    ) -> None:
+        """Halbtransparenter Öffnungswinkel-Sektor (Kartenfarben), innerhalb des Kreises."""
+        if not self._beam_overlay_enabled or self._beam_center_deg is None:
+            return
+        opening = float(self._beam_opening_deg)
+        if opening < 1.0:
+            return
+        i = max(0, min(2, int(self._beam_antenna_idx)))
+        stroke_hex, fill_hex = ANTENNA_BEAM_COLORS[i]
+        fill = QColor(fill_hex)
+        fill.setAlpha(42)  # ~0.16 — schwach, stört wenig
+        stroke = QColor(stroke_hex)
+        stroke.setAlpha(70)
+        inner_r = r * 0.985
+
+        def _wedge(center_deg: float) -> None:
+            half = opening / 2.0
+            # Qt: 0° = 3 Uhr, positiv CCW; Kompass: 0° = N, positiv CW.
+            # Sektor mittig um center: Start an der linken Kante (center−half), Sweep CW (−).
+            start_qt = 90.0 - (float(center_deg) - half)
+            path = QPainterPath()
+            path.moveTo(cx, cy)
+            path.arcTo(
+                cx - inner_r,
+                cy - inner_r,
+                2.0 * inner_r,
+                2.0 * inner_r,
+                start_qt,
+                -opening,
+            )
+            path.closeSubpath()
+            painter.setPen(QPen(stroke, 1.0))
+            painter.setBrush(fill)
+            painter.drawPath(path)
+
+        painter.save()
+        try:
+            _wedge(float(self._beam_center_deg))
+            if self._beam_dipole:
+                _wedge(wrap_deg(float(self._beam_center_deg) + 180.0))
+        finally:
+            painter.restore()
 
     def _draw_anschlag_triangle(self, painter: QPainter, cx: float, cy: float, r: float) -> None:
         """Rotes Dreieck auf der Kreislinie am Antennenversatz, Spitze nach innen."""

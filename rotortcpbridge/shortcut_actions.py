@@ -10,6 +10,7 @@ from .angle_utils import (
     az_max_d10_from_axis,
     az_pos_deg_from_d10,
     clamp_el,
+    el_max_deg_from_rotor_type,
     raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
     wrap_deg,
@@ -113,30 +114,35 @@ def bump_antenna_target_deg(cfg: dict, ctrl: "RotorController", delta_deg: float
     set_antenna_azimuth_deg(cfg, ctrl, new_ant)
 
 
+def _el_max_deg(ctrl: "RotorController") -> float:
+    return el_max_deg_from_rotor_type(getattr(ctrl, "el_rotor_type", None))
+
+
 def _el_deg_for_relative_steps(ctrl: "RotorController") -> float:
     """EL-Bezug (°) für Jog: Motor-Soll wenn schon gesendet, sonst Ist-Position."""
+    mx = _el_max_deg(ctrl)
     if not getattr(ctrl, "enable_el", False):
         return 0.0
     try:
         if getattr(ctrl.el, "last_set_sent_target_d10", None) is not None:
-            return clamp_el(int(getattr(ctrl.el, "target_d10", 0)) / 10.0)
+            return clamp_el(int(getattr(ctrl.el, "target_d10", 0)) / 10.0, mx)
     except Exception:
         pass
     try:
-        return clamp_el(int(getattr(ctrl.el, "pos_d10", 0)) / 10.0)
+        return clamp_el(int(getattr(ctrl.el, "pos_d10", 0)) / 10.0, mx)
     except Exception:
         return 0.0
 
 
 def effective_el_target_deg(ctrl: "RotorController") -> float:
-    """Aktuelles EL in Grad (0…90°) als Bezug für relative Schritte, analog AZ."""
+    """Aktuelles EL in Grad als Bezug für relative Schritte, analog AZ."""
     return _el_deg_for_relative_steps(ctrl)
 
 
 def bump_el_target_deg(ctrl: "RotorController", delta_deg: float) -> None:
-    """EL-Ziel um delta Grad (0…90°)."""
+    """EL-Ziel um delta Grad (0…90° bzw. 0…180° laut Rotortyp)."""
     if not getattr(ctrl, "enable_el", False):
         return
     cur = effective_el_target_deg(ctrl)
-    new_el = clamp_el(cur + float(delta_deg))
+    new_el = clamp_el(cur + float(delta_deg), _el_max_deg(ctrl))
     ctrl.set_el_deg(new_el, force=True)

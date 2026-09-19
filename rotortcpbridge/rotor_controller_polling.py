@@ -184,6 +184,7 @@ class _RotorPollingHost:
     request_antenna_offsets: Callable[[], None]
     request_antenna_angles: Callable[[], None]
     request_antenna_ranges: Callable[[], None]
+    request_antenna_names: Callable[[], None]
     request_antenna_selection: Callable[[], None]
     # Von ``RotorController`` / Polling-Mixin; für ``RotorControllerAsyncMixin`` (gleicher Host-Stub)
     _apply_local_state_for_ui_command: Callable[..., None]
@@ -191,10 +192,15 @@ class _RotorPollingHost:
     set_el_from_spid: Callable[[int], None]
     note_setposcc_bus_activity: Callable[[], None]
     note_setposdg_poll_restrict: Callable[[], None]
+    note_foreign_master_activity: Callable[..., None]
+    clear_foreign_master_follow: Callable[..., None]
+    foreign_master_yield_active: Callable[..., bool]
+    _tick_foreign_follow_clear: Callable[[float], None]
     cc_poll_hold_active: Callable[[float], bool]
     _setposdg_poll_grace_until_ts: float
     _setposcc_poll_hold: bool
     _setposcc_hold_until: float
+    _foreign_poll_seen_until: float
     _acc_bins_chain_in_progress: Callable[[], bool]
     _fetch_cal_bins: Callable[..., None]
     _fetch_live_bins: Callable[..., None]
@@ -357,6 +363,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     self.request_antenna_offsets()
                     self.request_antenna_angles()
                     self.request_antenna_ranges()
+                    self.request_antenna_names()
                     self._antenna_bootstrap_requested = True
                 if not bool(getattr(self, "_antenna_selection_bootstrap_requested", False)):
                     # Unabhängig von AZ: Auswahl liegt am Display-Controller (cont_id).
@@ -368,6 +375,13 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 if (not bool(getattr(self, "_max_deg_requested", False))) and self.enable_az:
                     self.request_max_deg()
                     self._max_deg_requested = True
+                if not bool(getattr(self, "_home_pos_requested", False)):
+                    if self.enable_az or self.enable_el:
+                        self.request_home_pos()
+                        self._home_pos_requested = True
+                if (not bool(getattr(self, "_el_rotor_type_requested", False))) and self.enable_el:
+                    self.request_el_rotor_type()
+                    self._el_rotor_type_requested = True
             except Exception:
                 pass
         if (not hw_on) and self._hw_prev_connected:
@@ -375,9 +389,21 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             self.encoder_type_known = False
             self._encoder_type_requested = False
             self._max_deg_requested = False
+            self._home_pos_requested = False
+            self._park_pending_az = False
+            self._park_pending_el = False
+            self.el_rotor_type = None
+            self.el_rotor_type_known = False
+            self._el_rotor_type_requested = False
             try:
                 self.az.pos_max_d10 = 3600
                 self.az.position_wrap_360 = True
+                self.az.home_pos_d10 = None
+            except Exception:
+                pass
+            try:
+                self.el.pos_max_d10 = 3600
+                self.el.home_pos_d10 = None
             except Exception:
                 pass
             self._antenna_selection_bootstrap_requested = False
@@ -387,6 +413,12 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             if callable(cb):
                 try:
                     cb()
+                except Exception:
+                    pass
+            cb_rt = getattr(self, "on_rotor_type_changed", None)
+            if callable(cb_rt):
+                try:
+                    cb_rt()
                 except Exception:
                     pass
         self._hw_prev_connected = hw_on
@@ -412,14 +444,22 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         # oder kurz nach SETPOSDG-Mitschnitt.
         poll_restrict = self._motion_poll_restrict_active(now, pos_fast_s)
         cc_hold = self.cc_poll_hold_active(now)
+        try:
+            foreign_yield = bool(self.foreign_master_yield_active(now))
+        except Exception:
+            foreign_yield = False
+        try:
+            self._tick_foreign_follow_clear(now)
+        except Exception:
+            pass
 
         # GETACCBINS: Abschlussprüfung auch ohne hw_on (sonst hängt Inflight bei Disconnect).
         self._tick_acc_bins_finalize_rounds(now)
-        if poll_restrict and not cc_hold:
-            # Harte Vorgabe: während Fahrt nur Positions-/Fehlerpfad; Strom-/Statistikketten sofort stoppen.
+        if (poll_restrict or foreign_yield) and not cc_hold:
+            # Harte Vorgabe: während Fahrt / Mitlauf nur Positions-/Fehlerpfad; Strom-/Statistikketten sofort stoppen.
             self._abort_acc_bins_fetch_only()
 
-        if hw_on and (not cc_hold):
+        if hw_on and (not cc_hold) and (not foreign_yield):
             # Inflight-Sperren nach Request-Timeout freigeben (verhindert dauerhaftes Blockieren).
             if self._wind_enable_inflight and (
                 (now - self._wind_enable_sent_ts) > 1.5
@@ -785,6 +825,15 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         """
         try:
             self.note_setposdg_poll_restrict()
+        except Exception:
+            pass
+        # Wir übernehmen die Führung — Mitlauf hinter fremdem Master beenden.
+        try:
+            axu0 = str(axis).upper()
+            if axu0 == "AZ":
+                self.clear_foreign_master_follow(self.az)
+            elif axu0 == "EL":
+                self.clear_foreign_master_follow(self.el)
         except Exception:
             pass
         self._abort_stats_fetch_and_cooldown()

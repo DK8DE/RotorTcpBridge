@@ -65,16 +65,18 @@ def test_apply_gui_config_replaces_sections() -> None:
 
 
 def test_controller_vs_rotor_pairs_partition() -> None:
-    assert is_controller_set_cmd("SETCONANTNAME1")
+    assert is_controller_set_cmd("SETCONLEDP")
     assert is_controller_set_cmd("SETLSL")
     assert not is_controller_set_cmd("SETMAXDG")
     assert not is_controller_set_cmd("SETANTOFF1")
+    assert not is_controller_set_cmd("SETANTNAME1")
     ctrl = {s for s, _ in controller_backupable_pairs()}
     rotor = {s for s, _ in rotor_backupable_pairs()}
-    assert "SETCONANTNAME1" in ctrl
+    assert "SETCONLEDP" in ctrl
     assert "SETLSL" in ctrl
     assert "SETMAXDG" in rotor
     assert "SETANTOFF1" in rotor
+    assert "SETANTNAME1" in rotor
     assert ctrl.isdisjoint(rotor)
 
 
@@ -109,7 +111,8 @@ def test_build_backup_work_routes_con_to_controller() -> None:
     work = build_backup_work(cfg)
     assert any(dst == 20 and cmd == "SETMAXDG" for dst, cmd, _ in work)
     assert not any(dst == 21 for dst, _, _ in work)
-    assert any(dst == 2 and cmd == "SETCONANTNAME1" for dst, cmd, _ in work)
+    assert any(dst == 2 and cmd == "SETCONLEDP" for dst, cmd, _ in work)
+    assert any(dst == 20 and cmd == "SETANTNAME1" for dst, cmd, _ in work)
     assert not any(dst == 20 and cmd.startswith("SETCON") for dst, cmd, _ in work)
 
 
@@ -184,7 +187,7 @@ def test_xml_roundtrip(tmp_path: Path) -> None:
     path = tmp_path / "bak.xml"
     entries = [
         {"dst": 20, "cmd": "SETMAXDG", "params": "420,00"},
-        {"dst": 2, "cmd": "SETCONANTNAME1", "params": "Yagi"},
+        {"dst": 20, "cmd": "SETANTNAME1", "params": "Yagi"},
     ]
     gui = extract_gui_config_for_backup(
         {

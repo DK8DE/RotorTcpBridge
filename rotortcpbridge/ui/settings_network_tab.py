@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -53,7 +54,6 @@ from ..network_modules import (
     ebyte_udp_discover,
     modules_from_cfg,
     modules_to_cfg,
-    probe_module,
     probe_module_quick,
     probe_online,
     read_status,
@@ -141,25 +141,45 @@ class _WaitHostWorker(QThread):
 
 
 class _ProbeWorker(QThread):
-    """Prueft Online-Status aller Module im Hintergrund."""
+    """Prueft Online-Status aller Module im Hintergrund (parallel, kurze Timeouts)."""
 
     # List[Tuple[NetworkModule, bool]] -- Modul-Objekt + Ergebnis, damit die
     # Zuordnung auch dann stimmt, wenn sich die Modulliste (loeschen/
     # hinzufuegen) waehrend der laufenden Pruefung veraendert.
     results = Signal(object)
 
-    def __init__(self, modules: List[NetworkModule], parent=None):
+    def __init__(self, modules: List[NetworkModule], parent=None, *, gen: int = 0):
         super().__init__(parent)
         self._modules = list(modules)
+        self.gen = int(gen)
 
     def run(self) -> None:
-        out: List[Tuple[NetworkModule, bool]] = []
-        for m in self._modules:
+        mods = list(self._modules)
+        if not mods:
+            self.results.emit([])
+            return
+
+        def _one(m: NetworkModule) -> Tuple[NetworkModule, bool]:
             try:
-                out.append((m, probe_module(m, timeout=0.6)))
+                # Schneller LED-Check: kurze Timeouts, parallel → Offline kostet
+                # nicht mehr N× lange Serienwartezeit.
+                return (m, probe_module_quick(m, timeout=0.3))
             except Exception:
-                out.append((m, False))
-        self.results.emit(out)
+                return (m, False)
+
+        out: List[Tuple[NetworkModule, bool]] = []
+        workers = min(8, max(1, len(mods)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [pool.submit(_one, m) for m in mods]
+            for fut in concurrent.futures.as_completed(futs):
+                try:
+                    out.append(fut.result())
+                except Exception:
+                    pass
+        # Reihenfolge der Eingabeliste beibehalten (as_completed ist gemischt)
+        by_id = {id(m): online for m, online in out}
+        ordered = [(m, bool(by_id.get(id(m), False))) for m in mods]
+        self.results.emit(ordered)
 
 
 class _ReadWorker(QThread):
@@ -1671,6 +1691,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self._write_reread_retries = 0
         self._status_known = False
         self._probe_busy = False
+        self._probe_gen = 0
         self._leds: List[Led] = []
         self._build_ui()
         self.load_from_cfg()
@@ -1905,12 +1926,16 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self.on_tab_shown()
 
     def on_tab_shown(self) -> None:
-        """Beim Anzeigen des Tabs: Erreichbarkeit pruefen, Wartebalken bis alle durch sind."""
+        """Beim Anzeigen des Tabs: Erreichbarkeit pruefen (Busy nur beim ersten Mal)."""
         if not self._status_timer.isActive():
             self._status_timer.start()
-        if self._modules and not self._status_known:
+        if not self._modules:
+            return
+        if self._probe_busy and getattr(self, "_busy_progress", None) is not None:
+            return
+        if not self._status_known:
             self._start_probe_with_busy()
-        elif self._modules:
+        else:
             QTimer.singleShot(0, self._tick_probe)
 
     def _start_probe_with_busy(self) -> None:
@@ -1942,6 +1967,8 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
 
     # ----------------------------------------------------------- cfg sync
     def load_from_cfg(self) -> None:
+        # In-flight-Probes ungueltig machen (neue Modul-Objekte → alte IDs passen nicht).
+        self._probe_gen = int(getattr(self, "_probe_gen", 0) or 0) + 1
         self._modules = modules_from_cfg(self._cfg)
         self._online = [False] * len(self._modules)
         self._offline_streak = [0] * len(self._modules)
@@ -1954,10 +1981,9 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self._list.setCurrentRow(-1)
         self._clear_form()
         self._set_detail_enabled(False)
+        # Nur pruefen, wenn der Tab gerade sichtbar ist — sonst wartet on_tab_shown.
         if self.isVisible() and self._modules:
             self._start_probe_with_busy()
-        else:
-            QTimer.singleShot(0, self._tick_probe)
 
     def _in_reboot_pause(self) -> bool:
         return time.time() < float(getattr(self, "_reboot_pause_until", 0.0) or 0.0)
@@ -2829,11 +2855,39 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         )
 
     # ----------------------------------------------------------- probe
+    def _module_probe_key(self, m: NetworkModule) -> tuple:
+        mac = str(getattr(m, "mac", "") or "").strip().upper().replace("-", ":")
+        uid = str(getattr(m, "uid", "") or "").strip().upper()
+        host = str(getattr(m, "host", "") or "").strip()
+        contact = str(getattr(m, "contact_host", "") or "").strip()
+        vendor = str(getattr(m, "vendor", "") or "").strip()
+        return (vendor, host, contact, uid, mac)
+
+    def _index_for_probe_module(self, module: NetworkModule) -> int | None:
+        """Zuordnung Worker-Modul → aktuelle Listenposition (id oder Schluessel)."""
+        by_id = {id(m): i for i, m in enumerate(self._modules)}
+        i = by_id.get(id(module))
+        if i is not None:
+            return i
+        key = self._module_probe_key(module)
+        if not any(key[1:]):  # kein host/uid/mac
+            return None
+        for idx, m in enumerate(self._modules):
+            if self._module_probe_key(m) == key:
+                return idx
+        # Fallback: gleiche Host-IP reicht oft nach reload
+        host = str(getattr(module, "host", "") or "").strip()
+        if host:
+            for idx, m in enumerate(self._modules):
+                if str(m.host or "").strip() == host:
+                    return idx
+        return None
+
     def _tick_probe(self) -> None:
         app = QApplication.instance()
         modal = app.activeModalWidget() if app is not None else None
         busy = getattr(self, "_busy_progress", None)
-        # Eigenes Wartefenster (Schreiben) darf die Erreichbarkeit nicht blockieren.
+        # Eigenes Wartefenster (Schreiben/Pruefen) darf die Erreichbarkeit nicht blockieren.
         if modal is not None and modal is not busy:
             return
         if self._probe_worker is not None:
@@ -2861,7 +2915,8 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
                 return
         # Formular zuerst in Module schreiben, damit Host/Port aktuell sind
         self._apply_form_to_current()
-        self._probe_worker = _ProbeWorker(list(self._modules), self)
+        gen = int(getattr(self, "_probe_gen", 0) or 0)
+        self._probe_worker = _ProbeWorker(list(self._modules), self, gen=gen)
         self._probe_worker.results.connect(self._on_probe_results)
         self._probe_worker.start()
 
@@ -2871,36 +2926,38 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
     _OFFLINE_STREAK_LIMIT = 2
 
     def _on_probe_results(self, results: object) -> None:
+        worker = self._probe_worker
+        worker_gen = int(getattr(worker, "gen", -1) or -1) if worker is not None else -1
+        current_gen = int(getattr(self, "_probe_gen", 0) or 0)
+        if worker_gen >= 0 and worker_gen != current_gen:
+            # Veraltete Pruefung — Dialog zu; frische Pruefung kommt von load/on_tab_shown.
+            self._finish_probe_busy()
+            return
         while len(self._offline_streak) < len(self._modules):
             self._offline_streak.append(0)
         while len(self._online) < len(self._modules):
             self._online.append(False)
-        # Zuordnung ueber das Modul-Objekt selbst (nicht ueber die Position):
-        # Wenn waehrend der laufenden Pruefung Module geloescht/hinzugefuegt
-        # wurden, stimmen Listenpositionen nicht mehr mit der Momentaufnahme
-        # des Workers ueberein. Ergebnisse fuer inzwischen entfernte Module
-        # werden einfach verworfen, statt auf ein falsches (z. B. neu
-        # hinzugefuegtes) Modul angewendet zu werden.
-        index_by_id = {id(m): i for i, m in enumerate(self._modules)}
         pairs = results if isinstance(results, list) else []
         reboot_ready = False
         now = time.time()
         wait_id = int(getattr(self, "_reboot_wait_module_id", 0) or 0)
         grace_done = now >= float(getattr(self, "_reboot_grace_until", 0.0) or 0.0)
+        applied = 0
         for entry in pairs:
             if not isinstance(entry, tuple) or len(entry) != 2:
                 continue
             module, is_up = entry
-            i = index_by_id.get(id(module))
+            i = self._index_for_probe_module(module)
             if i is None:
                 continue
+            applied += 1
             if is_up:
                 self._offline_streak[i] = 0
                 self._online[i] = True
                 if (
                     self._reboot_status_active
                     and wait_id
-                    and id(module) == wait_id
+                    and id(self._modules[i]) == wait_id
                     and grace_done
                 ):
                     reboot_ready = True
@@ -2910,7 +2967,12 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
                     self._online[i] = False
         for i, led in enumerate(self._leds):
             if i < len(self._online):
-                led.set_state(self._online[i])
+                try:
+                    led.set_state(self._online[i])
+                    led.update()
+                except RuntimeError:
+                    pass
+        # Auch bei 0 Treffern abschliessen (kein Retry-Loop) — periodischer Timer prueft weiter.
         self._status_known = True
         self._finish_probe_busy()
         if reboot_ready:

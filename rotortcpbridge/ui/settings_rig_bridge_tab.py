@@ -868,8 +868,8 @@ class RigBridgeTab(QWidget):
         ``chk_enabled`` ist die GLOBALE ``rig_bridge.enabled``-Flagge und
         spiegelt ``self._global_enabled`` — sie ist damit unabhaengig vom
         gerade selektierten Profil. Die per-Profil-Aktivschaltung
-        passiert ueber den Profilwechsel (``Aktiv setzen``/Combobox im
-        Hauptfenster); Profile haben kein eigenes Deaktivieren mehr.
+        passiert ueber den Profilwechsel (``Aktiv setzen`` in diesem Tab);
+        Profile haben kein eigenes Deaktivieren mehr.
         """
         self.chk_enabled.blockSignals(True)
         self.chk_enabled.setChecked(bool(getattr(self, "_global_enabled", False)))

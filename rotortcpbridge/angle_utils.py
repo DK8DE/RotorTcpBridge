@@ -16,17 +16,35 @@ def wrap_deg(v: float) -> float:
     return v
 
 
-def clamp_el(deg: float) -> float:
-    """EL-Winkel auf 0..90° begrenzen."""
+def clamp_el(deg: float, max_deg: float = 90.0) -> float:
+    """EL-Winkel auf 0..max_deg begrenzen (90° oder 180° je nach Rotortyp)."""
     try:
         v = float(deg)
     except Exception:
         v = 0.0
+    try:
+        mx = float(max_deg)
+    except Exception:
+        mx = 90.0
+    if mx < 90.0:
+        mx = 90.0
+    if mx > 180.0:
+        mx = 180.0
     if v < 0.0:
         v = 0.0
-    if v > 90.0:
-        v = 90.0
+    if v > mx:
+        v = mx
     return v
+
+
+def el_max_deg_from_rotor_type(rotor_type: int | None) -> float:
+    """Maximaler Elevationswinkel aus GETROTORTYPE: 3 → 180°, sonst 90°."""
+    try:
+        if int(rotor_type) == 3:
+            return 180.0
+    except Exception:
+        pass
+    return 90.0
 
 
 def compute_dgcal_deg(

@@ -18,6 +18,22 @@ from PySide6.QtWebEngineCore import (
 # Custom URL-Scheme für Offline-Tiles (funktioniert ohne Netzwerkadapter)
 ROTORTILES_SCHEME = "rotortiles"
 
+# Online-Basiskarten: CARTO verlangt inzwischen einen API-Key und liefert sonst
+# Kacheln mit Wasserzeichen „API KEY REQUIRED“. Esri wie die Satellitenkarte —
+# ohne Key, Leaflet-Reihenfolge {z}/{y}/{x}.
+ONLINE_TILE_URL_LIGHT = (
+    "https://server.arcgisonline.com/ArcGIS/rest/services/"
+    "World_Street_Map/MapServer/tile/{z}/{y}/{x}"
+)
+ONLINE_TILE_URL_DARK = (
+    "https://server.arcgisonline.com/ArcGIS/rest/services/"
+    "Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+)
+ONLINE_TILE_ATTRIBUTION = (
+    'Tiles &copy; <a href="https://www.esri.com/">Esri</a>'
+    " &mdash; Source: Esri, OpenStreetMap contributors"
+)
+
 _DEBUG_TILES = False
 
 

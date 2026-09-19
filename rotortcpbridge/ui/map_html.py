@@ -9,6 +9,9 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .map_tiles import (
+    ONLINE_TILE_ATTRIBUTION,
+    ONLINE_TILE_URL_DARK,
+    ONLINE_TILE_URL_LIGHT,
     _DEBUG_TILES,
     _offline_tile_url,
     _offline_zoom_range,
@@ -82,27 +85,19 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     offline_min_z, offline_max_z = _offline_zoom_range(dark)
     if offline:
         tile_url = _offline_tile_url(dark) or (
-            "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-            if dark
-            else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+            ONLINE_TILE_URL_DARK if dark else ONLINE_TILE_URL_LIGHT
         )
-        tile_url_light = (
-            _offline_tile_url(False)
-            or "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-        )
-        tile_url_dark = (
-            _offline_tile_url(True)
-            or "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-        )
+        tile_url_light = _offline_tile_url(False) or ONLINE_TILE_URL_LIGHT
+        tile_url_dark = _offline_tile_url(True) or ONLINE_TILE_URL_DARK
         if _DEBUG_TILES:
             print(
                 f"[BuildHTML] dark={dark} tile={tile_url[:60]} light={tile_url_light[:60]} dark={tile_url_dark[:60]}"
             )
     elif dark:
-        tile_url = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        tile_url = ONLINE_TILE_URL_DARK
         tile_url_light = tile_url_dark = tile_url
     else:
-        tile_url = "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+        tile_url = ONLINE_TILE_URL_LIGHT
         tile_url_light = tile_url_dark = tile_url
     body_bg = "#1c1c1c" if dark else "inherit"
     body_map_dark_class = "map-dark" if dark else ""
@@ -319,11 +314,11 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     const ASNEAREST_TOOLTIP_PATH = {json.dumps(asnearest_tooltip_path)};
     const ASNEAREST_TOOLTIP_CATPATH = {json.dumps(asnearest_tooltip_catpath)};
 
-    const TILE_URL_DARK = "https://{{s}}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}{{r}}.png";
-    const TILE_URL_LIGHT = "https://{{s}}.basemaps.cartocdn.com/rastertiles/voyager/{{z}}/{{x}}/{{y}}{{r}}.png";
+    const TILE_URL_DARK = {json.dumps(ONLINE_TILE_URL_DARK)};
+    const TILE_URL_LIGHT = {json.dumps(ONLINE_TILE_URL_LIGHT)};
     const TILE_URL_SATELLITE = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}";
     const OFFLINE_ATTRIBUTION = "© OpenStreetMap-Mitwirkende";
-    const ONLINE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
+    const ONLINE_ATTRIBUTION = {json.dumps(ONLINE_TILE_ATTRIBUTION)};
     const SATELLITE_ATTRIBUTION = 'Tiles &copy; <a href="https://www.esri.com/">Esri</a>';
     const isOffline = {str(offline).lower()};
     let _currentOffline = isOffline;
@@ -333,7 +328,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     const offlineMaxZ = {offline_max_z};
     const tileOpts = isOffline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION,
       fadeAnimation: false, keepBuffer: 1, updateWhenIdle: true }}
-      : {{ subdomains: 'abcd', maxZoom: 19, attribution: ONLINE_ATTRIBUTION,
+      : {{ maxZoom: 19, attribution: ONLINE_ATTRIBUTION,
       fadeAnimation: false, keepBuffer: 1, updateWhenIdle: true }};
 
     console.log('[Map] Init isOffline=' + isOffline + ' tileUrl=' + {json.dumps(tile_url)} + ' origin=' + (document.location && document.location.origin ? document.location.origin : '?'));
@@ -970,7 +965,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
           fadeAnimation: false, keepBuffer: 1, updateWhenIdle: true }};
       }} else {{
         url = _mapDark ? TILE_URL_DARK : TILE_URL_LIGHT;
-        opts = {{ subdomains: 'abcd', maxZoom: 19, minZoom: 3, attribution: ONLINE_ATTRIBUTION,
+        opts = {{ maxZoom: 19, minZoom: 3, attribution: ONLINE_ATTRIBUTION,
           fadeAnimation: false, keepBuffer: 1, updateWhenIdle: true }};
       }}
       if (tileLayer && _currentTileUrl === url) return;

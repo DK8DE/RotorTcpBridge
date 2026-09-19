@@ -6,7 +6,8 @@ Steuerbefehle (STOP, NSTOP, SETREF, SETPOSDG, etc.) werden ausgeschlossen.
 
 Lokale App-Einstellungen (config.json-Bereiche) werden mitgespeichert.
 Hardware-Parameter gehen an Rotor-Slaves (AZ/EL) bzw. an den Display-Controller
-(``SETCON*`` / ``SETLSL`` → ``controller_hw.cont_id``).
+(``SETCON*`` / ``SETLSL`` → ``controller_hw.cont_id``). Antennen-Namen:
+``SETANTNAME*`` am Rotor-Slave.
 """
 
 from __future__ import annotations

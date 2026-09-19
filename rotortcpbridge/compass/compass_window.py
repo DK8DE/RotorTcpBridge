@@ -32,6 +32,7 @@ from ..angle_utils import (
     clamp_el,
     compute_dgcal_deg,
     current_rotor_az_deg,
+    el_max_deg_from_rotor_type,
     fmt_deg,
     om_beam_contributions_per_sector,
     raw_rotor_az_deg_from_axis,
@@ -67,7 +68,7 @@ class CompassWindow(QDialog):
     sig_dgcal_set_done = Signal(str, bool, str, float)  # axis, ok, err, value
 
     _MIN_WIDTH = 870
-    _MIN_HEIGHT = 710
+    _MIN_HEIGHT = 780
     _VAL_COLOR_SOLL = "#ff6b6b"
     _VAL_COLOR_IST = "#5ee07a"
     _VAL_COLOR_IST_REVERSE = "#da9a5c"
@@ -202,10 +203,10 @@ class CompassWindow(QDialog):
         main_row.setSpacing(6)
         root.addLayout(main_row, 1)
 
-        # --- Links-Panel: Soll / Ist / Wind / Locator-Karten ---
-        left_panel = QWidget()
-        left_panel.setFixedWidth(px_to_dip(self, 158))
-        left_vbox = QVBoxLayout(left_panel)
+        # --- Links-Panel: Soll / Ist / Wind / Locator-Karten (nur AZ) ---
+        self._az_left_panel = QWidget()
+        self._az_left_panel.setFixedWidth(px_to_dip(self, 158))
+        left_vbox = QVBoxLayout(self._az_left_panel)
         left_vbox.setContentsMargins(0, 0, 0, 0)
         left_vbox.setSpacing(6)
 
@@ -405,7 +406,7 @@ class CompassWindow(QDialog):
         left_vbox.addWidget(_c_ant)
         left_vbox.addWidget(_c_dgcal_az)
         left_vbox.addStretch(1)
-        main_row.addWidget(left_panel, 0)
+        main_row.addWidget(self._az_left_panel, 0)
 
         # --- Kompass-Bereich: AZ-Spalte | AZ-Steuerung | EL-Spalte | EL-Steuerung ---
         self._az_column = QWidget()
@@ -473,6 +474,7 @@ class CompassWindow(QDialog):
         self._az_right_panel = QWidget()
         self._az_right_panel.setFixedWidth(px_to_dip(self, 168))
         right_vbox = QVBoxLayout(self._az_right_panel)
+        self._az_right_vbox = right_vbox
         right_vbox.setContentsMargins(0, 0, 0, 0)
         right_vbox.setSpacing(6)
 
@@ -607,9 +609,10 @@ class CompassWindow(QDialog):
         right_vbox.addWidget(_ctrl_card)
 
         # ── FAVORITEN-Card ────────────────────────────────────────────────
-        _fav_card = QFrame()
-        self._apply_compass_card_style(_fav_card)
-        _fav_vbox = QVBoxLayout(_fav_card)
+        # Bei nur EL wird die Karte nach rechts ans EL-Panel gehängt (refresh_visibility).
+        self._fav_card = QFrame()
+        self._apply_compass_card_style(self._fav_card)
+        _fav_vbox = QVBoxLayout(self._fav_card)
         _fav_vbox.setContentsMargins(8, 8, 8, 8)
         _fav_vbox.setSpacing(5)
 
@@ -639,12 +642,13 @@ class CompassWindow(QDialog):
         _fav_btn_row.addWidget(self.btn_fav_delete)
         _fav_vbox.addLayout(_fav_btn_row)
 
-        right_vbox.addWidget(_fav_card)
+        right_vbox.addWidget(self._fav_card)
+        self._fav_host = "az"
 
         # ── SCAN-Card (nur AZ) ────────────────────────────────────────────
-        _scan_card = QFrame()
-        self._apply_compass_card_style(_scan_card)
-        _scan_vbox = QVBoxLayout(_scan_card)
+        self._scan_card = QFrame()
+        self._apply_compass_card_style(self._scan_card)
+        _scan_vbox = QVBoxLayout(self._scan_card)
         _scan_vbox.setContentsMargins(8, 8, 8, 8)
         _scan_vbox.setSpacing(5)
 
@@ -669,13 +673,14 @@ class CompassWindow(QDialog):
         self.btn_scan_start.setToolTip(format_tooltip(t("compass.scan_btn_start_tooltip")))
         _scan_vbox.addWidget(self.btn_scan_start)
 
-        right_vbox.addWidget(_scan_card)
+        right_vbox.addWidget(self._scan_card)
         right_vbox.addStretch(1)
 
         # --- Rechts-Panel EL: VERBINDUNG + SOLL + IST + STEUERUNG ---
         self._el_right_panel = QWidget()
         self._el_right_panel.setFixedWidth(px_to_dip(self, 168))
         _el_right_vbox = QVBoxLayout(self._el_right_panel)
+        self._el_right_vbox = _el_right_vbox
         _el_right_vbox.setContentsMargins(0, 0, 0, 0)
         _el_right_vbox.setSpacing(6)
 
@@ -812,6 +817,7 @@ class CompassWindow(QDialog):
         self.cb_heatmap_el.currentIndexChanged.connect(self._on_heatmap_el_changed)
         self.az_compass.targetPicked.connect(self._on_target_picked_az)
         self.el_compass.targetPicked.connect(self._on_target_picked_el)
+        self.update_el_rotor_type_display()
 
         self.cb_fav.activated.connect(self._on_fav_activated)
         self.btn_fav_save.clicked.connect(self._on_fav_save)
@@ -835,6 +841,20 @@ class CompassWindow(QDialog):
     def _on_antenna_offsets_changed(self) -> None:
         """Wird nach erfolgreichem SETANTOFF-ACK vom Controller aufgerufen → Dropdown sofort aktualisieren."""
         self._refresh_antenna_dropdown()
+
+    def _el_max_deg(self) -> float:
+        return el_max_deg_from_rotor_type(getattr(self.ctrl, "el_rotor_type", None))
+
+    def _clamp_el(self, deg: float) -> float:
+        return clamp_el(deg, self._el_max_deg())
+
+    def update_el_rotor_type_display(self) -> None:
+        """EL-Kompass auf 90°/180° laut GETROTORTYPE umstellen."""
+        mx = self._el_max_deg()
+        try:
+            self.el_compass.set_max_deg(mx)
+        except Exception:
+            pass
 
     def _request_antenna_offsets(self) -> None:
         """Antennenwerte einmalig anfordern (kein periodisches Nachpolling im Kompass)."""
@@ -860,11 +880,9 @@ class CompassWindow(QDialog):
 
     def _get_antenna_dropdown_items(self) -> list[str]:
         """Antennen-Namen mit Versatz in Klammern: 'Antenne 1 (0°)' etc."""
-        names = list(
-            self.cfg.get("ui", {}).get("antenna_names", ["Antenne 1", "Antenne 2", "Antenne 3"])
-        )
-        while len(names) < 3:
-            names.append(f"Antenne {len(names) + 1}")
+        from ..app_config import normalized_antenna_names
+
+        names = normalized_antenna_names(self.cfg)
         offsets: list[float] = []
         for slot in (1, 2, 3):
             v = getattr(self.ctrl.az, f"antoff{slot}", None)
@@ -892,6 +910,7 @@ class CompassWindow(QDialog):
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         self._last_strom_notify_key = None
+        self.refresh_visibility()
         self._apply_label_colors_from_palette()
         self._apply_compass_control_theme()
         self._refresh_antenna_dropdown()
@@ -1458,7 +1477,7 @@ class CompassWindow(QDialog):
                         {
                             "name": str(it["name"])[:15],
                             "az": float(it.get("az", 0.0)),
-                            "el": clamp_el(float(it.get("el", 0.0))),
+                            "el": self._clamp_el(float(it.get("el", 0.0))),
                         }
                     )
                 except (TypeError, ValueError):
@@ -1607,7 +1626,7 @@ class CompassWindow(QDialog):
         if not isinstance(data, dict) or "az" not in data or "el" not in data:
             return
         rotor_az = wrap_deg(float(data["az"]))
-        rotor_el = clamp_el(float(data["el"]))
+        rotor_el = self._clamp_el(float(data["el"]))
         self._stop_az_ts = None
         self._stop_el_ts = None
         self._cc_display_latch_az_d10 = None
@@ -1650,7 +1669,7 @@ class CompassWindow(QDialog):
         if az_d10 is None:
             return
         az_deg = float(az_d10) / 10.0
-        el_deg = clamp_el(float(el_d10 or 0) / 10.0)  # EL 0 bei nur AZ
+        el_deg = self._clamp_el(float(el_d10 or 0) / 10.0)  # EL 0 bei nur AZ
         fav = {"name": name[:15], "az": wrap_deg(az_deg), "el": el_deg}
         if "ui" not in self.cfg:
             self.cfg["ui"] = {}
@@ -1955,14 +1974,57 @@ class CompassWindow(QDialog):
         except Exception:
             pass
 
+    def _place_favorites_panel(self, az_on: bool, el_on: bool) -> None:
+        """Favoriten-Card: bei nur EL rechts ans EL-Panel, sonst ans AZ-Rechts-Panel."""
+        card = getattr(self, "_fav_card", None)
+        if card is None:
+            return
+        want_el_side = bool(el_on and not az_on)
+        host = "el" if want_el_side else "az"
+        parent_ok = (
+            card.parent() is self._el_right_panel
+            if want_el_side
+            else card.parent() is self._az_right_panel
+        )
+        if getattr(self, "_fav_host", None) == host and parent_ok:
+            return
+
+        az_lay = getattr(self, "_az_right_vbox", None)
+        el_lay = getattr(self, "_el_right_vbox", None)
+        for lay in (az_lay, el_lay):
+            if lay is None:
+                continue
+            idx = lay.indexOf(card)
+            if idx >= 0:
+                lay.takeAt(idx)
+
+        if want_el_side and el_lay is not None:
+            # Vor dem Stretch am Ende einfügen
+            insert_at = max(0, el_lay.count() - 1)
+            el_lay.insertWidget(insert_at, card)
+        elif az_lay is not None:
+            scan = getattr(self, "_scan_card", None)
+            if scan is not None:
+                si = az_lay.indexOf(scan)
+                if si >= 0:
+                    az_lay.insertWidget(si, card)
+                else:
+                    az_lay.insertWidget(max(0, az_lay.count() - 1), card)
+            else:
+                az_lay.insertWidget(max(0, az_lay.count() - 1), card)
+        self._fav_host = host
+
     def refresh_visibility(self) -> None:
         az_on = bool(getattr(self.ctrl, "enable_az", True))
         el_on = bool(getattr(self.ctrl, "enable_el", True))
+        self._az_left_panel.setVisible(az_on)
         self._az_column.setVisible(az_on)
+        self._az_right_panel.setVisible(az_on)
         self._el_column.setVisible(el_on)
         self._el_right_panel.setVisible(el_on)
         self.gb_az.setVisible(az_on)
         self.gb_el.setVisible(el_on)
+        self._place_favorites_panel(az_on, el_on)
         self.update_homing_buttons_visibility()
         self.update_ist_reverse_visibility()
         self._update_place_search_visibility()
@@ -2376,7 +2438,20 @@ class CompassWindow(QDialog):
             # Windrose/Zeiger: immer 0..360°; Zahlen: erweiterter Bereich inkl. Versatz
             cur_display_needle = wrap_deg(float(cur_smooth) + float(off_az))
             self.az_compass.set_current_deg(cur_display_needle)
+        else:
+            cur_display_needle = None
         self.az_compass.set_dipole_active(self._selected_antenna_dipole_enabled())
+        try:
+            overlay_on = bool(self.cfg.get("ui", {}).get("compass_antenna_overlay", True))
+            self.az_compass.set_antenna_beam_overlay(
+                enabled=overlay_on and cur_display_needle is not None,
+                antenna_idx=self._selected_antenna_idx(),
+                center_deg=cur_display_needle,
+                opening_deg=self._om_opening_deg(),
+                dipole=self._selected_antenna_dipole_enabled(),
+            )
+        except Exception:
+            pass
         self.update_ist_reverse_visibility()
 
         try:
@@ -2566,16 +2641,16 @@ class CompassWindow(QDialog):
                 cc_el = None
             if cc_el is not None:
                 self._cc_display_latch_el_d10 = int(cc_el)
-                tgt = clamp_el(float(int(cc_el)) / 10.0)
+                tgt = self._clamp_el(float(int(cc_el)) / 10.0)
             elif moving_el:
                 if self._cc_display_latch_el_d10 is not None:
-                    tgt = clamp_el(float(self._cc_display_latch_el_d10) / 10.0)
+                    tgt = self._clamp_el(float(self._cc_display_latch_el_d10) / 10.0)
                 else:
                     try:
                         td = int(getattr(self.ctrl.el, "target_d10", 0))
                     except Exception:
                         td = 0
-                    tgt = clamp_el(float(td) / 10.0)
+                    tgt = self._clamp_el(float(td) / 10.0)
             else:
                 self._cc_display_latch_el_d10 = None
                 tgt = self._target_el
@@ -2618,17 +2693,18 @@ class CompassWindow(QDialog):
             tgt = None
 
         if cur is not None:
-            cur_clamped = clamp_el(cur)
+            cur_clamped = self._clamp_el(cur)
             self.el_compass.set_current_deg(cur_clamped)
 
         try:
             acc_cw = getattr(self.ctrl.el, "acc_bins_cw", None)
             acc_ccw = getattr(self.ctrl.el, "acc_bins_ccw", None)
-            # EL: 72 Bins möglich, für Viertelkreis nur erste 18 nutzen
-            if acc_cw is not None and len(acc_cw) >= 18:
-                acc_cw = acc_cw[:18]
-            if acc_ccw is not None and len(acc_ccw) >= 18:
-                acc_ccw = acc_ccw[:18]
+            # EL-Firmware: immer 36 Bins (unabhängig von 90°/180°) → auf Anzeige-Bogen strecken
+            n_el = 36
+            if acc_cw is not None and len(acc_cw) >= n_el:
+                acc_cw = acc_cw[:n_el]
+            if acc_ccw is not None and len(acc_ccw) >= n_el:
+                acc_ccw = acc_ccw[:n_el]
             self.el_compass.set_heatmap_offset_deg(0.0)
             self.el_compass.set_bins(acc_cw, acc_ccw)
             ui0 = self.cfg.get("ui", {})
@@ -2637,7 +2713,7 @@ class CompassWindow(QDialog):
             pass
 
         if tgt is not None:
-            tgt_clamped = clamp_el(tgt)
+            tgt_clamped = self._clamp_el(tgt)
             self.el_compass.set_target_deg(tgt_clamped)
             desired_txt = fmt_deg(float(tgt_clamped)).rstrip("°")
             try:
@@ -2687,19 +2763,19 @@ class CompassWindow(QDialog):
             pass
 
         if cur is not None:
-            self._dgcal_el_ist = float(clamp_el(cur))
-            self._lbl_left_el_ist_val.setText(fmt_deg(clamp_el(cur)))
+            self._dgcal_el_ist = float(self._clamp_el(cur))
+            self._lbl_left_el_ist_val.setText(fmt_deg(self._clamp_el(cur)))
         else:
             self._dgcal_el_ist = None
             self._lbl_left_el_ist_val.setText("–")
         self._refresh_dgcal_labels()
         if tgt is not None:
-            self._lbl_left_el_soll_val.setText(fmt_deg(clamp_el(tgt)))
+            self._lbl_left_el_soll_val.setText(fmt_deg(self._clamp_el(tgt)))
         else:
             self._lbl_left_el_soll_val.setText("–")
 
         if cur is not None:
-            ist_txt = t("compass.ist_prefix") + fmt_deg(clamp_el(cur))
+            ist_txt = t("compass.ist_prefix") + fmt_deg(self._clamp_el(cur))
         else:
             ist_txt = t("compass.ist_prefix") + "–"
         self.el_compass.set_overlay_ist_soll(ist_txt, "")
@@ -3008,7 +3084,7 @@ class CompassWindow(QDialog):
         v = self._parse_deg_input(self.ed_el_soll.text())
         if v is None:
             return
-        self.el_compass.pick_target(clamp_el(v))
+        self.el_compass.pick_target(self._clamp_el(v))
 
     @Slot(float)
     def _on_target_picked_az(self, deg: float) -> None:
@@ -3098,7 +3174,7 @@ class CompassWindow(QDialog):
         """deg = angezeigter Winkel (EL: kein Versatz)."""
         self._stop_el_ts = None
         self._cc_display_latch_el_d10 = None
-        rotor_deg = clamp_el(deg)
+        rotor_deg = self._clamp_el(deg)
         self._target_el = rotor_deg
         self.el_compass.set_target_deg(deg)  # Anzeige bleibt Antennenrichtung
         self.ed_el_soll.setText(f"{deg:.1f}")
@@ -3163,7 +3239,7 @@ class CompassWindow(QDialog):
             # … dann die Soll-Anzeige EXAKT aus dem tatsächlich gesendeten Ziel
             # (target_d10) ableiten, damit Soll == angefahrenes Ziel.
             d10 = int(self.ctrl.el.target_d10)
-            self._target_el = clamp_el(d10 / 10.0)
+            self._target_el = self._clamp_el(d10 / 10.0)
             self.ctrl.el.compass_target_d10 = d10
             self._compass_last_bus_target_d10_el = d10
         except Exception:

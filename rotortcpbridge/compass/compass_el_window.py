@@ -5,7 +5,7 @@ from __future__ import annotations
 Dieses Fenster ist das Gegenstück zu ``compass_az_window.py``.
 
 Unterschiede:
-- Darstellung als Viertelkreis (0..90°)
+- Darstellung als Viertelkreis (0..90°) oder Halbkreis (0..180°) je nach GETROTORTYPE
 - Nur EL-Rotor wird angesprochen (dst = ctrl.slave_el)
 
 Bedienung:
@@ -16,7 +16,15 @@ import math
 from typing import Optional, List
 
 from PySide6.QtCore import Qt, Signal, QPointF, QRectF
-from PySide6.QtGui import QPainter, QPen, QColor, QPalette, QFontMetrics
+from PySide6.QtGui import (
+    QPainter,
+    QPen,
+    QColor,
+    QPalette,
+    QFontMetrics,
+    QPolygonF,
+    QLinearGradient,
+)
 from PySide6.QtWidgets import QLabel, QWidget
 from ..angle_utils import clamp_el
 from ..i18n import t
@@ -26,10 +34,11 @@ from .statistic_compass_widget import HeatmapScale, paint_bins_heatmap_ring
 
 # „Soll:“ + Eingabe (rechts oben) zusätzlich nach oben (kleineres oy)
 _SOLL_OVERLAY_Y_SHIFT_PX = 60
+_ARROW_SHAFT_WIDTH = 7.0
 
 
 class ElevationCompassWidget(QWidget):
-    """Viertelkreis-Kompass für 0..90° (Elevation)."""
+    """Elevations-Kompass: 0..90° (Viertelkreis) oder 0..180° (Halbkreis)."""
 
     targetPicked = Signal(float)
 
@@ -38,6 +47,7 @@ class ElevationCompassWidget(QWidget):
         self._current_deg: Optional[float] = None
         self._target_deg: Optional[float] = None
         self._angle_decimals: int = 1
+        self._max_deg: float = 90.0
         self._bins_cw: Optional[List[int]] = None
         self._bins_ccw: Optional[List[int]] = None
         self._heatmap_visible: bool = False
@@ -77,6 +87,26 @@ class ElevationCompassWidget(QWidget):
             w.setVisible(False)
 
         self.setMinimumSize(280, 280)
+
+    def max_deg(self) -> float:
+        return float(self._max_deg)
+
+    def set_max_deg(self, max_deg: float) -> None:
+        """90 = Viertelkreis, 180 = Halbkreis (GETROTORTYPE 2 bzw. 3)."""
+        try:
+            mx = float(max_deg)
+        except Exception:
+            mx = 90.0
+        mx = 180.0 if mx >= 180.0 else 90.0
+        if abs(mx - self._max_deg) < 0.1:
+            return
+        self._max_deg = mx
+        if self._current_deg is not None:
+            self._current_deg = clamp_el(self._current_deg, mx)
+        if self._target_deg is not None:
+            self._target_deg = clamp_el(self._target_deg, mx)
+        # 36 Firmware-Bins bleiben; nur die Darstellung (90°/180°) ändert sich
+        self.update()
 
     def set_top_center_widget(self, widget: Optional[QWidget]) -> None:
         """Widget oben mittig über dem Kompass (z.B. Antennen-Dropdown)."""
@@ -202,11 +232,11 @@ class ElevationCompassWidget(QWidget):
             self._soll_overlay.raise_()
 
     def set_current_deg(self, deg: Optional[float]) -> None:
-        self._current_deg = None if deg is None else clamp_el(deg)
+        self._current_deg = None if deg is None else clamp_el(deg, self._max_deg)
         self.update()
 
     def set_target_deg(self, deg: Optional[float]) -> None:
-        self._target_deg = None if deg is None else clamp_el(deg)
+        self._target_deg = None if deg is None else clamp_el(deg, self._max_deg)
         self.update()
 
     def set_angle_decimals(self, decimals: int) -> None:
@@ -219,9 +249,10 @@ class ElevationCompassWidget(QWidget):
         self._angle_decimals = d
 
     def set_bins(self, cw: Optional[List[int]], ccw: Optional[List[int]]) -> None:
-        """ACCBINS für 5px Heatmap-Ring. 18 Werte je Richtung (EL)."""
-        self._bins_cw = list(cw) if cw is not None and len(cw) >= 18 else None
-        self._bins_ccw = list(ccw) if ccw is not None and len(ccw) >= 18 else None
+        """ACCBINS für 5px Heatmap-Ring (EL immer 36 Bins, auf 90°/180° gestreckt)."""
+        need = 36
+        self._bins_cw = list(cw) if cw is not None and len(cw) >= need else None
+        self._bins_ccw = list(ccw) if ccw is not None and len(ccw) >= need else None
         if self._bins_cw is None and self._bins_ccw is None:
             self._heatmap_auto_smooth.clear()
         self.update()
@@ -246,7 +277,8 @@ class ElevationCompassWidget(QWidget):
     def _geom(self) -> tuple[float, float, float]:
         """Hilfsgeometrie: (cx, cy, r)
 
-        Viertelkreis mit Anker unten links (cx, cy); gesamte Anzeige mittig im Widget.
+        90°: Viertelkreis, Anker unten links.
+        180°: Halbkreis, Anker unten mittig.
         """
         w = max(1, int(self.width()))
         h = max(1, int(self.height()))
@@ -255,15 +287,23 @@ class ElevationCompassWidget(QWidget):
         inner_w = float(w - 2 * margin)
         inner_h = float(h - 2 * margin)
 
-        base = min(inner_w, inner_h)
-        r = base * 0.82
-
-        label_pad = r * 0.10
-        bbox_w = r + label_pad
-        bbox_h = r + label_pad
-
-        cx = (w - bbox_w) / 2.0
-        cy = (h + bbox_h) / 2.0
+        label_pad = 0.10
+        if self._max_deg >= 180.0:
+            # Halbkreis: Breite 2r, Höhe r
+            r = min(inner_w / 2.0, inner_h) * 0.82
+            label_pad_px = r * label_pad
+            bbox_w = 2.0 * r + label_pad_px
+            bbox_h = r + label_pad_px
+            cx = w / 2.0
+            cy = (h + bbox_h) / 2.0
+        else:
+            base = min(inner_w, inner_h)
+            r = base * 0.82
+            label_pad_px = r * label_pad
+            bbox_w = r + label_pad_px
+            bbox_h = r + label_pad_px
+            cx = (w - bbox_w) / 2.0
+            cy = (h + bbox_h) / 2.0
         return cx, cy, r
 
     def mousePressEvent(self, event):
@@ -282,23 +322,22 @@ class ElevationCompassWidget(QWidget):
         if dist < inner or dist > outer:
             return super().mousePressEvent(event)
 
-        # Winkel: 0° = rechts (Horizont), 90° = nach oben (Zenit)
+        # Winkel: 0° = rechts (Horizont), 90° = oben (Zenit), 180° = links
         rad = math.atan2(dy, dx)
         deg = math.degrees(rad)
         if deg < 0.0:
             deg = 0.0
-        if deg > 90.0:
-            deg = 90.0
+        deg = clamp_el(deg, self._max_deg)
 
         deg = round(float(deg), int(self._angle_decimals))
-        deg = clamp_el(deg)
+        deg = clamp_el(deg, self._max_deg)
 
         self.set_target_deg(deg)
         self.targetPicked.emit(deg)
 
     def pick_target(self, deg: float) -> None:
         """Ziel programmatisch setzen (wie Klick) – z.B. aus Soll-Eingabefeld."""
-        deg = clamp_el(float(deg))
+        deg = clamp_el(float(deg), self._max_deg)
         self.set_target_deg(deg)
         self.targetPicked.emit(deg)
 
@@ -307,24 +346,25 @@ class ElevationCompassWidget(QWidget):
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
             cx, cy, r = self._geom()
+            arc_span = int(self._max_deg)
 
-            # Rahmen (Viertelkreis): Arc + zwei Radien
+            # Rahmen: Arc + Radien
             painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
-            # Qt: drawArc benötigt ein Rechteck um den Vollkreis.
-            # Unser Viertelkreis ist Teil eines Kreises mit Mittelpunkt (cx,cy) und Radius r.
             arc_rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-            # Startwinkel 0° (3 Uhr), Spannweite 90° CCW
-            painter.drawArc(arc_rect, 0 * 16, 90 * 16)
-            # Radialkanten
+            # Startwinkel 0° (3 Uhr), Spannweite CCW
+            painter.drawArc(arc_rect, 0 * 16, arc_span * 16)
             painter.drawLine(QPointF(cx, cy), QPointF(cx + r, cy))  # 0°
-            painter.drawLine(QPointF(cx, cy), QPointF(cx, cy - r))  # 90°
+            if arc_span >= 180:
+                painter.drawLine(QPointF(cx, cy), QPointF(cx - r, cy))  # 180°
+            else:
+                painter.drawLine(QPointF(cx, cy), QPointF(cx, cy - r))  # 90°
 
             # Teilstriche
             tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
             painter.setPen(tick_pen)
-            for a in range(0, 91, 5):
+            for a in range(0, arc_span + 1, 5):
                 rad = math.radians(a)
                 x1 = cx + math.cos(rad) * (r * 0.90)
                 y1 = cy - math.sin(rad) * (r * 0.90)
@@ -336,21 +376,18 @@ class ElevationCompassWidget(QWidget):
                     y2 = cy - math.sin(rad) * (r * 0.96)
                 painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
-            # Grad-Beschriftung (alle 10°)
+            # Grad-Beschriftung
             painter.save()
             deg_font = painter.font()
             deg_font.setBold(False)
-            # Beim AZ-Kompass wirken die Zahlen kleiner; beim Viertelkreis ist der Radius oft
-            # größer, daher skalieren wir etwas konservativer und begrenzen nach oben.
             deg_font.setPointSize(max(7, min(14, int(r * 0.045))))
             painter.setFont(deg_font)
             fm_deg = QFontMetrics(deg_font)
             painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
 
-            # Beschriftung absichtlich *außerhalb* des Viertelkreises: so werden die Zahlen
-            # an 0° und 90° nicht von den Radiallinien geschnitten.
             label_r = r * 1.06
-            for a in range(0, 91, 10):
+            label_step = 15 if arc_span >= 180 else 10
+            for a in range(0, arc_span + 1, label_step):
                 txt = f"{a}°"
                 rad = math.radians(a)
                 tx = cx + math.cos(rad) * label_r
@@ -360,7 +397,7 @@ class ElevationCompassWidget(QWidget):
                 painter.drawText(QPointF(tx - w / 2.0, ty + h / 3.0), txt)
             painter.restore()
 
-            # ACCBINS-Heatmap-Ring (5px) um den Viertelkreis
+            # ACCBINS-Heatmap-Ring
             if self._heatmap_visible and (self._bins_cw or self._bins_ccw):
                 paint_bins_heatmap_ring(
                     painter,
@@ -376,17 +413,32 @@ class ElevationCompassWidget(QWidget):
                     auto_smooth_state=self._heatmap_auto_smooth
                     if self._heatmap_scale is None
                     else None,
+                    el_arc_deg=float(self._max_deg),
                 )
 
-            # SOLL (durchgezogen)
+            # SOLL (gleiche 3D-Pfeiloptik wie AZ)
             if self._target_deg is not None:
-                painter.setPen(QPen(QColor(160, 0, 0), 3, Qt.PenStyle.SolidLine))
-                self._draw_arrow(painter, cx, cy, r * 0.85, self._target_deg)
+                self._draw_arrow_3d(
+                    painter,
+                    cx,
+                    cy,
+                    r * 0.85,
+                    self._target_deg,
+                    QColor(160, 0, 0),
+                    _ARROW_SHAFT_WIDTH,
+                )
 
-            # IST (durchgezogen)
+            # IST
             if self._current_deg is not None:
-                painter.setPen(QPen(QColor(0, 120, 0), 4, Qt.PenStyle.SolidLine))
-                self._draw_arrow(painter, cx, cy, r * 0.92, self._current_deg)
+                self._draw_arrow_3d(
+                    painter,
+                    cx,
+                    cy,
+                    r * 0.92,
+                    self._current_deg,
+                    QColor(0, 120, 0),
+                    _ARROW_SHAFT_WIDTH,
+                )
 
             if self._text_overlay_visible:
                 margin_txt = 7
@@ -405,19 +457,73 @@ class ElevationCompassWidget(QWidget):
             painter.drawEllipse(QRectF(cx - 5.0, cy - 5.0, 10.0, 10.0))
 
     @staticmethod
-    def _draw_arrow(painter: QPainter, cx: float, cy: float, length: float, deg: float) -> None:
-        rad = math.radians(float(deg))
-        x2 = cx + math.cos(rad) * length
-        y2 = cy - math.sin(rad) * length
-        painter.drawLine(QPointF(cx, cy), QPointF(x2, y2))
+    def _arrow_gradient(
+        cx: float, cy: float, rx: float, ry: float, color: QColor
+    ) -> QLinearGradient:
+        """Leichter 3D-Verlauf quer zur Pfeilrichtung (hell → mittel → dunkel)."""
+        grad = QLinearGradient(cx - rx, cy - ry, cx + rx, cy + ry)
+        grad.setColorAt(0.0, color.lighter(135))
+        grad.setColorAt(0.5, color)
+        grad.setColorAt(1.0, color.darker(135))
+        return grad
 
-        # Pfeilspitze
-        head_len = max(10.0, length * 0.08)
-        left = math.radians(float(deg) + 150)
-        right = math.radians(float(deg) - 150)
-        xl = x2 + math.cos(left) * head_len
-        yl = y2 - math.sin(left) * head_len
-        xr = x2 + math.cos(right) * head_len
-        yr = y2 - math.sin(right) * head_len
-        painter.drawLine(QPointF(x2, y2), QPointF(xl, yl))
-        painter.drawLine(QPointF(x2, y2), QPointF(xr, yr))
+    @classmethod
+    def _draw_arrow_3d(
+        cls,
+        painter: QPainter,
+        cx: float,
+        cy: float,
+        length: float,
+        deg: float,
+        color: QColor,
+        width: float,
+    ) -> None:
+        """Pfeil wie AZ: 3D-Verlauf und gefüllte Dreiecksspitze (EL: 0°=rechts)."""
+        rad = math.radians(float(deg))
+        # EL: 0° Horizont rechts, 90° Zenit
+        fx, fy = math.cos(rad), -math.sin(rad)
+        rx, ry = math.sin(rad), math.cos(rad)
+        half_w = max(2.0, float(width) / 2.0)
+        head_len = max(11.0, float(length) * 0.13)
+        shaft_len = max(half_w * 1.2, float(length) - head_len)
+
+        tip_x = cx + fx * length
+        tip_y = cy + fy * length
+        base_x = cx + fx * shaft_len
+        base_y = cy + fy * shaft_len
+
+        head_half = half_w * 1.4
+        tip = QPointF(tip_x, tip_y)
+        head_l = QPointF(base_x - rx * head_half, base_y - ry * head_half)
+        head_r = QPointF(base_x + rx * head_half, base_y + ry * head_half)
+        head_poly = QPolygonF([tip, head_l, head_r])
+
+        tail_half = half_w * 0.22
+        shaft_poly = QPolygonF(
+            [
+                QPointF(cx - rx * tail_half, cy - ry * tail_half),
+                QPointF(cx + rx * tail_half, cy + ry * tail_half),
+                head_r,
+                head_l,
+            ]
+        )
+
+        mid_x = (cx + base_x) / 2.0
+        mid_y = (cy + base_y) / 2.0
+        lo = color.darker(140)
+
+        painter.save()
+        painter.translate(0.9, 1.1)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 55))
+        painter.drawPolygon(shaft_poly)
+        painter.drawPolygon(head_poly)
+        painter.restore()
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(cls._arrow_gradient(mid_x, mid_y, rx, ry, color))
+        painter.drawPolygon(shaft_poly)
+
+        painter.setPen(QPen(lo, 1.0))
+        painter.setBrush(cls._arrow_gradient(tip_x, tip_y, rx, ry, color))
+        painter.drawPolygon(head_poly)

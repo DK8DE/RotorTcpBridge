@@ -1,7 +1,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from .net_utils import ipv4_subnet_broadcast_default
 
@@ -16,7 +16,22 @@ def appdata_dir() -> Path:
 
 
 def config_path() -> Path:
+    """Legacy-Pfad (Migration). Aktive Config liegt unter profiles/."""
     return appdata_dir() / "config.json"
+
+
+def load_config() -> Dict[str, Any]:
+    """Lädt die Config des aktiven Rotor-Profils (volle JSON)."""
+    from .profile_store import load_active_config
+
+    return load_active_config()
+
+
+def save_config(cfg: Dict[str, Any]):
+    """Speichert in die Datei des aktiven Rotor-Profils."""
+    from .profile_store import save_active_config
+
+    save_active_config(cfg)
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -76,6 +91,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "slave_el": 21,
         "enable_az": True,
         "enable_el": False,
+        # EL-Slave SETROTORTYPE: 1=360/720°, 2=90°, 3=180° (Anzeige Kompass/Karte)
+        "el_rotor_type": 2,
         # SETPOSCC vom Bus: Master-IDs ignorieren (z. B. [2] wenn Stör-Telegramme den Soll verfälschen)
         "setposcc_ignore_src_master_ids": [],
     },
@@ -164,6 +181,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # Standzeit-Ring (AZ): Sektoren 10–100; volle Skala (rot) nach X Minuten Gesamtstillstand im Sektor.
         "compass_dwell_sectors": 20,
         "compass_dwell_full_minutes": 5.0,
+        # AZ-Kompass: Öffnungswinkel-Sektor wie Karten-Beam (Antennenoverlay)
+        "compass_antenna_overlay": True,
         # AZ-Kompass: bis zu zwei Ringe gleichzeitig: "strom" / "om_radar" / "dwell"
         "compass_heatmap_az_modes": [],
         # Last-Heatmap: optional feste Skala (Kompass + Statistik-Fenster, Langzeit=Aktuell gleich).
@@ -209,7 +228,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # Hört auf udp_pst_port, sendet Positionsmeldungen an udp_pst_port + 1.
         # Ziel für AZ:/TGA:-Antworten. Leer = automatisch Subnetz-Broadcast (x.y.z.255);
         # 127.0.0.1 = nur dieser PC; 255.255.255.255 = globaler Broadcast; sonst konkrete IPv4.
-        "udp_pst_enabled": True,
+        # Standard aus (wie SPID-TCP); Nutzer schaltet bei Bedarf ein.
+        "udp_pst_enabled": False,
         "udp_pst_port": 12000,
         # Wie pst_server.az_shortest_path: Standard aus = exakter eingehender Winkel.
         "udp_pst_az_shortest_path": False,
@@ -303,13 +323,50 @@ def _apply_compass_strom_analysis_defaults(ui: Dict[str, Any]) -> None:
     ui.setdefault("compass_strom_el", False)
     ui.setdefault("compass_heatmap_az", "off")
     ui.setdefault("compass_heatmap_el", "off")
+    ui.setdefault("compass_antenna_overlay", True)
     if not isinstance(ui.get("compass_heatmap_az_modes"), list):
         ui["compass_heatmap_az_modes"] = []
 
 
-def load_config() -> Dict[str, Any]:
-    p = config_path()
-    if not p.exists():
+def normalized_antenna_names(
+    cfg: Optional[Dict[str, Any]] = None,
+    *,
+    defaults: Optional[list[str]] = None,
+) -> list[str]:
+    """Drei Antennen-Anzeigenamen: Config → Defaults.
+
+    Ohne AZ-Rotor (nur EL) gibt es kein GETANTNAME — dann immer diese Quelle nutzen.
+    Leere/fehlende Einträge werden durch Defaults ersetzt (``Antenne 1`` …).
+    """
+    fb = list(defaults) if defaults is not None else list(
+        DEFAULT_CONFIG.get("ui", {}).get(
+            "antenna_names", ["Antenne 1", "Antenne 2", "Antenne 3"]
+        )
+    )
+    while len(fb) < 3:
+        fb.append(f"Antenne {len(fb) + 1}")
+    fb = fb[:3]
+    names_raw: list[Any] = []
+    try:
+        if cfg is not None:
+            names_raw = list((cfg.get("ui") or {}).get("antenna_names") or [])
+    except Exception:
+        names_raw = []
+    out: list[str] = []
+    for i in range(3):
+        n = ""
+        try:
+            if i < len(names_raw) and names_raw[i] is not None:
+                n = str(names_raw[i]).strip()
+        except Exception:
+            n = ""
+        out.append(n if n else str(fb[i]))
+    return out
+
+
+def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Migrationen + Merge mit DEFAULT_CONFIG. ``cfg``=None → frische Defaults (Erstinstallation)."""
+    if cfg is None:
         initial = json.loads(json.dumps(DEFAULT_CONFIG))
         ui = initial.setdefault("ui", {})
         # Erste Installation: UcxLog/AirScout/PST lauschen standardmaessig nur lokal
@@ -321,10 +378,7 @@ def load_config() -> Dict[str, Any]:
         ui["aswatch_udp_listen_host"] = "127.0.0.1"
         ui["udp_pst_send_host"] = ipv4_subnet_broadcast_default()
         _apply_compass_strom_analysis_defaults(ui)
-        save_config(initial)
-        return json.loads(json.dumps(initial))
-    with open(p, "r", encoding="utf-8") as f:
-        cfg = json.load(f)
+        return initial
 
     # Migration: alte Konfiguration hatte evtl. nur "listen_port"
     if "pst_server" in cfg and isinstance(cfg["pst_server"], dict):
@@ -353,6 +407,11 @@ def load_config() -> Dict[str, Any]:
         rb = cfg["rotor_bus"]
         rb.setdefault("enable_az", True)
         rb.setdefault("enable_el", True)
+        rb.setdefault("el_rotor_type", 2)
+
+    # Antennen-Namen: immer 3 Einträge (ohne AZ nur Config/Defaults, kein GETANTNAME).
+    if "ui" in cfg and isinstance(cfg["ui"], dict):
+        cfg["ui"]["antenna_names"] = normalized_antenna_names(cfg)
 
     # Migration: rig_bridge flach → {rigs: [...], active_rig_id}.
     # Alte Konfigurationen hatten com_port/rig_brand/... direkt unterhalb
@@ -481,9 +540,3 @@ def load_config() -> Dict[str, Any]:
     # Entfernt: Schnell-Buttons (GUI gibt es nicht mehr); alte Keys aus früheren Versionen verwerfen.
     ui.pop("quick_buttons", None)
     return merged
-
-
-def save_config(cfg: Dict[str, Any]):
-    p = config_path()
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)

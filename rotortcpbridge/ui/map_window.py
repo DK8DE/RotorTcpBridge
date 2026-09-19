@@ -31,6 +31,7 @@ from ..angle_utils import (
     az_max_d10_from_axis,
     az_pos_deg_from_d10,
     clamp_el,
+    el_max_deg_from_rotor_type,
     fmt_deg,
     raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
@@ -42,6 +43,7 @@ from ..ui.led_widget import Led
 from ..ui.ui_utils import px_to_dip
 from ..app_icon import get_app_icon
 from ..geo_utils import (
+    ANTENNA_BEAM_COLORS,
     beam_center_line_points,
     beam_polygon_points,
     bearing_deg,
@@ -61,6 +63,8 @@ from .elevation_window import ElevationProfileWindow, initial_elevation_freq_mhz
 from .map_html import build_map_html
 from .rig_freq_utils import format_rig_freq_mhz, rig_freq_out_of_band_hz
 from .map_tiles import (
+    ONLINE_TILE_URL_DARK,
+    ONLINE_TILE_URL_LIGHT,
     ROTORTILES_SCHEME,
     _DEBUG_TILES,
     _offline_tile_url,
@@ -69,11 +73,7 @@ from .map_tiles import (
 from .map_widgets import MapWindOverlay, MapWebPage, _MapContainer
 
 # Strich / Füllung für die drei Antennen-Beams auf der Karte (Antenne 1–3)
-_MAP_ANTENNA_BEAM_COLORS: tuple[tuple[str, str], ...] = (
-    ("#5BA3D0", "#87CEEB"),  # 1: bisheriges Blau
-    ("#66BB6A", "#C8E6C9"),  # 2: helles Grün
-    ("#ae80d9", "#d8c4f0"),  # 3: Violett (Stroke #ae80d9)
-)
+_MAP_ANTENNA_BEAM_COLORS = ANTENNA_BEAM_COLORS
 
 
 def _map_antenna_swatch_icon(antenna_index: int, size_px: int = 14) -> QIcon:
@@ -188,6 +188,7 @@ class MapWindow(QDialog):
         toolbar.addWidget(self._w_map_loc)
         toolbar.addWidget(self._btn_elevation)
         self._cb_antenna.setToolTip(tt("map.tooltip_antenna"))
+        self.refresh_antenna_visibility()
         self._cb_fav.setToolTip(tt("map.tooltip_favorites"))
         self._ed_fav_name.setToolTip(tt("map.tooltip_fav_name"))
         self._btn_fav_save.setToolTip(tt("map.tooltip_fav_save"))
@@ -639,11 +640,9 @@ class MapWindow(QDialog):
 
     def _get_antenna_dropdown_items(self) -> list[str]:
         """Antennen-Namen mit Versatz in Klammern (wie Kompass)."""
-        names = list(
-            self.cfg.get("ui", {}).get("antenna_names", ["Antenne 1", "Antenne 2", "Antenne 3"])
-        )
-        while len(names) < 3:
-            names.append(f"Antenne {len(names) + 1}")
+        from ..app_config import normalized_antenna_names
+
+        names = normalized_antenna_names(self.cfg)
         az_axis = getattr(self.ctrl, "az", None)
         offsets: list[float] = []
         for slot in (1, 2, 3):
@@ -681,7 +680,7 @@ class MapWindow(QDialog):
                         {
                             "name": str(it["name"])[:15],
                             "az": float(it.get("az", 0.0)),
-                            "el": clamp_el(float(it.get("el", 0.0))),
+                            "el": self._clamp_el(float(it.get("el", 0.0))),
                         }
                     )
                 except (TypeError, ValueError):
@@ -715,6 +714,15 @@ class MapWindow(QDialog):
         self._populate_antenna_dropdown()
         self._cb_antenna.setCurrentIndex(idx)
         self._cb_antenna.blockSignals(False)
+        self.refresh_antenna_visibility()
+
+    def refresh_antenna_visibility(self) -> None:
+        """Antennen-Dropdown nur bei aktivem AZ (bei nur EL nicht relevant)."""
+        az_on = bool(getattr(self.ctrl, "enable_az", True))
+        try:
+            self._cb_antenna.setVisible(az_on)
+        except Exception:
+            pass
 
     def sync_antenna_from_external(self, idx: int) -> None:
         """Kompass/Bridge/RS485: Index 0–2 in cfg schreiben, Dropdown und Karte aktualisieren."""
@@ -754,7 +762,7 @@ class MapWindow(QDialog):
         if not isinstance(data, dict) or "az" not in data or "el" not in data:
             return
         rotor_az = wrap_deg(float(data["az"]))
-        rotor_el = clamp_el(float(data["el"]))
+        rotor_el = self._clamp_el(float(data["el"]))
         try:
             self.ctrl.set_az_deg(rotor_az, force=True)
             if hasattr(self.ctrl, "set_el_deg"):
@@ -786,7 +794,7 @@ class MapWindow(QDialog):
             el_d10 = getattr(self.ctrl.el, "pos_d10", None) if hasattr(self.ctrl, "el") else None
         except Exception:
             el_d10 = None
-        el_deg = clamp_el(float(el_d10 or 0) / 10.0)
+        el_deg = self._clamp_el(float(el_d10 or 0) / 10.0)
         fav = {"name": name[:15], "az": wrap_deg(az_deg), "el": el_deg}
         if "ui" not in self.cfg:
             self.cfg["ui"] = {}
@@ -1000,6 +1008,16 @@ class MapWindow(QDialog):
             self.ctrl.reference_az(True)
         except Exception:
             pass
+
+    def _el_max_deg(self) -> float:
+        return el_max_deg_from_rotor_type(getattr(self.ctrl, "el_rotor_type", None))
+
+    def _clamp_el(self, deg: float) -> float:
+        return clamp_el(deg, self._el_max_deg())
+
+    def update_el_rotor_type_display(self) -> None:
+        """Hook für Rotortyp-Wechsel (Karte nutzt nur Clamp, keine eigene EL-Grafik)."""
+        return
 
     def update_homing_buttons_visibility(self) -> None:
         """Absolut-Encoder (Typ 3): AZ-Homing-Button und Home-Status ausblenden."""
@@ -1465,17 +1483,11 @@ class MapWindow(QDialog):
             if self._map_offline is not None and self._map_offline != offline:
                 if offline:
                     tile_url_off = _offline_tile_url(dark) or (
-                        "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                        if dark
-                        else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+                        ONLINE_TILE_URL_DARK if dark else ONLINE_TILE_URL_LIGHT
                     )
                     js_off = f"if (typeof window.setMapOfflineMode === 'function') window.setMapOfflineMode(true, {json.dumps(tile_url_off)});"
                 else:
-                    tile_url_on = (
-                        "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                        if dark
-                        else "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-                    )
+                    tile_url_on = ONLINE_TILE_URL_DARK if dark else ONLINE_TILE_URL_LIGHT
                     js_off = f"if (typeof window.setMapOfflineMode === 'function') window.setMapOfflineMode(false, {json.dumps(tile_url_on)});"
                 self._view.page().runJavaScript(js_off)
             elif self._map_dark_mode is not None and self._map_dark_mode != dark:

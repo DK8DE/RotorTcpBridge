@@ -7,6 +7,13 @@ from datetime import datetime, timezone
 
 _EARTH_RADIUS_KM = 6371.0
 
+# Strich / Füllung für Antennen-Beams (Antenne 1–3) — Karte und AZ-Kompass
+ANTENNA_BEAM_COLORS: tuple[tuple[str, str], ...] = (
+    ("#5BA3D0", "#87CEEB"),  # 1: Blau
+    ("#66BB6A", "#C8E6C9"),  # 2: Grün
+    ("#ae80d9", "#d8c4f0"),  # 3: Violett
+)
+
 # Standard-Standort in app_config (Einstellungen) — Abgleich für Locator-Logik
 _DEFAULT_LOCATION_LAT = 49.502651
 _DEFAULT_LOCATION_LON = 8.375019

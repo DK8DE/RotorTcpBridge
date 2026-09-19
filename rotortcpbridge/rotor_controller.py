@@ -47,6 +47,11 @@ _CC_POLL_HOLD_MAX_S = 2.0
 # (mehrere SETPOSDG hintereinander) ab; Idle-Zusatzabfragen werden solange wie bei Fahrt pausiert.
 _SETPOSDG_POLL_GRACE_S = 1.5
 
+# Anderer Master pollt denselben Rotor: eigenes GETPOSDG/Idle pausieren (Anti-Ruckeln).
+_FOREIGN_POLL_HOLD_S = 1.5
+# Fremde Fahrt übernommen: ohne frische ACKs wieder selbst pollen (Fallback).
+_FOREIGN_FOLLOW_STALE_S = 8.0
+
 
 class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
     """Fachlogik: übersetzt SPID-Kommandos in RS485-Befehle + Polling + Status.
@@ -93,6 +98,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._setposcc_poll_hold: bool = False
         self._setposcc_hold_until: float = 0.0
         self._setposdg_poll_grace_until_ts: float = 0.0
+        # Anderer Master am Bus (beliebige ID): wir pausieren unser Polling und laufen mit.
+        self._foreign_poll_seen_until: float = 0.0
 
         self._last_poll = 0.0
         self._last_warn = 0.0
@@ -184,12 +191,22 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.on_antenna_offsets_changed: Optional[Callable[[], None]] = None
         self.on_antenna_angles_changed: Optional[Callable[[], None]] = None
         self.on_antenna_dipoles_changed: Optional[Callable[[], None]] = None
+        self.on_antenna_names_changed: Optional[Callable[[], None]] = None
         self.on_encoder_type_changed: Optional[Callable[[], None]] = None
         # GETENCTYPE (1=Motor, 2=Ring, 3=Absolut R&S) — einmal pro Verbindung
         self.encoder_type: Optional[int] = None
         self.encoder_type_known: bool = False
         self._encoder_type_requested: bool = False
         self._max_deg_requested: bool = False
+        self._home_pos_requested: bool = False
+        # Parken wartet auf GETHOMEPOS, falls Cache noch leer
+        self._park_pending_az: bool = False
+        self._park_pending_el: bool = False
+        # GETROTORTYPE am EL-Slave (2=EL 90°, 3=EL 180°) — Grafik/Clamp
+        self.on_rotor_type_changed: Optional[Callable[[], None]] = None
+        self.el_rotor_type: Optional[int] = None
+        self.el_rotor_type_known: bool = False
+        self._el_rotor_type_requested: bool = False
         # Weitere Reads passieren explizit in den Einstellungen.
         self._antenna_bootstrap_requested: bool = False
         # GETASELECT an Controller (cont_id) einmal pro Verbindung → UI an HW-Auswahl
@@ -263,6 +280,44 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         except Exception:
             pass
 
+    def reset_bus_discovery_state(self) -> None:
+        """Nach Profilwechsel: Encoder-/Rotor-/Antennen-Caches und Bootstrap-Flags zurücksetzen."""
+        self.encoder_type = None
+        self.encoder_type_known = False
+        self._encoder_type_requested = False
+        self._max_deg_requested = False
+        self._home_pos_requested = False
+        self._park_pending_az = False
+        self._park_pending_el = False
+        self.el_rotor_type = None
+        self.el_rotor_type_known = False
+        self._el_rotor_type_requested = False
+        self._antenna_bootstrap_requested = False
+        self._antenna_selection_bootstrap_requested = False
+        try:
+            self.az.pos_max_d10 = 3600
+            self.az.position_wrap_360 = True
+            self.az.home_pos_d10 = None
+        except Exception:
+            pass
+        try:
+            self.el.pos_max_d10 = 3600
+            self.el.home_pos_d10 = None
+        except Exception:
+            pass
+        cb = getattr(self, "on_encoder_type_changed", None)
+        if callable(cb):
+            try:
+                cb()
+            except Exception:
+                pass
+        cb_rt = getattr(self, "on_rotor_type_changed", None)
+        if callable(cb_rt):
+            try:
+                cb_rt()
+            except Exception:
+                pass
+
     def abs_encoder_no_homing(self) -> bool:
         """Absolutwert-Encoder R&S (GETENCTYPE=3): kein manuelles Homing nötig."""
         if not self.encoder_type_known:
@@ -320,6 +375,74 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             )
         )
 
+    def request_el_rotor_type(self) -> None:
+        """Rotortyp vom EL-Slave lesen (GETROTORTYPE → 90°/180°-Darstellung)."""
+        if not self.enable_el:
+            return
+        self.hw.send_request(
+            HwRequest(
+                line=build(self.master_id, self.slave_el, "GETROTORTYPE", "0"),
+                expect_prefix=None,
+                timeout_s=0.5,
+                on_done=None,
+                priority=4,
+            )
+        )
+
+    def apply_el_rotor_type_from_value(
+        self,
+        value: int | str,
+        *,
+        dst: int | None = None,
+        reread: bool = True,
+    ) -> None:
+        """EL-Rotortyp aus SET/ACK übernehmen und EL-GUI (90°/180°) aktualisieren.
+
+        Wird u. a. aus dem Rotorkonfigurations-Fenster nach erfolgreichem SETROTORTYPE
+        aufgerufen — dort landet ACK nur im UI-``on_done``, nicht im Async-Handler.
+        """
+        if not self.enable_el:
+            return
+        try:
+            if dst is not None and int(dst) == int(self.slave_az) and int(dst) != int(self.slave_el):
+                # SET am AZ-Slave betrifft die Elevations-Anzeige nicht
+                return
+        except Exception:
+            pass
+        try:
+            from .rotor_parse_utils import parse_int
+
+            v = parse_int(str(value).strip())
+        except Exception:
+            v = None
+        if v is None:
+            try:
+                v = int(float(str(value).strip().replace(",", ".")))
+            except Exception:
+                return
+        new_type = int(v)
+        if new_type not in (1, 2, 3):
+            return
+        self.el_rotor_type = new_type
+        self.el_rotor_type_known = True
+        try:
+            self.el.pos_max_d10 = 1800 if new_type == 3 else 900
+        except Exception:
+            pass
+        # Nach SET immer UI refreshen (auch wenn Wert gleich), damit Kompass/Karte stimmen
+        if callable(getattr(self, "on_rotor_type_changed", None)):
+            try:
+                self.on_rotor_type_changed()
+            except Exception:
+                pass
+        if reread:
+            try:
+                self._el_rotor_type_requested = False
+                self.request_el_rotor_type()
+                self._el_rotor_type_requested = True
+            except Exception:
+                pass
+
     def request_max_deg(self) -> None:
         """Max-Winkel vom Rotor lesen (GETMAXDG, nur AZ-Slave)."""
         if not self.enable_az:
@@ -333,6 +456,62 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 priority=4,
             )
         )
+
+    def request_home_pos(self, *, az: bool = True, el: bool = True) -> None:
+        """Park-/Hom-Winkel vom Rotor lesen (GETHOMEPOS) für aktive Achsen."""
+        if az and self.enable_az:
+            self.hw.send_request(
+                HwRequest(
+                    line=build(self.master_id, self.slave_az, "GETHOMEPOS", "0"),
+                    expect_prefix=None,
+                    timeout_s=0.5,
+                    on_done=None,
+                    priority=4,
+                )
+            )
+        if el and self.enable_el:
+            self.hw.send_request(
+                HwRequest(
+                    line=build(self.master_id, self.slave_el, "GETHOMEPOS", "0"),
+                    expect_prefix=None,
+                    timeout_s=0.5,
+                    on_done=None,
+                    priority=4,
+                )
+            )
+
+    def remember_home_pos_deg(self, axis: AxisState, deg: float) -> None:
+        """Hom-Winkel (Grad) im Achsen-Cache merken (0,1°-Einheiten)."""
+        try:
+            d10 = int(deg_to_d10(float(deg)))
+        except Exception:
+            try:
+                d10 = int(round(float(deg) * 10.0))
+            except Exception:
+                return
+        if d10 < 0:
+            d10 = 0
+        axis.home_pos_d10 = d10
+
+    def _drive_to_home_pos(self, axis_name: str) -> bool:
+        """Parken per SETPOSDG auf gecachten Hom-Winkel. True wenn gefahren."""
+        if axis_name == "AZ":
+            if not self.enable_az:
+                return False
+            d10 = getattr(self.az, "home_pos_d10", None)
+            if d10 is None:
+                return False
+            self.set_az_deg(float(d10) / 10.0, force=True)
+            return True
+        if axis_name == "EL":
+            if not self.enable_el:
+                return False
+            d10 = getattr(self.el, "home_pos_d10", None)
+            if d10 is None:
+                return False
+            self.set_el_deg(float(d10) / 10.0, force=True)
+            return True
+        return False
 
     def _apply_abs_encoder_referenced(self) -> None:
         """Absolut-Encoder (Typ 3): als referenziert behandeln, kein GETREF-Polling."""
@@ -488,6 +667,20 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """AZ-Antennen-Reichweiten vom Rotor lesen (GETANTDIS1–3)."""
         if self.enable_az:
             for cmd in ("GETANTDIS1", "GETANTDIS2", "GETANTDIS3"):
+                self.hw.send_request(
+                    HwRequest(
+                        line=build(self.master_id, self.slave_az, cmd, "0"),
+                        expect_prefix=None,
+                        timeout_s=0.5,
+                        on_done=None,
+                        priority=4,
+                    )
+                )
+
+    def request_antenna_names(self) -> None:
+        """AZ-Antennen-Anzeigenamen vom Rotor lesen (GETANTNAME1–3)."""
+        if self.enable_az:
+            for cmd in ("GETANTNAME1", "GETANTNAME2", "GETANTNAME3"):
                 self.hw.send_request(
                     HwRequest(
                         line=build(self.master_id, self.slave_az, cmd, "0"),
@@ -915,6 +1108,94 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             prev = 0.0
         self._idle_poll_defer_until = max(prev, now + _SETPOSDG_POLL_GRACE_S)
 
+    def note_foreign_master_activity(
+        self,
+        axis: Optional[AxisState] = None,
+        *,
+        set_target: bool = False,
+    ) -> None:
+        """Anderer Master spricht unseren Rotor an — eigenes Polling pausieren, ACKs mitauswerten.
+
+        - Jedes fremde ``ACK_GETPOSDG`` verlängert das Hold-Fenster (``_FOREIGN_POLL_HOLD_S``).
+        - Fremdes ``SETPOSDG`` / Winkel-``ACK_SETPOSDG``: Follow bis Soll≈Ist (oder Stale-Timeout).
+        """
+        now = time.time()
+        try:
+            prev = float(getattr(self, "_foreign_poll_seen_until", 0.0) or 0.0)
+        except Exception:
+            prev = 0.0
+        self._foreign_poll_seen_until = max(prev, now + _FOREIGN_POLL_HOLD_S)
+        if axis is None:
+            return
+        try:
+            axis.foreign_follow_last_rx_ts = now
+            axis.pos_poll_inflight = False
+        except Exception:
+            pass
+        if set_target:
+            try:
+                axis.foreign_follow_active = True
+            except Exception:
+                pass
+
+    def clear_foreign_master_follow(self, axis: Optional[AxisState] = None) -> None:
+        """Eigenes SETPOSDG / Ankunft: Follow-Modus beenden."""
+        axes = (
+            [axis]
+            if axis is not None
+            else [a for a in (self.az, self.el) if a is not None]
+        )
+        for ax in axes:
+            try:
+                ax.foreign_follow_active = False
+            except Exception:
+                pass
+
+    def foreign_master_yield_active(self, now: Optional[float] = None) -> bool:
+        """True: kein eigenes GETPOSDG/Idle — anderer Master pollt oder führt eine Fahrt."""
+        t = float(now if now is not None else time.time())
+        try:
+            if t < float(getattr(self, "_foreign_poll_seen_until", 0.0) or 0.0):
+                return True
+        except Exception:
+            pass
+        try:
+            if self.enable_az and bool(getattr(self.az, "foreign_follow_active", False)):
+                return True
+        except Exception:
+            pass
+        try:
+            if self.enable_el and bool(getattr(self.el, "foreign_follow_active", False)):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _tick_foreign_follow_clear(self, now: float) -> None:
+        """Follow beenden wenn Ziel erreicht oder lange keine fremden ACKs mehr kommen."""
+        for axis in (self.az, self.el):
+            try:
+                if not bool(getattr(axis, "foreign_follow_active", False)):
+                    continue
+            except Exception:
+                continue
+            try:
+                last_rx = float(getattr(axis, "foreign_follow_last_rx_ts", 0.0) or 0.0)
+            except Exception:
+                last_rx = 0.0
+            if last_rx > 0.0 and (now - last_rx) > float(_FOREIGN_FOLLOW_STALE_S):
+                axis.foreign_follow_active = False
+                continue
+            try:
+                pending = bool(self._axis_target_pending(axis))
+            except Exception:
+                pending = False
+            if pending:
+                continue
+            if bool(getattr(axis, "moving", False)):
+                continue
+            axis.foreign_follow_active = False
+
     def _az_antenna_offset_deg(self, idx_0_to_2: int, cfg: Optional[dict] = None) -> float:
         """Versatz der Antenne idx (0..2) aus Achsen-State, sonst cfg-Fallback wie Kompass."""
         try:
@@ -1196,6 +1477,22 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 self._abort_stats_fetch_and_cooldown()
                 axis.moving = False
                 axis.external_panel_move_active = False
+                return
+
+            # -------------------- Hom-Winkel (SETHOMEPOS) --------------------
+            if cmd == "SETHOMEPOS":
+                try:
+                    p = str(params).strip().replace(" ", "").replace(",", ".")
+                    self.remember_home_pos_deg(axis, float(p))
+                except Exception:
+                    pass
+                try:
+                    self.request_home_pos(
+                        az=(axis is self.az),
+                        el=(axis is self.el),
+                    )
+                except Exception:
+                    pass
                 return
 
             # -------------------- Referenzfahrt --------------------
@@ -1628,6 +1925,39 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._send_simple(self.slave_el, "STOP", "0", expect="ACK_STOP", prio=0)
         self.el.moving = False
         self.el.compass_target_d10 = None
+
+    def park_all(self) -> None:
+        """Parken: Hom-Winkel per SETPOSDG anfahren (sichtbar für alle Bus-Teilnehmer)."""
+        if self.enable_az:
+            self.park_az()
+        if self.enable_el:
+            self.park_el()
+
+    def park_az(self) -> None:
+        if not self.enable_az:
+            return
+        self._abort_stats_fetch_and_cooldown()
+        if self._drive_to_home_pos("AZ"):
+            self._park_pending_az = False
+            return
+        self._park_pending_az = True
+        try:
+            self.request_home_pos(az=True, el=False)
+        except Exception:
+            self._park_pending_az = False
+
+    def park_el(self) -> None:
+        if not self.enable_el:
+            return
+        self._abort_stats_fetch_and_cooldown()
+        if self._drive_to_home_pos("EL"):
+            self._park_pending_el = False
+            return
+        self._park_pending_el = True
+        try:
+            self.request_home_pos(az=False, el=True)
+        except Exception:
+            self._park_pending_el = False
 
     def reference_all(self, start_homing: bool = True) -> None:
         """Referenziert alle aktiven Rotoren (AZ und/oder EL laut Config)."""

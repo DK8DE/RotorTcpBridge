@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..app_icon import get_app_icon
+from ..angle_utils import el_max_deg_from_rotor_type
 from ..i18n import t
 from ..compass.statistic_compass_widget import StatisticCompassWidget, parse_heatmap_scale
 
@@ -127,10 +128,20 @@ class StatisticsWindow(QDialog):
         el_on = bool(getattr(self.ctrl, "enable_el", False))
         self.gb_el.setVisible(el_on)
 
+    def update_el_rotor_type_display(self) -> None:
+        """EL-Statistik-Bögen auf 90°/180° laut GETROTORTYPE."""
+        mx = el_max_deg_from_rotor_type(getattr(self.ctrl, "el_rotor_type", None))
+        for w in (self.stat_cal_el, self.stat_live_el, self.stat_placeholder_el):
+            try:
+                w.set_el_max_deg(mx)
+            except Exception:
+                pass
+
     @Slot()
     def _tick(self) -> None:
         try:
             self._update_el_visibility()
+            self.update_el_rotor_type_display()
             ui0 = self.cfg.get("ui", {})
             az_sc = parse_heatmap_scale(ui0, "az")
             el_sc = parse_heatmap_scale(ui0, "el")

@@ -9,6 +9,7 @@ from typing import Callable, Optional
 from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QFontDatabase, QShowEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -60,6 +61,7 @@ _SET_TO_GET_SPECIAL_MAP = {
 # Block 1: (label_key, SET-CMD, GET-CMD) – GETTEMPMW für SETTEMPM
 _BLOCK1_DEFS = [
     ("cmd.label_rotor_id", "SETID", "GETID"),
+    ("cmd.label_rotor_type", "SETROTORTYPE", "GETROTORTYPE"),
     ("cmd.label_enc_type", "SETENCTYPE", "GETENCTYPE"),
     ("cmd.label_enc_counts_ring", "SETENCCRI", "GETENCCRI"),
     ("cmd.label_enc_counts_axis", "SETENCCAX", "GETENCCAX"),
@@ -79,6 +81,7 @@ _BLOCK2_DEFS = [
     ("cmd.label_homing_seek_pwm", "SETHOMESEEKPPWM", "GETHOMESEEKPPWM"),
     ("cmd.label_homing_backoff_angle", "SETHOMEBACKOFF", "GETHOMEBACKOFF"),
     ("cmd.label_home_bl_scale", "SETHOMEBLSCALE", "GETHOMEBLSCALE"),
+    ("cmd.label_home_pos", "SETHOMEPOS", "GETHOMEPOS"),
     ("cmd.label_min_pwm", "SETMINPWM", "GETMINPWM"),
     ("cmd.label_max_angle", "SETMAXDG", "GETMAXDG"),
     ("cmd.label_dgcal", "SETDGCAL", "GETDGCAL"),
@@ -100,22 +103,24 @@ def _BLOCK2():
 # is_timeout_s  : Eingabe Sekunden, Senden/Empfangen ms
 _PARAM_SPEC = {
     "SETID": (1, 254, "ID", False, False),
-    "SETENCTYPE": (1, 3, "1…3", False, False),
+    "SETROTORTYPE": (1, 3, "", False, False),
+    "SETENCTYPE": (1, 3, "", False, False),
     "SETENCCRI": (None, None, "Cnt.", False, False),
     "SETENCCAX": (None, None, "Cnt.", False, False),
-    "SETWINDENABLE": (0, 1, "0/1", False, False),
+    "SETWINDENABLE": (0, 1, "", False, False),
     "SETWINDDIROF": (0, 360, "°", False, False),
     "SETTEMPM": (0, 90, "°C", False, False),
-    "SETSWAPTEMP": (0, 1, "0/1", False, False),
+    "SETSWAPTEMP": (0, 1, "", False, False),
     "SETRAMP": (0, 60, "°", False, False),
     "SETPOSTIMEOUT": (1, 600, "s", False, True),
     "SETHOMETIMEOUT": (1, 600, "s", False, True),
-    "SETHOMERETURN": (0, 1, "0/1", False, False),
+    "SETHOMERETURN": (0, 1, "", False, False),
     "SETHOMEPWM": (0, 100, "%", False, False),
     "SETHOMESEEKPPWM": (0, 100, "%", False, False),
     # Homing Rückzug Winkel (Grad). Empfehlung laut Help: 10..60.
     "SETHOMEBACKOFF": (0, 360, "°", False, False),
     "SETHOMEBLSCALE": (0, 1, "0…1", False, False),
+    "SETHOMEPOS": (0, 720, "°", False, False),
     "SETMINPWM": (15, 100, "%", False, False),
     "SETMAXDG": (0, 720, "°", False, False),
     "SETDGCAL": (-360, 360, "°", False, False),
@@ -137,12 +142,30 @@ _INTEGER_PERCENT_SET_CMDS = frozenset(
 # SET mit Dezimalwert 0..1 (kein int()-Truncate wie bei Homing-Winkeln).
 _FLOAT_01_SET_CMDS = frozenset({"SETHOMEBLSCALE"})
 # SET mit Dezimal-Winkel (Nachkommastellen behalten).
-_FLOAT_ANGLE_SET_CMDS = frozenset({"SETDGCAL"})
+_FLOAT_ANGLE_SET_CMDS = frozenset({"SETDGCAL", "SETHOMEPOS"})
 
+# Spezielle Steuerelemente statt freier Zahleneingabe
+_PARAM_COMBO_SET_CMDS = frozenset({"SETROTORTYPE", "SETENCTYPE"})
+_PARAM_CHECK_SET_CMDS = frozenset({"SETWINDENABLE", "SETSWAPTEMP", "SETHOMERETURN"})
+
+# Dropdown-Optionen: (Wert, i18n-Key)
+_PARAM_COMBO_OPTIONS: dict[str, tuple[tuple[int, str], ...]] = {
+    "SETROTORTYPE": (
+        (1, "cmd.opt_rotor_type_1"),
+        (2, "cmd.opt_rotor_type_2"),
+        (3, "cmd.opt_rotor_type_3"),
+    ),
+    "SETENCTYPE": (
+        (1, "cmd.opt_enc_type_1"),
+        (2, "cmd.opt_enc_type_2"),
+        (3, "cmd.opt_enc_type_3"),
+    ),
+}
 
 _PARAM_EDIT_WIDTH = 90
+_PARAM_COMBO_WIDTH = 86
 _PARAM_BTN_WIDTH = 55
-_PARAM_UNIT_WIDTH = 28
+_PARAM_UNIT_WIDTH = 48
 _PARAM_EDIT_LEFT_MARGIN = 5
 _PARAM_LABEL_MIN_WIDTH = 170
 
@@ -262,7 +285,7 @@ class CommandButtonsWindow(QDialog):
         self.setWindowTitle(t("cmd.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setFixedSize(730, 648)
+        self.setFixedSize(730, 678)
 
         self._backup_state: Optional[dict] = None
         self._restore_state: Optional[dict] = None
@@ -302,7 +325,7 @@ class CommandButtonsWindow(QDialog):
             and c.name not in _HIDE_FROM_MANUAL_CMD_COMBO
         ]
         self._spec_by_name = {c.name: c for c in self._cmd_specs}
-        self._param_rows: dict[str, tuple[QLineEdit, QPushButton]] = {}
+        self._param_rows: dict[str, tuple[QWidget, QPushButton]] = {}
         self._send_set_inflight: set[tuple[int, str]] = set()
         self._set_rotor_id_broadcast_inflight: bool = False
         # DST-Listenindex beim Senden von SETID/SETROTORID (Fallback für cfg-Zuordnung)
@@ -574,20 +597,12 @@ class CommandButtonsWindow(QDialog):
 
     def _make_dst_combo(self) -> QComboBox:
         cb = QComboBox()
-        rb = self.cfg.get("rotor_bus", {})
-        ids = []
-        for key in ("slave_az", "slave_el"):
-            try:
-                v = int(rb.get(key))
-                if v not in ids:
-                    ids.append(v)
-            except Exception:
-                pass
-        if not ids:
-            ids = [0]
-        for v in ids:
+        for v in self._active_slave_ids():
             cb.addItem(f"ID {v}")
             cb.setItemData(cb.count() - 1, int(v), Qt.ItemDataRole.UserRole)
+        if cb.count() == 0:
+            cb.addItem("ID 0")
+            cb.setItemData(0, 0, Qt.ItemDataRole.UserRole)
         return cb
 
     def _on_dst_changed(self) -> None:
@@ -791,7 +806,7 @@ class CommandButtonsWindow(QDialog):
     def _add_param_row_to_grid(
         self, grid: QGridLayout, row: int, label: str, set_cmd: str, get_cmd: str
     ):
-        """Grid-Spalten: 0=Label (links), 1=Eingabe (100px), 2=Einheit (28px), 3=Button (55px)."""
+        """Grid-Spalten: 0=Label (links), 1=Eingabe/Combo/Check, 2=Einheit, 3=Button."""
         param_spec = _PARAM_SPEC.get(set_cmd, (None, None, "", False, False))
         min_v, max_v, unit, is_current_mA, is_timeout_s = param_spec
         lab = QLabel(label + ":")
@@ -805,9 +820,23 @@ class CommandButtonsWindow(QDialog):
             tooltip = format_cmd_tooltip(cmd_spec) if cmd_spec is not None else ""
         if tooltip:
             lab.setToolTip(format_tooltip(tooltip))
-        ed = QLineEdit()
-        ed.setPlaceholderText("–")
-        ed.setFixedWidth(_PARAM_EDIT_WIDTH)
+
+        if set_cmd in _PARAM_COMBO_SET_CMDS:
+            ed: QWidget = QComboBox()
+            ed.setFixedWidth(_PARAM_COMBO_WIDTH)
+            for val, key in _PARAM_COMBO_OPTIONS.get(set_cmd, ()):
+                ed.addItem(t(key), int(val))
+            unit_txt = ""
+        elif set_cmd in _PARAM_CHECK_SET_CMDS:
+            ed = QCheckBox(t("cmd.chk_enabled"))
+            ed.setFixedWidth(_PARAM_COMBO_WIDTH)
+            unit_txt = ""
+        else:
+            ed = QLineEdit()
+            ed.setPlaceholderText("–")
+            ed.setFixedWidth(_PARAM_EDIT_WIDTH)
+            unit_txt = unit if unit else ""
+
         if tooltip:
             ed.setToolTip(format_tooltip(tooltip))
         ed_wrap = QWidget()
@@ -821,7 +850,7 @@ class CommandButtonsWindow(QDialog):
         btn.setDefault(False)
         grid.addWidget(lab, row, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         grid.addWidget(ed_wrap, row, 1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        unit_lbl = QLabel(unit if unit else "")
+        unit_lbl = QLabel(unit_txt)
         unit_lbl.setFixedWidth(_PARAM_UNIT_WIDTH)
         unit_lbl.setStyleSheet("color: gray;")
         unit_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -829,11 +858,66 @@ class CommandButtonsWindow(QDialog):
         grid.addWidget(btn, row, 3, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         def _on_set():
-            self._send_set(set_cmd, ed.text().strip(), ed)
+            self._send_set(set_cmd, self._param_widget_raw(ed), ed)
 
         btn.clicked.connect(_on_set)
-        ed.returnPressed.connect(_on_set)
+        if isinstance(ed, QLineEdit):
+            ed.returnPressed.connect(_on_set)
         return ed, btn
+
+    @staticmethod
+    def _param_widget_raw(widget: QWidget) -> str:
+        """Aktuellen Steuerwert als SET-Parameterstring lesen."""
+        if isinstance(widget, QComboBox):
+            data = widget.currentData()
+            try:
+                return str(int(data))
+            except (TypeError, ValueError):
+                return ""
+        if isinstance(widget, QCheckBox):
+            return "1" if widget.isChecked() else "0"
+        if isinstance(widget, QLineEdit):
+            return widget.text().strip()
+        return ""
+
+    @staticmethod
+    def _param_widget_set_display(widget: QWidget, value: str) -> None:
+        """GET-/Anzeige-Wert in das passende Steuerelement schreiben."""
+        raw = str(value or "").strip()
+        if isinstance(widget, QComboBox):
+            try:
+                v = int(float(raw.replace(",", ".")))
+            except (TypeError, ValueError):
+                return
+            for i in range(widget.count()):
+                try:
+                    if int(widget.itemData(i)) == v:
+                        widget.blockSignals(True)
+                        widget.setCurrentIndex(i)
+                        widget.blockSignals(False)
+                        return
+                except (TypeError, ValueError):
+                    continue
+            return
+        if isinstance(widget, QCheckBox):
+            on = False
+            try:
+                on = int(float(raw.replace(",", "."))) != 0
+            except (TypeError, ValueError):
+                on = raw.lower() in ("1", "true", "ein", "on", "yes")
+            widget.blockSignals(True)
+            widget.setChecked(bool(on))
+            widget.blockSignals(False)
+            return
+        if isinstance(widget, QLineEdit):
+            widget.setText(raw)
+            widget.setPlaceholderText("")
+
+    @staticmethod
+    def _param_widget_mark_empty(widget: QWidget) -> None:
+        """Nur LineEdit: leeren Placeholder setzen (Combo/Check bleiben unverändert)."""
+        if isinstance(widget, QLineEdit) and str(widget.text() or "").strip() == "":
+            widget.setPlaceholderText("–")
 
     def _current_dst(self) -> int:
         idx = self.cb_dst.currentIndex()
@@ -862,42 +946,49 @@ class CommandButtonsWindow(QDialog):
             return None
 
     def _rotor_bus_keys_with_slave_id(self, slave: int) -> set[str]:
-        """Alle cfg-Keys (slave_az/slave_el), deren Wert der Slave-ID entspricht."""
+        """Alle cfg-Keys (slave_az/slave_el) aktiver Achsen, deren Wert der Slave-ID entspricht."""
         rb = self.cfg.get("rotor_bus", {})
         try:
             sid = int(slave)
         except Exception:
             return set()
         keys: set[str] = set()
-        for k in ("slave_az", "slave_el"):
+        for k, axis in (("slave_az", "az"), ("slave_el", "el")):
+            if not self._axis_enabled(axis):
+                continue
             v = self._int_rotor_bus_slave(rb.get(k))
             if v is not None and v == sid:
                 keys.add(k)
         return keys
 
+    def _active_slave_ids(self) -> list[int]:
+        """Slave-IDs nur der in den Einstellungen aktivierten Achsen (AZ/EL)."""
+        return list(self._cal_active_dsts())
+
     def _rotor_bus_keys_for_dst_combo_row(self, row: int) -> set[str]:
-        """Welche cfg-Keys zur DST-Listenzeile `row` gehören (wie _refresh_dst_dropdown, inkl. gleiche ID)."""
+        """Welche cfg-Keys zur DST-Listenzeile `row` gehören (nur aktivierte Achsen)."""
         rb = self.cfg.get("rotor_bus", {})
         from collections import defaultdict
 
         id_to_keys: dict[int, set[str]] = defaultdict(set)
-        for k in ("slave_az", "slave_el"):
-            v = self._int_rotor_bus_slave(rb.get(k))
-            if v is not None:
-                id_to_keys[v].add(k)
         ordered: list[int] = []
-        for k in ("slave_az", "slave_el"):
+        for k, axis in (("slave_az", "az"), ("slave_el", "el")):
+            if not self._axis_enabled(axis):
+                continue
             v = self._int_rotor_bus_slave(rb.get(k))
             if v is None:
                 continue
+            id_to_keys[v].add(k)
             if v not in ordered:
                 ordered.append(v)
         if not ordered:
-            return {"slave_az"}
+            return {"slave_el"} if self._axis_enabled("el") and not self._axis_enabled("az") else {"slave_az"}
         r = max(0, min(int(row), len(ordered) - 1))
         vid = ordered[r]
         out = set(id_to_keys.get(vid, set()))
-        return out if out else {"slave_az"}
+        if out:
+            return out
+        return {"slave_el"} if self._axis_enabled("el") and not self._axis_enabled("az") else {"slave_az"}
 
     def _master_id(self) -> int:
         try:
@@ -909,7 +1000,8 @@ class CommandButtonsWindow(QDialog):
         super().showEvent(event)
         self._refresh_dst_dropdown()
         self._update_frame()
-        self._read_all_params()
+        # Nach Dropdown-Aufbau explizit Parameter der aktuell gewählten (aktiven) ID laden.
+        QTimer.singleShot(0, self._read_all_params)
         try:
             qcmd = self._get_query_cmd_for_selection(self._current_cmd())
             if qcmd:
@@ -919,22 +1011,31 @@ class CommandButtonsWindow(QDialog):
             pass
 
     def _refresh_dst_dropdown(self) -> None:
+        prev = self._current_dst() if self.cb_dst.count() > 0 else None
         self.cb_dst.blockSignals(True)
         self.cb_dst.clear()
-        rb = self.cfg.get("rotor_bus", {})
-        ids = []
-        for key in ("slave_az", "slave_el"):
-            try:
-                v = int(rb.get(key))
-                if v not in ids:
-                    ids.append(v)
-            except Exception:
-                pass
+        ids = self._active_slave_ids()
         if not ids:
             ids = [0]
         for v in ids:
             self.cb_dst.addItem(f"ID {v}")
             self.cb_dst.setItemData(self.cb_dst.count() - 1, int(v), Qt.ItemDataRole.UserRole)
+        # Vorherige Auswahl behalten, falls noch in der Liste; sonst erste aktive ID.
+        if prev is not None:
+            for i in range(self.cb_dst.count()):
+                try:
+                    vd = self.cb_dst.itemData(i, Qt.ItemDataRole.UserRole)
+                    if vd is None:
+                        vd = self.cb_dst.itemData(i)
+                    if int(vd) == int(prev):
+                        self.cb_dst.setCurrentIndex(i)
+                        break
+                except Exception:
+                    continue
+            else:
+                self.cb_dst.setCurrentIndex(0)
+        else:
+            self.cb_dst.setCurrentIndex(0)
         self.cb_dst.blockSignals(False)
 
     def _select_dst_data_id(self, slave_id: int) -> None:
@@ -1179,7 +1280,9 @@ class CommandButtonsWindow(QDialog):
             except Exception:
                 ed, _ = self._param_rows.get(get_cmd, (None, None))
                 if ed is not None:
-                    ed.setPlaceholderText(t("cmd.err_placeholder"))
+                    self._param_widget_mark_empty(ed)
+                    if isinstance(ed, QLineEdit):
+                        ed.setPlaceholderText(t("cmd.err_placeholder"))
                 self._invoke_on_gui(lambda di=int(dst), gc=get_cmd, pr=str(params): on_item_done(False, di, gc, pr))
 
     def _read_all_params(self) -> None:
@@ -1187,7 +1290,7 @@ class CommandButtonsWindow(QDialog):
         dst = self._current_dst()
         self._param_get_batch_id += 1
         bid = self._param_get_batch_id
-        items: list[tuple[str, QLineEdit, str]] = []
+        items: list[tuple[str, QWidget, str]] = []
         for label, set_cmd, get_cmd in _BLOCK1() + _BLOCK2():
             ed, btn = self._param_rows.get(get_cmd, (None, None))
             if ed is None:
@@ -1231,7 +1334,8 @@ class CommandButtonsWindow(QDialog):
                     on_done=make_done(get_cmd, params),
                 )
             except Exception:
-                ed.setPlaceholderText(t("cmd.err_placeholder"))
+                if isinstance(ed, QLineEdit):
+                    ed.setPlaceholderText(t("cmd.err_placeholder"))
                 self._invoke_on_gui(
                     lambda gc=get_cmd, pr=params: self._on_param_round1_item_done(
                         bid, False, dst_i, gc, pr
@@ -1294,9 +1398,7 @@ class CommandButtonsWindow(QDialog):
             if cmd in self._param_rows:
                 ed, _ = self._param_rows[cmd]
                 # Robust: alten Wert NICHT löschen, sonst "verschwindet" er bei Timing/Timeout.
-                # Nur wenn wirklich leer, Placeholder anzeigen.
-                if str(ed.text() or "").strip() == "":
-                    ed.setPlaceholderText("–")
+                self._param_widget_mark_empty(ed)
             if self._cmd_matches_result(cmd):
                 self._block_auto_send = True
                 try:
@@ -1311,14 +1413,26 @@ class CommandButtonsWindow(QDialog):
         try:
             if cmd in self._param_rows:
                 ed, _ = self._param_rows[cmd]
-                ed.setText(display_val)
-                ed.setPlaceholderText("")
+                self._param_widget_set_display(ed, display_val)
             if self._cmd_matches_result(cmd):
                 self.ed_params.setText(display_val)
                 self.lbl_hint.setText(t("cmd.hint_enter"))
         finally:
             self._block_auto_send = False
         self._update_frame()
+
+    def _rotor_angle_from_ui(self) -> float | None:
+        """Aktueller Rotorwinkel (SETMAXDG/GETMAXDG) aus dem Parameterfeld, falls lesbar."""
+        ed, _ = self._param_rows.get("GETMAXDG", (None, None))
+        if ed is None:
+            return None
+        raw = self._param_widget_raw(ed)
+        if not raw or raw in ("—", "–", "-"):
+            return None
+        try:
+            return float(raw.replace(",", "."))
+        except (ValueError, TypeError):
+            return None
 
     def _validate_and_convert_param(self, cmd: str, raw: str) -> tuple[str | None, str | None]:
         """Prüft den Wert; konvertiert mA→mV (Strom) bzw. s→ms (Timeout).
@@ -1336,6 +1450,17 @@ class CommandButtonsWindow(QDialog):
             hi = float(max_v) if max_v is not None else (360.0 if cmd in _FLOAT_ANGLE_SET_CMDS else 1.0)
             if xf < lo - 1e-9 or xf > hi + 1e-9:
                 return (None, f"Wert außerhalb {lo}–{hi}")
+            if cmd == "SETHOMEPOS":
+                max_rotor = self._rotor_angle_from_ui()
+                if max_rotor is not None and xf > max_rotor + 1e-9:
+                    return (
+                        None,
+                        t(
+                            "cmd.err_home_pos_gt_rotor",
+                            home=f"{xf:g}".replace(".", ","),
+                            rotor=f"{max_rotor:g}".replace(".", ","),
+                        ),
+                    )
             if cmd in _FLOAT_ANGLE_SET_CMDS:
                 txt = f"{xf:.1f}".rstrip("0").rstrip(".")
                 if not txt or txt == "-0":
@@ -1366,18 +1491,33 @@ class CommandButtonsWindow(QDialog):
             return (None, f"Wert {val} über Maximum {max_v}")
         return (str(val), None)
 
+    def _axis_enabled(self, axis: str) -> bool:
+        """AZ/EL aktiv? Controller-Flag hat Vorrang vor cfg."""
+        rb = self.cfg.get("rotor_bus", {}) if isinstance(self.cfg.get("rotor_bus"), dict) else {}
+        if axis == "az":
+            cfg_default = True
+            attr = "enable_az"
+        else:
+            cfg_default = False
+            attr = "enable_el"
+        cfg_val = bool(rb.get(attr, cfg_default))
+        ctrl = getattr(self, "ctrl", None)
+        if ctrl is not None and hasattr(ctrl, attr):
+            return bool(getattr(ctrl, attr))
+        return cfg_val
+
     def _cal_active_dsts(self) -> list[int]:
-        """Alle aktiven Slave-IDs aus der Config zurückgeben."""
+        """Slave-IDs nur der aktivierten Achsen (AZ/EL)."""
         rb = self.cfg.get("rotor_bus", {})
         dsts: list[int] = []
-        if bool(rb.get("enable_az", True)):
+        if self._axis_enabled("az"):
             try:
                 v = int(rb.get("slave_az", 0))
                 if v not in dsts:
                     dsts.append(v)
             except Exception:
                 pass
-        if bool(rb.get("enable_el", False)):
+        if self._axis_enabled("el"):
             try:
                 v = int(rb.get("slave_el", 0))
                 if v not in dsts:
@@ -1416,6 +1556,13 @@ class CommandButtonsWindow(QDialog):
             if cmd == "SETWINDENABLE" and hasattr(self.ctrl, "set_wind_enabled_from_value"):
                 val = getattr(tel, "params", "") or params
                 self.ctrl.set_wind_enabled_from_value(val)
+            if cmd == "SETROTORTYPE" and hasattr(self.ctrl, "apply_el_rotor_type_from_value"):
+                # ACK_SETROTORTYPE geht bei pending nur an on_done — EL-GUI hier aktualisieren
+                val = getattr(tel, "params", "") or params
+                try:
+                    self.ctrl.apply_el_rotor_type_from_value(val, dst=int(dst), reread=True)
+                except Exception:
+                    pass
             self.sig_send_result.emit(
                 cmd,
                 str(getattr(tel, "cmd", "") or ""),

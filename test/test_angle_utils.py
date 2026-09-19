@@ -44,6 +44,8 @@ def test_clamp_el() -> None:
     assert clamp_el(-5) == 0.0
     assert clamp_el(100) == 90.0
     assert clamp_el(45) == pytest.approx(45.0)
+    assert clamp_el(100, max_deg=180) == pytest.approx(100.0)
+    assert clamp_el(200, max_deg=180) == 180.0
 
 
 def test_fmt_deg() -> None:

@@ -1509,15 +1509,20 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
             # -------------------- Kompass-Soll (Bus / Encoder-Panel, kein Motor-SET) --------------------
             if cmd == "SETPOSCC":
-                # Kurz nach SETPOSDG: erstes SETPOSCC ignorieren (Bus-Reihenfolge / Echo).
-                # Während Fahrt: SETPOSCC immer anwenden — Sollzeiger = Encoder (#2:…), Motorziel bleibt target_d10.
-                # (Die Ignore-Zeit sonst: SETPOSDG-Mitschnitte verlängern sie oft → CC würde nie durchkommen.)
+                # Kurz nach eigenem SETPOSDG: erstes SETPOSCC ignorieren (Bus-Reihenfolge / Echo).
+                # Während Fahrt oder Mitlauf (fremd): SETPOSCC immer anwenden — Sollzeiger = Encoder.
+                # Ignore gilt nicht im Mitlauf: fremde SETPOSDG/ACK würden das Fenster sonst dauerhaft
+                # verlängern und der Sollzeiger bliebe nach Ankunft stehen.
                 try:
-                    if not bool(getattr(axis, "moving", False)):
-                        if time.time() < float(
-                            getattr(axis, "setposcc_ignore_until_ts", 0.0) or 0.0
-                        ):
-                            return
+                    moving = bool(getattr(axis, "moving", False))
+                    follow = bool(getattr(axis, "foreign_follow_active", False))
+                    if (
+                        not moving
+                        and not follow
+                        and time.time()
+                        < float(getattr(axis, "setposcc_ignore_until_ts", 0.0) or 0.0)
+                    ):
+                        return
                 except Exception:
                     pass
                 try:
@@ -1622,10 +1627,16 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     else:
                         axis.compass_target_d10 = None
                         axis.external_panel_move_active = False
-                    try:
-                        axis.setposcc_ignore_until_ts = time.time() + _SETPOSCC_SUPPRESS_S
-                    except Exception:
-                        pass
+                    # Ignore nur bei eigenem SETPOSDG (set_az_deg/_send_setpos). Bus-Mitschnitt
+                    # (Mitlauf/Echo) darf das Fenster nicht zyklisch verlängern — sonst bleibt
+                    # SETPOSCC nach Ankunft dauerhaft gesperrt und der Sollzeiger hängt.
+                    if not from_bus_sniff:
+                        try:
+                            axis.setposcc_ignore_until_ts = (
+                                time.time() + _SETPOSCC_SUPPRESS_S
+                            )
+                        except Exception:
+                            pass
                     axis.last_set_sent_target_d10 = d10
                     axis.last_set_sent_ts = time.time()
                 # Bus-Mitschnitt kann SETPOSDG zyklisch wiederholen, obwohl der Rotor

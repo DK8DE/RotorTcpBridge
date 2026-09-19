@@ -89,6 +89,39 @@ def test_setposcc_suppressed_after_setposdg_when_idle() -> None:
     assert c.az.compass_target_d10 is None
 
 
+def test_bus_setposdg_echo_does_not_refresh_setposcc_ignore() -> None:
+    """Mitlauf/Echo: sniffed SETPOSDG darf Ignore-Fenster nicht verlängern."""
+    c = RotorController(
+        _hw_stub(),
+        master_id=0,
+        slave_az=20,
+        slave_el=21,
+        log=_Log(),
+        setposcc_controller_src_id=2,
+    )
+    c.az.moving = False
+    c.az.pos_d10 = 900
+    c.az.target_d10 = 900
+    c.az.compass_target_d10 = 900
+    c.az.setposcc_ignore_until_ts = 0.0
+    c._apply_local_state_for_ui_command(
+        20, "SETPOSDG", "90,0", from_bus_sniff=True, bus_src=2
+    )
+    assert float(c.az.setposcc_ignore_until_ts or 0.0) == 0.0
+    c._apply_local_state_for_ui_command(20, "SETPOSCC", "120,0", from_bus_sniff=True)
+    assert c.az.compass_target_d10 == 1200
+
+
+def test_setposcc_applies_during_foreign_follow_despite_ignore() -> None:
+    """Mitlaufmodus: SETPOSCC trotz Ignore-Fenster → Sollzeiger folgt Encoder."""
+    c = RotorController(_hw_stub(), master_id=1, slave_az=20, slave_el=21, log=_Log())
+    c.az.moving = False
+    c.az.foreign_follow_active = True
+    c.az.setposcc_ignore_until_ts = time.time() + 1.0
+    c._apply_local_state_for_ui_command(20, "SETPOSCC", "90,5", from_bus_sniff=True)
+    assert c.az.compass_target_d10 == 905
+
+
 def test_setposcc_applies_even_if_far_from_motor_target() -> None:
     c = RotorController(_hw_stub(), master_id=1, slave_az=20, slave_el=21, log=_Log())
     c.az.moving = False

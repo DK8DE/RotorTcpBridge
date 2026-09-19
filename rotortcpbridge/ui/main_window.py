@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QSystemTrayIcon,
     QWidget,
     QVBoxLayout,
@@ -24,7 +25,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
 )
 from PySide6.QtGui import QAction, QActionGroup, QFont, QGuiApplication
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QEventLoop, Qt, QTimer, Signal
 
 from .antenna_sync import AntennaSelectionBridge
 
@@ -1218,24 +1219,32 @@ class MainWindow(QMainWindow):
         menu = getattr(self, "_menu_profile", None)
         if menu is None:
             return
-        menu.clear()
-        menu.setTitle(t("main.menu_profile"))
-        group = QActionGroup(self)
-        group.setExclusive(True)
-        self._profile_action_group = group
-        active = get_active_profile_id()
-        for p in list_profiles():
-            pid = str(p.get("id") or "")
-            name = str(p.get("name") or pid)
-            act = QAction(name, self)
-            act.setCheckable(True)
-            act.setChecked(pid == active)
-            act.setData(pid)
-            act.triggered.connect(partial(self._on_profile_menu_triggered, pid))
-            group.addAction(act)
-            menu.addAction(act)
+        self._profile_menu_suppress = True
+        try:
+            menu.clear()
+            menu.setTitle(t("main.menu_profile"))
+            group = QActionGroup(self)
+            group.setExclusive(True)
+            self._profile_action_group = group
+            active = get_active_profile_id()
+            for p in list_profiles():
+                pid = str(p.get("id") or "")
+                name = str(p.get("name") or pid)
+                act = QAction(name, self)
+                act.setCheckable(True)
+                act.setData(pid)
+                group.addAction(act)
+                menu.addAction(act)
+                # Check nach connect vermeiden: toggled erst danach verbinden
+                act.setChecked(pid == active)
+                # toggled(True) ist unter Windows/QActionGroup zuverlässiger als triggered(bool)
+                act.toggled.connect(partial(self._on_profile_menu_toggled, pid))
+        finally:
+            self._profile_menu_suppress = False
 
-    def _on_profile_menu_triggered(self, profile_id: str, checked: bool = False) -> None:
+    def _on_profile_menu_toggled(self, profile_id: str, checked: bool) -> None:
+        if getattr(self, "_profile_menu_suppress", False):
+            return
         if not checked:
             return
         self._switch_rotor_profile(profile_id)
@@ -2020,6 +2029,128 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _park_on_exit_enabled(self) -> bool:
+        return bool((self.cfg.get("ui") or {}).get("ask_park_on_exit", False))
+
+    def _axis_at_park(self, axis, *, tol_deg: float = 0.5) -> bool:
+        home = getattr(axis, "home_pos_d10", None)
+        if home is None:
+            return False
+        try:
+            pos = float(getattr(axis, "pos_d10", 0) or 0) / 10.0
+            tgt = float(home) / 10.0
+        except (TypeError, ValueError):
+            return False
+        if bool(getattr(axis, "position_wrap_360", False)):
+            try:
+                from ..angle_utils import shortest_delta_deg
+
+                return abs(float(shortest_delta_deg(pos, tgt))) <= float(tol_deg)
+            except Exception:
+                pass
+        return abs(pos - tgt) <= float(tol_deg)
+
+    def _all_enabled_axes_at_park(self) -> bool:
+        ok = True
+        any_axis = False
+        if bool(getattr(self.ctrl, "enable_az", False)):
+            any_axis = True
+            ok = ok and self._axis_at_park(self.ctrl.az)
+        if bool(getattr(self.ctrl, "enable_el", False)):
+            any_axis = True
+            ok = ok and self._axis_at_park(self.ctrl.el)
+        return bool(any_axis and ok)
+
+    def _confirm_park_on_exit(self) -> bool:
+        """True = Beenden fortsetzen, False = Abbrechen.
+
+        Ja → schließen. Jetzt Parken → parken, warten, dann schließen.
+        """
+        try:
+            hw_on = bool(self.hw.is_connected())
+        except Exception:
+            hw_on = False
+        if not hw_on:
+            return True
+        if not (
+            bool(getattr(self.ctrl, "enable_az", False))
+            or bool(getattr(self.ctrl, "enable_el", False))
+        ):
+            return True
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(t("main.park_on_exit_title"))
+        box.setText(t("main.park_on_exit_text"))
+        btn_yes = box.addButton(
+            t("main.park_on_exit_yes"), QMessageBox.ButtonRole.AcceptRole
+        )
+        btn_park = box.addButton(
+            t("main.park_on_exit_park_now"), QMessageBox.ButtonRole.ActionRole
+        )
+        btn_cancel = box.addButton(
+            t("main.park_on_exit_cancel"), QMessageBox.ButtonRole.RejectRole
+        )
+        box.setDefaultButton(btn_yes)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is btn_cancel or clicked is None:
+            return False
+        if clicked is btn_yes:
+            return True
+        if clicked is not btn_park:
+            return False
+
+        # Jetzt Parken
+        try:
+            self.ctrl.park_all()
+        except Exception:
+            pass
+        return self._wait_until_parked_or_confirm()
+
+    def _wait_until_parked_or_confirm(self, *, timeout_s: float = 90.0) -> bool:
+        """Wartet auf Parkposition; bei Timeout nachfragen. True = weiter beenden."""
+        dlg = QProgressDialog(t("main.park_on_exit_waiting"), None, 0, 0, self)
+        dlg.setWindowTitle(t("main.park_on_exit_title"))
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setCancelButton(None)
+        dlg.setMinimumDuration(0)
+        dlg.show()
+        QApplication.processEvents()
+
+        loop = QEventLoop(self)
+        deadline = time.time() + max(5.0, float(timeout_s))
+        result = {"ok": False}
+
+        def _tick() -> None:
+            if self._all_enabled_axes_at_park():
+                result["ok"] = True
+                loop.quit()
+                return
+            if time.time() >= deadline:
+                result["ok"] = False
+                loop.quit()
+                return
+            QTimer.singleShot(200, _tick)
+
+        QTimer.singleShot(200, _tick)
+        loop.exec()
+        try:
+            dlg.close()
+        except Exception:
+            pass
+
+        if result["ok"]:
+            return True
+        reply = QMessageBox.question(
+            self,
+            t("main.park_on_exit_title"),
+            t("main.park_on_exit_timeout"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
     def _open_commands(self):
         if not bool(getattr(self._act_commands, "isEnabled", lambda: True)()):
             return
@@ -2375,6 +2506,13 @@ class MainWindow(QMainWindow):
         return False
 
     def closeEvent(self, event):
+        if getattr(self, "_closing_after_park_confirm", False):
+            pass
+        elif self._park_on_exit_enabled():
+            if not self._confirm_park_on_exit():
+                event.ignore()
+                return
+            self._closing_after_park_confirm = True
         try:
             if self._tray_icon is not None:
                 self._tray_icon.hide()

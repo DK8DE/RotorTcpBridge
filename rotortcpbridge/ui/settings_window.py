@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -1099,6 +1100,34 @@ class SettingsWindow(QDialog):
         fl_display.addRow(t("settings.language_label"), self.cb_language)
         form_ui.addRow(gb_display)
 
+        gb_park = QGroupBox(t("settings.group_park_position"))
+        self._gb_park = gb_park
+        fl_park = QFormLayout(gb_park)
+        self.chk_ask_park_on_exit = QCheckBox(t("settings.chk_ask_park_on_exit"))
+        self.chk_ask_park_on_exit.setChecked(bool(_ui0.get("ask_park_on_exit", False)))
+        self.chk_ask_park_on_exit.setToolTip(tt("settings.chk_ask_park_on_exit_tooltip"))
+        fl_park.addRow(self.chk_ask_park_on_exit)
+        self.sp_park_az = QDoubleSpinBox()
+        self.sp_park_az.setRange(0.0, 720.0)
+        self.sp_park_az.setDecimals(1)
+        self.sp_park_az.setSingleStep(0.1)
+        self.sp_park_az.setSuffix(" °")
+        self.sp_park_az.setToolTip(tt("settings.park_az_tooltip"))
+        self._lbl_park_az = QLabel(t("settings.park_az"))
+        fl_park.addRow(self._lbl_park_az, self.sp_park_az)
+        self.sp_park_el = QDoubleSpinBox()
+        self.sp_park_el.setRange(0.0, 180.0)
+        self.sp_park_el.setDecimals(1)
+        self.sp_park_el.setSingleStep(0.1)
+        self.sp_park_el.setSuffix(" °")
+        self.sp_park_el.setToolTip(tt("settings.park_el_tooltip"))
+        self._lbl_park_el = QLabel(t("settings.park_el"))
+        fl_park.addRow(self._lbl_park_el, self.sp_park_el)
+        self._snapshot_home_az: float | None = None
+        self._snapshot_home_el: float | None = None
+        self._park_home_suppress = False
+        form_ui.addRow(gb_park)
+
         gb_location = QGroupBox(t("settings.group_location"))
         fl_location = QFormLayout(gb_location)
         self.ed_location_lat = QDoubleSpinBox()
@@ -1543,8 +1572,12 @@ class SettingsWindow(QDialog):
         self.chk_enable_az.stateChanged.connect(self._update_antenna_visibility)
         self.chk_enable_el.stateChanged.connect(self._update_antenna_visibility)
         self.chk_enable_az.stateChanged.connect(lambda _s: self._update_enc_zero_button_ui())
+        self.chk_enable_az.stateChanged.connect(lambda _s: self._update_park_home_visibility())
         self.chk_enable_el.stateChanged.connect(self._shortcuts_tab.refresh_el_visibility)
+        self.chk_enable_el.stateChanged.connect(lambda _s: self._update_park_home_visibility())
         self._update_antenna_visibility()
+        self._update_park_home_visibility()
+        self._fill_park_home_from_cache()
 
         # Versatz- und Öffnungswinkel-Änderungen sofort in Config schreiben (Kompass liest daraus)
         for sp in [self.sp_az_antoff_1, self.sp_az_antoff_2, self.sp_az_antoff_3]:
@@ -1657,6 +1690,7 @@ class SettingsWindow(QDialog):
         self._capture_antenna_snapshots_from_ui()
         # Vergleichsbasis für SETCON* beim Speichern (sonst snap=None → kein Schreiben)
         self._snapshot_controller = self._controller_snapshot_from_ui()
+        QTimer.singleShot(0, self._load_park_home_from_bus)
         # Antennennamen vom Rotor (GETANTNAME1–3 am AZ-Slave, nicht Display-Controller)
         try:
             self.ctrl.on_antenna_names_changed = lambda: QTimer.singleShot(
@@ -2441,16 +2475,22 @@ class SettingsWindow(QDialog):
         self.btn_profile_rename = QPushButton(t("settings.profile_btn_rename"))
         self.btn_profile_delete = QPushButton(t("settings.profile_btn_delete"))
         self.btn_profile_activate = QPushButton(t("settings.profile_btn_activate"))
+        self.btn_profile_export = QPushButton(t("settings.profile_btn_export"))
+        self.btn_profile_import = QPushButton(t("settings.profile_btn_import"))
         self.btn_profile_new.setToolTip(tt("settings.profile_btn_new_tooltip"))
         self.btn_profile_copy.setToolTip(tt("settings.profile_btn_copy_tooltip"))
         self.btn_profile_rename.setToolTip(tt("settings.profile_btn_rename_tooltip"))
         self.btn_profile_delete.setToolTip(tt("settings.profile_btn_delete_tooltip"))
         self.btn_profile_activate.setToolTip(tt("settings.profile_btn_activate_tooltip"))
+        self.btn_profile_export.setToolTip(tt("settings.profile_btn_export_tooltip"))
+        self.btn_profile_import.setToolTip(tt("settings.profile_btn_import_tooltip"))
         self.btn_profile_new.clicked.connect(self._on_profile_new)
         self.btn_profile_copy.clicked.connect(self._on_profile_copy)
         self.btn_profile_rename.clicked.connect(self._on_profile_rename)
         self.btn_profile_delete.clicked.connect(self._on_profile_delete)
         self.btn_profile_activate.clicked.connect(self._on_profile_activate)
+        self.btn_profile_export.clicked.connect(self._on_profile_export)
+        self.btn_profile_import.clicked.connect(self._on_profile_import)
         row.addWidget(self.btn_profile_new)
         row.addWidget(self.btn_profile_copy)
         row.addWidget(self.btn_profile_rename)
@@ -2458,6 +2498,11 @@ class SettingsWindow(QDialog):
         row.addWidget(self.btn_profile_activate)
         row.addStretch(1)
         form.addLayout(row)
+        row2 = QHBoxLayout()
+        row2.addWidget(self.btn_profile_export)
+        row2.addWidget(self.btn_profile_import)
+        row2.addStretch(1)
+        form.addLayout(row2)
         vl.addWidget(gb)
         vl.addStretch(1)
         self.refresh_profiles_list()
@@ -2530,6 +2575,7 @@ class SettingsWindow(QDialog):
         active = get_active_profile_id()
         self.btn_profile_rename.setEnabled(bool(pid))
         self.btn_profile_copy.setEnabled(bool(pid))
+        self.btn_profile_export.setEnabled(bool(pid))
         self.btn_profile_delete.setEnabled(bool(pid) and not is_def)
         self.btn_profile_activate.setEnabled(bool(pid) and pid != active)
 
@@ -2707,6 +2753,87 @@ class SettingsWindow(QDialog):
                 self, t("settings.title"), t("settings.profile_err_no_switch_cb")
             )
 
+    def _on_profile_export(self) -> None:
+        from pathlib import Path
+
+        from ..profile_store import (
+            export_profile,
+            get_active_profile_id,
+            get_profile_meta,
+            save_active_config,
+        )
+
+        pid = self._selected_profile_id()
+        if not pid:
+            return
+        meta = get_profile_meta(pid) or {}
+        name = str(meta.get("name") or pid)
+        safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in name).strip() or pid
+        suggested = f"{safe}.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            t("settings.profile_dlg_export_title"),
+            suggested,
+            t("settings.profile_file_filter"),
+        )
+        if not path:
+            return
+        try:
+            if pid == get_active_profile_id():
+                save_active_config(self.cfg)
+            export_profile(pid, Path(path))
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                t("settings.title"),
+                t("settings.profile_err_export", err=str(exc)),
+            )
+            return
+        QMessageBox.information(
+            self,
+            t("settings.title"),
+            t("settings.profile_export_ok", name=name),
+        )
+
+    def _on_profile_import(self) -> None:
+        from pathlib import Path
+
+        from ..profile_store import import_profile
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            t("settings.profile_dlg_import_title"),
+            "",
+            t("settings.profile_file_filter"),
+        )
+        if not path:
+            return
+        try:
+            new_id = import_profile(Path(path))
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                t("settings.title"),
+                t("settings.profile_err_import", err=str(exc)),
+            )
+            return
+        self.refresh_profiles_list()
+        for i in range(self.lst_profiles.count()):
+            it = self.lst_profiles.item(i)
+            if it is not None and it.data(Qt.ItemDataRole.UserRole) == new_id:
+                self.lst_profiles.setCurrentRow(i)
+                break
+        if callable(self._profiles_changed_cb):
+            try:
+                self._profiles_changed_cb()
+            except Exception:
+                pass
+        QMessageBox.information(
+            self,
+            t("settings.title"),
+            t("settings.profile_import_ok"),
+        )
+
     def _on_settings_nav_changed(self, row: int) -> None:
         """Linke Liste → rechten Stacked-Inhalt umschalten."""
         if row < 0 or row >= self._settings_stack.count():
@@ -2842,6 +2969,190 @@ class SettingsWindow(QDialog):
             # AZ wieder aktiv: Bus-Namen neu laden dürfen.
             self._antenna_names_bus_read_ok = False
             QTimer.singleShot(0, self._load_rotor_antenna_names_from_bus)
+        self._update_park_home_visibility()
+
+    def _update_park_home_visibility(self) -> None:
+        """Parkwinkel-Felder nur für aktive Achsen zeigen."""
+        if not hasattr(self, "sp_park_az"):
+            return
+        az_on = bool(self.chk_enable_az.isChecked())
+        el_on = bool(self.chk_enable_el.isChecked())
+        self._lbl_park_az.setVisible(az_on)
+        self.sp_park_az.setVisible(az_on)
+        self._lbl_park_el.setVisible(el_on)
+        self.sp_park_el.setVisible(el_on)
+
+    @staticmethod
+    def _home_deg_from_axis(axis) -> float | None:
+        d10 = getattr(axis, "home_pos_d10", None)
+        if d10 is None:
+            return None
+        try:
+            return float(d10) / 10.0
+        except (TypeError, ValueError):
+            return None
+
+    def _set_park_spin_value(self, spin: QDoubleSpinBox, deg: float | None) -> None:
+        self._park_home_suppress = True
+        try:
+            if deg is None:
+                spin.setValue(0.0)
+            else:
+                spin.setValue(max(spin.minimum(), min(spin.maximum(), float(deg))))
+        finally:
+            self._park_home_suppress = False
+
+    def _fill_park_home_from_cache(self) -> None:
+        """Parkwinkel aus Controller-Cache in die Spinboxen (ohne Bus)."""
+        if not hasattr(self, "sp_park_az"):
+            return
+        az_deg = self._home_deg_from_axis(getattr(self.ctrl, "az", None))
+        el_deg = self._home_deg_from_axis(getattr(self.ctrl, "el", None))
+        if self.chk_enable_az.isChecked() and az_deg is not None:
+            self._set_park_spin_value(self.sp_park_az, az_deg)
+            self._snapshot_home_az = float(az_deg)
+        if self.chk_enable_el.isChecked() and el_deg is not None:
+            self._set_park_spin_value(self.sp_park_el, el_deg)
+            self._snapshot_home_el = float(el_deg)
+
+    def _load_park_home_from_bus(self) -> None:
+        """GETHOMEPOS für aktive Achsen; Felder + Snapshot setzen. Ohne Änderung kein SET."""
+        if not hasattr(self, "sp_park_az"):
+            return
+        self._fill_park_home_from_cache()
+        if not bool(getattr(self.hw, "is_connected", lambda: False)()):
+            return
+        if not hasattr(self.ctrl, "sync_ui_command_response"):
+            try:
+                self.ctrl.request_home_pos(
+                    az=bool(self.chk_enable_az.isChecked()),
+                    el=bool(self.chk_enable_el.isChecked()),
+                )
+            except Exception:
+                pass
+            QTimer.singleShot(400, self._fill_park_home_from_cache)
+            return
+
+        def _parse_deg(raw: str | None) -> float | None:
+            if raw is None or not _sync_got_ack_value(raw):
+                return None
+            try:
+                return float(str(raw).strip().replace(",", ".").split(";")[0])
+            except (TypeError, ValueError):
+                return None
+
+        c = self.ctrl
+        if self.chk_enable_az.isChecked():
+            try:
+                dst = int(self.sp_slave_az.value())
+            except Exception:
+                dst = int(getattr(c, "slave_az", 0) or 0)
+            if dst > 0:
+                r = c.sync_ui_command_response(
+                    dst, "GETHOMEPOS", "0", "ACK_GETHOMEPOS", timeout_s=1.0
+                )
+                deg = _parse_deg(r)
+                if deg is not None:
+                    try:
+                        c.remember_home_pos_deg(c.az, deg)
+                    except Exception:
+                        pass
+                    self._set_park_spin_value(self.sp_park_az, deg)
+                    self._snapshot_home_az = float(deg)
+        if self.chk_enable_el.isChecked():
+            try:
+                dst = int(self.sp_slave_el.value())
+            except Exception:
+                dst = int(getattr(c, "slave_el", 0) or 0)
+            if dst > 0:
+                r = c.sync_ui_command_response(
+                    dst, "GETHOMEPOS", "0", "ACK_GETHOMEPOS", timeout_s=1.0
+                )
+                deg = _parse_deg(r)
+                if deg is not None:
+                    try:
+                        c.remember_home_pos_deg(c.el, deg)
+                    except Exception:
+                        pass
+                    self._set_park_spin_value(self.sp_park_el, deg)
+                    self._snapshot_home_el = float(deg)
+
+    @staticmethod
+    def _format_home_pos_param(deg: float) -> str:
+        txt = f"{float(deg):.1f}".rstrip("0").rstrip(".")
+        if not txt or txt == "-0":
+            txt = "0"
+        return txt
+
+    def _home_value_changed(self, snap: float | None, cur: float) -> bool:
+        if snap is None:
+            # Noch nie vom Bus gelesen → nicht schreiben (nur auslesen beim Öffnen).
+            return False
+        return abs(float(snap) - float(cur)) > 0.05
+
+    def _save_park_home_if_changed(self) -> bool:
+        """SETHOMEPOS nur wenn Winkel gegenüber Snapshot geändert; sonst nichts schreiben."""
+        if not hasattr(self, "sp_park_az"):
+            return True
+        if not bool(getattr(self.hw, "is_connected", lambda: False)()):
+            return True
+        if not hasattr(self.ctrl, "sync_ui_command_response"):
+            return True
+        c = self.ctrl
+        all_ok = True
+
+        if self.chk_enable_az.isChecked():
+            cur = float(self.sp_park_az.value())
+            if self._home_value_changed(self._snapshot_home_az, cur):
+                try:
+                    dst = int(self.sp_slave_az.value())
+                except Exception:
+                    dst = int(getattr(c, "slave_az", 0) or 0)
+                if dst > 0:
+                    self.lbl_status.setText(t("settings.park_home_saving_az"))
+                    QApplication.processEvents()
+                    r = c.sync_ui_command_response(
+                        dst,
+                        "SETHOMEPOS",
+                        self._format_home_pos_param(cur),
+                        "ACK_SETHOMEPOS",
+                        timeout_s=1.2,
+                    )
+                    if _sync_got_ack_value(r):
+                        self._snapshot_home_az = cur
+                        try:
+                            c.remember_home_pos_deg(c.az, cur)
+                        except Exception:
+                            pass
+                    else:
+                        all_ok = False
+
+        if self.chk_enable_el.isChecked():
+            cur = float(self.sp_park_el.value())
+            if self._home_value_changed(self._snapshot_home_el, cur):
+                try:
+                    dst = int(self.sp_slave_el.value())
+                except Exception:
+                    dst = int(getattr(c, "slave_el", 0) or 0)
+                if dst > 0:
+                    self.lbl_status.setText(t("settings.park_home_saving_el"))
+                    QApplication.processEvents()
+                    r = c.sync_ui_command_response(
+                        dst,
+                        "SETHOMEPOS",
+                        self._format_home_pos_param(cur),
+                        "ACK_SETHOMEPOS",
+                        timeout_s=1.2,
+                    )
+                    if _sync_got_ack_value(r):
+                        self._snapshot_home_el = cur
+                        try:
+                            c.remember_home_pos_deg(c.el, cur)
+                        except Exception:
+                            pass
+                    else:
+                        all_ok = False
+        return all_ok
 
     def _update_antenna_offset_enabled(self) -> None:
         """Versatz-Felder aktivieren: Daten vom Rotor ODER Giveup. Nur AZ."""
@@ -3506,6 +3817,9 @@ class SettingsWindow(QDialog):
             self.cfg.setdefault("ui", {})["minimize_to_tray"] = bool(
                 self.chk_minimize_to_tray.isChecked()
             )
+        self.cfg.setdefault("ui", {})["ask_park_on_exit"] = bool(
+            self.chk_ask_park_on_exit.isChecked()
+        )
         self.cfg.setdefault("ui", {})["udp_ucxlog_enabled"] = bool(self.chk_udp_ucxlog.isChecked())
         self.cfg.setdefault("ui", {})["udp_ucxlog_port"] = int(self.sp_udp_ucxlog_port.value())
         self.cfg.setdefault("ui", {})["udp_ucxlog_listen_host"] = self.ed_udp_ucxlog_listen.text().strip()
@@ -3778,6 +4092,15 @@ class SettingsWindow(QDialog):
                 self,
                 t("settings.title"),
                 t("settings.controller_status_write_fail"),
+            )
+
+        if not self._save_park_home_if_changed():
+            self.lbl_status.setText(t("settings.park_home_write_fail"))
+            QApplication.processEvents()
+            QMessageBox.warning(
+                self,
+                t("settings.title"),
+                t("settings.park_home_write_fail"),
             )
 
         self.save_cfg_cb(self.cfg)

@@ -107,3 +107,29 @@ def test_save_config_writes_active_profile(profile_env):
     app_config.save_config(cfg)
     raw = json.loads((tmp_path / "profiles" / f"{pid}.json").read_text(encoding="utf-8"))
     assert raw.get("ui", {}).get("force_dark_mode") is False
+
+
+def test_export_import_profile(profile_env):
+    tmp_path, _ac, ps = profile_env
+    ps.ensure_profiles_migrated()
+    cfg = ps.load_active_config()
+    cfg.setdefault("rotor_bus", {})["slave_az"] = 42
+    ps.save_active_config(cfg)
+    out = tmp_path / "export" / "station.json"
+    ps.export_profile("default", out)
+    raw = json.loads(out.read_text(encoding="utf-8"))
+    assert raw.get("format") == ps.PROFILE_EXPORT_FORMAT
+    assert raw.get("config", {}).get("rotor_bus", {}).get("slave_az") == 42
+
+    new_id = ps.import_profile(out)
+    assert new_id != "default"
+    imported = ps.load_profile_config(new_id)
+    assert imported.get("rotor_bus", {}).get("slave_az") == 42
+    assert any(p["id"] == new_id for p in ps.list_profiles())
+
+    # Reine Config-JSON ebenfalls importierbar
+    plain = tmp_path / "plain.json"
+    plain.write_text(json.dumps({"rotor_bus": {"slave_az": 55}, "ui": {}}), encoding="utf-8")
+    pid2 = ps.import_profile(plain, name="Plain Import")
+    assert ps.load_profile_config(pid2).get("rotor_bus", {}).get("slave_az") == 55
+    assert any(p["id"] == pid2 and p["name"] == "Plain Import" for p in ps.list_profiles())

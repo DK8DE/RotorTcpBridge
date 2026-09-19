@@ -170,6 +170,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "force_dark_mode": True,
         # Wenn True: Hauptfenster beim Minimieren ausblenden (Infobereich/Tray nötig).
         "minimize_to_tray": False,
+        # Wenn True: beim Beenden nachfragen, ob der Rotor in Parkposition ist.
+        "ask_park_on_exit": False,
         # Wenn True: ACCBINS-Heatmap (Strom/Last) als 5px-Ring um den Kompass anzeigen.
         "compass_strom_az": False,
         "compass_strom_el": False,

@@ -341,3 +341,59 @@ def switch_profile(profile_id: str) -> Dict[str, Any]:
     idx["active_id"] = pid
     save_index(idx)
     return load_profile_config(pid)
+
+
+PROFILE_EXPORT_FORMAT = "RotorTcpBridge-profile"
+PROFILE_EXPORT_VERSION = 1
+
+
+def export_profile(profile_id: str, path: Path | str) -> None:
+    """Profil als JSON-Datei exportieren (inkl. Anzeigename)."""
+    ensure_profiles_migrated()
+    pid = str(profile_id or "").strip()
+    meta = get_profile_meta(pid)
+    if meta is None:
+        raise ValueError(f"unknown profile: {profile_id}")
+    cfg = load_profile_config(pid)
+    payload = {
+        "format": PROFILE_EXPORT_FORMAT,
+        "version": PROFILE_EXPORT_VERSION,
+        "name": str(meta.get("name") or pid),
+        "config": cfg,
+    }
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
+def import_profile(path: Path | str, *, name: Optional[str] = None) -> str:
+    """Profil aus JSON importieren → neues Profil (nie Default überschreiben).
+
+    Akzeptiert Export-Wrapper oder reine Config-JSON (wie profiles/*.json).
+    """
+    ensure_profiles_migrated()
+    raw = _read_json_file(Path(path))
+    if raw is None:
+        raise ValueError("invalid or unreadable JSON")
+    display = str(name or "").strip()
+    if (
+        str(raw.get("format") or "") == PROFILE_EXPORT_FORMAT
+        and isinstance(raw.get("config"), dict)
+    ):
+        cfg_raw = raw["config"]
+        if not display:
+            display = str(raw.get("name") or "").strip()
+    else:
+        # Reine Config-Datei
+        cfg_raw = raw
+    if not isinstance(cfg_raw, dict):
+        raise ValueError("invalid profile config")
+    # Heuristik: echte App-Config hat typische Top-Level-Keys
+    if not any(k in cfg_raw for k in ("rotor_bus", "hardware_link", "ui", "pst_server")):
+        raise ValueError("file does not look like a RotorTcpBridge profile")
+    cfg = _normalize_loaded_config(cfg_raw)
+    if not display:
+        stem = Path(path).stem.strip() or "Import"
+        display = stem
+    return _append_profile(display, cfg)

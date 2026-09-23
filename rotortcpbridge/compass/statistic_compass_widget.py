@@ -226,19 +226,34 @@ def paint_bins_heatmap_ring(
         src_i = (i - offset_bin) % n_used
         seg_color = val_to_color(vals[src_i])
         if elevation:
+            # EL-Anzeige: 0° links, 90° oben, 180° rechts (Qt-Winkel 180°−EL, Span CW)
             start_rad = math.radians(comp_start)
             end_rad = math.radians(comp_start + comp_span)
+            qt_start = 180.0 - comp_start
             path = QPainterPath()
-            path.moveTo(cx + inner_r * math.cos(start_rad), cy - inner_r * math.sin(start_rad))
-            path.arcTo(cx - outer_r, cy - outer_r, 2 * outer_r, 2 * outer_r, comp_start, comp_span)
-            path.lineTo(cx + inner_r * math.cos(end_rad), cy - inner_r * math.sin(end_rad))
+            path.moveTo(
+                cx - inner_r * math.cos(start_rad),
+                cy - inner_r * math.sin(start_rad),
+            )
+            path.arcTo(
+                cx - outer_r,
+                cy - outer_r,
+                2 * outer_r,
+                2 * outer_r,
+                qt_start,
+                -comp_span,
+            )
+            path.lineTo(
+                cx - inner_r * math.cos(end_rad),
+                cy - inner_r * math.sin(end_rad),
+            )
             path.arcTo(
                 cx - inner_r,
                 cy - inner_r,
                 2 * inner_r,
                 2 * inner_r,
-                comp_start + comp_span,
-                -comp_span,
+                180.0 - (comp_start + comp_span),
+                comp_span,
             )
             path.closeSubpath()
         else:
@@ -468,7 +483,7 @@ class StatisticCompassWidget(QWidget):
         self.update()
 
     def _geom(self) -> tuple[float, float, float]:
-        """(cx, cy, r) – 15px Rand. Bei EL 90°: unten links; bei 180°: unten mittig."""
+        """(cx, cy, r) – 15px Rand. Bei EL 90°: unten rechts; bei 180°: unten mittig."""
         rect = self.rect().adjusted(15, 15, -15, -15)
         r_base = float(min(rect.width(), rect.height())) / 2.0
         if self._elevation:
@@ -477,7 +492,8 @@ class StatisticCompassWidget(QWidget):
                 cx = float(rect.center().x())
                 cy = float(rect.bottom())
             else:
-                cx = float(rect.left())
+                # 0° links / 90° oben → Anker unten rechts
+                cx = float(rect.right())
                 cy = float(rect.bottom())
         else:
             cx = float(rect.center().x())
@@ -496,18 +512,19 @@ class StatisticCompassWidget(QWidget):
                 arc_rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
                 painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawArc(arc_rect, int(0 * 16), int(arc * 16))
-                painter.drawLine(QPointF(cx, cy), QPointF(cx + r, cy))
-                end_x = cx + math.cos(math.radians(arc)) * r
+                # EL: 0° links → Qt-Start 180°, Span CW (negativ)
+                painter.drawArc(arc_rect, int(180 * 16), int(-arc * 16))
+                painter.drawLine(QPointF(cx, cy), QPointF(cx - r, cy))  # 0°
+                end_x = cx - math.cos(math.radians(arc)) * r
                 end_y = cy - math.sin(math.radians(arc)) * r
                 painter.drawLine(QPointF(cx, cy), QPointF(end_x, end_y))
                 tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
                 painter.setPen(tick_pen)
                 for a in range(0, int(arc) + 1, 15):
                     rad = math.radians(a)
-                    x1 = cx + math.cos(rad) * (r * 0.85)
+                    x1 = cx - math.cos(rad) * (r * 0.85)
                     y1 = cy - math.sin(rad) * (r * 0.85)
-                    x2 = cx + math.cos(rad) * r
+                    x2 = cx - math.cos(rad) * r
                     y2 = cy - math.sin(rad) * r
                     painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
             else:
@@ -557,9 +574,13 @@ class StatisticCompassWidget(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             if self._elevation:
                 arc = float(self._el_max_deg)
-                painter.drawArc(QRectF(cx - r, cy - r, 2 * r, 2 * r), int(0 * 16), int(arc * 16))
-                painter.drawLine(QPointF(cx, cy), QPointF(cx + r, cy))
-                end_x = cx + math.cos(math.radians(arc)) * r
+                painter.drawArc(
+                    QRectF(cx - r, cy - r, 2 * r, 2 * r),
+                    int(180 * 16),
+                    int(-arc * 16),
+                )
+                painter.drawLine(QPointF(cx, cy), QPointF(cx - r, cy))
+                end_x = cx - math.cos(math.radians(arc)) * r
                 end_y = cy - math.sin(math.radians(arc)) * r
                 painter.drawLine(QPointF(cx, cy), QPointF(end_x, end_y))
             else:

@@ -209,11 +209,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._el_rotor_type_requested: bool = False
         # Weitere Reads passieren explizit in den Einstellungen.
         self._antenna_bootstrap_requested: bool = False
-        # GETASELECT an Controller (cont_id) einmal pro Verbindung → UI an HW-Auswahl
+        # GETASELECT am AZ-Rotor einmal pro Verbindung → UI an NVS-Auswahl
         self._antenna_selection_bootstrap_requested: bool = False
-        # RS485-Broadcast SETASELECT (DST 255): arg = Antenne 1–3 (Hintergrund-Thread → UI per QTimer marshallen)
+        # SETASELECT (AZ-Slave oder Bus-Mitschnitt): arg = Antenne 1–3
         self.on_setaselect_from_bus: Optional[Callable[[int], None]] = None
-        # ACK_GETASELECT (Connect-Sync): nur UI/Config, kein Nachdrehen
+        # ACK_GETASELECT (Connect-Sync vom AZ): nur UI/Config, kein Nachdrehen
         self.on_aselect_query_result: Optional[Callable[[int], None]] = None
         # Callback: wird aufgerufen, wenn SETREF kein ACK erhält (Timeout/NAK). arg=Achsname "AZ"/"EL".
         # Wichtig: wird aus einem Hintergrund-Thread aufgerufen → UI muss QTimer.singleShot nutzen.
@@ -692,17 +692,17 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 )
 
     def request_antenna_selection(self) -> None:
-        """Aktuelle Antennenauswahl vom Hardware-Controller lesen (GETASELECT).
+        """Aktuelle Antennenauswahl vom AZ-Rotor lesen (GETASELECT).
 
-        Geht an ``controller_hw.cont_id`` (``setposcc_controller_src_id``). Antwort
-        ``ACK_GETASELECT:<1..3>`` aktualisiert die UI über ``on_aselect_query_result``
-        (ohne Rotor-Nachdrehen). Fehlt der Befehl in der Firmware, bleibt die
-        Config-Auswahl unverändert.
+        Antwort ``ACK_GETASELECT:<1..3>`` aktualisiert die UI über
+        ``on_aselect_query_result`` (ohne Rotor-Nachdrehen). Nur wenn AZ aktiv.
         """
+        if not self.enable_az:
+            return
         try:
-            dst = int(getattr(self, "setposcc_controller_src_id", 0) or 0)
+            dst = int(self.slave_az)
         except Exception:
-            dst = 0
+            return
         if dst < 1 or dst > 254:
             return
         self.hw.send_request(
@@ -1053,14 +1053,26 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         return build(int(self.master_id), int(dst), str(cmd).strip(), str(params))
 
     def broadcast_set_aselect(self, antenna_id_1_to_3: int) -> None:
-        """Broadcast (DST 255): gewählte Antenne 1–3 melden (SETASELECT). Keine Antwort erwartet."""
+        """Gewählte Antenne 1–3 am AZ-Rotor speichern (SETASELECT an slave_az).
+
+        Name historisch „broadcast“; Speicherung liegt im AZ-Rotor-NVS. Ohne AZ kein Send.
+        Andere Master auf dem Bus (SETASELECT an AZ oder früher DST 255) werden mitgeschnitten.
+        """
+        if not self.enable_az:
+            return
         try:
             n = int(antenna_id_1_to_3)
             if n < 1 or n > 3:
                 return
         except Exception:
             return
-        line = build(int(self.master_id), int(BROADCAST_DST), "SETASELECT", str(n))
+        try:
+            dst = int(self.slave_az)
+        except Exception:
+            return
+        if dst < 1 or dst > 254:
+            return
+        line = build(int(self.master_id), dst, "SETASELECT", str(n))
         # Direkt senden: Worker blockiert die Queue bei ausstehendem Poll-ACK
         self.hw.send_line_fire_and_forget(line)
 
@@ -1236,6 +1248,12 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.az.last_set_sent_target_d10 = d10
         self.az.last_set_sent_ts = time.time()
         self.az.moving = False
+        # Veraltete Dipol-/Anzeige-Peilung verwerfen — sonst bleibt der Sollzeiger am alten Winkel.
+        try:
+            self.az_dipole_display_bearing = None
+            self.az_dipole_last_rotor_az = None
+        except Exception:
+            pass
 
     def align_az_bearing_after_antenna_switch(
         self, old_idx: int, new_idx: int, cfg: Optional[dict] = None
@@ -1620,10 +1638,17 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     ext_panel = bool(
                         from_bus_sniff and self._is_external_panel_controller(bus_src)
                     )
-                    if ext_panel:
-                        # Encoder CC→DG: Soll-Nadel/Zahl behalten (compass_target), nicht löschen.
+                    foreign_master = False
+                    if from_bus_sniff and bus_src is not None:
+                        try:
+                            foreign_master = int(bus_src) != int(self.master_id)
+                        except Exception:
+                            foreign_master = True
+                    if from_bus_sniff and (ext_panel or foreign_master):
+                        # Fremder Master / Encoder CC→DG: Sollzeiger auf Bus-Ziel setzen.
+                        # Ohne compass_target behält die Kompass-UI ggf. ein altes _target_az.
                         axis.compass_target_d10 = int(d10)
-                        axis.external_panel_move_active = True
+                        axis.external_panel_move_active = bool(ext_panel)
                     else:
                         axis.compass_target_d10 = None
                         axis.external_panel_move_active = False

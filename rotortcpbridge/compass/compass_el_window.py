@@ -277,8 +277,9 @@ class ElevationCompassWidget(QWidget):
     def _geom(self) -> tuple[float, float, float]:
         """Hilfsgeometrie: (cx, cy, r)
 
-        90°: Viertelkreis, Anker unten links.
+        90°: Viertelkreis, Anker unten rechts (Bogen nach links/oben).
         180°: Halbkreis, Anker unten mittig.
+        Skala: 0° links, 90° oben, 180° rechts.
         """
         w = max(1, int(self.width()))
         h = max(1, int(self.height()))
@@ -302,9 +303,16 @@ class ElevationCompassWidget(QWidget):
             label_pad_px = r * label_pad
             bbox_w = r + label_pad_px
             bbox_h = r + label_pad_px
-            cx = (w - bbox_w) / 2.0
+            # Bogen nach links/oben → Mittelpunkt unten rechts
+            cx = (w + bbox_w) / 2.0
             cy = (h + bbox_h) / 2.0
         return cx, cy, r
+
+    @staticmethod
+    def _el_xy(cx: float, cy: float, radius: float, deg: float) -> tuple[float, float]:
+        """EL-Winkel → Bildschirm: 0° links, 90° oben, 180° rechts."""
+        rad = math.radians(float(deg))
+        return cx - math.cos(rad) * radius, cy - math.sin(rad) * radius
 
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
@@ -322,11 +330,14 @@ class ElevationCompassWidget(QWidget):
         if dist < inner or dist > outer:
             return super().mousePressEvent(event)
 
-        # Winkel: 0° = rechts (Horizont), 90° = oben (Zenit), 180° = links
+        # Math: 0°=rechts → EL: 0°=links, 90°=oben, 180°=rechts
         rad = math.atan2(dy, dx)
-        deg = math.degrees(rad)
-        if deg < 0.0:
-            deg = 0.0
+        math_deg = math.degrees(rad)
+        if math_deg < 0.0:
+            # Unter dem Horizont → auf nächsten Endpunkt abbilden
+            deg = 0.0 if dx < 0.0 else float(self._max_deg)
+        else:
+            deg = 180.0 - math_deg
         deg = clamp_el(deg, self._max_deg)
 
         deg = round(float(deg), int(self._angle_decimals))
@@ -348,32 +359,30 @@ class ElevationCompassWidget(QWidget):
             cx, cy, r = self._geom()
             arc_span = int(self._max_deg)
 
-            # Rahmen: Arc + Radien
+            # Rahmen: Arc + Radien (Qt: 0°=rechts CCW; EL 0°=links → Start 180°, Span CW negativ)
             painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
             arc_rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-            # Startwinkel 0° (3 Uhr), Spannweite CCW
-            painter.drawArc(arc_rect, 0 * 16, arc_span * 16)
-            painter.drawLine(QPointF(cx, cy), QPointF(cx + r, cy))  # 0°
+            painter.drawArc(arc_rect, 180 * 16, -arc_span * 16)
+            x0, y0 = self._el_xy(cx, cy, r, 0.0)
+            painter.drawLine(QPointF(cx, cy), QPointF(x0, y0))  # 0° links
             if arc_span >= 180:
-                painter.drawLine(QPointF(cx, cy), QPointF(cx - r, cy))  # 180°
+                x180, y180 = self._el_xy(cx, cy, r, 180.0)
+                painter.drawLine(QPointF(cx, cy), QPointF(x180, y180))  # 180° rechts
             else:
-                painter.drawLine(QPointF(cx, cy), QPointF(cx, cy - r))  # 90°
+                x90, y90 = self._el_xy(cx, cy, r, 90.0)
+                painter.drawLine(QPointF(cx, cy), QPointF(x90, y90))  # 90° oben
 
             # Teilstriche
             tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
             painter.setPen(tick_pen)
             for a in range(0, arc_span + 1, 5):
-                rad = math.radians(a)
-                x1 = cx + math.cos(rad) * (r * 0.90)
-                y1 = cy - math.sin(rad) * (r * 0.90)
+                x1, y1 = self._el_xy(cx, cy, r * 0.90, a)
                 if a % 15 == 0:
-                    x2 = cx + math.cos(rad) * (r * 1.00)
-                    y2 = cy - math.sin(rad) * (r * 1.00)
+                    x2, y2 = self._el_xy(cx, cy, r * 1.00, a)
                 else:
-                    x2 = cx + math.cos(rad) * (r * 0.96)
-                    y2 = cy - math.sin(rad) * (r * 0.96)
+                    x2, y2 = self._el_xy(cx, cy, r * 0.96, a)
                 painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
             # Grad-Beschriftung
@@ -389,9 +398,7 @@ class ElevationCompassWidget(QWidget):
             label_step = 15 if arc_span >= 180 else 10
             for a in range(0, arc_span + 1, label_step):
                 txt = f"{a}°"
-                rad = math.radians(a)
-                tx = cx + math.cos(rad) * label_r
-                ty = cy - math.sin(rad) * label_r
+                tx, ty = self._el_xy(cx, cy, label_r, a)
                 w = fm_deg.horizontalAdvance(txt)
                 h = fm_deg.height()
                 painter.drawText(QPointF(tx - w / 2.0, ty + h / 3.0), txt)
@@ -478,11 +485,11 @@ class ElevationCompassWidget(QWidget):
         color: QColor,
         width: float,
     ) -> None:
-        """Pfeil wie AZ: 3D-Verlauf und gefüllte Dreiecksspitze (EL: 0°=rechts)."""
+        """Pfeil wie AZ: 3D-Verlauf und gefüllte Dreiecksspitze (EL: 0°=links)."""
         rad = math.radians(float(deg))
-        # EL: 0° Horizont rechts, 90° Zenit
-        fx, fy = math.cos(rad), -math.sin(rad)
-        rx, ry = math.sin(rad), math.cos(rad)
+        # EL: 0° Horizont links, 90° Zenit, 180° rechts
+        fx, fy = -math.cos(rad), -math.sin(rad)
+        rx, ry = -math.sin(rad), math.cos(rad)
         half_w = max(2.0, float(width) / 2.0)
         head_len = max(11.0, float(length) * 0.13)
         shaft_len = max(half_w * 1.2, float(length) - head_len)

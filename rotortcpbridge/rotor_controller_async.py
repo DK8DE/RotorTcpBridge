@@ -50,6 +50,10 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
             # Deshalb hier nicht hart auf DST filtern, sonst gehen valide TCP-Mitschnitte verloren.
             if cmd_u == "SETPOSCC":
                 return True
+            # SETASELECT: SRC beliebig (jeder Master); DST kann AZ, Broadcast, unsere Master-ID
+            # oder eine fremde Master-ID sein — Filter erst im Handler anhand Params 1..3.
+            if cmd_u == "SETASELECT" or cmd_u.startswith("ACK_SETASELECT"):
+                return True
             if d == mid:
                 return True
             saz = int(self.slave_az)
@@ -59,9 +63,6 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
             # SETPOSDG an unseren Rotor (Mitschnitt; auch bei gleicher Master-ID wie wir,
             # z. B. zweiter Rechner / Echo auf dem Bus – Ziel muss trotzdem ins UI)
             if cmd_u == "SETPOSDG" and (d == saz or d == sel):
-                return True
-            # Broadcast: gewählte Antenne (alle Teilnehmer)
-            if cmd_u == "SETASELECT" and d == int(BROADCAST_DST):
                 return True
             # Broadcast-Fehler #SRC:255:ERR:code:CS$ (Firmware meldet ohne GETERR)
             if cmd_u == "ERR" and d == int(BROADCAST_DST) and (s == saz or s == sel):
@@ -76,23 +77,50 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
         if not self._tel_dst_allowed(tel):
             return
         cmd_u = str(tel.cmd or "").strip().upper()
-        # Broadcast SETASELECT → UI (Kompass/Karte)
-        if cmd_u == "SETASELECT" and int(tel.dst) == int(BROADCAST_DST):
-            # Checksumme nicht zwingend: Fremdgerät / Sniffer kann leicht abweichen
+
+        def _aselect_slot_from_params(raw: object) -> int | None:
+            """Antenne 1..3 aus PARAMS; SRC/DST egal (jeder Master)."""
             try:
-                n = parse_int(str(tel.params).strip().split(";")[0])
-                if n is not None and 1 <= n <= 3:
+                # Erster Zahlenwert (auch „2,00“ / „2;20“)
+                n = parse_int(str(raw or "").strip().split(";")[0])
+            except Exception:
+                n = None
+            if n is None:
+                try:
+                    n = parse_int(str(raw or "").strip().split(":")[0])
+                except Exception:
+                    n = None
+            if n is not None and 1 <= int(n) <= 3:
+                return int(n)
+            return None
+
+        # SETASELECT von beliebigem Master → UI (DST: AZ, Broadcast, unsere ID, fremde Master-ID, …)
+        if cmd_u == "SETASELECT":
+            try:
+                if not self.enable_az:
+                    return
+                n = _aselect_slot_from_params(tel.params)
+                if n is not None:
                     fn = getattr(self, "on_setaselect_from_bus", None)
                     if callable(fn):
                         fn(int(n))
             except Exception:
                 pass
             return
-        # Connect-Sync: aktuelle Auswahl vom Controller (GETASELECT → ACK)
+        # Connect-Sync: aktuelle Auswahl vom AZ-Rotor (GETASELECT → ACK)
         if cmd_u.startswith("ACK_GETASELECT"):
             try:
-                n = parse_int(str(tel.params).strip().split(";")[0])
-                if n is not None and 1 <= n <= 3:
+                if not self.enable_az:
+                    return
+                # Antwort vom AZ-Slave (an uns oder an fremden Master — Mitschnitt)
+                try:
+                    src_ok = int(tel.src) == int(self.slave_az)
+                except Exception:
+                    src_ok = False
+                if not src_ok:
+                    return
+                n = _aselect_slot_from_params(tel.params)
+                if n is not None:
                     fn = getattr(self, "on_aselect_query_result", None)
                     if callable(fn):
                         fn(int(n))
@@ -100,6 +128,25 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         fn2 = getattr(self, "on_setaselect_from_bus", None)
                         if callable(fn2):
                             fn2(int(n))
+            except Exception:
+                pass
+            return
+        # ACK_SETASELECT vom AZ (Antwort an uns oder fremden Master): Auswahl übernehmen
+        if cmd_u.startswith("ACK_SETASELECT"):
+            try:
+                if not self.enable_az:
+                    return
+                try:
+                    src_ok = int(tel.src) == int(self.slave_az)
+                except Exception:
+                    src_ok = False
+                if not src_ok:
+                    return
+                n = _aselect_slot_from_params(tel.params)
+                if n is not None:
+                    fn = getattr(self, "on_setaselect_from_bus", None)
+                    if callable(fn):
+                        fn(int(n))
             except Exception:
                 pass
             return
@@ -1206,5 +1253,38 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         except Exception:
                             pass
                         return
+                    # Mitlauf / fremder Master: eigene Kette ist gestoppt — ACK mitschneiden,
+                    # wenn Stromring (oder Statistik) die Bins braucht.
+                    try:
+                        foreign_ack = int(tel.dst) != int(self.master_id)
+                    except Exception:
+                        foreign_ack = False
+                    in_follow = False
+                    try:
+                        in_follow = bool(
+                            getattr(axis_state, "foreign_follow_active", False)
+                        ) or bool(self.foreign_master_yield_active())
+                    except Exception:
+                        in_follow = False
+                    want_sniff = False
+                    try:
+                        want_sniff = bool(
+                            self._want_sniff_foreign_acc_bins(str(axis_name or ""))
+                        )
+                    except Exception:
+                        want_sniff = False
+                    if want_sniff and (foreign_ack or in_follow):
+                        if foreign_ack:
+                            try:
+                                self.note_foreign_master_activity(
+                                    axis_state, set_target=False
+                                )
+                            except Exception:
+                                pass
+                        try:
+                            self._sniff_apply_acc_bins_ack(axis_state, tel)
+                        except Exception:
+                            pass
+                    return
         except Exception:
             pass

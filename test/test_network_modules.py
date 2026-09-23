@@ -9,12 +9,8 @@ from pathlib import Path
 from rotortcpbridge.network_modules import (
     NetworkModule,
     build_netat_line,
-    build_netp_cmd,
     build_sock_cmd,
-    build_usr_line,
     build_wan_cmd,
-    build_wann_cmd,
-    build_wsdns_cmd,
     extract_ok_payload,
     ip_octets_to_str,
     ip_str_to_octets,
@@ -22,10 +18,8 @@ from rotortcpbridge.network_modules import (
     modules_from_cfg,
     modules_to_cfg,
     parse_linksta_response,
-    parse_netp_response,
     parse_sock_response,
     parse_wan_response,
-    parse_wann_response,
     status_has_data,
     vendor_for_port,
 )
@@ -35,7 +29,7 @@ class TestOkPayload(unittest.TestCase):
     def test_ok_upper(self):
         self.assertEqual(extract_ok_payload("\r\n+OK=NE2-D11\r\n"), "NE2-D11")
 
-    def test_ok_lower_usr(self):
+    def test_ok_lower(self):
         self.assertEqual(
             extract_ok_payload("+ok=static,192.168.1.10,255.255.255.0,192.168.1.1\r\n\r\n"),
             "static,192.168.1.10,255.255.255.0,192.168.1.1",
@@ -94,22 +88,6 @@ class TestWan(unittest.TestCase):
         )
 
 
-class TestWannUsr(unittest.TestCase):
-    def test_parse_wann(self):
-        p = parse_wann_response("static,192.168.1.50,255.255.255.0,192.168.1.1")
-        self.assertEqual(p["mode"], "STATIC")
-        self.assertEqual(p["ip"], "192.168.1.50")
-
-    def test_build_wann(self):
-        self.assertEqual(
-            build_wann_cmd("STATIC", "10.0.0.2", "255.255.255.0", "10.0.0.1"),
-            "AT+WANN=static,10.0.0.2,255.255.255.0,10.0.0.1",
-        )
-
-    def test_wsdns(self):
-        self.assertEqual(build_wsdns_cmd("8.8.8.8"), "AT+WSDNS=8.8.8.8")
-
-
 class TestSock(unittest.TestCase):
     def test_parse_ne2_with_link(self):
         p = parse_sock_response("0,TCPC,192.168.3.3,8888")
@@ -137,28 +115,6 @@ class TestSock(unittest.TestCase):
         )
 
 
-class TestNetp(unittest.TestCase):
-    def test_parse_client(self):
-        p = parse_netp_response("TCP,CLIENT,8899,192.168.1.1")
-        self.assertEqual(p["mode"], "TCPC")
-        self.assertEqual(p["remote_port"], "8899")
-        self.assertEqual(p["remote_ip"], "192.168.1.1")
-
-    def test_parse_server(self):
-        p = parse_netp_response("TCP,SERVER,8899,0.0.0.0")
-        self.assertEqual(p["mode"], "TCPS")
-
-    def test_build_netp(self):
-        self.assertEqual(
-            build_netp_cmd("TCPC", "192.168.1.1", 8899),
-            "AT+NETP=TCP,CLIENT,8899,192.168.1.1",
-        )
-        self.assertEqual(
-            build_netp_cmd("TCPS", "0.0.0.0", 8899),
-            "AT+NETP=TCP,SERVER,8899,0.0.0.0",
-        )
-
-
 class TestPrefixes(unittest.TestCase):
     def test_netat_from_at(self):
         self.assertEqual(build_netat_line("NETAT", "AT+WAN"), "NETAT+WAN")
@@ -167,9 +123,6 @@ class TestPrefixes(unittest.TestCase):
             "NETAT+WAN=STATIC,1.2.3.4,255.255.255.0,1.2.3.1,8.8.8.8,8.8.4.4",
         )
 
-    def test_usr_prefix(self):
-        self.assertEqual(build_usr_line("USR", "AT+WANN"), "USRAT+WANN")
-        self.assertEqual(build_usr_line("USR", "AT+NETP=TCP,CLIENT,1,2"), "USRAT+NETP=TCP,CLIENT,1,2")
 
 
 class TestLinksta(unittest.TestCase):
@@ -197,7 +150,7 @@ class TestModuleSerde(unittest.TestCase):
         self.assertEqual(back[0].vendor, "ne2")
 
     def test_vendor_for_port(self):
-        self.assertEqual(vendor_for_port(8899), "usr_dr164")
+        self.assertEqual(vendor_for_port(9999), "generic")
         self.assertEqual(vendor_for_port(8886), "ne2")
 
     def test_web_creds_roundtrip(self):
@@ -295,33 +248,6 @@ class TestEbyteWebMap(unittest.TestCase):
         self.assertEqual(st["sock"]["mode"], "TCPS")
         self.assertEqual(st["sock"]["remote_port"], "8886")
         self.assertEqual(st["source"], "web_na111")
-
-    def test_map_usr_web(self):
-        from rotortcpbridge.network_modules import (
-            map_usr_web_to_status,
-            parse_html_js_string_vars,
-            usr_web_sock_mode,
-        )
-
-        html = 'var wan_setting_ip = "192.168.0.249";\nvar wan_setting_dhcp = "STATIC";\n'
-        self.assertEqual(parse_html_js_string_vars(html)["wan_setting_ip"], "192.168.0.249")
-        self.assertEqual(usr_web_sock_mode("TCP", "SERVER"), "TCPS")
-        st = map_usr_web_to_status(
-            {"cover_mid": "USR-DR164", "cover_sta_mac": "D4AD20E03DB0", "cover_ver": "V1"},
-            {
-                "wan_setting_dhcp": "STATIC",
-                "wan_setting_ip": "192.168.0.249",
-                "wan_setting_msk": "255.255.255.0",
-                "wan_setting_gw": "192.168.0.1",
-                "wan_setting_dns": "192.168.0.1",
-            },
-            {"net_pro": "TCP", "net_cs": "SERVER", "net_port": "8899", "net_ip": "0.0.0.0"},
-        )
-        self.assertTrue(status_has_data(st))
-        self.assertEqual(st["wan"]["ip"], "192.168.0.249")
-        self.assertEqual(st["sock"]["mode"], "TCPS")
-        self.assertEqual(st["mac"], "D4-AD-20-E0-3D-B0")
-        self.assertEqual(st["source"], "web_usr")
 
 
 # Fixtures aus mitschnitt/*.pcapng (UDP 1901/1902)

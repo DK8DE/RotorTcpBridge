@@ -3,7 +3,7 @@
 Unterstuetzte Hersteller:
   * Ebyte NE2 – Auslesen/Schreiben per UDP-Broadcast (1901/1902), wie Original-Tool
   * Ebyte NA11x – Web-API bzw. UDP; Suche/IP-Vergabe per UDP 1901/1902
-  * USR-DR164 – Web (HTTP Basic) bzw. Transparent-AT
+  * DK8DE WLAN/RS485 – UDP 8880 / Web
 """
 
 from __future__ import annotations
@@ -25,17 +25,15 @@ from urllib.parse import urlencode
 
 VENDOR_NE2 = "ne2"
 VENDOR_NA11X = "na11x"
-VENDOR_USR = "usr_dr164"
 VENDOR_DK8DE = "dk8de_wlan"
 VENDOR_GENERIC = "generic"
 
-VALID_VENDORS = (VENDOR_NE2, VENDOR_NA11X, VENDOR_USR, VENDOR_DK8DE, VENDOR_GENERIC)
+VALID_VENDORS = (VENDOR_NE2, VENDOR_NA11X, VENDOR_DK8DE, VENDOR_GENERIC)
 VALID_ROLES = ("server", "client", "bus_gateway")
 
 DEFAULT_AT_PORTS = {
     VENDOR_NE2: 8886,
     VENDOR_NA11X: 8886,  # NA111-M typisch 8886 (aeltere Docs: 8887)
-    VENDOR_USR: 8899,
     VENDOR_DK8DE: 8886,  # Nutzdaten-Port; AT/Discovery auf config_port (8880)
     VENDOR_GENERIC: 8886,
 }
@@ -45,7 +43,6 @@ DEFAULT_CONFIG_PORTS = {
 DEFAULT_WEB_PORTS = {
     VENDOR_NE2: 80,
     VENDOR_NA11X: 80,
-    VENDOR_USR: 80,
     VENDOR_DK8DE: 80,
     VENDOR_GENERIC: 80,
 }
@@ -62,7 +59,6 @@ class NetworkModule:
     web_port: int = 80
     role: str = "bus_gateway"
     netat_header: str = "NETAT"
-    cmdpw: str = "USR"
     web_user: str = "admin"
     web_password: str = "admin"
     uid: str = ""  # DK8DE: 8-stellige Hex-Geraete-ID
@@ -81,7 +77,6 @@ class NetworkModule:
             "web_port": int(self.web_port),
             "role": str(self.role or "bus_gateway").strip().lower(),
             "netat_header": str(self.netat_header or "NETAT").strip() or "NETAT",
-            "cmdpw": str(self.cmdpw or "USR").strip() or "USR",
             "web_user": str(self.web_user or "admin").strip() or "admin",
             "web_password": str(self.web_password or "admin"),
             "uid": str(self.uid or "").strip().upper(),
@@ -131,7 +126,6 @@ class NetworkModule:
             web_port=max(1, min(65535, web_port)),
             role=role,
             netat_header=str(raw.get("netat_header", "NETAT") or "NETAT").strip() or "NETAT",
-            cmdpw=str(raw.get("cmdpw", "USR") or "USR").strip() or "USR",
             web_user=str(raw.get("web_user", "admin") or "admin").strip() or "admin",
             web_password=str(raw.get("web_password", "admin") if raw.get("web_password") is not None else "admin"),
             uid=str(raw.get("uid", "") or "").strip().upper(),
@@ -184,7 +178,7 @@ def parse_wan_response(payload: str) -> Dict[str, str]:
         parts.append("")
     mode = parts[0].upper() if parts[0] else ""
     if mode not in ("DHCP", "STATIC"):
-        # USR nutzt manchmal "static"/"DHCP" – schon upper
+        # Manche Firmwares nutzen "static"/"DHCP" – schon upper
         if mode.lower() == "static":
             mode = "STATIC"
         elif mode.lower() == "dhcp":
@@ -220,38 +214,6 @@ def build_wan_cmd(
         parts.append(str(dns2 or "").strip() or "8.8.4.4")
     return "AT+WAN=" + ",".join(parts)
 
-
-def parse_wann_response(payload: str) -> Dict[str, str]:
-    """USR ``AT+WANN``: mode,address,mask,gateway (ohne DNS)."""
-    parts = [p.strip() for p in str(payload or "").split(",")]
-    while len(parts) < 4:
-        parts.append("")
-    mode = parts[0].upper()
-    if mode.lower() == "static":
-        mode = "STATIC"
-    elif mode.lower() == "dhcp":
-        mode = "DHCP"
-    return {
-        "mode": mode,
-        "ip": parts[1],
-        "mask": parts[2],
-        "gateway": parts[3],
-        "dns": "",
-        "dns2": "",
-    }
-
-
-def build_wann_cmd(mode: str, ip: str, mask: str, gateway: str) -> str:
-    m = str(mode or "STATIC").strip().upper()
-    if m not in ("DHCP", "STATIC"):
-        m = "STATIC"
-    # USR erwartet oft "static"/"DHCP"
-    m_out = "static" if m == "STATIC" else "DHCP"
-    return f"AT+WANN={m_out},{ip},{mask},{gateway}"
-
-
-def build_wsdns_cmd(dns: str) -> str:
-    return f"AT+WSDNS={str(dns or '').strip()}"
 
 
 def parse_sock_response(payload: str) -> Dict[str, str]:
@@ -303,52 +265,6 @@ def build_sock_cmd(
     return f"AT+SOCK={int(link_id)},{m},{ip},{port}"
 
 
-def parse_netp_response(payload: str) -> Dict[str, str]:
-    """USR ``AT+NETP``: protocol,CS,port,IP."""
-    parts = [p.strip() for p in str(payload or "").split(",")]
-    while len(parts) < 4:
-        parts.append("")
-    proto = parts[0].upper()
-    cs = parts[1].upper()
-    # Map auf Ebyte-aehnliche Modi
-    mode = ""
-    if proto == "TCP" and cs == "SERVER":
-        mode = "TCPS"
-    elif proto == "TCP" and cs == "CLIENT":
-        mode = "TCPC"
-    elif proto == "UDP" and cs == "SERVER":
-        mode = "UDPS"
-    elif proto == "UDP" and cs == "CLIENT":
-        mode = "UDPC"
-    else:
-        mode = f"{proto}_{cs}".strip("_")
-    return {
-        "protocol": proto,
-        "cs": cs,
-        "mode": mode,
-        "remote_port": parts[2],
-        "remote_ip": parts[3],
-        "link_id": "",
-    }
-
-
-def build_netp_cmd(mode: str, remote_ip: str, remote_port: int | str) -> str:
-    """Baut ``AT+NETP=TCP,CLIENT|SERVER,port,ip`` aus Ebyte-Modus."""
-    m = str(mode or "TCPS").strip().upper()
-    if m == "TCPS":
-        proto, cs = "TCP", "SERVER"
-    elif m == "TCPC":
-        proto, cs = "TCP", "CLIENT"
-    elif m == "UDPS":
-        proto, cs = "UDP", "SERVER"
-    elif m == "UDPC":
-        proto, cs = "UDP", "CLIENT"
-    else:
-        proto, cs = "TCP", "SERVER"
-    port = str(int(remote_port) if str(remote_port).isdigit() else remote_port)
-    ip = str(remote_ip or "0.0.0.0").strip() or "0.0.0.0"
-    return f"AT+NETP={proto},{cs},{port},{ip}"
-
 
 def build_netat_line(header: str, at_cmd: str) -> str:
     """NE2 Network Fast AT: ``NETAT+WAN`` aus Header + ``AT+WAN``."""
@@ -364,17 +280,6 @@ def build_netat_line(header: str, at_cmd: str) -> str:
         body = cmd if cmd.startswith("+") else ("+" + cmd)
     return f"{h}{body}"
 
-
-def build_usr_line(cmdpw: str, at_cmd: str) -> str:
-    """USR Transparent-AT: ``USRAT+WANN`` (kein CR hier)."""
-    pw = str(cmdpw or "USR").strip() or "USR"
-    cmd = str(at_cmd or "").strip()
-    if not cmd.upper().startswith("AT"):
-        if cmd.startswith("+"):
-            cmd = "AT" + cmd
-        else:
-            cmd = "AT+" + cmd.lstrip("+")
-    return f"{pw}{cmd}"
 
 
 def parse_linksta_response(payload: str) -> str:
@@ -524,7 +429,7 @@ def _http_req(
     basic_auth: Optional[Tuple[str, str]] = None,
     extra_headers: Optional[Dict[str, str]] = None,
 ) -> Tuple[int, bytes]:
-    """Minimaler HTTP/1.0-Client mit Content-Length (Ebyte/USR-Webserver)."""
+    """Minimaler HTTP/1.0-Client mit Content-Length (Ebyte-Webserver)."""
     import base64
 
     hdrs = {
@@ -1086,262 +991,6 @@ def write_config_web(
 
 
 # ---------------------------------------------------------------------------
-# USR-DR164 Web-UI – HTTP Basic Auth, Config als JS-Variablen in HTML
-# ---------------------------------------------------------------------------
-
-def parse_html_js_string_vars(html: str) -> Dict[str, str]:
-    """Extrahiert ``var name = "value";`` aus USR-HTML-Seiten."""
-    out: Dict[str, str] = {}
-    for m in re.finditer(r'\bvar\s+(\w+)\s*=\s*"([^"]*)"\s*;', str(html or "")):
-        out[m.group(1)] = m.group(2)
-    return out
-
-
-def format_usr_mac(raw: str) -> str:
-    s = re.sub(r"[^0-9A-Fa-f]", "", str(raw or ""))
-    if len(s) == 12:
-        return "-".join(s[i : i + 2] for i in range(0, 12, 2)).upper()
-    return str(raw or "").strip()
-
-
-def usr_web_sock_mode(net_pro: str, net_cs: str) -> str:
-    """USR Web: net_pro/net_cs → TCPS/TCPC/…"""
-    pro = str(net_pro or "").strip().upper()
-    cs = str(net_cs or "").strip().upper()
-    if pro in ("TCPS", "TCPC", "UDPS", "UDPC"):
-        return pro
-    if pro == "MQTT":
-        return "MQTTC"
-    if pro == "HTTP":
-        return "HTTPC"
-    if pro == "TCP":
-        return "TCPS" if cs == "SERVER" else "TCPC"
-    if pro == "UDP":
-        return "UDPS" if cs == "SERVER" else "UDPC"
-    return "TCPS"
-
-
-def usr_sock_mode_to_web(mode: str) -> str:
-    """Unser Modus → USR ``net_pro``-Feld (TCPS/TCPC/…)."""
-    m = str(mode or "TCPS").strip().upper()
-    if m == "MQTTC":
-        return "MQTT"
-    if m == "HTTPC":
-        return "HTTP"
-    if m in ("TCPS", "TCPC", "UDPS", "UDPC", "MQTT", "HTTP"):
-        return m
-    return "TCPS"
-
-
-def map_usr_web_to_status(
-    status_vars: Dict[str, str],
-    wan_vars: Dict[str, str],
-    net_vars: Dict[str, str],
-) -> Dict[str, Any]:
-    sock_mode = usr_web_sock_mode(net_vars.get("net_pro", ""), net_vars.get("net_cs", ""))
-    port = str(net_vars.get("net_port") or "")
-    return {
-        "model": str(status_vars.get("cover_mid") or "USR-DR164"),
-        "mac": format_usr_mac(status_vars.get("cover_sta_mac") or status_vars.get("cover_ap_mac") or ""),
-        "ver": str(status_vars.get("cover_ver") or ""),
-        "wan": {
-            "mode": str(wan_vars.get("wan_setting_dhcp") or "STATIC").upper(),
-            "ip": str(wan_vars.get("wan_setting_ip") or status_vars.get("cover_sta_ip") or "").strip(),
-            "mask": str(wan_vars.get("wan_setting_msk") or "").strip(),
-            "gateway": str(wan_vars.get("wan_setting_gw") or "").strip(),
-            "dns": str(wan_vars.get("wan_setting_dns") or "").strip(),
-            "dns2": "",
-        },
-        "sock": {
-            "mode": sock_mode,
-            "remote_ip": str(net_vars.get("net_ip") or "").strip(),
-            "remote_port": port,
-            "link_id": "",
-            "local_port": port if sock_mode in ("TCPS", "UDPS") else "",
-        },
-        "link": "",
-        "raw": {"status": status_vars, "wan": wan_vars, "net": net_vars},
-        "source": "web_usr",
-        "web_flavor": "usr",
-    }
-
-
-def _usr_auth(module: NetworkModule) -> Tuple[str, str]:
-    return (
-        str(module.web_user or "admin").strip() or "admin",
-        module.web_password if module.web_password is not None else "admin",
-    )
-
-
-def usr_web_get_page(
-    host: str,
-    web_port: int,
-    path: str,
-    auth: Tuple[str, str],
-    *,
-    timeout: float = 4.0,
-) -> str:
-    st, body = _http_req(
-        host, web_port, "GET", path, timeout=timeout, basic_auth=auth
-    )
-    if st == 401:
-        raise RuntimeError("Web-Login fehlgeschlagen (401) – Benutzer/Passwort prüfen (Basic Auth)")
-    if st != 200 or not body:
-        raise RuntimeError(f"{path} HTTP {st}")
-    return body.decode("utf-8", "replace")
-
-
-def usr_web_post_form(
-    host: str,
-    web_port: int,
-    path: str,
-    fields: Dict[str, Any],
-    auth: Tuple[str, str],
-    *,
-    timeout: float = 4.0,
-    referer: str = "",
-) -> None:
-    """POST Formular an USR-Web-UI. Referer ist Pflicht (sonst ignoriert die Firmware den POST)."""
-    body = urlencode({k: str(v) for k, v in fields.items()}).encode("utf-8")
-    extra: Dict[str, str] = {}
-    if referer:
-        extra["Referer"] = referer
-    st, _resp = _http_req(
-        host,
-        web_port,
-        "POST",
-        path,
-        body,
-        timeout=timeout,
-        content_type="application/x-www-form-urlencoded",
-        basic_auth=auth,
-        extra_headers=extra or None,
-    )
-    if st == 401:
-        raise RuntimeError("Web-Login fehlgeschlagen (401) – Benutzer/Passwort prüfen")
-    if st not in (200, 302, 303):
-        raise RuntimeError(f"POST {path} HTTP {st}")
-
-
-def read_status_web_usr(module: NetworkModule, *, timeout: float = 4.0) -> Dict[str, Any]:
-    """Liest USR-DR164-Config aus status/wireless/net HTML (Basic Auth admin/admin)."""
-    host = module.host.strip()
-    if not host:
-        raise ValueError("host empty")
-    auth = _usr_auth(module)
-    status_html = usr_web_get_page(host, module.web_port, "/status_en.html", auth, timeout=timeout)
-    wan_html = usr_web_get_page(host, module.web_port, "/wireless_en.html", auth, timeout=timeout)
-    net_html = usr_web_get_page(host, module.web_port, "/net_en.html", auth, timeout=timeout)
-    return map_usr_web_to_status(
-        parse_html_js_string_vars(status_html),
-        parse_html_js_string_vars(wan_html),
-        parse_html_js_string_vars(net_html),
-    )
-
-
-def write_config_web_usr(
-    module: NetworkModule,
-    wan: Dict[str, Any],
-    sock: Dict[str, Any],
-    *,
-    timeout: float = 4.0,
-    reboot: bool = True,
-) -> Dict[str, Any]:
-    """Schreibt WAN + Socket A ueber USR do_cmd_en.html (Basic Auth + Referer)."""
-    host = module.host.strip()
-    if not host:
-        raise ValueError("host empty")
-    auth = _usr_auth(module)
-    web_port = int(module.web_port)
-    base = f"http://{host}:{web_port}" if web_port not in (80, 443) else f"http://{host}"
-
-    wan_vars = parse_html_js_string_vars(
-        usr_web_get_page(host, web_port, "/wireless_en.html", auth, timeout=timeout)
-    )
-    net_vars = parse_html_js_string_vars(
-        usr_web_get_page(host, web_port, "/net_en.html", auth, timeout=timeout)
-    )
-
-    mode = str(wan.get("mode", "STATIC") or "STATIC").upper()
-    wan_fields = {
-        "sta_setting_ssid": wan_vars.get("sta_setting_ssid", ""),
-        "sta_setting_auth": wan_vars.get("sta_setting_auth", "WPA2PSK"),
-        "sta_setting_encry": wan_vars.get("sta_setting_encry", "AES"),
-        "sta_setting_wpakey": wan_vars.get("sta_setting_wpakey", ""),
-        "wan_setting_dhcp": "DHCP" if mode == "DHCP" else "STATIC",
-        "wan_setting_ip": str(wan.get("ip") or host),
-        "wan_setting_msk": str(wan.get("mask") or "255.255.255.0"),
-        "wan_setting_gw": str(wan.get("gateway") or "0.0.0.0"),
-        "wan_setting_dns": str(wan.get("dns") or "8.8.8.8"),
-    }
-    usr_web_post_form(
-        host,
-        web_port,
-        "/do_cmd_en.html",
-        wan_fields,
-        auth,
-        timeout=timeout,
-        referer=f"{base}/wireless_en.html",
-    )
-
-    # Verifizieren: Seite sagt immer „Saved“, auch wenn ohne Referer nichts gespeichert wurde
-    wan_check = parse_html_js_string_vars(
-        usr_web_get_page(host, web_port, "/wireless_en.html", auth, timeout=timeout)
-    )
-    if (
-        str(wan_check.get("wan_setting_ip") or "") != wan_fields["wan_setting_ip"]
-        or str(wan_check.get("wan_setting_gw") or "") != wan_fields["wan_setting_gw"]
-        or str(wan_check.get("wan_setting_dns") or "") != wan_fields["wan_setting_dns"]
-        or str(wan_check.get("wan_setting_msk") or "") != wan_fields["wan_setting_msk"]
-    ):
-        raise RuntimeError(
-            "USR hat WAN-Werte nicht übernommen. "
-            f"Soll GW/DNS={wan_fields['wan_setting_gw']}/{wan_fields['wan_setting_dns']}, "
-            f"ist {wan_check.get('wan_setting_gw')}/{wan_check.get('wan_setting_dns')}"
-        )
-
-    sock_mode = str(sock.get("mode", "TCPS") or "TCPS").upper()
-    remote_port = int(sock.get("remote_port") or module.at_port or 8899)
-    net_fields = {
-        "net_pro": usr_sock_mode_to_web(sock_mode),
-        "net_port": str(remote_port),
-        "net_ip": str(sock.get("remote_ip") or net_vars.get("net_ip") or "0.0.0.0"),
-        "net_to": net_vars.get("net_to", "300"),
-        "netb_pro": net_vars.get("netb_pro", "NONE"),
-        "netb_port": net_vars.get("netb_port", "0"),
-        "netb_ip": net_vars.get("netb_ip", " "),
-        "netb_to": net_vars.get("netb_to", "300"),
-    }
-    usr_web_post_form(
-        host,
-        web_port,
-        "/do_cmd_en.html",
-        net_fields,
-        auth,
-        timeout=timeout,
-        referer=f"{base}/net_en.html",
-    )
-
-    if reboot:
-        usr_web_post_form(
-            host,
-            web_port,
-            "/success_en.html",
-            {"HF_PROCESS_CMD": "RESTART"},
-            auth,
-            timeout=timeout,
-            referer=f"{base}/do_cmd_en.html",
-        )
-    return {
-        "ok": True,
-        "source": "web_usr",
-        "wan": wan_fields,
-        "net": net_fields,
-        "rebooted": bool(reboot),
-    }
-
-
-# ---------------------------------------------------------------------------
 # TCP-Hilfen
 # ---------------------------------------------------------------------------
 
@@ -1560,12 +1209,8 @@ def _send_at(
     host = module.host.strip()
     if not host:
         raise ValueError("host empty")
-    vendor = module.vendor
-    if vendor == VENDOR_USR:
-        line = build_usr_line(module.cmdpw, at_cmd) + "\r"
-    else:
-        # NE2 / NA11x / generic: Network Fast AT
-        line = build_netat_line(module.netat_header, at_cmd) + "\r\n"
+    # NE2 / NA11x / generic: Network Fast AT
+    line = build_netat_line(module.netat_header, at_cmd) + "\r\n"
     return _tcp_transact(host, module.at_port, line.encode("ascii", errors="ignore"), timeout=timeout)
 
 
@@ -1590,7 +1235,7 @@ def read_status(
     """Liest Modell/MAC/WAN/SOCK/Link-Status vom Modul.
 
     NE2: nur UDP-Broadcast (1901/1902), wie Original-Tool – kein Web.
-    NA11x/USR: Web-API; USR zusaetzlich AT-Fallback.
+    NA11x: Web-API, sonst UDP.
     """
     out: Dict[str, Any] = {
         "model": "",
@@ -1644,15 +1289,7 @@ def read_status(
         out["error"] = "; ".join(errors) if errors else "Keine Konfigurationsdaten empfangen"
         return out
 
-    if vendor == VENDOR_USR:
-        try:
-            web_st = read_status_web_usr(module, timeout=max(timeout, 4.0))
-            if status_has_data(web_st):
-                return web_st
-            errors.append("USR-Web lieferte keine Daten")
-        except Exception as exc:
-            errors.append(f"Web: {exc}")
-    elif vendor == VENDOR_NE2:
+    if vendor == VENDOR_NE2:
         try:
             udp_st = read_status_ebyte_udp(module, timeout=min(max(timeout, 1.0), 1.8))
             if status_has_data(udp_st):
@@ -1682,52 +1319,7 @@ def read_status(
         return _ok_or_raise(resp, cmd)
 
     try:
-        if vendor == VENDOR_USR:
-            try:
-                out["model"] = _q("AT+MID")
-            except Exception:
-                try:
-                    out["model"] = _q("AT+VER")
-                except Exception:
-                    pass
-            try:
-                out["ver"] = _q("AT+VER")
-            except Exception:
-                pass
-            try:
-                out["mac"] = _q("AT+WSMAC")
-            except Exception:
-                pass
-            try:
-                wann = parse_wann_response(_q("AT+WANN"))
-                try:
-                    dns = _q("AT+WSDNS")
-                    wann["dns"] = dns
-                except Exception:
-                    pass
-                out["wan"] = wann
-            except Exception:
-                pass
-            try:
-                netp = parse_netp_response(_q("AT+NETP"))
-                out["sock"] = {
-                    "mode": netp.get("mode", ""),
-                    "remote_ip": netp.get("remote_ip", ""),
-                    "remote_port": netp.get("remote_port", ""),
-                    "link_id": "",
-                }
-            except Exception:
-                pass
-            try:
-                out["link"] = parse_linksta_response(_q("AT+TCPLK"))
-            except Exception:
-                try:
-                    out["link"] = parse_linksta_response(_q("AT+WSLK"))
-                except Exception:
-                    pass
-            if status_has_data(out):
-                out["source"] = "at"
-        elif vendor in (VENDOR_NA11X, VENDOR_GENERIC):
+        if vendor in (VENDOR_NA11X, VENDOR_GENERIC):
             for key, cmd in (("model", "AT+MODEL"), ("mac", "AT+MAC"), ("ver", "AT+VER")):
                 try:
                     out[key] = _q(cmd)
@@ -1776,7 +1368,7 @@ def write_config(
     """Schreibt WAN + SOCK.
 
     NE2/NA11x: Netz + Socket per UDP-Broadcast (wie Original-Tool / Suche→IP setzen).
-    USR/DK8DE: Web bzw. AT wie bisher.
+    DK8DE: Web bzw. AT.
     """
     results: Dict[str, Any] = {"commands": [], "ok": True, "error": ""}
     vendor = module.vendor
@@ -1801,19 +1393,6 @@ def write_config(
         except Exception as exc:
             return {"ok": False, "error": str(exc), "commands": []}
 
-    if vendor == VENDOR_USR:
-        try:
-            web_res = write_config_web_usr(
-                module, wan, sock, timeout=max(timeout, 4.0), reboot=reboot
-            )
-            results.update(web_res)
-            results["ok"] = True
-            return results
-        except Exception as exc:
-            results["ok"] = False
-            results["error"] = f"Web-Schreiben fehlgeschlagen: {exc}"
-            # AT-Fallback weiter unten
-
     if vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC):
         try:
             return write_config_ebyte_udp(module, wan, sock, reboot=reboot)
@@ -1836,30 +1415,17 @@ def write_config(
         remote_ip = str(sock.get("remote_ip", "0.0.0.0") or "0.0.0.0")
         remote_port = sock.get("remote_port", 8886)
 
-        if vendor == VENDOR_USR:
-            _w(build_wann_cmd(mode, ip, mask, gw))
-            if dns:
-                _w(build_wsdns_cmd(dns))
-            _w(build_netp_cmd(sock_mode, remote_ip, remote_port))
-            if reboot:
-                try:
-                    _w("AT+Z")
-                except Exception:
-                    results["commands"].append({"cmd": "AT+Z", "resp": "(reboot)"})
-            results["ok"] = True
-            results["error"] = ""
+        with_dns2 = vendor != VENDOR_NA11X
+        _w(build_wan_cmd(mode, ip, mask, gw, dns, dns2, with_dns2=with_dns2))
+        if vendor == VENDOR_NA11X:
+            _w(build_sock_cmd(sock_mode, remote_ip, remote_port, link_id=None))
         else:
-            with_dns2 = vendor != VENDOR_NA11X
-            _w(build_wan_cmd(mode, ip, mask, gw, dns, dns2, with_dns2=with_dns2))
-            if vendor == VENDOR_NA11X:
-                _w(build_sock_cmd(sock_mode, remote_ip, remote_port, link_id=None))
-            else:
-                _w(build_sock_cmd(sock_mode, remote_ip, remote_port, link_id=0))
-            if reboot:
-                try:
-                    _w("AT+REBT")
-                except Exception:
-                    results["commands"].append({"cmd": "AT+REBT", "resp": "(reboot)"})
+            _w(build_sock_cmd(sock_mode, remote_ip, remote_port, link_id=0))
+        if reboot:
+            try:
+                _w("AT+REBT")
+            except Exception:
+                results["commands"].append({"cmd": "AT+REBT", "resp": "(reboot)"})
     except Exception as exc:
         results["ok"] = False
         results["error"] = str(exc)
@@ -3343,7 +2909,7 @@ def scan_subnet(
         if 1 <= pi <= 65535:
             port_list.append(pi)
     if not port_list:
-        port_list = [8886, 8899, 80]
+        port_list = [8886, 80]
 
     hosts = [str(h) for h in net.hosts()]
     if len(hosts) > 1024:
@@ -3375,8 +2941,6 @@ def scan_subnet(
 def vendor_for_port(port: int) -> str:
     """Heuristik: bekannte Default-Ports → Vendor."""
     p = int(port)
-    if p == 8899:
-        return VENDOR_USR
     if p in (8886, 8887):
         return VENDOR_NE2
     return VENDOR_GENERIC

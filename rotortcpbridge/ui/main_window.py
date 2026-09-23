@@ -778,8 +778,13 @@ class MainWindow(QMainWindow):
         self._antenna_bridge.selection_changed.connect(self._compass_win.sync_az_rotor_target_from_controller)
         self._antenna_bridge.selection_changed.connect(self._compass_win.sync_antenna_from_external)
         self._antenna_bridge.selection_changed.connect(self._map_win.sync_antenna_from_external)
-        self._antenna_bridge.setaselect_from_bus.connect(self._apply_setaselect_from_bus_ui)
-        self._antenna_bridge.aselect_from_query.connect(self._apply_aselect_from_query_ui)
+        # Reader-Thread → UI: QueuedConnection Pflicht (sonst hängt die Antennenwahl von fremden Mastern)
+        self._antenna_bridge.setaselect_from_bus.connect(
+            self._apply_setaselect_from_bus_ui, Qt.ConnectionType.QueuedConnection
+        )
+        self._antenna_bridge.aselect_from_query.connect(
+            self._apply_aselect_from_query_ui, Qt.ConnectionType.QueuedConnection
+        )
         self.ctrl.on_setaselect_from_bus = (
             lambda n: self._antenna_bridge.setaselect_from_bus.emit(int(n))
         )
@@ -1848,14 +1853,14 @@ class MainWindow(QMainWindow):
         self._compass_win.set_aswatch_marker_provider(lambda: self._aswatch_markers_last)
 
     def _on_antenna_broadcast_aselect(self, idx: int) -> None:
-        """Kompass/Karte: Antennenwechsel → RS485-Broadcast SETASELECT (Antenne 1–3)."""
+        """Kompass/Karte: Antennenwechsel → SETASELECT an AZ-Rotor (Antenne 1–3)."""
         try:
             self.ctrl.broadcast_set_aselect(int(idx) + 1)
         except Exception:
             pass
 
     def _apply_aselect_from_query_ui(self, antenna_id_1_to_3: int) -> None:
-        """GETASELECT beim Connect: nur Anzeige/Config an HW anpassen, Rotor nicht bewegen."""
+        """GETASELECT vom AZ-Rotor beim Connect: nur Anzeige/Config, Rotor nicht bewegen."""
         self._apply_setaselect_from_bus_ui(antenna_id_1_to_3, realign=False)
 
     def _apply_setaselect_from_bus_ui(
@@ -1866,6 +1871,8 @@ class MainWindow(QMainWindow):
         ``realign=True`` (Live-SETASELECT): optional Nachdrehen laut controller_hw.
         ``realign=False`` (GETASELECT-Sync): nur UI/Config — Hardware ist bereits korrekt.
         """
+        if not bool(getattr(self.ctrl, "enable_az", True)):
+            return
         try:
             idx = max(0, min(2, int(antenna_id_1_to_3) - 1))
             ui = self.cfg.setdefault("ui", {})
@@ -1885,7 +1892,8 @@ class MainWindow(QMainWindow):
                 pass
             cw = getattr(self, "_compass_win", None)
             if cw is not None:
-                if realign and hasattr(cw, "sync_az_rotor_target_from_controller"):
+                # Immer UI-Soll an Controller-Soll anbinden (Snap oder Nachdrehen).
+                if hasattr(cw, "sync_az_rotor_target_from_controller"):
                     try:
                         cw.sync_az_rotor_target_from_controller()
                     except Exception:
@@ -1933,7 +1941,9 @@ class MainWindow(QMainWindow):
         cb.blockSignals(False)
 
     def _on_main_antenna_changed(self) -> None:
-        """Antennenwahl wie im Kompass: Config, Bus-Broadcast, Bridge."""
+        """Antennenwahl wie im Kompass: Config, Bus an AZ-Rotor, Bridge."""
+        if not bool(getattr(self.ctrl, "enable_az", True)):
+            return
         cb = getattr(self, "_cb_main_antenna", None)
         if cb is None:
             return
@@ -1945,12 +1955,13 @@ class MainWindow(QMainWindow):
                 self.ctrl.align_az_bearing_after_antenna_switch(old, idx, self.cfg)
             except Exception:
                 pass
+        ui["compass_antenna"] = idx
+        if old != idx:
             try:
                 if hasattr(self._compass_win, "sync_az_rotor_target_from_controller"):
                     self._compass_win.sync_az_rotor_target_from_controller()
             except Exception:
                 pass
-        ui["compass_antenna"] = idx
         try:
             if self.save_cfg_cb:
                 self.save_cfg_cb(self.cfg)
@@ -2225,6 +2236,9 @@ class MainWindow(QMainWindow):
         self.gb_el.setVisible(el_on)
         if hasattr(self, "gb_antenna"):
             self.gb_antenna.setVisible(az_on)
+            self.gb_antenna.setEnabled(az_on)
+        if hasattr(self, "_cb_main_antenna"):
+            self._cb_main_antenna.setEnabled(az_on)
         try:
             if hasattr(self, "_compass_win") and hasattr(self._compass_win, "refresh_visibility"):
                 self._compass_win.refresh_visibility()

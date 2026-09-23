@@ -997,17 +997,50 @@ class CompassWindow(QDialog):
             if hasattr(self.ctrl, "set_compass_window_open"):
                 self.ctrl.set_compass_window_open(False)
 
-    def sync_az_rotor_target_from_controller(self) -> None:
-        """Internes AZ-Soll (Rotor) an ctrl.target_d10 anpassen (nach SETPOSDG)."""
+    def sync_az_rotor_target_from_controller(self, *_args) -> None:
+        """Internes AZ-Soll an ctrl.target_d10; nach Antennenwechsel Soll-Anzeige = Ist.
+
+        ``*_args``: erlaubt Anschluss an ``selection_changed(int)`` ohne TypeError.
+        """
         self._cc_display_latch_az_d10 = None
+        self._stop_az_ts = None
+        self._clear_az_dipole_soll_display()
         try:
-            self._target_az = float(self.ctrl.az.target_d10) / 10.0
+            self._target_az = az_pos_deg_from_d10(
+                int(self.ctrl.az.target_d10),
+                max_d10=self._az_max_d10(),
+            )
+        except Exception:
+            try:
+                self._target_az = float(self.ctrl.az.target_d10) / 10.0
+            except Exception:
+                pass
+        # Ohne Nachdrehen: Sollzeiger/Zahl sofort auf aktuelle Ist-Anzeige (neuer Versatz).
+        realign = bool(
+            (self.cfg.get("controller_hw") or {}).get("antenna_realign_on_switch", False)
+        )
+        if realign:
+            return
+        try:
+            off_az = self._get_antenna_offset_az()
+            cur = self._current_rotor_az_deg()
+            if cur is None:
+                return
+            max_d10 = self._az_max_d10()
+            disp = antenna_bearing_from_rotor_and_offset(cur, off_az, max_d10=max_d10)
+            self.az_compass.set_target_deg(wrap_deg(float(disp)))
+            if not self.ed_az_soll.hasFocus():
+                self.ed_az_soll.setText(f"{float(disp):.1f}")
+            self._lbl_left_soll_val.setText(fmt_deg(disp))
+            self._compass_last_bus_target_d10_az = self._effective_az_bus_target_d10()
         except Exception:
             pass
 
     @Slot()
     def _on_antenna_changed(self) -> None:
         """Antenne gewechselt → Versatz für Zeiger, Heatmap und Dreieck aktualisieren."""
+        if not bool(getattr(self.ctrl, "enable_az", True)):
+            return
         old = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
         idx = max(0, min(2, self.cb_antenna.currentIndex()))
         if "ui" not in self.cfg:
@@ -1017,11 +1050,12 @@ class CompassWindow(QDialog):
                 self.ctrl.align_az_bearing_after_antenna_switch(old, idx, self.cfg)
             except Exception:
                 pass
+        self.cfg["ui"]["compass_antenna"] = idx
+        if old != idx:
             try:
                 self.sync_az_rotor_target_from_controller()
             except Exception:
                 pass
-        self.cfg["ui"]["compass_antenna"] = idx
         try:
             self.save_cfg_cb(self.cfg)
         except Exception:

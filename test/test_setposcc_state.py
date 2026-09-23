@@ -63,6 +63,28 @@ def test_external_setposdg_keeps_compass_target_for_display() -> None:
     assert c.az.external_panel_move_active is True
 
 
+def test_foreign_master_setposdg_sets_compass_target_for_soll() -> None:
+    """SETPOSDG von anderem Master (nicht Cont-ID): Sollzeiger über compass_target setzen."""
+    c = RotorController(
+        _hw_stub(),
+        master_id=0,
+        slave_az=20,
+        slave_el=21,
+        log=_Log(),
+        setposcc_controller_src_id=2,
+    )
+    c.az.compass_target_d10 = None
+    c.az.target_d10 = 100
+    c.az.pos_d10 = 100
+    c._apply_local_state_for_ui_command(
+        20, "SETPOSDG", "180,5", from_bus_sniff=True, bus_src=7
+    )
+    assert c.az.target_d10 == 1805
+    assert c.az.compass_target_d10 == 1805
+    assert c.az.moving is True
+    assert c.az.external_panel_move_active is False
+
+
 def test_setposcc_applies_while_moving() -> None:
     """Encoder-Soll auch während Fahrt (Sollzeiger folgt SETPOSCC)."""
     c = RotorController(_hw_stub(), master_id=1, slave_az=20, slave_el=21, log=_Log())

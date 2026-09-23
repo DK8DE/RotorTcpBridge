@@ -366,9 +366,10 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     self.request_antenna_names()
                     self._antenna_bootstrap_requested = True
                 if not bool(getattr(self, "_antenna_selection_bootstrap_requested", False)):
-                    # Unabhängig von AZ: Auswahl liegt am Display-Controller (cont_id).
-                    self.request_antenna_selection()
-                    self._antenna_selection_bootstrap_requested = True
+                    # Antennenauswahl liegt im AZ-Rotor-NVS (GETASELECT / SETASELECT).
+                    if self.enable_az:
+                        self.request_antenna_selection()
+                        self._antenna_selection_bootstrap_requested = True
                 if (not bool(getattr(self, "_encoder_type_requested", False))) and self.enable_az:
                     self.request_encoder_type()
                     self._encoder_type_requested = True
@@ -1388,6 +1389,60 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._acc_bins_block_mask_el = None
         self._acc_bins_inflight_el = False
         self._acc_bins_finalize_pending_el = False
+
+    def _want_sniff_foreign_acc_bins(self, axis_name: str) -> bool:
+        """True: fremde ACK_GETACCBINS in die Anzeige übernehmen (Stromring / Statistik)."""
+        name = str(axis_name or "").strip().upper()
+        if name == "AZ":
+            if bool(getattr(self, "_compass_window_open", False)) and bool(
+                getattr(self, "_compass_strom_heatmap_az", False)
+            ):
+                return True
+            if bool(getattr(self, "_statistics_window_open", False)):
+                return True
+            return False
+        if name == "EL":
+            if bool(getattr(self, "_compass_window_open", False)) and bool(
+                getattr(self, "_compass_strom_heatmap_el", False)
+            ):
+                return True
+            if bool(getattr(self, "_statistics_window_open", False)):
+                return True
+            return False
+        return False
+
+    def _sniff_apply_acc_bins_ack(self, axis_state: AxisState, tel: Optional[Telegram]) -> bool:
+        """Bus-Mitschnitt ACK_GETACCBINS (fremder Master): direkt in ``acc_bins_*`` schreiben.
+
+        Im Mitlauf stoppt die Bridge die eigene GETACCBINS-Kette; ohne diesen Pfad bleibt
+        der Stromring stehen, obwohl der andere Master dieselben Bins abfragt.
+        """
+        if tel is None or not tel.params:
+            return False
+        parts = (tel.params or "").strip().split(";")
+        if len(parts) < 4:
+            return False
+        dir_val = parse_int(parts[0])
+        start_val = parse_int(parts[1])
+        count_val = parse_int(parts[2])
+        if dir_val is None or start_val is None or count_val is None:
+            return False
+        if not (0 <= int(start_val) < 72 and 1 <= int(count_val) <= 12):
+            return False
+        if int(dir_val) == 1:
+            bins = getattr(axis_state, "acc_bins_cw", None)
+            if bins is None or len(bins) < 72:
+                bins = [0] * 72
+                axis_state.acc_bins_cw = bins
+        else:
+            bins = getattr(axis_state, "acc_bins_ccw", None)
+            if bins is None or len(bins) < 72:
+                bins = [0] * 72
+                axis_state.acc_bins_ccw = bins
+        ok_m, _plausible = merge_strom_bin_block(
+            bins, parts, int(start_val), int(count_val)
+        )
+        return bool(ok_m)
 
     def _async_merge_acc_bins_ack_az(self, tel: Optional[Telegram], axis_state: AxisState) -> None:
         """Verspäteter ACK_GETACCBINS: nur mergen (Kette läuft über on_done / Abschluss-Maske)."""

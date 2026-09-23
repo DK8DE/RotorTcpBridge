@@ -135,3 +135,49 @@ def test_own_setpos_clears_foreign_follow() -> None:
     c._foreign_poll_seen_until = time.time() + 10.0
     c.clear_foreign_master_follow(c.az)
     assert c.az.foreign_follow_active is False
+
+
+def _acc_ack_params(direction: int = 1, start: int = 0, base: int = 100) -> str:
+    vals = ";".join(str(base + i) for i in range(12))
+    return f"{direction};{start};12;{vals}"
+
+
+def test_foreign_ack_getaccbins_sniffed_when_stromring_and_follow() -> None:
+    """Mitlauf + Stromring: #20:7:ACK_GETACCBINS → acc_bins für Heatmap übernehmen."""
+    c = RotorController(_hw_stub(), master_id=0, slave_az=20, slave_el=21, log=_Log())
+    c.set_compass_window_open(True)
+    c.set_compass_strom_heatmap_active(True, False)
+    c.az.foreign_follow_active = True
+    c._acc_bins_inflight_az = False
+    tel = Telegram(
+        src=20,
+        dst=7,
+        cmd="ACK_GETACCBINS",
+        params=_acc_ack_params(1, 0, 200),
+        cs=0.0,
+        ok=True,
+    )
+    assert c._tel_dst_allowed(tel) is True
+    c._on_async_tel(tel)
+    assert c.az.acc_bins_cw is not None
+    assert c.az.acc_bins_cw[0] == 200
+    assert c.az.acc_bins_cw[11] == 211
+    assert c.foreign_master_yield_active() is True
+
+
+def test_foreign_ack_getaccbins_ignored_without_stromring() -> None:
+    """Ohne Stromring/Statistik: fremdes ACK_GETACCBINS nicht in acc_bins schreiben."""
+    c = RotorController(_hw_stub(), master_id=0, slave_az=20, slave_el=21, log=_Log())
+    c.set_compass_window_open(True)
+    c.set_compass_strom_heatmap_active(False, False)
+    c.az.foreign_follow_active = True
+    tel = Telegram(
+        src=20,
+        dst=7,
+        cmd="ACK_GETACCBINS",
+        params=_acc_ack_params(1, 0, 50),
+        cs=0.0,
+        ok=True,
+    )
+    c._on_async_tel(tel)
+    assert c.az.acc_bins_cw is None

@@ -24,11 +24,13 @@ def test_align_snaps_soll_to_ist_when_flag_off() -> None:
     c.az.smooth_pos_d10f = 900.0
     c.az.target_d10 = 1234
     c.az.compass_target_d10 = 500
+    c.az_dipole_display_bearing = 45.0
     cfg = {"controller_hw": {"antenna_realign_on_switch": False}}
     c.align_az_bearing_after_antenna_switch(0, 1, cfg)
     assert c.az.target_d10 == 900
     assert c.az.compass_target_d10 is None
     assert c.az.moving is False
+    assert c.az_dipole_display_bearing is None
 
 
 def test_align_sets_target_when_flag_on() -> None:

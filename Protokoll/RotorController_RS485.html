@@ -1086,8 +1086,8 @@
 <td><code>ACK_GETCONLEDP</code> / <code>ACK_SETCONLEDP</code> (bzw. <code>NAK_SETCONLEDP</code>) — LED‑Ring‑Helligkeit am Controller in Prozent (0…100).</td>
 </tr>
 <tr>
-<td><code>GETASELECT</code></td>
-<td><code>ACK_GETASELECT</code> / <code>NAK_GETASELECT</code> — aktuell gewählte Antenne <b>1…3</b> lesen (Display‑Controller). PC‑Software fragt das beim Connect ab, damit die UI nach HW‑Wechsel ohne laufende Software nicht die alte Config‑Auswahl zeigt. Beim Antennenwechsel sendet der Controller weiterhin Broadcast <code>SETASELECT</code> an DST&nbsp;255.</td>
+<td><code>GETASELECT</code> / <code>SETASELECT</code></td>
+<td><code>ACK_GETASELECT</code> / <code>ACK_SETASELECT</code> (bzw. <code>NAK_…</code>) — aktuell gewählte Antenne <b>1…3</b> lesen/schreiben. <b>Speicherort: AZ-Rotor-NVS</b> (Ziel = AZ-Slave-ID). PC‑Software fragt beim Connect per <code>GETASELECT</code> ab und schreibt beim Wechsel <code>SETASELECT</code> an den AZ-Rotor. Andere Master auf dem Bus (SETASELECT an AZ oder älter Broadcast DST&nbsp;255) werden mitgeschnitten. Ohne AZ-Rotor ist die Antennenauswahl deaktiviert.</td>
 </tr>
 </table>
 

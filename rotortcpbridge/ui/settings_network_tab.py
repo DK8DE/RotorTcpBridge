@@ -46,7 +46,6 @@ from ..network_modules import (
     VENDOR_GENERIC,
     VENDOR_NA11X,
     VENDOR_NE2,
-    VENDOR_USR,
     EbyteDevice,
     NetworkModule,
     ebyte_device_data_port,
@@ -1569,7 +1568,7 @@ class _NetworkDiscoverDialog(_BusyProgressMixin, QDialog):
                     t("settings.network_discover_set_ip_ok_detail_manual_reboot", ip=new_ip),
                 )
                 return
-            self._start_wait_host(new_ip, ports=[80, 8886, 8899], timeout_s=25.0)
+            self._start_wait_host(new_ip, ports=[80, 8886], timeout_s=25.0)
             return
         if isinstance(dev, Dk8deDevice):
             old_ip = str(dev.ip or "")
@@ -1779,12 +1778,6 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self._lbl_netat = QLabel(t("settings.network_netat_header"))
         fi.addRow(self._lbl_netat, self.ed_netat)
 
-        self.ed_cmdpw = QLineEdit("USR")
-        self.ed_cmdpw.editingFinished.connect(self._apply_form_to_current)
-        self.ed_cmdpw.setToolTip(tt("settings.network_cmdpw_tooltip"))
-        self._lbl_cmdpw = QLabel(t("settings.network_cmdpw"))
-        fi.addRow(self._lbl_cmdpw, self.ed_cmdpw)
-
         self.ed_web_user = QLineEdit("admin")
         self.ed_web_user.editingFinished.connect(self._apply_form_to_current)
         self.ed_web_user.setToolTip(tt("settings.network_web_user_tooltip"))
@@ -1915,7 +1908,6 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self.cb_vendor.clear()
         self.cb_vendor.addItem(t("settings.network_vendor_ne2"), VENDOR_NE2)
         self.cb_vendor.addItem(t("settings.network_vendor_na11x"), VENDOR_NA11X)
-        self.cb_vendor.addItem(t("settings.network_vendor_usr"), VENDOR_USR)
         self.cb_vendor.addItem(t("settings.network_vendor_dk8de"), VENDOR_DK8DE)
         self.cb_vendor.addItem(t("settings.network_vendor_generic"), VENDOR_GENERIC)
         self.cb_vendor.blockSignals(False)
@@ -2050,7 +2042,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         if not isinstance(scan, dict):
             scan = {}
             cfg["network_scan"] = scan
-        scan.setdefault("ports", [8886, 8899, 80])
+        scan.setdefault("ports", [8886, 80])
         scan.setdefault("enabled", True)
 
     # ----------------------------------------------------------- list
@@ -2142,7 +2134,6 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
             self.cb_vendor,
             self.sp_web_port,
             self.ed_netat,
-            self.ed_cmdpw,
             self.ed_web_user,
             self.ed_web_password,
             self.ed_uid,
@@ -2175,7 +2166,6 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self.ed_name.clear()
         self.sp_web_port.setValue(80)
         self.ed_netat.setText("NETAT")
-        self.ed_cmdpw.setText("USR")
         self.ed_web_user.setText("admin")
         self.ed_web_password.setText("admin")
         self.ed_uid.clear()
@@ -2200,7 +2190,6 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self.cb_vendor.setCurrentIndex(idx if idx >= 0 else 0)
         self.sp_web_port.setValue(int(m.web_port))
         self.ed_netat.setText(m.netat_header or "NETAT")
-        self.ed_cmdpw.setText(m.cmdpw or "USR")
         self.ed_web_user.setText(m.web_user or "admin")
         self.ed_web_password.setText(
             m.web_password if m.web_password is not None else "admin"
@@ -2253,7 +2242,6 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         m.at_port = int(self.sp_remote_port.value())
         m.web_port = int(self.sp_web_port.value())
         m.netat_header = self.ed_netat.text().strip() or "NETAT"
-        m.cmdpw = self.ed_cmdpw.text().strip() or "USR"
         m.web_user = self.ed_web_user.text().strip() or "admin"
         m.web_password = self.ed_web_password.text()
         if m.vendor == VENDOR_DK8DE:
@@ -2292,13 +2280,10 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
 
     def _update_vendor_fields_visibility(self) -> None:
         vendor = str(self.cb_vendor.currentData() or VENDOR_GENERIC)
-        is_usr = vendor == VENDOR_USR
         is_dk8de = vendor == VENDOR_DK8DE
-        use_web = vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC, VENDOR_USR, VENDOR_DK8DE)
-        self._lbl_cmdpw.setVisible(is_usr)
-        self.ed_cmdpw.setVisible(is_usr)
-        self._lbl_netat.setVisible(not is_usr and not is_dk8de)
-        self.ed_netat.setVisible(not is_usr and not is_dk8de)
+        use_web = vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC, VENDOR_DK8DE)
+        self._lbl_netat.setVisible(not is_dk8de)
+        self.ed_netat.setVisible(not is_dk8de)
         self._lbl_uid.setVisible(is_dk8de)
         self.ed_uid.setVisible(is_dk8de)
         self._lbl_config_port.setVisible(is_dk8de)
@@ -3006,8 +2991,6 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self.sp_web_port.setToolTip(tt("settings.network_web_port_tooltip"))
         self._lbl_netat.setText(t("settings.network_netat_header"))
         self.ed_netat.setToolTip(tt("settings.network_netat_header_tooltip"))
-        self._lbl_cmdpw.setText(t("settings.network_cmdpw"))
-        self.ed_cmdpw.setToolTip(tt("settings.network_cmdpw_tooltip"))
         self._lbl_web_user.setText(t("settings.network_web_user"))
         self.ed_web_user.setToolTip(tt("settings.network_web_user_tooltip"))
         self._lbl_web_password.setText(t("settings.network_web_password"))

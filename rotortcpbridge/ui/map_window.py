@@ -717,10 +717,11 @@ class MapWindow(QDialog):
         self.refresh_antenna_visibility()
 
     def refresh_antenna_visibility(self) -> None:
-        """Antennen-Dropdown nur bei aktivem AZ (bei nur EL nicht relevant)."""
+        """Antennenauswahl nur mit AZ-Rotor (Speicherung im AZ-NVS)."""
         az_on = bool(getattr(self.ctrl, "enable_az", True))
         try:
             self._cb_antenna.setVisible(az_on)
+            self._cb_antenna.setEnabled(az_on)
         except Exception:
             pass
 
@@ -733,6 +734,8 @@ class MapWindow(QDialog):
 
     def _on_antenna_changed(self) -> None:
         """Antenne gewechselt → Config speichern, Karte aktualisiert sich über cfg."""
+        if not bool(getattr(self.ctrl, "enable_az", True)):
+            return
         old = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
         idx = max(0, min(2, self._cb_antenna.currentIndex()))
         if "ui" not in self.cfg:
@@ -753,6 +756,7 @@ class MapWindow(QDialog):
                 self._antenna_bridge.selection_changed.emit(idx)
             except Exception:
                 pass
+        self._refresh_map()
 
     def _on_fav_activated(self, idx: int) -> None:
         """Favorit ausgewählt → dorthin fahren."""

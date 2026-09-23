@@ -1602,11 +1602,22 @@ SPECS_DATA: list[dict] = [
         "help_text_en": "Read antenna realign-on-switch state (0/1) from the controller.",
     },
     {
+        "name": "SETASELECT",
+        "kind": "int",
+        "min_value": 1.0,
+        "max_value": 3.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 1.0,
+        "help_text": "Gewählte Antenne 1–3 am AZ-Rotor speichern (NVS). Ziel: AZ-Slave-ID.",
+        "help_text_en": "Store selected antenna 1–3 in the AZ rotor (NVS). Destination: AZ slave ID.",
+    },
+    {
         "name": "GETASELECT",
         "kind": "none",
         "params_literal": "0",
-        "help_text": "Aktuell gewählte Antenne (1–3) vom Hardware-Controller lesen.",
-        "help_text_en": "Read currently selected antenna (1–3) from the hardware controller.",
+        "help_text": "Aktuell gewählte Antenne (1–3) vom AZ-Rotor lesen.",
+        "help_text_en": "Read currently selected antenna (1–3) from the AZ rotor.",
     },
 ]
 

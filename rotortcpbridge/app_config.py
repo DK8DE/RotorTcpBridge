@@ -76,13 +76,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "com_port": "COM1",
         "baudrate": 115200,
     },
-    # RS485-Netzwerk-Konverter (Ebyte NE2/NA11x, USR-DR164, …).
-    # Einträge: name, vendor (ne2|na11x|usr_dr164|generic), host, at_port,
-    # web_port, role (server|client|bus_gateway), netat_header, cmdpw.
+    # RS485-Netzwerk-Konverter (Ebyte NE2/NA11x, DK8DE WLAN/RS485, …).
+    # Einträge: name, vendor (ne2|na11x|dk8de_wlan|generic), host, at_port,
+    # web_port, role (server|client|bus_gateway), netat_header.
     "network_modules": [],
     "network_scan": {
         "subnet_cidr": "",
-        "ports": [8886, 8899, 80],
+        "ports": [8886, 80],
         "enabled": True,
     },
     "rotor_bus": {

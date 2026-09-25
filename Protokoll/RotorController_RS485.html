@@ -1034,12 +1034,12 @@
 <table>
 <tr><th>Befehl</th><th>Antwort</th></tr>
 <tr>
-<td><code>GETCONRID</code> / <code>GETTCONRID</code> (Alias)</td>
-<td><code>ACK_GETCONRID</code> (Parameter = aktuelle <code>rotor_id</code>)</td>
+<td><code>GETCONTAZID</code> / <code>SETCONTAZID</code></td>
+<td><code>ACK_GETCONTAZID</code> / <code>ACK_SETCONTAZID</code> (bzw. <code>NAK_…</code>) — AZ-Rotor-Slave-ID am Controller (0…254; <b>0 = AZ-Achse aus</b>). JSON <code>az_rotor_id</code>.</td>
 </tr>
 <tr>
-<td><code>SETCONRID</code></td>
-<td><code>ACK_SETCONRID</code> / <code>NAK_SETCONRID</code> (Rotor‑Slave‑ID 1…254)</td>
+<td><code>GETCONTELID</code> / <code>SETCONTELID</code></td>
+<td><code>ACK_GETCONTELID</code> / <code>ACK_SETCONTELID</code> (bzw. <code>NAK_…</code>) — EL-Rotor-Slave-ID am Controller (0…254; <b>0 = EL-Achse aus</b>). JSON <code>el_rotor_id</code>.</td>
 </tr>
 <tr>
 <td><code>GETCONTID</code></td>

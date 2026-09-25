@@ -346,13 +346,145 @@ def apply_live_ids_from_cfg(ctrl: Any, cfg: Dict[str, Any]) -> None:
             ctrl.update_ids(mid, saz, sel, enable_az=en_az, enable_el=en_el)
     except Exception:
         pass
+    try:
+        ignore = rb.get("setposcc_ignore_src_master_ids", [])
+        if hasattr(ctrl, "setposcc_ignore_src_master_ids"):
+            norm = getattr(ctrl, "_normalize_master_id_list", None)
+            if callable(norm):
+                ctrl.setposcc_ignore_src_master_ids = norm(ignore)
+            else:
+                ctrl.setposcc_ignore_src_master_ids = list(ignore or [])
+    except Exception:
+        pass
     chw = cfg.get("controller_hw") if isinstance(cfg.get("controller_hw"), dict) else {}
     try:
         cid = int(chw.get("cont_id", 2) or 0)
         if hasattr(ctrl, "setposcc_controller_src_id"):
-            ctrl.setposcc_controller_src_id = cid
+            ctrl.setposcc_controller_src_id = max(0, min(254, cid))
     except Exception:
         pass
+
+
+def _clamp_cont_id(v: Any, default: int = 0) -> int:
+    try:
+        return max(0, min(254, int(v)))
+    except (TypeError, ValueError):
+        return default
+
+
+def controller_hw_norm(chw: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    """Normierte Controller-HW-Werte für Diff/Push (inkl. AZ/EL-Rotor-IDs)."""
+    ch = chw if isinstance(chw, dict) else {}
+    try:
+        ed = int(ch.get("encoder_delta", 10))
+    except (TypeError, ValueError):
+        ed = 10
+    if ed not in (1, 10):
+        ed = 10
+    return {
+        "cont_id": _clamp_cont_id(ch.get("cont_id", 2), 2),
+        "slow_pwm": max(0, min(100, _clamp_cont_id(ch.get("slow_pwm", 30), 30))),
+        "fast_pwm": max(0, min(100, _clamp_cont_id(ch.get("fast_pwm", 80), 80))),
+        "speaker_freq_hz": max(
+            100, min(4000, _clamp_cont_id(ch.get("speaker_freq_hz", 1000), 1000))
+        ),
+        "speaker_volume": max(0, min(50, _clamp_cont_id(ch.get("speaker_volume", 50), 50))),
+        "display_brightness_pct": max(
+            0, min(100, _clamp_cont_id(ch.get("display_brightness_pct", 100), 100))
+        ),
+        "wind_anemometer": 1 if bool(ch.get("wind_anemometer", False)) else 0,
+        "encoder_delta": ed,
+        "antenna_realign_on_switch": 1 if bool(ch.get("antenna_realign_on_switch", False)) else 0,
+        "az_rotor_id": _clamp_cont_id(ch.get("az_rotor_id", 20), 20),
+        "el_rotor_id": _clamp_cont_id(ch.get("el_rotor_id", 0), 0),
+    }
+
+
+def push_controller_hw_diff(
+    ctrl: Any,
+    *,
+    old_chw: Optional[Dict[str, Any]],
+    new_chw: Optional[Dict[str, Any]],
+    connected: bool,
+    encoder_type3: bool = False,
+    force: bool = False,
+) -> bool:
+    """``controller_hw``-Werte per SETCON* an den Controller schreiben.
+
+    - ``force=False`` (Default): nur Differenzen old→new.
+    - ``force=True``: alle SETCON*-Werte aus ``new_chw`` schreiben (Profilwechsel),
+      damit der physische Controller dem neuen Profil entspricht — auch wenn die
+      beiden Profil-JSONs nach Normalisierung gleich aussehen.
+
+    Nur wenn ``new_chw.enabled`` und ``connected``. Rückgabe True wenn alles OK / nichts zu tun.
+    """
+    from .rotor_controller import SYNC_UI_NAK_PREFIX
+
+    if not connected or not hasattr(ctrl, "sync_ui_command_response"):
+        return True
+    new_ch = new_chw if isinstance(new_chw, dict) else {}
+    if not bool(new_ch.get("enabled", True)):
+        return True
+    old_n = controller_hw_norm(old_chw)
+    new_n = controller_hw_norm(new_ch)
+    if (not force) and old_n == new_n:
+        return True
+
+    def _ok(r: Optional[str]) -> bool:
+        if r is None:
+            return False
+        return not str(r).startswith(SYNC_UI_NAK_PREFIX)
+
+    def _changed(key: str) -> bool:
+        return force or old_n[key] != new_n[key]
+
+    all_ok = True
+    dst = int(new_n["cont_id"])
+    if dst <= 0:
+        return True
+
+    if _changed("cont_id"):
+        id_dst = int(new_n["cont_id"]) if int(old_n["cont_id"]) == 0 else int(old_n["cont_id"])
+        # Bei force und gleicher ID: SETCONTID überspringen (Adresse unverändert).
+        if force and old_n["cont_id"] == new_n["cont_id"]:
+            pass
+        else:
+            r = ctrl.sync_ui_command_response(
+                id_dst, "SETCONTID", str(int(new_n["cont_id"])), "ACK_SETCONTID", timeout_s=1.5
+            )
+            if not _ok(r):
+                all_ok = False
+
+    pairs = (
+        ("slow_pwm", "SETCONSPWM", "ACK_SETCONSPWM"),
+        ("fast_pwm", "SETCONFPWM", "ACK_SETCONFPWM"),
+        ("speaker_freq_hz", "SETCONFRQ", "ACK_SETCONFRQ"),
+        ("speaker_volume", "SETLSL", "ACK_SETLSL"),
+        ("display_brightness_pct", "SETCONLEDP", "ACK_SETCONLEDP"),
+        ("encoder_delta", "SETCONDELTA", "ACK_SETCONDELTA"),
+        ("antenna_realign_on_switch", "SETCONCHA", "ACK_SETCONCHA"),
+        ("az_rotor_id", "SETCONTAZID", "ACK_SETCONTAZID"),
+        ("el_rotor_id", "SETCONTELID", "ACK_SETCONTELID"),
+    )
+    for key, cmd, ack in pairs:
+        if not _changed(key):
+            continue
+        r = ctrl.sync_ui_command_response(dst, cmd, str(int(new_n[key])), ack, timeout_s=1.5)
+        if not _ok(r):
+            all_ok = False
+
+    if _changed("wind_anemometer") and not encoder_type3:
+        r = ctrl.sync_ui_command_response(
+            dst,
+            "SETCONANO",
+            str(int(new_n["wind_anemometer"])),
+            "ACK_SETCONANO",
+            timeout_s=1.5,
+        )
+        if not _ok(r):
+            all_ok = False
+
+    return all_ok
 
 
 def save_rotor_config_xml(

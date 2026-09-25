@@ -21,14 +21,14 @@ ROTORTILES_SCHEME = "rotortiles"
 # Online-Basiskarten: CARTO verlangt inzwischen einen API-Key und liefert sonst
 # Kacheln mit Wasserzeichen „API KEY REQUIRED“. Esri wie die Satellitenkarte —
 # ohne Key, Leaflet-Reihenfolge {z}/{y}/{x}.
+# Dark-Mode online: immer World_Street_Map (viele Details), Dark-Look per CSS-Filter
+# auf dem Tile-Pane in map_html — nicht die detailarme World_Dark_Gray_Base.
 ONLINE_TILE_URL_LIGHT = (
     "https://server.arcgisonline.com/ArcGIS/rest/services/"
     "World_Street_Map/MapServer/tile/{z}/{y}/{x}"
 )
-ONLINE_TILE_URL_DARK = (
-    "https://server.arcgisonline.com/ArcGIS/rest/services/"
-    "Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
-)
+# Fallback, falls Offline-KartenDark fehlt; online ungenutzt.
+ONLINE_TILE_URL_DARK = ONLINE_TILE_URL_LIGHT
 ONLINE_TILE_ATTRIBUTION = (
     'Tiles &copy; <a href="https://www.esri.com/">Esri</a>'
     " &mdash; Source: Esri, OpenStreetMap contributors"

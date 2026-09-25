@@ -294,6 +294,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._el_rotor_type_requested = False
         self._antenna_bootstrap_requested = False
         self._antenna_selection_bootstrap_requested = False
+        self.wind_enabled = False
+        self.wind_enabled_known = False
         try:
             self.az.pos_max_d10 = 3600
             self.az.position_wrap_360 = True

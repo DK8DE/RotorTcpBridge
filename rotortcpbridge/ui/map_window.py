@@ -1491,7 +1491,7 @@ class MapWindow(QDialog):
                     )
                     js_off = f"if (typeof window.setMapOfflineMode === 'function') window.setMapOfflineMode(true, {json.dumps(tile_url_off)});"
                 else:
-                    tile_url_on = ONLINE_TILE_URL_DARK if dark else ONLINE_TILE_URL_LIGHT
+                    tile_url_on = ONLINE_TILE_URL_LIGHT
                     js_off = f"if (typeof window.setMapOfflineMode === 'function') window.setMapOfflineMode(false, {json.dumps(tile_url_on)});"
                 self._view.page().runJavaScript(js_off)
             elif self._map_dark_mode is not None and self._map_dark_mode != dark:

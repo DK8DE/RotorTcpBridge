@@ -997,6 +997,28 @@ class SettingsWindow(QDialog):
         _lay_cont_id.addWidget(self._lbl_controller_wait, 0, Qt.AlignmentFlag.AlignVCenter)
         _lay_cont_id.addStretch(1)
         fl_ctrl.addRow(t("settings.controller_id"), _row_cont_id)
+        self.sp_cont_az_rotor_id = QSpinBox()
+        self.sp_cont_az_rotor_id.setRange(0, 254)
+        try:
+            self.sp_cont_az_rotor_id.setValue(
+                max(0, min(254, int(_chw.get("az_rotor_id", 20))))
+            )
+        except (TypeError, ValueError):
+            self.sp_cont_az_rotor_id.setValue(20)
+        self.sp_cont_az_rotor_id.setToolTip(tt("settings.controller_az_rotor_id_tooltip"))
+        self._lbl_cont_az_rotor_id = QLabel(t("settings.controller_az_rotor_id"))
+        fl_ctrl.addRow(self._lbl_cont_az_rotor_id, self.sp_cont_az_rotor_id)
+        self.sp_cont_el_rotor_id = QSpinBox()
+        self.sp_cont_el_rotor_id.setRange(0, 254)
+        try:
+            self.sp_cont_el_rotor_id.setValue(
+                max(0, min(254, int(_chw.get("el_rotor_id", 0))))
+            )
+        except (TypeError, ValueError):
+            self.sp_cont_el_rotor_id.setValue(0)
+        self.sp_cont_el_rotor_id.setToolTip(tt("settings.controller_el_rotor_id_tooltip"))
+        self._lbl_cont_el_rotor_id = QLabel(t("settings.controller_el_rotor_id"))
+        fl_ctrl.addRow(self._lbl_cont_el_rotor_id, self.sp_cont_el_rotor_id)
         self.sp_cont_pwm_slow = QSpinBox()
         self.sp_cont_pwm_slow.setRange(0, 100)
         try:
@@ -1666,6 +1688,12 @@ class SettingsWindow(QDialog):
         self._update_weather_tab_visibility()
         try:
             self._weather_tab.load_from_cfg()
+            self._sync_weather_wind_enable_from_ctrl()
+            if not getattr(self, "_weather_wind_enable_connected", False):
+                self._weather_tab.chk_wind_enable.toggled.connect(
+                    lambda *_: self._update_weather_tab_visibility()
+                )
+                self._weather_wind_enable_connected = True
         except Exception:
             pass
         try:
@@ -1690,6 +1718,7 @@ class SettingsWindow(QDialog):
         self._capture_antenna_snapshots_from_ui()
         # Vergleichsbasis für SETCON* beim Speichern (sonst snap=None → kein Schreiben)
         self._snapshot_controller = self._controller_snapshot_from_ui()
+        self._snapshot_wind_enable = bool(self._weather_tab.wind_enable_wanted())
         QTimer.singleShot(0, self._load_park_home_from_bus)
         # Antennennamen vom Rotor (GETANTNAME1–3 am AZ-Slave, nicht Display-Controller)
         try:
@@ -3214,17 +3243,77 @@ class SettingsWindow(QDialog):
         return bool(wind_on)
 
     def _update_weather_tab_visibility(self) -> None:
-        """Tab „Wetter“ nur bei angeschlossenem Windmesser (wie Karte/Kompass-Wind)."""
+        """Tab „Wetter“ immer sichtbar; Wind-Warnungen nur bei Checkbox Windmesser."""
         try:
-            show = self._wind_sensor_available_for_ui()
             idx = getattr(self, "_tab_weather_index", -1)
             item = self._settings_nav.item(idx)
             if item is not None:
-                item.setHidden(not show)
-            if not show and self._settings_nav.currentRow() == idx:
-                self._settings_nav.setCurrentRow(0)
+                item.setHidden(False)
+            tab = getattr(self, "_weather_tab", None)
+            if tab is None:
+                return
+            # Encoder Typ 3: kein Windmesser am Rotor (wie Controller-Anemo)
+            available = not self._rotor_has_abs_encoder_type3()
+            if hasattr(tab, "set_wind_enable_available"):
+                tab.set_wind_enable_available(available)
+            # Bereich „Wind“ folgt nur der Checkbox (nicht dem aktuellen Rotor-Status)
+            if hasattr(tab, "_sync_wind_section_from_checkbox"):
+                tab._sync_wind_section_from_checkbox()
+            elif hasattr(tab, "set_wind_section_visible"):
+                want = bool(tab.wind_enable_wanted()) if hasattr(tab, "wind_enable_wanted") else False
+                tab.set_wind_section_visible(want)
         except Exception:
             pass
+
+    def _sync_weather_wind_enable_from_ctrl(self) -> None:
+        """Checkbox an GETWINDENABLE angleichen; sonst Default aus."""
+        tab = getattr(self, "_weather_tab", None)
+        if tab is None or not hasattr(tab, "set_wind_enable_checked"):
+            return
+        wind_known = bool(getattr(self.ctrl, "wind_enabled_known", False))
+        checked = bool(getattr(self.ctrl, "wind_enabled", False)) if wind_known else False
+        tab.set_wind_enable_checked(checked)
+        self._snapshot_wind_enable = bool(tab.wind_enable_wanted())
+
+    def _save_wind_enable_if_changed(self) -> bool:
+        """SETWINDENABLE am AZ-Slave nur bei Änderung gegenüber Snapshot."""
+        tab = getattr(self, "_weather_tab", None)
+        if tab is None or not hasattr(tab, "wind_enable_wanted"):
+            return True
+        if not bool(getattr(self.hw, "is_connected", lambda: False)()):
+            return True
+        if self._rotor_has_abs_encoder_type3():
+            return True
+        if not hasattr(self.ctrl, "sync_ui_command_response"):
+            return True
+        want = bool(tab.wind_enable_wanted())
+        snap = getattr(self, "_snapshot_wind_enable", None)
+        if snap is not None and bool(snap) == want:
+            return True
+        try:
+            dst = int(self.sp_slave_az.value())
+        except Exception:
+            dst = int(getattr(self.ctrl, "slave_az", 0) or 0)
+        if dst <= 0:
+            return True
+        self.lbl_status.setText(t("settings.weather_wind_enable_saving"))
+        QApplication.processEvents()
+        r = self.ctrl.sync_ui_command_response(
+            dst,
+            "SETWINDENABLE",
+            "1" if want else "0",
+            "ACK_SETWINDENABLE",
+            timeout_s=1.5,
+        )
+        if not _sync_got_ack_value(r):
+            return False
+        self._snapshot_wind_enable = want
+        if hasattr(self.ctrl, "set_wind_enabled_from_value"):
+            try:
+                self.ctrl.set_wind_enabled_from_value(1 if want else 0)
+            except Exception:
+                pass
+        return True
 
     def _sync_pst_server_cfg_from_tcp_ui(self) -> None:
         """PST-TCP-Gruppe → ``cfg['pst_server']`` und ``ui.udp_pst_enabled`` (ohne vollständigen Speichern-Dialog)."""
@@ -3938,6 +4027,16 @@ class SettingsWindow(QDialog):
         except Exception as exc:
             self.logbuf.write("WARN", f"Wetter-Schwellen: {exc}")
 
+        if not self._save_wind_enable_if_changed():
+            self.lbl_status.setText(t("settings.weather_wind_enable_write_fail"))
+            QApplication.processEvents()
+            QMessageBox.warning(
+                self,
+                t("settings.title"),
+                t("settings.weather_wind_enable_write_fail"),
+            )
+        self._update_weather_tab_visibility()
+
         try:
             self._network_tab.apply_to_cfg(self.cfg)
         except Exception as exc:
@@ -3958,6 +4057,8 @@ class SettingsWindow(QDialog):
         chw["wind_anemometer"] = bool(self._controller_wind_anemo_ui_value())
         chw["encoder_delta"] = int(self.cb_cont_encoder_delta.currentData())
         chw["antenna_realign_on_switch"] = bool(self.chk_cont_antenna_realign.isChecked())
+        chw["az_rotor_id"] = int(self.sp_cont_az_rotor_id.value())
+        chw["el_rotor_id"] = int(self.sp_cont_el_rotor_id.value())
 
         # AZ-Versatz, Öffnungswinkel, Dipol, Reichweite und Namen in den Rotor schreiben
         # (SETANTOFF1–3, SETANGLE1–3, SETANTDP1–3, SETANTDIS1–3, SETANTNAME1–3).
@@ -4172,6 +4273,7 @@ class SettingsWindow(QDialog):
         self._update_wind_anemo_row_visibility()
         self._update_enc_zero_button_ui()
         self._update_az_overlap_checkboxes_ui()
+        self._update_weather_tab_visibility()
 
     def _update_az_overlap_checkboxes_ui(self, *_args) -> None:
         """Kürzerer Weg / 0…360-Ausgabe nur bei Absolut-Encoder Typ 3; Ausgabe nur mit kürzerem Weg.
@@ -4316,7 +4418,7 @@ class SettingsWindow(QDialog):
 
     def _controller_snapshot_from_ui(
         self,
-    ) -> tuple[int, int, int, int, int, int, int, int, int, int, int, int]:
+    ) -> tuple[int, int, int, int, int, int, int, int, int, int, int, int, int, int]:
         return (
             int(self.sp_controller_id.value()),
             int(self.sp_cont_pwm_slow.value()),
@@ -4330,6 +4432,8 @@ class SettingsWindow(QDialog):
             1 if self.chk_az_dipole_1.isChecked() else 0,
             1 if self.chk_az_dipole_2.isChecked() else 0,
             1 if self.chk_az_dipole_3.isChecked() else 0,
+            int(self.sp_cont_az_rotor_id.value()),
+            int(self.sp_cont_el_rotor_id.value()),
         )
 
     def _apply_controller_from_cfg_only(self) -> None:
@@ -4374,6 +4478,18 @@ class SettingsWindow(QDialog):
                 _ed = 10
             self.cb_cont_encoder_delta.setCurrentIndex(0 if _ed == 1 else 1)
             self.chk_cont_antenna_realign.setChecked(bool(ch.get("antenna_realign_on_switch", False)))
+            try:
+                self.sp_cont_az_rotor_id.setValue(
+                    max(0, min(254, int(ch.get("az_rotor_id", 20))))
+                )
+            except (TypeError, ValueError):
+                self.sp_cont_az_rotor_id.setValue(20)
+            try:
+                self.sp_cont_el_rotor_id.setValue(
+                    max(0, min(254, int(ch.get("el_rotor_id", 0))))
+                )
+            except (TypeError, ValueError):
+                self.sp_cont_el_rotor_id.setValue(0)
             ui_dips = list((self.cfg.get("ui") or {}).get("antenna_dipoles_az", [False, False, False]))
             while len(ui_dips) < 3:
                 ui_dips.append(False)
@@ -4664,10 +4780,28 @@ class SettingsWindow(QDialog):
                         w = self._parse_hw_int(str(rp_cha).split(";")[0].strip())
                     if w is not None:
                         self.chk_cont_antenna_realign.setChecked(bool(int(w)))
-            # LED: alle Kern-Abfragen mit ACK; Piep/LED-Ring (GETCONFRQ/GETLSL/GETCONLEDP): NAK NOTIMPL zählt als Bus-OK.
+            for sp, cmd, exp in (
+                (self.sp_cont_az_rotor_id, "GETCONTAZID", "ACK_GETCONTAZID"),
+                (self.sp_cont_el_rotor_id, "GETCONTELID", "ACK_GETCONTELID"),
+            ):
+                rp_id = c.sync_ui_command_response(dst, cmd, "0", exp)
+                if _sync_nak_notimpl(rp_id):
+                    acks.append(True)
+                    continue
+                if rp_id is not None and str(rp_id).startswith(SYNC_UI_NAK_PREFIX):
+                    acks.append(False)
+                    continue
+                acks.append(_sync_got_ack_value(rp_id))
+                if rp_id is not None and _sync_got_ack_value(rp_id):
+                    w = self._parse_hw_int(rp_id)
+                    if w is None:
+                        w = self._parse_hw_int(str(rp_id).split(";")[0].strip())
+                    if w is not None:
+                        sp.setValue(max(0, min(254, int(w))))
+            # LED: alle Kern-Abfragen mit ACK; Piep/LED-Ring + neue IDs: NAK NOTIMPL zählt als Bus-OK.
             # Anzahl = 1 (GETCONTID) + 5 PWM/Beep/LED-Ring + GETCONANO + GETCONDELTA + GETCONCHA
-            # (Antennennamen: GETANTNAME1–3 am Rotor, nicht am Controller.)
-            _n_ctrl_reads = 1 + 5 + 1 + 1 + 1
+            # + GETCONTAZID + GETCONTELID
+            _n_ctrl_reads = 1 + 5 + 1 + 1 + 1 + 2
             all_ok = len(acks) == _n_ctrl_reads and all(acks)
             self.lbl_status.setText(t("settings.controller_status_saved"))
             self._set_controller_led_ok(all_ok)
@@ -4735,6 +4869,18 @@ class SettingsWindow(QDialog):
                 all_ok = False
         if snap[8] != cur[8]:
             r = c.sync_ui_command_response(dst, "SETCONCHA", str(int(cur[8])), "ACK_SETCONCHA")
+            if not _sync_got_ack_value(r):
+                all_ok = False
+        if len(cur) > 12 and (len(snap) <= 12 or snap[12] != cur[12]):
+            r = c.sync_ui_command_response(
+                dst, "SETCONTAZID", str(int(cur[12])), "ACK_SETCONTAZID"
+            )
+            if not _sync_got_ack_value(r):
+                all_ok = False
+        if len(cur) > 13 and (len(snap) <= 13 or snap[13] != cur[13]):
+            r = c.sync_ui_command_response(
+                dst, "SETCONTELID", str(int(cur[13])), "ACK_SETCONTELID"
+            )
             if not _sync_got_ack_value(r):
                 all_ok = False
         if all_ok:

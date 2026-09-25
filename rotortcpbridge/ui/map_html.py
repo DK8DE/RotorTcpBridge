@@ -93,14 +93,17 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
             print(
                 f"[BuildHTML] dark={dark} tile={tile_url[:60]} light={tile_url_light[:60]} dark={tile_url_dark[:60]}"
             )
-    elif dark:
-        tile_url = ONLINE_TILE_URL_DARK
-        tile_url_light = tile_url_dark = tile_url
     else:
+        # Online immer detaillierte Street-Map; Dark = CSS-Filter auf Tile-Pane.
         tile_url = ONLINE_TILE_URL_LIGHT
         tile_url_light = tile_url_dark = tile_url
     body_bg = "#1c1c1c" if dark else "inherit"
-    body_map_dark_class = "map-dark" if dark else ""
+    _body_cls = []
+    if dark:
+        _body_cls.append("map-dark")
+    if offline:
+        _body_cls.append("map-offline")
+    body_map_dark_class = " ".join(_body_cls)
 
     _pkg_root = Path(__file__).resolve().parent.parent
     antenna_path = _pkg_root / "Antenne.png"
@@ -205,6 +208,10 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
     html, body {{ width: 100%; height: 100%; overflow: hidden; background: {body_bg}; }}
     #map {{ width: 100%; height: 100%; }}
+    /* Online-Dark: helle Street-Map behalten, nur Kacheln abdunkeln (Marker/Overlays unverändert). */
+    body.map-dark:not(.map-offline):not(.map-satellite) .leaflet-tile-pane {{
+      filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9) saturate(0.65);
+    }}
     #info {{ position: absolute; top: 12px; left: 62px; z-index: 1000;
       background: transparent; padding: 0; max-width: min(420px, calc(100vw - 80px));
       font: 13px/1.4 sans-serif; }}
@@ -314,7 +321,6 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     const ASNEAREST_TOOLTIP_PATH = {json.dumps(asnearest_tooltip_path)};
     const ASNEAREST_TOOLTIP_CATPATH = {json.dumps(asnearest_tooltip_catpath)};
 
-    const TILE_URL_DARK = {json.dumps(ONLINE_TILE_URL_DARK)};
     const TILE_URL_LIGHT = {json.dumps(ONLINE_TILE_URL_LIGHT)};
     const TILE_URL_SATELLITE = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}";
     const OFFLINE_ATTRIBUTION = "© OpenStreetMap-Mitwirkende";
@@ -324,6 +330,12 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     let _currentOffline = isOffline;
     let _mapDark = {str(dark).lower()};
     let _mapSatellite = false;
+    function _syncMapBodyTileClasses() {{
+      document.body.classList.toggle('map-dark', !!_mapDark);
+      document.body.classList.toggle('map-offline', !!_currentOffline);
+      document.body.classList.toggle('map-satellite', !!_mapSatellite && !_currentOffline);
+    }}
+    _syncMapBodyTileClasses();
     const offlineMinZ = {offline_min_z};
     const offlineMaxZ = {offline_max_z};
     const tileOpts = isOffline ? {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION,
@@ -964,11 +976,15 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         opts = {{ maxZoom: offlineMaxZ, minZoom: offlineMaxZ, attribution: OFFLINE_ATTRIBUTION,
           fadeAnimation: false, keepBuffer: 1, updateWhenIdle: true }};
       }} else {{
-        url = _mapDark ? TILE_URL_DARK : TILE_URL_LIGHT;
+        // Online: immer Street-Map; Dark-Look per CSS-Filter auf .leaflet-tile-pane.
+        url = TILE_URL_LIGHT;
         opts = {{ maxZoom: 19, minZoom: 3, attribution: ONLINE_ATTRIBUTION,
           fadeAnimation: false, keepBuffer: 1, updateWhenIdle: true }};
       }}
-      if (tileLayer && _currentTileUrl === url) return;
+      if (tileLayer && _currentTileUrl === url) {{
+        _syncMapBodyTileClasses();
+        return;
+      }}
       _currentTileUrl = url;
       if (tileLayer) map.removeLayer(tileLayer);
       tileLayer = L.tileLayer(url, opts).addTo(map);
@@ -985,10 +1001,12 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         map.setMinZoom(3);
         map.setMaxZoom(19);
       }}
+      _syncMapBodyTileClasses();
     }}
     window.setMapSatelliteMode = function(on) {{
       if (_currentOffline && on) {{
         _mapSatellite = false;
+        _syncMapBodyTileClasses();
         return false;
       }}
       const want = !!on;
@@ -1006,6 +1024,8 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       }}
       if (wasOffline !== _currentOffline || hadSatellite !== _mapSatellite) {{
         _replaceBaseTileLayer();
+      }} else {{
+        _syncMapBodyTileClasses();
       }}
     }};
 
@@ -1013,11 +1033,17 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       const wasDark = _mapDark;
       _mapDark = !!dark;
       if (wasDark !== _mapDark) {{
-        _replaceBaseTileLayer();
+        // Online: gleiche Street-Tiles, nur Filter wechseln — Offline: Dark/Light-Tiles tauschen.
+        if (_currentOffline) {{
+          _replaceBaseTileLayer();
+        }} else {{
+          _syncMapBodyTileClasses();
+        }}
+      }} else {{
+        _syncMapBodyTileClasses();
       }}
       document.body.style.background = dark ? '#1c1c1c' : 'inherit';
       const info = document.getElementById('info');
-      document.body.classList.toggle('map-dark', !!dark);
       if (info) {{
         info.style.background = dark ? '#2d2d2d' : 'white';
         info.style.color = dark ? '#e1e1e1' : 'inherit';

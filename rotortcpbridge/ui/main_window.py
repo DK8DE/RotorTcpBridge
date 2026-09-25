@@ -495,6 +495,23 @@ class MainWindow(QMainWindow):
         self._last_main_antenna_labels: tuple[str, ...] | None = None
         main.addWidget(self.gb_antenna)
 
+        self.gb_profile = QGroupBox(t("main.group_profile"))
+        _lay_prof = QVBoxLayout(self.gb_profile)
+        try:
+            _lay_prof.setContentsMargins(
+                px_to_dip(self, 8), px_to_dip(self, 4), px_to_dip(self, 8), px_to_dip(self, 4)
+            )
+        except Exception:
+            pass
+        self._cb_main_profile = QComboBox()
+        self._cb_main_profile.setMinimumWidth(px_to_dip(self, 160))
+        self._cb_main_profile.setToolTip(tt("main.profile_combo_tooltip"))
+        self._profile_combo_suppress = False
+        self._cb_main_profile.currentIndexChanged.connect(self._on_main_profile_changed)
+        _lay_prof.addWidget(self._cb_main_profile)
+        main.addWidget(self.gb_profile)
+        self._refresh_main_profile_combo()
+
         self._rig_freq_poll_timer = QTimer(self)
         self._rig_freq_poll_timer.setInterval(1000)
         self._rig_freq_poll_timer.timeout.connect(self._on_rig_freq_poll_timer)
@@ -1218,34 +1235,77 @@ class MainWindow(QMainWindow):
             mb.addMenu(m)
 
     def _refresh_profile_menu(self) -> None:
-        """Menü „Profil“ mit allen Profilen und Haken am aktiven neu aufbauen."""
+        """Menü „Profil“ und Hauptfenster-Combo mit allen Profilen neu aufbauen."""
         from ..profile_store import get_active_profile_id, list_profiles
 
         menu = getattr(self, "_menu_profile", None)
-        if menu is None:
+        profiles = list_profiles()
+        active = get_active_profile_id()
+        if menu is not None:
+            self._profile_menu_suppress = True
+            try:
+                menu.clear()
+                menu.setTitle(t("main.menu_profile"))
+                group = QActionGroup(self)
+                group.setExclusive(True)
+                self._profile_action_group = group
+                for p in profiles:
+                    pid = str(p.get("id") or "")
+                    name = str(p.get("name") or pid)
+                    act = QAction(name, self)
+                    act.setCheckable(True)
+                    act.setData(pid)
+                    group.addAction(act)
+                    menu.addAction(act)
+                    act.setChecked(pid == active)
+                    act.toggled.connect(partial(self._on_profile_menu_toggled, pid))
+            finally:
+                self._profile_menu_suppress = False
+        self._refresh_main_profile_combo(profiles=profiles, active_id=active)
+
+    def _refresh_main_profile_combo(
+        self,
+        *,
+        profiles: list | None = None,
+        active_id: str | None = None,
+    ) -> None:
+        """Profil-Combo im Hauptfenster an Index/Aktiv-ID anpassen."""
+        from ..profile_store import get_active_profile_id, list_profiles
+
+        cb = getattr(self, "_cb_main_profile", None)
+        if cb is None:
             return
-        self._profile_menu_suppress = True
+        if profiles is None:
+            profiles = list_profiles()
+        if active_id is None:
+            active_id = get_active_profile_id()
+        self._profile_combo_suppress = True
         try:
-            menu.clear()
-            menu.setTitle(t("main.menu_profile"))
-            group = QActionGroup(self)
-            group.setExclusive(True)
-            self._profile_action_group = group
-            active = get_active_profile_id()
-            for p in list_profiles():
+            cb.blockSignals(True)
+            cb.clear()
+            active_idx = 0
+            for i, p in enumerate(profiles):
                 pid = str(p.get("id") or "")
                 name = str(p.get("name") or pid)
-                act = QAction(name, self)
-                act.setCheckable(True)
-                act.setData(pid)
-                group.addAction(act)
-                menu.addAction(act)
-                # Check nach connect vermeiden: toggled erst danach verbinden
-                act.setChecked(pid == active)
-                # toggled(True) ist unter Windows/QActionGroup zuverlässiger als triggered(bool)
-                act.toggled.connect(partial(self._on_profile_menu_toggled, pid))
+                cb.addItem(name, pid)
+                if pid == active_id:
+                    active_idx = i
+            if cb.count() > 0:
+                cb.setCurrentIndex(active_idx)
+            cb.blockSignals(False)
         finally:
-            self._profile_menu_suppress = False
+            self._profile_combo_suppress = False
+
+    def _on_main_profile_changed(self, index: int) -> None:
+        if getattr(self, "_profile_combo_suppress", False):
+            return
+        cb = getattr(self, "_cb_main_profile", None)
+        if cb is None or index < 0:
+            return
+        pid = str(cb.itemData(index) or "").strip()
+        if not pid:
+            return
+        self._switch_rotor_profile(pid)
 
     def _on_profile_menu_toggled(self, profile_id: str, checked: bool) -> None:
         if getattr(self, "_profile_menu_suppress", False):
@@ -1253,6 +1313,35 @@ class MainWindow(QMainWindow):
         if not checked:
             return
         self._switch_rotor_profile(profile_id)
+
+    def _wait_hw_connected_for_profile_push(self, timeout_s: float = 4.0) -> bool:
+        """Kurz warten bis Hardware-Link steht (nach update_cfg / Safe-Reconnect)."""
+        import time
+
+        hw = getattr(self, "hw", None)
+        if hw is None:
+            return False
+        try:
+            if bool(hw.is_connected()):
+                return True
+        except Exception:
+            pass
+        deadline = time.time() + max(0.2, float(timeout_s))
+        while time.time() < deadline:
+            try:
+                if bool(hw.is_connected()):
+                    return True
+            except Exception:
+                pass
+            try:
+                QApplication.processEvents()
+            except Exception:
+                pass
+            time.sleep(0.05)
+        try:
+            return bool(hw.is_connected())
+        except Exception:
+            return False
 
     def _switch_rotor_profile(self, profile_id: str) -> None:
         """Aktives Profil speichern, neues laden, HW/Server anwenden, Bus-Caches neu lesen."""
@@ -1273,6 +1362,7 @@ class MainWindow(QMainWindow):
             return
 
         old_lang = str((self.cfg.get("ui") or {}).get("language") or "")
+        old_chw = dict(self.cfg.get("controller_hw") or {}) if isinstance(self.cfg.get("controller_hw"), dict) else {}
         try:
             save_active_config(self.cfg)
             new_cfg = switch_profile(pid)
@@ -1297,23 +1387,64 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._log_exception("_switch_rotor_profile hw.update_cfg", e)
 
-        rb = self.cfg.get("rotor_bus") or {}
         try:
-            self.ctrl.update_ids(
-                int(rb.get("master_id", 0)),
-                int(rb.get("slave_az", 1)),
-                int(rb.get("slave_el", 1)),
-                bool(rb.get("enable_az", True)),
-                bool(rb.get("enable_el", False)),
-            )
+            from ..rotor_backup import apply_live_ids_from_cfg
+
+            apply_live_ids_from_cfg(self.ctrl, self.cfg)
         except Exception as e:
-            self._log_exception("_switch_rotor_profile update_ids", e)
+            self._log_exception("_switch_rotor_profile apply_live_ids", e)
+            rb = self.cfg.get("rotor_bus") or {}
+            try:
+                self.ctrl.update_ids(
+                    int(rb.get("master_id", 0)),
+                    int(rb.get("slave_az", 1)),
+                    int(rb.get("slave_el", 1)),
+                    bool(rb.get("enable_az", True)),
+                    bool(rb.get("enable_el", False)),
+                )
+            except Exception as e2:
+                self._log_exception("_switch_rotor_profile update_ids", e2)
 
         try:
             if hasattr(self.ctrl, "reset_bus_discovery_state"):
                 self.ctrl.reset_bus_discovery_state()
         except Exception as e:
             self._log_exception("_switch_rotor_profile reset_bus_discovery_state", e)
+
+        try:
+            from ..rotor_backup import push_controller_hw_diff
+
+            # Nach Transportwechsel kurz auf Link warten, sonst werden SETCON* verworfen.
+            connected = self._wait_hw_connected_for_profile_push(timeout_s=4.0)
+            enc3 = False
+            try:
+                fn = getattr(self.ctrl, "abs_encoder_no_homing", None)
+                enc3 = bool(fn()) if callable(fn) else False
+            except Exception:
+                enc3 = False
+            new_chw = self.cfg.get("controller_hw") if isinstance(self.cfg.get("controller_hw"), dict) else {}
+            # force=True: alle Controller-Einstellungen des neuen Profils schreiben
+            # (nicht nur Diff zwischen Profil-JSONs — physischer Controller kann abweichen).
+            ok_push = push_controller_hw_diff(
+                self.ctrl,
+                old_chw=old_chw,
+                new_chw=new_chw,
+                connected=connected,
+                encoder_type3=enc3,
+                force=True,
+            )
+            if not connected:
+                self.logbuf.write(
+                    "WARN",
+                    t("main.profile_controller_push_offline"),
+                )
+            elif not ok_push:
+                self.logbuf.write(
+                    "WARN",
+                    t("main.profile_controller_push_warn"),
+                )
+        except Exception as e:
+            self._log_exception("_switch_rotor_profile push_controller_hw", e)
 
         pst = self.cfg.get("pst_server") or {}
         try:
@@ -1371,11 +1502,22 @@ class MainWindow(QMainWindow):
         self._update_homing_buttons_visibility()
         self._update_encoder_dependent_settings_ui()
         try:
+            self._update_wind_visibility()
+        except Exception:
+            pass
+        try:
             self._on_rotor_type_changed_ui()
         except Exception:
             pass
 
         self._refresh_profile_menu()
+
+        try:
+            # Antennen-Combo sofort neu befüllen (nicht erst beim Timer)
+            self._last_main_antenna_labels = None
+            self._refresh_main_antenna_dropdown_labels_if_needed()
+        except Exception as e:
+            self._log_exception("_switch_rotor_profile antenna_combo", e)
 
         try:
             self._rebuild_settings_win()
@@ -1461,6 +1603,13 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, "gb_antenna"):
                 self.gb_antenna.setTitle(t("main.group_antenna_select"))
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "gb_profile"):
+                self.gb_profile.setTitle(t("main.group_profile"))
+            if hasattr(self, "_cb_main_profile"):
+                self._cb_main_profile.setToolTip(tt("main.profile_combo_tooltip"))
         except Exception:
             pass
         try:

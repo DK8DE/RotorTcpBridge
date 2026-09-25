@@ -100,6 +100,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "controller_hw": {
         "enabled": True,
         "cont_id": 2,
+        # Rotor-IDs am Display-Controller (SETCONTAZID / SETCONTELID); 0 = Achse aus
+        "az_rotor_id": 20,
+        "el_rotor_id": 0,
+        # Antenne beim Wechsel nachdrehen (SETCONCHA) — Standard aus
+        "antenna_realign_on_switch": False,
     },
     "spid": {"ph": 10, "pv": 10},
     "polling_ms": {
@@ -410,6 +415,31 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
         rb.setdefault("enable_az", True)
         rb.setdefault("enable_el", True)
         rb.setdefault("el_rotor_type", 2)
+
+    # Migration: Controller AZ/EL-Rotor-IDs (SETCONTAZID / SETCONTELID)
+    if isinstance(cfg.get("controller_hw"), dict) or isinstance(cfg.get("rotor_bus"), dict):
+        chw_m = cfg.setdefault("controller_hw", {})
+        if not isinstance(chw_m, dict):
+            chw_m = {}
+            cfg["controller_hw"] = chw_m
+        rb_m = cfg.get("rotor_bus") if isinstance(cfg.get("rotor_bus"), dict) else {}
+        if "az_rotor_id" not in chw_m:
+            try:
+                saz = int(rb_m.get("slave_az", 20))
+            except (TypeError, ValueError):
+                saz = 20
+            if not bool(rb_m.get("enable_az", True)):
+                saz = 0
+            chw_m["az_rotor_id"] = max(0, min(254, saz))
+        if "el_rotor_id" not in chw_m:
+            try:
+                sel = int(rb_m.get("slave_el", 21))
+            except (TypeError, ValueError):
+                sel = 21
+            if not bool(rb_m.get("enable_el", False)):
+                sel = 0
+            chw_m["el_rotor_id"] = max(0, min(254, sel))
+        chw_m.setdefault("antenna_realign_on_switch", False)
 
     # Antennen-Namen: immer 3 Einträge (ohne AZ nur Config/Defaults, kein GETANTNAME).
     if "ui" in cfg and isinstance(cfg["ui"], dict):

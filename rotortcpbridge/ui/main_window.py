@@ -495,23 +495,6 @@ class MainWindow(QMainWindow):
         self._last_main_antenna_labels: tuple[str, ...] | None = None
         main.addWidget(self.gb_antenna)
 
-        self.gb_profile = QGroupBox(t("main.group_profile"))
-        _lay_prof = QVBoxLayout(self.gb_profile)
-        try:
-            _lay_prof.setContentsMargins(
-                px_to_dip(self, 8), px_to_dip(self, 4), px_to_dip(self, 8), px_to_dip(self, 4)
-            )
-        except Exception:
-            pass
-        self._cb_main_profile = QComboBox()
-        self._cb_main_profile.setMinimumWidth(px_to_dip(self, 160))
-        self._cb_main_profile.setToolTip(tt("main.profile_combo_tooltip"))
-        self._profile_combo_suppress = False
-        self._cb_main_profile.currentIndexChanged.connect(self._on_main_profile_changed)
-        _lay_prof.addWidget(self._cb_main_profile)
-        main.addWidget(self.gb_profile)
-        self._refresh_main_profile_combo()
-
         self._rig_freq_poll_timer = QTimer(self)
         self._rig_freq_poll_timer.setInterval(1000)
         self._rig_freq_poll_timer.timeout.connect(self._on_rig_freq_poll_timer)
@@ -1235,7 +1218,7 @@ class MainWindow(QMainWindow):
             mb.addMenu(m)
 
     def _refresh_profile_menu(self) -> None:
-        """Menü „Profil“ und Hauptfenster-Combo mit allen Profilen neu aufbauen."""
+        """Menü „Profile“ neu aufbauen; nur sichtbar bei mehr als einem Profil."""
         from ..profile_store import get_active_profile_id, list_profiles
 
         menu = getattr(self, "_menu_profile", None)
@@ -1261,51 +1244,9 @@ class MainWindow(QMainWindow):
                     act.toggled.connect(partial(self._on_profile_menu_toggled, pid))
             finally:
                 self._profile_menu_suppress = False
-        self._refresh_main_profile_combo(profiles=profiles, active_id=active)
-
-    def _refresh_main_profile_combo(
-        self,
-        *,
-        profiles: list | None = None,
-        active_id: str | None = None,
-    ) -> None:
-        """Profil-Combo im Hauptfenster an Index/Aktiv-ID anpassen."""
-        from ..profile_store import get_active_profile_id, list_profiles
-
-        cb = getattr(self, "_cb_main_profile", None)
-        if cb is None:
-            return
-        if profiles is None:
-            profiles = list_profiles()
-        if active_id is None:
-            active_id = get_active_profile_id()
-        self._profile_combo_suppress = True
-        try:
-            cb.blockSignals(True)
-            cb.clear()
-            active_idx = 0
-            for i, p in enumerate(profiles):
-                pid = str(p.get("id") or "")
-                name = str(p.get("name") or pid)
-                cb.addItem(name, pid)
-                if pid == active_id:
-                    active_idx = i
-            if cb.count() > 0:
-                cb.setCurrentIndex(active_idx)
-            cb.blockSignals(False)
-        finally:
-            self._profile_combo_suppress = False
-
-    def _on_main_profile_changed(self, index: int) -> None:
-        if getattr(self, "_profile_combo_suppress", False):
-            return
-        cb = getattr(self, "_cb_main_profile", None)
-        if cb is None or index < 0:
-            return
-        pid = str(cb.itemData(index) or "").strip()
-        if not pid:
-            return
-        self._switch_rotor_profile(pid)
+            act = menu.menuAction()
+            if act is not None:
+                act.setVisible(len(profiles) >= 2)
 
     def _on_profile_menu_toggled(self, profile_id: str, checked: bool) -> None:
         if getattr(self, "_profile_menu_suppress", False):
@@ -1603,13 +1544,6 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, "gb_antenna"):
                 self.gb_antenna.setTitle(t("main.group_antenna_select"))
-        except Exception:
-            pass
-        try:
-            if hasattr(self, "gb_profile"):
-                self.gb_profile.setTitle(t("main.group_profile"))
-            if hasattr(self, "_cb_main_profile"):
-                self._cb_main_profile.setToolTip(tt("main.profile_combo_tooltip"))
         except Exception:
             pass
         try:

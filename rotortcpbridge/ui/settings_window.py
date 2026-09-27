@@ -803,6 +803,53 @@ class SettingsWindow(QDialog):
         _st_pad = px_to_dip(self, 5)
         vl_st.setContentsMargins(_st_pad, _st_pad, _st_pad, _st_pad)
         vl_st.setSpacing(10)
+        self._lbl_strom_cal_intro = QLabel(t("settings.strom_cal_intro"))
+        self._lbl_strom_cal_intro.setWordWrap(True)
+        vl_st.addWidget(self._lbl_strom_cal_intro)
+
+        self.gb_strom_limits = QGroupBox(t("settings.strom_limits_group"))
+        fl_strom_lim = QFormLayout(self.gb_strom_limits)
+        self._lbl_strom_limits_intro = QLabel(t("settings.strom_limits_intro"))
+        self._lbl_strom_limits_intro.setWordWrap(True)
+        fl_strom_lim.addRow(self._lbl_strom_limits_intro)
+        self.sp_iwarn_az = QSpinBox()
+        self.sp_iwarn_az.setRange(100, 10000)
+        self.sp_iwarn_az.setSingleStep(50)
+        self.sp_iwarn_az.setSuffix(" mA")
+        self.sp_iwarn_az.setValue(2500)
+        self.sp_iwarn_az.setToolTip(tt("settings.strom_iwarn_tooltip"))
+        self._lbl_iwarn_az = QLabel(t("settings.strom_iwarn_az"))
+        fl_strom_lim.addRow(self._lbl_iwarn_az, self.sp_iwarn_az)
+        self.sp_imax_az = QSpinBox()
+        self.sp_imax_az.setRange(100, 10000)
+        self.sp_imax_az.setSingleStep(50)
+        self.sp_imax_az.setSuffix(" mA")
+        self.sp_imax_az.setValue(3500)
+        self.sp_imax_az.setToolTip(tt("settings.strom_imax_tooltip"))
+        self._lbl_imax_az = QLabel(t("settings.strom_imax_az"))
+        fl_strom_lim.addRow(self._lbl_imax_az, self.sp_imax_az)
+        self.sp_iwarn_el = QSpinBox()
+        self.sp_iwarn_el.setRange(100, 10000)
+        self.sp_iwarn_el.setSingleStep(50)
+        self.sp_iwarn_el.setSuffix(" mA")
+        self.sp_iwarn_el.setValue(2500)
+        self.sp_iwarn_el.setToolTip(tt("settings.strom_iwarn_tooltip"))
+        self._lbl_iwarn_el = QLabel(t("settings.strom_iwarn_el"))
+        fl_strom_lim.addRow(self._lbl_iwarn_el, self.sp_iwarn_el)
+        self.sp_imax_el = QSpinBox()
+        self.sp_imax_el.setRange(100, 10000)
+        self.sp_imax_el.setSingleStep(50)
+        self.sp_imax_el.setSuffix(" mA")
+        self.sp_imax_el.setValue(3500)
+        self.sp_imax_el.setToolTip(tt("settings.strom_imax_tooltip"))
+        self._lbl_imax_el = QLabel(t("settings.strom_imax_el"))
+        fl_strom_lim.addRow(self._lbl_imax_el, self.sp_imax_el)
+        vl_st.addWidget(self.gb_strom_limits)
+        self._snapshot_iwarn_az: int | None = None
+        self._snapshot_imax_az: int | None = None
+        self._snapshot_iwarn_el: int | None = None
+        self._snapshot_imax_el: int | None = None
+
         self.gb_strom_cal = QGroupBox(t("settings.cal_label"))
         # Gleiches Layout wie Last-Heatmap-Gruppen (Standard-QGroupBox, kein Sonder-Stylesheet).
         fl_strom_cal = QFormLayout(self.gb_strom_cal)
@@ -959,6 +1006,9 @@ class SettingsWindow(QDialog):
         _ctrl_pad = px_to_dip(self, 5)
         vl_ctrl.setContentsMargins(_ctrl_pad, _ctrl_pad, _ctrl_pad, _ctrl_pad)
         vl_ctrl.setSpacing(10)
+        self._lbl_controller_intro = QLabel(t("settings.controller_intro"))
+        self._lbl_controller_intro.setWordWrap(True)
+        vl_ctrl.addWidget(self._lbl_controller_intro)
         self.chk_hw_controller_enabled = QCheckBox(t("settings.controller_hw_enable"))
         self.chk_hw_controller_enabled.setChecked(bool(_chw.get("enabled", True)))
         self.chk_hw_controller_enabled.setToolTip(tt("settings.controller_hw_enable_tooltip"))
@@ -1720,6 +1770,7 @@ class SettingsWindow(QDialog):
         self._snapshot_controller = self._controller_snapshot_from_ui()
         self._snapshot_wind_enable = bool(self._weather_tab.wind_enable_wanted())
         QTimer.singleShot(0, self._load_park_home_from_bus)
+        QTimer.singleShot(0, self._load_strom_limits_from_bus)
         # Antennennamen vom Rotor (GETANTNAME1–3 am AZ-Slave, nicht Display-Controller)
         try:
             self.ctrl.on_antenna_names_changed = lambda: QTimer.singleShot(
@@ -1854,9 +1905,21 @@ class SettingsWindow(QDialog):
 
     def _update_strom_cal_sections_visibility(self) -> None:
         """Stromkalibrierung und EL-Heatmap nur bei jeweils aktivierter Achse (Verbindung)."""
-        self.gb_strom_cal.setVisible(self.chk_enable_az.isChecked())
-        self.gb_strom_cal_el.setVisible(self.chk_enable_el.isChecked())
-        self.gb_hm_el.setVisible(self.chk_enable_el.isChecked())
+        az_on = self.chk_enable_az.isChecked()
+        el_on = self.chk_enable_el.isChecked()
+        self.gb_strom_cal.setVisible(az_on)
+        self.gb_strom_cal_el.setVisible(el_on)
+        self.gb_hm_el.setVisible(el_on)
+        if hasattr(self, "gb_strom_limits"):
+            self.gb_strom_limits.setVisible(az_on or el_on)
+            self._lbl_iwarn_az.setVisible(az_on)
+            self.sp_iwarn_az.setVisible(az_on)
+            self._lbl_imax_az.setVisible(az_on)
+            self.sp_imax_az.setVisible(az_on)
+            self._lbl_iwarn_el.setVisible(el_on)
+            self.sp_iwarn_el.setVisible(el_on)
+            self._lbl_imax_el.setVisible(el_on)
+            self.sp_imax_el.setVisible(el_on)
         self._update_strom_cal_buttons_enabled()
 
     def _update_strom_cal_buttons_enabled(self) -> None:
@@ -2489,6 +2552,9 @@ class SettingsWindow(QDialog):
         """Erster Settings-Tab: Rotor-Profile verwalten und aktivieren."""
         page = QWidget()
         vl = QVBoxLayout(page)
+        self._lbl_profiles_intro = QLabel(t("settings.profiles_intro"))
+        self._lbl_profiles_intro.setWordWrap(True)
+        vl.addWidget(self._lbl_profiles_intro)
         gb = QGroupBox(t("settings.group_rotor_profile"))
         self._gb_rotor_profile = gb
         form = QVBoxLayout(gb)
@@ -2874,6 +2940,7 @@ class SettingsWindow(QDialog):
             self._network_tab.on_tab_shown()
         if row == getattr(self, "_tab_statistics_index", -1):
             self._start_calvalid_timer()
+            QTimer.singleShot(0, self._load_strom_limits_from_bus)
         else:
             self._stop_calvalid_timer()
         if row == getattr(self, "_tab_antenna_index", -1):
@@ -3181,6 +3248,118 @@ class SettingsWindow(QDialog):
                             pass
                     else:
                         all_ok = False
+        return all_ok
+
+    # Stromschwellen SETIWARN/SETIMAX: UI in mA, Bus in mV (1 A = 130 mV), wie Rotor-Konfiguration.
+    _STROM_MV_PER_A = 130.0
+
+    @classmethod
+    def _strom_ma_to_mv(cls, ma: int) -> int:
+        return int(round(float(ma) * cls._STROM_MV_PER_A / 1000.0))
+
+    @classmethod
+    def _strom_mv_to_ma(cls, mv: int) -> int:
+        return int(round(float(mv) * 10000.0 / 1300.0))
+
+    def _load_strom_limits_from_bus(self) -> None:
+        """GETIWARN/GETIMAX von AZ/EL lesen und SpinBoxes setzen."""
+        if not hasattr(self, "sp_iwarn_az"):
+            return
+        if not bool(getattr(self.hw, "is_connected", lambda: False)()):
+            return
+        if not hasattr(self.ctrl, "sync_ui_command_response"):
+            return
+        c = self.ctrl
+
+        def _read_pair(dst: int) -> tuple[int | None, int | None]:
+            if dst <= 0:
+                return None, None
+            r_w = c.sync_ui_command_response(dst, "GETIWARN", "0", "ACK_GETIWARN", timeout_s=1.2)
+            r_m = c.sync_ui_command_response(dst, "GETIMAX", "0", "ACK_GETIMAX", timeout_s=1.2)
+            warn_ma = imax_ma = None
+            if _sync_got_ack_value(r_w):
+                try:
+                    warn_ma = self._strom_mv_to_ma(int(float(str(r_w).split(";")[0].replace(",", "."))))
+                except (TypeError, ValueError):
+                    pass
+            if _sync_got_ack_value(r_m):
+                try:
+                    imax_ma = self._strom_mv_to_ma(int(float(str(r_m).split(";")[0].replace(",", "."))))
+                except (TypeError, ValueError):
+                    pass
+            return warn_ma, imax_ma
+
+        if self.chk_enable_az.isChecked():
+            try:
+                dst = int(self.sp_slave_az.value())
+            except Exception:
+                dst = int(getattr(c, "slave_az", 0) or 0)
+            w, m = _read_pair(dst)
+            if w is not None:
+                self.sp_iwarn_az.setValue(max(100, min(10000, int(w))))
+                self._snapshot_iwarn_az = int(self.sp_iwarn_az.value())
+            if m is not None:
+                self.sp_imax_az.setValue(max(100, min(10000, int(m))))
+                self._snapshot_imax_az = int(self.sp_imax_az.value())
+        if self.chk_enable_el.isChecked():
+            try:
+                dst = int(self.sp_slave_el.value())
+            except Exception:
+                dst = int(getattr(c, "slave_el", 0) or 0)
+            w, m = _read_pair(dst)
+            if w is not None:
+                self.sp_iwarn_el.setValue(max(100, min(10000, int(w))))
+                self._snapshot_iwarn_el = int(self.sp_iwarn_el.value())
+            if m is not None:
+                self.sp_imax_el.setValue(max(100, min(10000, int(m))))
+                self._snapshot_imax_el = int(self.sp_imax_el.value())
+
+    def _save_strom_limits_if_changed(self) -> bool:
+        """SETIWARN/SETIMAX nur bei Änderung gegenüber Snapshot schreiben."""
+        if not hasattr(self, "sp_iwarn_az"):
+            return True
+        if not bool(getattr(self.hw, "is_connected", lambda: False)()):
+            return True
+        if not hasattr(self.ctrl, "sync_ui_command_response"):
+            return True
+        c = self.ctrl
+        all_ok = True
+
+        def _write(dst: int, cmd: str, ma: int, snap_attr: str) -> bool:
+            snap = getattr(self, snap_attr, None)
+            if snap is None:
+                return True
+            if int(snap) == int(ma):
+                return True
+            if dst <= 0:
+                return True
+            self.lbl_status.setText(t("settings.strom_limits_saving"))
+            QApplication.processEvents()
+            mv = self._strom_ma_to_mv(int(ma))
+            r = c.sync_ui_command_response(dst, cmd, str(mv), f"ACK_{cmd}", timeout_s=1.5)
+            if _sync_got_ack_value(r):
+                setattr(self, snap_attr, int(ma))
+                return True
+            return False
+
+        if self.chk_enable_az.isChecked():
+            try:
+                dst = int(self.sp_slave_az.value())
+            except Exception:
+                dst = int(getattr(c, "slave_az", 0) or 0)
+            if not _write(dst, "SETIWARN", int(self.sp_iwarn_az.value()), "_snapshot_iwarn_az"):
+                all_ok = False
+            if not _write(dst, "SETIMAX", int(self.sp_imax_az.value()), "_snapshot_imax_az"):
+                all_ok = False
+        if self.chk_enable_el.isChecked():
+            try:
+                dst = int(self.sp_slave_el.value())
+            except Exception:
+                dst = int(getattr(c, "slave_el", 0) or 0)
+            if not _write(dst, "SETIWARN", int(self.sp_iwarn_el.value()), "_snapshot_iwarn_el"):
+                all_ok = False
+            if not _write(dst, "SETIMAX", int(self.sp_imax_el.value()), "_snapshot_imax_el"):
+                all_ok = False
         return all_ok
 
     def _update_antenna_offset_enabled(self) -> None:
@@ -4202,6 +4381,15 @@ class SettingsWindow(QDialog):
                 self,
                 t("settings.title"),
                 t("settings.park_home_write_fail"),
+            )
+
+        if not self._save_strom_limits_if_changed():
+            self.lbl_status.setText(t("settings.strom_limits_write_fail"))
+            QApplication.processEvents()
+            QMessageBox.warning(
+                self,
+                t("settings.title"),
+                t("settings.strom_limits_write_fail"),
             )
 
         self.save_cfg_cb(self.cfg)

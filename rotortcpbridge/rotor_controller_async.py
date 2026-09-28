@@ -1122,9 +1122,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             state == 2
                             and axis_name == "AZ"
                             and bool(getattr(self, "enable_az", True))
-                            and (
-                                self._statistics_window_open or self._settings_window_open
-                            )
+                            and self._statistics_window_open
                             and not self._acc_bins_chain_in_progress()
                         ):
                             if not self._cal_bins_inflight_az and (
@@ -1140,9 +1138,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             state == 2
                             and axis_name == "EL"
                             and bool(getattr(self, "enable_el", True))
-                            and (
-                                self._statistics_window_open or self._settings_window_open
-                            )
+                            and self._statistics_window_open
                             and not self._acc_bins_chain_in_progress()
                         ):
                             dst_el = int(self.slave_el)

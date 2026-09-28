@@ -536,13 +536,13 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             self._acc_bins_stats_arm_after_setpos_el = False
 
     def set_settings_window_open(self, open: bool) -> None:
-        """Einstellungen offen/geschlossen. Wenn offen: CAL/LIVE wie beim Statistik-Fenster pollen."""
+        """Einstellungen offen/geschlossen.
+
+        Öffnen allein darf das normale Positions-Polling nicht umstellen
+        (sonst Deadman bei Fahrt). CAL/LIVE/ACC nur über Statistik-Fenster
+        oder gezielte UI-GET/SET (kurz Idle-Defer).
+        """
         self._settings_window_open = bool(open)
-        if bool(open):
-            self._acc_bins_stats_initial_az = False
-            self._acc_bins_stats_initial_el = False
-            self._acc_bins_stats_arm_after_setpos_az = False
-            self._acc_bins_stats_arm_after_setpos_el = False
 
     def set_compass_strom_heatmap_active(self, az: bool, el: bool) -> None:
         """Ob im Kompass die Strom-Heatmap (AZ/EL) eingeschaltet ist — steuert GETACCBINS-Polling."""
@@ -984,7 +984,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         now = time.time()
         self._last_live_bins_az = now
         self._last_live_bins_el = now
-        stats_ui = bool(self._statistics_window_open or self._settings_window_open)
+        stats_ui = bool(self._statistics_window_open)
         comp_az = bool(self._compass_window_open and self._compass_strom_heatmap_az)
         comp_el = bool(self._compass_window_open and self._compass_strom_heatmap_el)
         want_acc_az = False
@@ -1419,9 +1419,20 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
         timeout_s ist mit HwRequest.timeout_s identisch: RS485/TCP kann >1 s pro Telegramm
         brauchen; bei 1,2 s kommt die RX-Zeile oft noch im Log, aber on_done war schon „timeout“.
+
+        Idle-Zusatzpolls kurz hintenanstellen (nicht Positions-Fast-Poll bei Fahrt),
+        damit GET/SET aus den Einstellungen den Bus nicht mit Wind/WARN kreuzen.
         """
         from PySide6.QtCore import QEventLoop, QElapsedTimer
         from PySide6.QtWidgets import QApplication
+
+        try:
+            now = time.time()
+            prev = float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
+            # Kurz Idle-Zusatzpolls zurückstellen; Fahrt-GETPOSDG bleibt über poll_restrict aktiv.
+            self._idle_poll_defer_until = max(prev, now + max(0.8, min(2.0, float(timeout_s))))
+        except Exception:
+            pass
 
         result: list[Optional[str]] = [None]
         done = [False]

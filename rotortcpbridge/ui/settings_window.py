@@ -1730,8 +1730,6 @@ class SettingsWindow(QDialog):
         self._connect_settings_nav_os_theme_signals()
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(True)
-        if hasattr(self.ctrl, "request_immediate_stats"):
-            self.ctrl.request_immediate_stats()
         self._antenna_giveup_done = False
         self._update_antenna_visibility()
         self._shortcuts_tab.refresh_el_visibility()
@@ -2029,13 +2027,23 @@ class SettingsWindow(QDialog):
             setattr(self, dl_attr, min(dl, now + 15.0) if dl > now else 0.0)
         setattr(self, prev_attr, st)
         if want_poll:
+            # Während Fahrt kein GETCALSTATE (prio würde GETPOSDG/Deadman gefährden)
+            try:
+                if bool(
+                    self.ctrl._motion_poll_restrict_active(
+                        time.time(), float(self.ctrl._cfg_poll.get("pos_fast", 200)) / 1000.0
+                    )
+                ):
+                    return
+            except Exception:
+                pass
             try:
                 self.ctrl.send_ui_command(
                     int(dst),
                     "GETCALSTATE",
                     "0",
                     expect_prefix=None,
-                    priority=0,
+                    priority=5,
                     apply_local_state=False,
                 )
             except Exception:
@@ -2081,6 +2089,16 @@ class SettingsWindow(QDialog):
         """GETCALVALID je Achse nur wenn AZ/EL unter Verbindung aktiv."""
         if not self.isVisible() or not self._calvalid_tab_active():
             return
+        # Während Fahrt kein Sync-GET (Deadman / Positions-Poll hat Vorrang)
+        try:
+            if bool(
+                self.ctrl._motion_poll_restrict_active(
+                    time.time(), float(self.ctrl._cfg_poll.get("pos_fast", 200)) / 1000.0
+                )
+            ):
+                return
+        except Exception:
+            pass
         sync = getattr(self.ctrl, "sync_ui_command_response", None)
         if sync is None:
             return

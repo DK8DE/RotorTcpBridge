@@ -239,10 +239,9 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         """True, wenn GETACCBINS grundsätzlich erlaubt ist (UI-Kontext).
 
         Der eigentliche Abrufrhythmus steuert ``tick_polling`` (einmal komplett, dann nur nach SETPOSDG).
+        Einstellungen allein lösen kein ACC-Polling aus (Deadman bei Fahrt).
         """
         if bool(getattr(self, "_statistics_window_open", False)):
-            return True
-        if bool(getattr(self, "_settings_window_open", False)):
             return True
         if bool(getattr(self, "_compass_window_open", False)) and (
             bool(getattr(self, "_compass_strom_heatmap_az", False))
@@ -568,8 +567,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     if wind_unknown_retry or wind_known_repoll:
                         self._poll_wind_enable(self.slave_az, self.az, "AZ")
 
-                # GETCALSTATE/LIVE wenn Statistik- oder Einstellungsfenster offen
-                if self._statistics_window_open or self._settings_window_open:
+                # GETCALSTATE/LIVE wenn Statistik-Fenster offen (nicht Einstellungen)
+                if self._statistics_window_open:
                     if self.enable_az and (now - self._last_cal_state_az >= 10.0):
                         self._last_cal_state_az = now
                         self._poll_cal_state(self.slave_az, self.az)
@@ -589,7 +588,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 # GETACCBINS: einmal vollständig bei Statistik/Kompass-Strom, danach nur nach SETPOSDG.
                 if now >= self._stats_cooldown_until:
                     gap = float(_ACC_BINS_REFETCH_GAP_S)
-                    stats_ui = bool(self._statistics_window_open or self._settings_window_open)
+                    stats_ui = bool(self._statistics_window_open)
                     comp_az = bool(self._compass_window_open and self._compass_strom_heatmap_az)
                     comp_el = bool(self._compass_window_open and self._compass_strom_heatmap_el)
                     if self.enable_az and (not self._acc_bins_inflight_az):
@@ -1307,9 +1306,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             assert temp_cw is not None and temp_ccw is not None
             axis_state.acc_bins_cw = list(temp_cw)
             axis_state.acc_bins_ccw = list(temp_ccw)
-            if bool(getattr(self, "_statistics_window_open", False)) or bool(
-                getattr(self, "_settings_window_open", False)
-            ):
+            if bool(getattr(self, "_statistics_window_open", False)):
                 self._acc_bins_stats_initial_az = True
                 self._acc_bins_stats_arm_after_setpos_az = False
             if bool(getattr(self, "_compass_window_open", False)) and bool(
@@ -1357,9 +1354,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             assert temp_cw is not None and temp_ccw is not None
             axis_state.acc_bins_cw = list(temp_cw)
             axis_state.acc_bins_ccw = list(temp_ccw)
-            if bool(getattr(self, "_statistics_window_open", False)) or bool(
-                getattr(self, "_settings_window_open", False)
-            ):
+            if bool(getattr(self, "_statistics_window_open", False)):
                 self._acc_bins_stats_initial_el = True
                 self._acc_bins_stats_arm_after_setpos_el = False
             if bool(getattr(self, "_compass_window_open", False)) and bool(

@@ -844,7 +844,6 @@ class SettingsWindow(QDialog):
         self.sp_imax_el.setToolTip(tt("settings.strom_imax_tooltip"))
         self._lbl_imax_el = QLabel(t("settings.strom_imax_el"))
         fl_strom_lim.addRow(self._lbl_imax_el, self.sp_imax_el)
-        vl_st.addWidget(self.gb_strom_limits)
         self._snapshot_iwarn_az: int | None = None
         self._snapshot_imax_az: int | None = None
         self._snapshot_iwarn_el: int | None = None
@@ -988,6 +987,7 @@ class SettingsWindow(QDialog):
         self.btn_apply_cal_el.setToolTip(tt("settings.stats_apply_from_cal_tooltip"))
         fl_hm_el.addRow(self.btn_apply_cal_el)
         vl_st.addWidget(self.gb_hm_el)
+        vl_st.addWidget(self.gb_strom_limits)
         vl_st.addStretch(1)
 
         _chw = cfg.setdefault("controller_hw", {})
@@ -1103,10 +1103,10 @@ class SettingsWindow(QDialog):
         self.cb_cont_encoder_delta.setToolTip(tt("settings.controller_encoder_delta_tooltip"))
         fl_ctrl.addRow(t("settings.controller_encoder_delta"), self.cb_cont_encoder_delta)
         self.sp_cont_beep_freq = QSpinBox()
-        self.sp_cont_beep_freq.setRange(500, 4000)
+        self.sp_cont_beep_freq.setRange(200, 4000)
         try:
             self.sp_cont_beep_freq.setValue(
-                max(500, min(4000, int(_chw.get("speaker_freq_hz", 1000))))
+                max(200, min(4000, int(_chw.get("speaker_freq_hz", 1000))))
             )
         except (TypeError, ValueError):
             self.sp_cont_beep_freq.setValue(1000)
@@ -1768,7 +1768,7 @@ class SettingsWindow(QDialog):
         self._capture_antenna_snapshots_from_ui()
         # Vergleichsbasis für SETCON* beim Speichern (sonst snap=None → kein Schreiben)
         self._snapshot_controller = self._controller_snapshot_from_ui()
-        self._snapshot_wind_enable = bool(self._weather_tab.wind_enable_wanted())
+        # Wind-Baseline nur aus Bus (siehe _sync_weather_wind_enable_from_ctrl); nicht aus UI überschreiben
         QTimer.singleShot(0, self._load_park_home_from_bus)
         QTimer.singleShot(0, self._load_strom_limits_from_bus)
         # Antennennamen vom Rotor (GETANTNAME1–3 am AZ-Slave, nicht Display-Controller)
@@ -3405,6 +3405,14 @@ class SettingsWindow(QDialog):
         self._update_antenna_offset_enabled()
         self.update_encoder_dependent_ui()
         self._update_weather_tab_visibility()
+        # Wind-Baseline nachziehen, sobald GETWINDENABLE bekannt wird
+        if getattr(self, "_snapshot_wind_enable", None) is None and bool(
+            getattr(self.ctrl, "wind_enabled_known", False)
+        ):
+            try:
+                self._sync_weather_wind_enable_from_ctrl()
+            except Exception:
+                pass
 
     def _wind_sensor_available_for_ui(self) -> bool:
         """True wenn Wind-Anzeige/Sensor aktiv (gleiche Logik wie Hauptfenster-Wetterbutton)."""
@@ -3445,12 +3453,16 @@ class SettingsWindow(QDialog):
             pass
 
     def _sync_weather_wind_enable_from_ctrl(self) -> None:
-        """Checkbox an GETWINDENABLE angleichen; sonst Default aus."""
+        """Checkbox an GETWINDENABLE angleichen; ohne bekannte Baseline kein Snapshot."""
         tab = getattr(self, "_weather_tab", None)
         if tab is None or not hasattr(tab, "set_wind_enable_checked"):
             return
         wind_known = bool(getattr(self.ctrl, "wind_enabled_known", False))
-        checked = bool(getattr(self.ctrl, "wind_enabled", False)) if wind_known else False
+        if not wind_known:
+            tab.set_wind_enable_checked(False)
+            self._snapshot_wind_enable = None
+            return
+        checked = bool(getattr(self.ctrl, "wind_enabled", False))
         tab.set_wind_enable_checked(checked)
         self._snapshot_wind_enable = bool(tab.wind_enable_wanted())
 
@@ -3467,7 +3479,8 @@ class SettingsWindow(QDialog):
             return True
         want = bool(tab.wind_enable_wanted())
         snap = getattr(self, "_snapshot_wind_enable", None)
-        if snap is not None and bool(snap) == want:
+        # Keine Baseline (noch nicht vom Bus) oder unverändert → kein Write
+        if snap is None or bool(snap) == want:
             return True
         try:
             dst = int(self.sp_slave_az.value())
@@ -3979,7 +3992,7 @@ class SettingsWindow(QDialog):
         self._update_el_rotor_type_combo_enabled()
 
     def _on_el_rotor_type_combo_changed(self, _index: int = 0) -> None:
-        """Dropdown: GUI sofort umstellen und SETROTORTYPE an EL-Slave senden."""
+        """Dropdown: GUI sofort umstellen; SETROTORTYPE nur bei echter Änderung."""
         if not self.chk_enable_el.isChecked():
             return
         typ = self._el_rotor_type_from_ui()
@@ -3987,6 +4000,13 @@ class SettingsWindow(QDialog):
             self.cfg.setdefault("rotor_bus", {})["el_rotor_type"] = int(typ)
         except Exception:
             pass
+        # Vor lokalem Apply prüfen — sonst wäre der Diff immer „gleich“.
+        already_same = False
+        if bool(getattr(self.ctrl, "el_rotor_type_known", False)):
+            try:
+                already_same = int(getattr(self.ctrl, "el_rotor_type", -1) or -1) == int(typ)
+            except Exception:
+                already_same = False
         if hasattr(self.ctrl, "apply_el_rotor_type_from_value"):
             try:
                 self.ctrl.apply_el_rotor_type_from_value(
@@ -3996,6 +4016,8 @@ class SettingsWindow(QDialog):
                 )
             except Exception:
                 pass
+        if already_same:
+            return
         try:
             dst = int(self.sp_slave_el.value())
         except Exception:
@@ -4323,8 +4345,8 @@ class SettingsWindow(QDialog):
                     for slot in (1, 2, 3):
                         new_name = self._antenna_display_name(slot - 1)
                         old_name = snapshot_antname[slot - 1]
-                        # None = noch nie vom Rotor gelesen → trotzdem schreiben, wenn Wert gesetzt
-                        if old_name is not None and str(old_name) == str(new_name):
+                        # Keine Baseline oder unverändert → kein NVS-Write
+                        if old_name is None or str(old_name) == str(new_name):
                             continue
                         wrote_antenna_hw = True
                         self.lbl_status.setText(t("settings.status_antname_saving", slot=slot))
@@ -4586,7 +4608,7 @@ class SettingsWindow(QDialog):
         self._update_conled_brightness_label()
 
     def _on_conled_brightness_released(self) -> None:
-        """SETCONLEDP beim Loslassen (nur bei echter Änderung durch Ziehen); Snapshot → kein Doppel-Write beim Speichern."""
+        """SETCONLEDP beim Loslassen nur bei echter Änderung; Snapshot → kein Doppel-Write beim Speichern."""
         self._update_conled_brightness_label()
         if not self._controller_hw_enabled():
             return
@@ -4594,8 +4616,11 @@ class SettingsWindow(QDialog):
             return
         if not hasattr(self.ctrl, "sync_ui_command_response"):
             return
-        dst = self._controller_bus_dst()
         val = int(self.sl_cont_display_brightness.value())
+        snap = getattr(self, "_snapshot_controller", None)
+        if snap is not None and len(snap) > 5 and int(snap[5]) == val:
+            return
+        dst = self._controller_bus_dst()
         r = self.ctrl.sync_ui_command_response(
             dst, "SETCONLEDP", str(val), "ACK_SETCONLEDP"
         )
@@ -4642,7 +4667,7 @@ class SettingsWindow(QDialog):
                 self.sp_cont_pwm_fast.setValue(80)
             try:
                 self.sp_cont_beep_freq.setValue(
-                    max(100, min(4000, int(ch.get("speaker_freq_hz", 1000))))
+                    max(200, min(4000, int(ch.get("speaker_freq_hz", 1000))))
                 )
             except (TypeError, ValueError):
                 self.sp_cont_beep_freq.setValue(1000)

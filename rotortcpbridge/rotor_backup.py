@@ -386,7 +386,7 @@ def controller_hw_norm(chw: Optional[Dict[str, Any]]) -> Dict[str, int]:
         "slow_pwm": max(0, min(100, _clamp_cont_id(ch.get("slow_pwm", 30), 30))),
         "fast_pwm": max(0, min(100, _clamp_cont_id(ch.get("fast_pwm", 80), 80))),
         "speaker_freq_hz": max(
-            100, min(4000, _clamp_cont_id(ch.get("speaker_freq_hz", 1000), 1000))
+            200, min(4000, _clamp_cont_id(ch.get("speaker_freq_hz", 1100), 1100))
         ),
         "speaker_volume": max(0, min(50, _clamp_cont_id(ch.get("speaker_volume", 50), 50))),
         "display_brightness_pct": max(

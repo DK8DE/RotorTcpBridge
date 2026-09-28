@@ -1532,13 +1532,13 @@ SPECS_DATA: list[dict] = [
     {
         "name": "SETCONFRQ",
         "kind": "int",
-        "min_value": 100.0,
+        "min_value": 200.0,
         "max_value": 4000.0,
         "decimals": 0,
         "step": 1.0,
-        "default": 1000.0,
-        "help_text": "Piep-Tonhöhe (Frequenz in Hz) für den Lautsprecher am Controller (100–4000).",
-        "help_text_en": "Beeper pitch (frequency in Hz) on the controller speaker (100–4000).",
+        "default": 1100.0,
+        "help_text": "Piep-Tonhöhe (Frequenz in Hz) für den Lautsprecher am Controller (200–4000).",
+        "help_text_en": "Beeper pitch (frequency in Hz) on the controller speaker (200–4000).",
     },
     {
         "name": "GETCONFRQ",

@@ -162,8 +162,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._acc_bins_finalize_until_el: float = 0.0
         # Statistik-Fenster offen: nur dann CAL/LIVE/ACC pollen (Bus entlasten)
         self._statistics_window_open: bool = False
-        # Einstellungen offen: CAL/LIVE wie Statistik pollen (Tab Statistik / „aus Kalibrierung“)
+        # Einstellungen offen (Flag; Polling nicht umstellen — Deadman)
         self._settings_window_open: bool = False
+        # Einstellungen → Tab Stromwerte: CAL-Status + GETCALBINS (kein ACC)
+        self._settings_strom_tab_open: bool = False
         # Kompass-Fenster offen (Anzeige); Strom-Bins nur wenn Heatmap „strom“ aktiv (siehe set_compass_strom_heatmap_active)
         self._compass_window_open: bool = False
         self._compass_strom_heatmap_az: bool = False
@@ -539,10 +541,19 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """Einstellungen offen/geschlossen.
 
         Öffnen allein darf das normale Positions-Polling nicht umstellen
-        (sonst Deadman bei Fahrt). CAL/LIVE/ACC nur über Statistik-Fenster
-        oder gezielte UI-GET/SET (kurz Idle-Defer).
+        (sonst Deadman bei Fahrt). CAL-Daten nur über ``set_settings_strom_tab_open``.
         """
         self._settings_window_open = bool(open)
+        if not open:
+            self._settings_strom_tab_open = False
+
+    def set_settings_strom_tab_open(self, open: bool) -> None:
+        """Einstellungen-Tab „Stromwerte“ aktiv: GETCALSTATE + GETCALBINS (kein ACC/LIVE-Dauerpoll)."""
+        self._settings_strom_tab_open = bool(open)
+
+    def _cal_data_ui_active(self) -> bool:
+        """True wenn CAL-Status/CAL-Bins vom Bus geholt werden sollen."""
+        return bool(self._statistics_window_open) or bool(self._settings_strom_tab_open)
 
     def set_compass_strom_heatmap_active(self, az: bool, el: bool) -> None:
         """Ob im Kompass die Strom-Heatmap (AZ/EL) eingeschaltet ist — steuert GETACCBINS-Polling."""
@@ -966,6 +977,30 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 priority=2,
             )
         )
+
+    def request_immediate_cal_data(self) -> None:
+        """CAL-Status sofort abfragen (Stromwerte-Tab). Kein ACC — Deadman-schonend.
+
+        Bei CAL-State=2 startet der Async-Pfad anschließend GETCALBINS.
+        """
+        try:
+            if bool(self._motion_poll_restrict_active(time.time(), self._cfg_poll["pos_fast"] / 1000.0)):
+                return
+        except Exception:
+            pass
+        self._last_cal_state_az = 0.0
+        self._last_cal_state_el = 0.0
+        if not self.hw.is_connected():
+            return
+        try:
+            # Prio 5: unter Fahrt-GETPOSDG (0), über Idle-Zusatzpolls
+            prio = 5
+            if self.enable_az and not self._cal_bins_inflight_az:
+                self._poll_cal_state(self.slave_az, self.az, priority=prio)
+            if self.enable_el and not self._cal_bins_inflight_el:
+                self._poll_cal_state(self.slave_el, self.el, priority=prio)
+        except Exception:
+            pass
 
     def request_immediate_stats(self) -> None:
         """Statistik-Abfrage sofort auslösen (beim Öffnen des Statistik-Fensters). Priorität 0 = vor allem anderen.

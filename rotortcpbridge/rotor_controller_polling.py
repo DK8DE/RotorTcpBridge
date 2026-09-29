@@ -101,6 +101,7 @@ class _RotorPollingHost:
     _cfg_poll: dict[str, int]
     _statistics_window_open: bool
     _settings_window_open: bool
+    _settings_strom_tab_open: bool
     _compass_window_open: bool
     _compass_strom_heatmap_az: bool
     _compass_strom_heatmap_el: bool
@@ -567,8 +568,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     if wind_unknown_retry or wind_known_repoll:
                         self._poll_wind_enable(self.slave_az, self.az, "AZ")
 
-                # GETCALSTATE/LIVE wenn Statistik-Fenster offen (nicht Einstellungen)
-                if self._statistics_window_open:
+                # GETCALSTATE wenn Statistik oder Einstellungen-Stromwerte-Tab
+                if self._cal_data_ui_active():
                     if self.enable_az and (now - self._last_cal_state_az >= 10.0):
                         self._last_cal_state_az = now
                         self._poll_cal_state(self.slave_az, self.az)
@@ -576,6 +577,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                         self._last_cal_state_el = now
                         self._poll_cal_state(self.slave_el, self.el)
 
+                # GETLIVEBINS nur Statistik-Fenster (Heatmap-Anzeige), nicht Einstellungen
+                if self._statistics_window_open:
                     live_interval = 2.0 if (self.az.live_bins_cw is None) else 30.0
                     if self.enable_az and (now - self._last_live_bins_az >= live_interval):
                         self._last_live_bins_az = now

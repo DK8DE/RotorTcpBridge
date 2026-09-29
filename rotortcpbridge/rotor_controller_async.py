@@ -1122,7 +1122,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             state == 2
                             and axis_name == "AZ"
                             and bool(getattr(self, "enable_az", True))
-                            and self._statistics_window_open
+                            and self._cal_data_ui_active()
                             and not self._acc_bins_chain_in_progress()
                         ):
                             if not self._cal_bins_inflight_az and (
@@ -1131,14 +1131,18 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                 or not self._cal_bins_fetched_az
                             ):
                                 self._fetch_cal_bins(int(self.slave_az), axis_state, "AZ")
-                            elif not self._live_bins_inflight_az and self._cal_bins_fetched_az:
+                            elif (
+                                self._statistics_window_open
+                                and not self._live_bins_inflight_az
+                                and self._cal_bins_fetched_az
+                            ):
                                 self._fetch_live_bins(int(self.slave_az), axis_state, "AZ")
                                 self._last_live_bins_az = time.time()
                         elif (
                             state == 2
                             and axis_name == "EL"
                             and bool(getattr(self, "enable_el", True))
-                            and self._statistics_window_open
+                            and self._cal_data_ui_active()
                             and not self._acc_bins_chain_in_progress()
                         ):
                             dst_el = int(self.slave_el)
@@ -1148,7 +1152,11 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                 or not self._cal_bins_fetched_el
                             ):
                                 self._fetch_cal_bins_el(dst_el, axis_state, "EL")
-                            elif not self._live_bins_inflight_el and self._cal_bins_fetched_el:
+                            elif (
+                                self._statistics_window_open
+                                and not self._live_bins_inflight_el
+                                and self._cal_bins_fetched_el
+                            ):
                                 self._fetch_live_bins_el(dst_el, axis_state, "EL")
                                 self._last_live_bins_el = time.time()
                     return

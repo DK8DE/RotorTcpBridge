@@ -1762,6 +1762,10 @@ class SettingsWindow(QDialog):
         self._update_strom_cal_buttons_enabled()
         if self._settings_nav.currentRow() == getattr(self, "_tab_statistics_index", -1):
             self._start_calvalid_timer()
+            if hasattr(self.ctrl, "set_settings_strom_tab_open"):
+                self.ctrl.set_settings_strom_tab_open(True)
+            if hasattr(self.ctrl, "request_immediate_cal_data"):
+                QTimer.singleShot(0, self.ctrl.request_immediate_cal_data)
         # Snapshots: nur geänderte Werte gehen auf den Bus (SETANTOFF / SETCON* …)
         self._capture_antenna_snapshots_from_ui()
         # Vergleichsbasis für SETCON* beim Speichern (sonst snap=None → kein Schreiben)
@@ -1824,6 +1828,8 @@ class SettingsWindow(QDialog):
             pass
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(False)
+        if hasattr(self.ctrl, "set_settings_strom_tab_open"):
+            self.ctrl.set_settings_strom_tab_open(False)
         super().hideEvent(event)
 
     def changeEvent(self, event: QEvent) -> None:
@@ -1843,6 +1849,8 @@ class SettingsWindow(QDialog):
             self._stop_calvalid_timer()
             if hasattr(self.ctrl, "set_settings_window_open"):
                 self.ctrl.set_settings_window_open(False)
+            if hasattr(self.ctrl, "set_settings_strom_tab_open"):
+                self.ctrl.set_settings_strom_tab_open(False)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._disconnect_settings_nav_os_theme_signals()
@@ -1854,6 +1862,8 @@ class SettingsWindow(QDialog):
         self._stop_calvalid_timer()
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(False)
+        if hasattr(self.ctrl, "set_settings_strom_tab_open"):
+            self.ctrl.set_settings_strom_tab_open(False)
         super().closeEvent(event)
 
     def _on_antenna_giveup(self) -> None:
@@ -2027,16 +2037,7 @@ class SettingsWindow(QDialog):
             setattr(self, dl_attr, min(dl, now + 15.0) if dl > now else 0.0)
         setattr(self, prev_attr, st)
         if want_poll:
-            # Während Fahrt kein GETCALSTATE (prio würde GETPOSDG/Deadman gefährden)
-            try:
-                if bool(
-                    self.ctrl._motion_poll_restrict_active(
-                        time.time(), float(self.ctrl._cfg_poll.get("pos_fast", 200)) / 1000.0
-                    )
-                ):
-                    return
-            except Exception:
-                pass
+            # Prio 5: unter Fahrt-GETPOSDG (0), Fortschritt trotzdem aktuell halten
             try:
                 self.ctrl.send_ui_command(
                     int(dst),
@@ -2270,46 +2271,65 @@ class SettingsWindow(QDialog):
 
     def _on_apply_cal_heatmap_az(self) -> None:
         """CAL-Bins (AZ): Min/Max in Normfelder übernehmen, Schwellen mit Rand."""
-        az = self.ctrl.az
-        if getattr(az, "cal_state", 0) != 2:
-            self.lbl_status.setText(t("settings.stats_cal_no_data"))
-            return
-        mn, mx = compute_bin_min_max(
-            getattr(az, "cal_bins_cw", None),
-            getattr(az, "cal_bins_ccw", None),
-            False,
-        )
-        if mn is None or mx is None:
-            self.lbl_status.setText(t("settings.stats_cal_no_data"))
-            return
-        margin = 50
-        self.sp_norm_min_az.setValue(int(mn))
-        self.sp_norm_max_az.setValue(int(mx))
-        self.sp_thr_blue_az.setValue(max(0, int(mn) - margin))
-        self.sp_thr_red_az.setValue(min(65535, int(mx) + margin))
-        self.chk_heatmap_custom_az.setChecked(True)
-        self.lbl_status.setText(t("settings.stats_apply_ok"))
+        self._apply_cal_heatmap("az")
 
     def _on_apply_cal_heatmap_el(self) -> None:
         """CAL-Bins (EL): Min/Max übernehmen."""
-        el = getattr(self.ctrl, "el", None)
-        if el is None or getattr(el, "cal_state", 0) != 2:
+        self._apply_cal_heatmap("el")
+
+    def _apply_cal_heatmap(self, which: str, *, _retry: int = 0) -> None:
+        """Werte aus Kalibrierung übernehmen; fehlende CAL-Bins einmal vom Bus nachladen."""
+        axis = self.ctrl.az if which == "az" else getattr(self.ctrl, "el", None)
+        if axis is None or getattr(axis, "cal_state", 0) != 2:
+            if _retry == 0 and hasattr(self.ctrl, "request_immediate_cal_data"):
+                try:
+                    self.ctrl.request_immediate_cal_data()
+                except Exception:
+                    pass
+                self.lbl_status.setText(t("settings.stats_cal_loading"))
+                QTimer.singleShot(600, lambda: self._apply_cal_heatmap(which, _retry=1))
+                return
             self.lbl_status.setText(t("settings.stats_cal_no_data"))
             return
         mn, mx = compute_bin_min_max(
-            getattr(el, "cal_bins_cw", None),
-            getattr(el, "cal_bins_ccw", None),
-            True,
+            getattr(axis, "cal_bins_cw", None),
+            getattr(axis, "cal_bins_ccw", None),
+            which == "el",
         )
         if mn is None or mx is None:
+            if _retry < 8:
+                # CAL-Bins nachladen und erneut versuchen
+                try:
+                    if which == "az" and hasattr(self.ctrl, "_fetch_cal_bins"):
+                        if not bool(getattr(self.ctrl, "_cal_bins_inflight_az", False)):
+                            self.ctrl._fetch_cal_bins(
+                                int(self.sp_slave_az.value()), self.ctrl.az, "AZ", priority=5
+                            )
+                    elif which == "el" and hasattr(self.ctrl, "_fetch_cal_bins_el"):
+                        if not bool(getattr(self.ctrl, "_cal_bins_inflight_el", False)):
+                            self.ctrl._fetch_cal_bins_el(
+                                int(self.sp_slave_el.value()), self.ctrl.el, "EL", priority=5
+                            )
+                except Exception:
+                    pass
+                self.lbl_status.setText(t("settings.stats_cal_loading"))
+                QTimer.singleShot(700, lambda: self._apply_cal_heatmap(which, _retry=_retry + 1))
+                return
             self.lbl_status.setText(t("settings.stats_cal_no_data"))
             return
         margin = 50
-        self.sp_norm_min_el.setValue(int(mn))
-        self.sp_norm_max_el.setValue(int(mx))
-        self.sp_thr_blue_el.setValue(max(0, int(mn) - margin))
-        self.sp_thr_red_el.setValue(min(65535, int(mx) + margin))
-        self.chk_heatmap_custom_el.setChecked(True)
+        if which == "az":
+            self.sp_norm_min_az.setValue(int(mn))
+            self.sp_norm_max_az.setValue(int(mx))
+            self.sp_thr_blue_az.setValue(max(0, int(mn) - margin))
+            self.sp_thr_red_az.setValue(min(65535, int(mx) + margin))
+            self.chk_heatmap_custom_az.setChecked(True)
+        else:
+            self.sp_norm_min_el.setValue(int(mn))
+            self.sp_norm_max_el.setValue(int(mx))
+            self.sp_thr_blue_el.setValue(max(0, int(mn) - margin))
+            self.sp_thr_red_el.setValue(min(65535, int(mx) + margin))
+            self.chk_heatmap_custom_el.setChecked(True)
         self.lbl_status.setText(t("settings.stats_apply_ok"))
 
     def _heatmap_scale_valid(self) -> bool:
@@ -2959,8 +2979,14 @@ class SettingsWindow(QDialog):
         if row == getattr(self, "_tab_statistics_index", -1):
             self._start_calvalid_timer()
             QTimer.singleShot(0, self._load_strom_limits_from_bus)
+            if hasattr(self.ctrl, "set_settings_strom_tab_open"):
+                self.ctrl.set_settings_strom_tab_open(True)
+            if hasattr(self.ctrl, "request_immediate_cal_data"):
+                QTimer.singleShot(0, self.ctrl.request_immediate_cal_data)
         else:
             self._stop_calvalid_timer()
+            if hasattr(self.ctrl, "set_settings_strom_tab_open"):
+                self.ctrl.set_settings_strom_tab_open(False)
         if row == getattr(self, "_tab_antenna_index", -1):
             QTimer.singleShot(0, self._load_rotor_antenna_names_from_bus)
         if row == getattr(self, "_tab_controller_index", -1):

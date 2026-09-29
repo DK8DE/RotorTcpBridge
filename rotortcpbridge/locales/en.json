@@ -735,6 +735,7 @@
   "settings.stats_cal_range_fmt": "Minimum: {min} · Maximum: {max}",
   "settings.stats_cal_waiting": "No CAL data (run calibration or wait …).",
   "settings.stats_cal_no_data": "No CAL bins available. Finish calibration first (CAL state complete).",
+  "settings.stats_cal_loading": "Loading CAL bins from rotor…",
   "settings.stats_el_disabled": "EL axis disabled in settings.",
   "settings.stats_heatmap_group_az": "Heatmap Azimuth",
   "settings.stats_heatmap_group_el": "Heatmap Elevation",

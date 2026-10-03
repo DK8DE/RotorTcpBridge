@@ -812,6 +812,11 @@ class MainWindow(QMainWindow):
         self._antenna_bridge.aselect_from_query.connect(
             self._apply_aselect_from_query_ui, Qt.ConnectionType.QueuedConnection
         )
+        # UDP-PST <ANT>n</ANT> (Hintergrundthread) → gleiche Bridge wie Kompass/Karte
+        if self._udp_pst is not None:
+            self._udp_pst.on_antenna_selected = (
+                lambda idx: self._antenna_bridge.selection_changed.emit(int(idx))
+            )
         self.ctrl.on_setaselect_from_bus = (
             lambda n: self._antenna_bridge.setaselect_from_bus.emit(int(n))
         )
@@ -1761,6 +1766,10 @@ class MainWindow(QMainWindow):
             self.ctrl.on_aselect_query_result = (
                 lambda n: self._antenna_bridge.aselect_from_query.emit(int(n))
             )
+            if self._udp_pst is not None:
+                self._udp_pst.on_antenna_selected = (
+                    lambda idx: self._antenna_bridge.selection_changed.emit(int(idx))
+                )
             self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
             self._weather_win = WeatherWindow(self.cfg, self.ctrl, parent=None)
             self._warnings_errors_win = WarningsErrorsWindow(self.ctrl, parent=None)

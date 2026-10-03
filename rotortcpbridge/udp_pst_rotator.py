@@ -6,10 +6,15 @@ Protokoll-Übersicht:
     <PST><ELEVATION>25</ELEVATION></PST>   → EL auf 25° fahren (wenn EL aktiv)
     <PST><STOP>1</STOP></PST>              → Rotor stoppen (AZ+EL)
     <PST><PARK>1</PARK></PST>              → Rotor stoppen (AZ+EL)
+    <PST><QRA>JO31jg</QRA></PST>           → Peilung zum Locator, AZ fahren
+    <PST><ANT>1</ANT></PST>                → Antenne 1–3 wählen
+    <PST><TRACK>0|1</TRACK></PST>          → OK-Antwort (kein Tracking)
+    <PST><ON>0|1</ON></PST>                → externe Kommandos aus/an + OK
     <PST>AZ?</PST>                         → aktuelle AZ-Position zurückschicken
     <PST>TGA?</PST>                        → Ziel-Azimut zurückschicken
     <PST>EL?</PST>                         → aktuelle EL-Position (wenn EL aktiv)
     <PST>TGE?</PST>                        → Ziel-Elevation (wenn EL aktiv)
+    <PST>MODE?</PST>                       → immer MODE:0 (Manual)
     (andere bekannte Felder werden geparst, aber ignoriert bzw. geloggt)
 
   Senden  (Ziel konfigurierbar; leer = Subnetz-Broadcast x.y.z.255 : listen_port + 1):
@@ -17,6 +22,8 @@ Protokoll-Übersicht:
     TGA:xxx<CR>  auf Anfrage TGA?
     EL:xxx<CR>   auf Anfrage EL? (nur bei aktivem EL)
     TGE:xxx<CR>  auf Anfrage TGE? (nur bei aktivem EL)
+    MODE:0<CR>   auf Anfrage MODE?
+    OK:…<CR>     Bestätigung TRACK/ON/ANT/QRA
 """
 
 from __future__ import annotations
@@ -25,25 +32,27 @@ import re
 import socket
 import threading
 import time
+from typing import Callable
+
 from .angle_utils import (
     az_deg_for_external_report,
     az_d10_for_external_report,
     az_max_d10_from_axis,
+    raw_rotor_az_deg_from_axis,
     resolve_external_az_d10,
+    rotor_az_for_display_bearing,
+    wrap_deg,
 )
+from .geo_utils import bearing_deg, effective_station_lat_lon, maidenhead_to_lat_lon
 from .net_utils import ipv4_subnet_broadcast_default, normalize_udp_bind_host
 from .pst_notify_logic import pst_notify_position_decision
 
-# Alle bekannten PST-Tags, die still ignoriert werden dürfen
+# Bekannte PST-Tags ohne Rotor-Wirkung (PstRotator-UI / Zubehör)
 _KNOWN_SILENT = {
-    "TRACK",
-    "ON",
-    "ANT",
     "OFFSET1",
     "OFFSET2",
     "STF",
     "STR",
-    "QRA",
     "MYQRA",
 }
 
@@ -105,6 +114,10 @@ class UdpPstRotator:
         self._last_rx_ts: float = 0.0
         # Fehlermeldung wenn Port beim Start belegt war (None = kein Fehler)
         self.bind_error_msg: str | None = None
+        # <ON>1</ON> = Kommandos annehmen; 0 = nur Abfragen/OK
+        self._commands_on: bool = True
+        # Optional: Antennenwechsel Index 0–2 → UI/Bus (QueuedConnection empfohlen)
+        self.on_antenna_selected: Callable[[int], None] | None = None
 
     # ------------------------------------------------------------------
     # Öffentliche API
@@ -329,6 +342,29 @@ class UdpPstRotator:
             except Exception as e:
                 self.log.write("WARN", f"UDP PST-Rotator Fehler beim Verarbeiten: {e}")
 
+    def _pst_query_name(self, text: str) -> str | None:
+        """Erkennt Positions-/Status-Abfragen; Rückgabe z. B. ``AZ?``, sonst None."""
+        s = (text or "").strip()
+        if not s:
+            return None
+        # <PST>AZ?</PST> oder <PST><AZ?></AZ?></PST> (Groß/Klein egal)
+        m = re.fullmatch(
+            r"<PST>\s*(?:<)?(AZ\?|TGA\?|EL\?|TGE\?|MODE\?)\s*(?:/>|></\1>)?\s*</PST>",
+            s,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            return m.group(1).upper()
+        # Nur Inneres nach Strip des Wrappers
+        if s.upper().startswith("<PST>") and s.upper().endswith("</PST>"):
+            inner = s[5:-6].strip().upper()
+            if inner in ("AZ?", "TGA?", "EL?", "TGE?", "MODE?"):
+                return inner
+            m2 = re.fullmatch(r"<(AZ\?|TGA\?|EL\?|TGE\?|MODE\?)>\s*</\1>", inner)
+            if m2:
+                return m2.group(1).upper()
+        return None
+
     def _handle_packet(self, data: bytes, addr: tuple) -> None:
         """Verarbeitet ein eingehendes UDP-Paket."""
         try:
@@ -340,57 +376,239 @@ class UdpPstRotator:
         self._last_rx_ts = time.time()
         self.packet_received_flag = True
 
-        # Kurzabfragen ohne XML-Wrapper
-        if text == "<PST>AZ?</PST>":
-            az = self._current_az_deg()
-            reply = f"AZ:{az:.1f}\r"
-            self._send_reply(reply)
-            self.log.write("UDP", f"PST AZ? von {sender} → {reply.strip()}")
-            return
-
-        if text == "<PST>TGA?</PST>":
-            tga = self._target_az_deg()
-            reply = f"TGA:{tga:.1f}\r"
-            self._send_reply(reply)
-            self.log.write("UDP", f"PST TGA? von {sender} → {reply.strip()}")
-            return
-
-        if text == "<PST>EL?</PST>":
-            if not bool(getattr(self.ctrl, "enable_el", False)):
-                self.log.write("UDP", f"PST EL? von {sender} ignoriert (EL aus)")
+        # Alle Anfragen (Position, Mode, …) explizit ins Log – auch wenn unbekannt.
+        q = self._pst_query_name(text)
+        if q is not None:
+            if q == "AZ?":
+                az = self._current_az_deg()
+                reply = f"AZ:{az:.1f}\r"
+                self._send_reply(reply)
+                self.log.write("UDP", f"PST Anfrage {q} von {sender} → {reply.strip()}")
                 return
-            el = self._current_el_deg()
-            reply = f"EL:{el:.1f}\r"
-            self._send_reply(reply)
-            self.log.write("UDP", f"PST EL? von {sender} → {reply.strip()}")
-            return
-
-        if text == "<PST>TGE?</PST>":
-            if not bool(getattr(self.ctrl, "enable_el", False)):
-                self.log.write("UDP", f"PST TGE? von {sender} ignoriert (EL aus)")
+            if q == "TGA?":
+                tga = self._target_az_deg()
+                reply = f"TGA:{tga:.1f}\r"
+                self._send_reply(reply)
+                self.log.write("UDP", f"PST Anfrage {q} von {sender} → {reply.strip()}")
                 return
-            tge = self._target_el_deg()
-            reply = f"TGE:{tge:.1f}\r"
-            self._send_reply(reply)
-            self.log.write("UDP", f"PST TGE? von {sender} → {reply.strip()}")
+            if q == "EL?":
+                if not bool(getattr(self.ctrl, "enable_el", False)):
+                    self.log.write(
+                        "UDP", f"PST Anfrage {q} von {sender} → ignoriert (EL aus)"
+                    )
+                    return
+                el = self._current_el_deg()
+                reply = f"EL:{el:.1f}\r"
+                self._send_reply(reply)
+                self.log.write("UDP", f"PST Anfrage {q} von {sender} → {reply.strip()}")
+                return
+            if q == "TGE?":
+                if not bool(getattr(self.ctrl, "enable_el", False)):
+                    self.log.write(
+                        "UDP", f"PST Anfrage {q} von {sender} → ignoriert (EL aus)"
+                    )
+                    return
+                tge = self._target_el_deg()
+                reply = f"TGE:{tge:.1f}\r"
+                self._send_reply(reply)
+                self.log.write("UDP", f"PST Anfrage {q} von {sender} → {reply.strip()}")
+                return
+            if q == "MODE?":
+                # PstRotator: MODE:1 = Tracking, MODE:0 = Manual.
+                # RotorTcpBridge hat keinen Satelliten-/Logger-Tracking-Modus → immer Manual.
+                reply = "MODE:0\r"
+                self._send_reply(reply)
+                self.log.write("UDP", f"PST Anfrage {q} von {sender} → {reply.strip()}")
+                return
+            self.log.write(
+                "UDP",
+                f"PST Anfrage {q} von {sender} → nicht implementiert (ignoriert)",
+            )
             return
 
         # Normales PST-XML: muss mit <PST> anfangen und mit </PST> enden
-        if not (text.startswith("<PST>") and text.endswith("</PST>")):
-            self.log.write("WARN", f"UDP PST-Rotator: ungültiges Paket von {sender}: {text[:80]}")
+        if not (text.upper().startswith("<PST>") and text.upper().endswith("</PST>")):
+            self.log.write(
+                "WARN",
+                f"UDP PST-Rotator: ungültiges Paket von {sender}: {text[:80]}",
+            )
             return
 
-        inner = text[5:-6].strip()  # <PST>…</PST> abschneiden
+        # Groß/Klein am Wrapper egal; Inhalt abschneiden über Länge von <PST>/</PST>
+        inner = text[5:-6].strip()
+
+        tags = list(_RE_TAG.finditer(inner))
+        if not tags:
+            self.log.write(
+                "UDP",
+                f"PST Anfrage von {sender} (kein Steuer-Tag): {text[:100]}",
+            )
+            return
 
         # Mehrere Tags in einem Paket möglich
-        for m in _RE_TAG.finditer(inner):
+        for m in tags:
             tag = m.group(1).strip().upper()
             val = m.group(2).strip()
             self._handle_tag(tag, val, sender)
 
+    def _ack(self, tag: str, value: str) -> None:
+        """PstRotator-übliche Bestätigung auf Port+1."""
+        self._send_reply(f"OK:{tag}:{value}\r")
+
+    def _commands_allowed(self, sender: str, tag: str) -> bool:
+        if self._commands_on:
+            return True
+        self.log.write("UDP", f"PST {tag} von {sender} ignoriert (ON=0)")
+        return False
+
+    def _selected_antenna_idx(self) -> int:
+        try:
+            return max(0, min(2, int((self.cfg or {}).get("ui", {}).get("compass_antenna", 0))))
+        except Exception:
+            return 0
+
+    def _antenna_offset_az(self, ant_idx: int | None = None) -> float:
+        idx = self._selected_antenna_idx() if ant_idx is None else max(0, min(2, int(ant_idx)))
+        slot = idx + 1
+        try:
+            v = getattr(self.ctrl.az, f"antoff{slot}", None)
+            if v is not None:
+                return float(v)
+        except Exception:
+            pass
+        try:
+            offs = (self.cfg or {}).get("ui", {}).get("antenna_offsets_az", [0.0, 0.0, 0.0])
+            return float(offs[idx])
+        except Exception:
+            return 0.0
+
+    def _antenna_dipole_enabled(self, ant_idx: int) -> bool:
+        idx = max(0, min(2, int(ant_idx)))
+        slot = idx + 1
+        try:
+            v = getattr(self.ctrl.az, f"antdp{slot}", None)
+            if v is not None:
+                return bool(int(v))
+        except Exception:
+            pass
+        try:
+            dips = (self.cfg or {}).get("ui", {}).get("antenna_dipole_az", [False, False, False])
+            return bool(dips[idx])
+        except Exception:
+            return False
+
+    def _set_az_to_display_bearing(self, bearing: float) -> float:
+        """Anzeige-Peilung (Nord) → Rotor-Soll inkl. Versatz/Dipol; setzt den Rotor."""
+        ant_idx = self._selected_antenna_idx()
+        off = self._antenna_offset_az(ant_idx)
+        cur_rotor = raw_rotor_az_deg_from_axis(getattr(self.ctrl, "az", None))
+        dipole = self._antenna_dipole_enabled(ant_idx)
+        rotor_deg = rotor_az_for_display_bearing(
+            float(bearing),
+            off,
+            cur_rotor,
+            dipole=dipole,
+            last_rotor_az=getattr(self.ctrl, "az_dipole_last_rotor_az", None) if dipole else None,
+            max_deg=float(az_max_d10_from_axis(getattr(self.ctrl, "az", None))) / 10.0,
+        )
+        self.ctrl.set_az_deg(rotor_deg, force=True)
+        if dipole:
+            try:
+                self.ctrl.az_dipole_display_bearing = wrap_deg(float(bearing))
+                self.ctrl.az_dipole_last_rotor_az = rotor_deg
+            except Exception:
+                pass
+        return rotor_deg
+
     def _handle_tag(self, tag: str, val: str, sender: str) -> None:
         """Verarbeitet einen einzelnen PST-Tag."""
+        if tag == "TRACK":
+            # Nur Protokoll-ACK; kein Satelliten-Tracking. MODE? bleibt MODE:0.
+            v = "1" if str(val).strip() in ("1", "true", "TRUE", "on", "ON") else "0"
+            self._ack("TRACK", v)
+            self.log.write("UDP", f"PST TRACK={v} von {sender} → OK (kein Tracking)")
+            return
+
+        if tag == "ON":
+            on = str(val).strip() in ("1", "true", "TRUE", "on", "ON")
+            self._commands_on = on
+            self._ack("ON", "1" if on else "0")
+            self.log.write(
+                "UDP",
+                f"PST ON={'1' if on else '0'} von {sender} → "
+                f"{'Kommandos an' if on else 'Kommandos aus'}",
+            )
+            return
+
+        if tag == "ANT":
+            if not self._commands_allowed(sender, tag):
+                return
+            try:
+                ant_num = int(float(str(val).strip()))
+            except ValueError:
+                self.log.write(
+                    "WARN", f"UDP PST-Rotator: ungültiger ANT-Wert '{val}' von {sender}"
+                )
+                return
+            if ant_num < 1 or ant_num > 3:
+                self.log.write(
+                    "WARN", f"UDP PST-Rotator: ANT={ant_num} von {sender} ungültig (1–3)"
+                )
+                return
+            idx = ant_num - 1
+            ui = (self.cfg or {}).setdefault("ui", {})
+            try:
+                old = max(0, min(2, int(ui.get("compass_antenna", 0))))
+            except Exception:
+                old = 0
+            if old != idx and hasattr(self.ctrl, "align_az_bearing_after_antenna_switch"):
+                try:
+                    self.ctrl.align_az_bearing_after_antenna_switch(old, idx, self.cfg or {})
+                except Exception as e:
+                    self.log.write("WARN", f"UDP PST-Rotator ANT align: {e}")
+            ui["compass_antenna"] = idx
+            cb = self.on_antenna_selected
+            if cb is not None:
+                try:
+                    cb(idx)
+                except Exception as e:
+                    self.log.write("WARN", f"UDP PST-Rotator ANT UI-Callback: {e}")
+            self._ack("ANT", str(ant_num))
+            self.log.write("UDP", f"PST ANT={ant_num} von {sender} → Antenne {ant_num}")
+            return
+
+        if tag == "QRA":
+            if not self._commands_allowed(sender, tag):
+                return
+            loc = "".join(str(val or "").strip().upper().split())
+            ll = maidenhead_to_lat_lon(loc) if loc else None
+            if ll is None:
+                self.log.write(
+                    "WARN", f"UDP PST-Rotator: ungültiger QRA-Locator '{val}' von {sender}"
+                )
+                return
+            if not getattr(self.ctrl, "enable_az", True):
+                self.log.write("UDP", f"PST QRA von {sender} ignoriert (AZ aus)")
+                return
+            try:
+                ui = (self.cfg or {}).get("ui", {}) or {}
+                lat0, lon0 = effective_station_lat_lon(ui)
+                bearing = wrap_deg(bearing_deg(lat0, lon0, float(ll[0]), float(ll[1])))
+                rotor_deg = self._set_az_to_display_bearing(bearing)
+            except Exception as e:
+                self.log.write("WARN", f"UDP PST-Rotator QRA: {e}")
+                return
+            self._ack("QRA", loc)
+            self.log.write(
+                "UDP",
+                f"PST QRA={loc} von {sender} → Peilung {bearing:.1f}° "
+                f"(Rotor {rotor_deg:.1f}°)",
+            )
+            return
+
         if tag == "AZIMUTH":
+            if not self._commands_allowed(sender, tag):
+                return
             try:
                 az_deg = float(val)
             except ValueError:
@@ -427,6 +645,8 @@ class UdpPstRotator:
                 self.log.write("WARN", f"UDP PST-Rotator set_az_deg: {e}")
 
         elif tag == "ELEVATION":
+            if not self._commands_allowed(sender, tag):
+                return
             try:
                 el_deg = float(val)
             except ValueError:
@@ -444,9 +664,12 @@ class UdpPstRotator:
                 self.log.write("WARN", f"UDP PST-Rotator set_el_deg: {e}")
 
         elif tag in ("STOP", "PARK"):
+            if not self._commands_allowed(sender, tag):
+                return
             self.log.write("UDP", f"PST {tag} von {sender} → SETPOS auf Ist-Position (statt STOP)")
             try:
                 self.ctrl.hold_all_at_current_pos()
+                self._ack(tag, "1")
             except Exception as e:
                 self.log.write("WARN", f"UDP PST-Rotator hold_all_at_current_pos: {e}")
 

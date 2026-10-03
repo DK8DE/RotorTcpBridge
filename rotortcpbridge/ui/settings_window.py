@@ -157,10 +157,10 @@ class SettingsWindow(QDialog):
         self.setWindowTitle(t("settings.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        # Breite fix; Höhe frei skalierbar (niedrige Mindesthöhe). Start-Höhe beim Öffnen: _settings_open_height_dip.
+        # Breite fix; Mindesthöhe / Start-Höhe beim Öffnen: 680 Referenzpixel.
         self._settings_base_width_dip = 730
-        self._settings_min_height_dip = 320
-        self._settings_open_height_dip = 780
+        self._settings_min_height_dip = 680
+        self._settings_open_height_dip = 680
         self.setFixedWidth(px_to_dip(self, self._settings_base_width_dip))
         self.setMinimumHeight(px_to_dip(self, self._settings_min_height_dip))
 
@@ -227,6 +227,9 @@ class SettingsWindow(QDialog):
         w_spid_tcp_pst = QWidget()
         fl_spid_tcp_pst = QFormLayout(w_spid_tcp_pst)
         fl_spid_tcp_pst.setContentsMargins(0, 0, 0, 0)
+        self._lbl_spid_emulation_info = QLabel(t("settings.spid_emulation_info"))
+        self._lbl_spid_emulation_info.setWordWrap(True)
+        fl_spid_tcp_pst.addRow(self._lbl_spid_emulation_info)
         fl_spid_tcp_pst.addRow(self.chk_pst_enabled)
         fl_spid_tcp_pst.addRow(self.chk_pst_az_shortest)
         fl_spid_tcp_pst.addRow(self.chk_pst_az_report_mod360)
@@ -605,14 +608,6 @@ class SettingsWindow(QDialog):
         _vl_map_as = QVBoxLayout(gb_map_airscout)
         _vl_map_as.addWidget(map_airscout_block_w)
 
-        pg_external_programs = QWidget()
-        vl_external_programs = QVBoxLayout(pg_external_programs)
-        vl_external_programs.setContentsMargins(0, 0, 0, 0)
-        vl_external_programs.setSpacing(10)
-        vl_external_programs.addWidget(gb_external_programs)
-        vl_external_programs.addWidget(gb_map_airscout)
-        vl_external_programs.addStretch(1)
-
         grid_pst = QGridLayout()
         grid_pst.setContentsMargins(0, 0, 0, 0)
         grid_pst.setHorizontalSpacing(8)
@@ -723,6 +718,9 @@ class SettingsWindow(QDialog):
 
         gb_udp_pst_emulation = QGroupBox(t("settings.group_udp_pst_emulation"))
         _vl_pst_box = QVBoxLayout(gb_udp_pst_emulation)
+        self._lbl_udp_pst_emulation_info = QLabel(t("settings.udp_pst_emulation_info"))
+        self._lbl_udp_pst_emulation_info.setWordWrap(True)
+        _vl_pst_box.addWidget(self._lbl_udp_pst_emulation_info)
         _vl_pst_box.addWidget(udp_pst_block_w)
         _vl_pst_box.addWidget(row_udp_pst_status)
 
@@ -770,7 +768,7 @@ class SettingsWindow(QDialog):
             self.sp_asnearest_list_max_min.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
             self.lbl_asnearest_list_max_rows.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
             self.sp_asnearest_list_max_rows.setEnabled(en and self.chk_aswatch_aircraft.isChecked())
-            # OM-Radar-Einstellungen im Kompass-Tab nur sichtbar, wenn AirScout/KST aktiv ist
+            # OM-Radar-Einstellungen nur sichtbar, wenn AirScout/KST aktiv ist
             gb_om = getattr(self, "_gb_compass_om", None)
             if gb_om is not None:
                 gb_om.setVisible(en)
@@ -1043,16 +1041,6 @@ class SettingsWindow(QDialog):
             )
         )
         _lay_usb.addWidget(self.btn_cont_usb_refresh, 0)
-        self.sp_cont_usb_baud = QSpinBox()
-        self.sp_cont_usb_baud.setRange(1200, 921600)
-        self.sp_cont_usb_baud.setSingleStep(100)
-        try:
-            self.sp_cont_usb_baud.setValue(int((_clink or {}).get("baudrate", 115200)))
-        except (TypeError, ValueError):
-            self.sp_cont_usb_baud.setValue(115200)
-        self.sp_cont_usb_baud.setToolTip(tt("settings.controller_usb_baud_tooltip"))
-        _lay_usb.addWidget(QLabel(t("settings.controller_usb_baud")), 0)
-        _lay_usb.addWidget(self.sp_cont_usb_baud, 0)
         vl_ctrl.addWidget(self._row_cont_usb_port)
         self.gb_controller = QGroupBox(t("settings.controller_group"))
         fl_ctrl = QFormLayout(self.gb_controller)
@@ -1499,20 +1487,6 @@ class SettingsWindow(QDialog):
             )
             return sc
 
-        pg_ui = QWidget()
-        vl_ui = QVBoxLayout(pg_ui)
-        vl_ui.setContentsMargins(0, 0, 0, 0)
-        vl_ui.addWidget(gb_ui)
-        vl_ui.addStretch(1)
-
-        pg_ant = QWidget()
-        vl_ant = QVBoxLayout(pg_ant)
-        vl_ant.setContentsMargins(0, 0, 0, 0)
-        vl_ant.setSpacing(10)
-        vl_ant.addWidget(self.gb_antenna_az)
-        vl_ant.addWidget(self.gb_antenna_misc)
-        vl_ant.addStretch(1)
-
         _om_sectors = int(cfg.get("ui", {}).get("compass_om_radar_sectors", 20))
         _om_sectors = max(10, min(100, _om_sectors))
         _dwell_sec = int(cfg.get("ui", {}).get("compass_dwell_sectors", 20))
@@ -1522,17 +1496,11 @@ class SettingsWindow(QDialog):
         except (TypeError, ValueError):
             _dwell_min = 5.0
         _dwell_min = max(0.05, min(240.0, _dwell_min))
-        pg_compass = QWidget()
-        vl_compass = QVBoxLayout(pg_compass)
-        _cp_pad = px_to_dip(self, 5)
-        vl_compass.setContentsMargins(_cp_pad, _cp_pad, _cp_pad, _cp_pad)
-        vl_compass.setSpacing(10)
         self.chk_compass_antenna_overlay = QCheckBox(t("settings.compass_antenna_overlay"))
         self.chk_compass_antenna_overlay.setToolTip(tt("settings.compass_antenna_overlay_tooltip"))
         self.chk_compass_antenna_overlay.setChecked(
             bool(cfg.get("ui", {}).get("compass_antenna_overlay", True))
         )
-        vl_compass.addWidget(self.chk_compass_antenna_overlay)
         gb_compass_om = QGroupBox(t("settings.compass_om_radar_group"))
         fl_compass_om = QFormLayout(gb_compass_om)
         self.sp_compass_om_sectors = QSpinBox()
@@ -1540,7 +1508,6 @@ class SettingsWindow(QDialog):
         self.sp_compass_om_sectors.setValue(_om_sectors)
         self.sp_compass_om_sectors.setToolTip(tt("settings.compass_om_radar_sectors_tooltip"))
         fl_compass_om.addRow(t("settings.compass_om_radar_sectors"), self.sp_compass_om_sectors)
-        vl_compass.addWidget(gb_compass_om)
         self._gb_compass_om = gb_compass_om
         gb_compass_om.setVisible(bool(self.chk_aswatch_udp.isChecked()))
         gb_compass_dwell = QGroupBox(t("settings.compass_dwell_group"))
@@ -1557,17 +1524,28 @@ class SettingsWindow(QDialog):
         self.sp_compass_dwell_minutes.setValue(_dwell_min)
         self.sp_compass_dwell_minutes.setToolTip(tt("settings.compass_dwell_minutes_tooltip"))
         fl_compass_dwell.addRow(t("settings.compass_dwell_minutes"), self.sp_compass_dwell_minutes)
-        vl_compass.addWidget(gb_compass_dwell)
-        vl_compass.addWidget(self._gb_wind_dir_display)
-        vl_compass.addStretch(1)
 
-        # --- Karten-Webserver (nach Kompass) -----------------------------------
+        pg_ui = QWidget()
+        vl_ui = QVBoxLayout(pg_ui)
+        vl_ui.setContentsMargins(0, 0, 0, 0)
+        vl_ui.setSpacing(10)
+        vl_ui.addWidget(gb_ui)
+        vl_ui.addWidget(self.chk_compass_antenna_overlay)
+        vl_ui.addWidget(gb_compass_om)
+        vl_ui.addWidget(gb_compass_dwell)
+        vl_ui.addWidget(self._gb_wind_dir_display)
+        vl_ui.addStretch(1)
+
+        pg_ant = QWidget()
+        vl_ant = QVBoxLayout(pg_ant)
+        vl_ant.setContentsMargins(0, 0, 0, 0)
+        vl_ant.setSpacing(10)
+        vl_ant.addWidget(self.gb_antenna_az)
+        vl_ant.addWidget(self.gb_antenna_misc)
+        vl_ant.addStretch(1)
+
+        # --- Webserver (Gruppe im Tab Protokolle) -------------------------------
         _mws_cfg = self.cfg.get("map_webserver", {}) or {}
-        pg_map_webserver = QWidget()
-        vl_map_ws = QVBoxLayout(pg_map_webserver)
-        _mws_pad = px_to_dip(self, 5)
-        vl_map_ws.setContentsMargins(_mws_pad, _mws_pad, _mws_pad, _mws_pad)
-        vl_map_ws.setSpacing(10)
         self._lbl_map_webserver_info = QLabel(t("settings.map_webserver_info"))
         self._lbl_map_webserver_info.setWordWrap(True)
         self.chk_map_webserver_enabled = QCheckBox(t("settings.chk_map_webserver_enabled"))
@@ -1625,8 +1603,11 @@ class SettingsWindow(QDialog):
         gb_map_ws = QGroupBox(t("settings.tab_map_webserver"))
         _vl_map_ws_box = QVBoxLayout(gb_map_ws)
         _vl_map_ws_box.addWidget(w_map_ws)
-        vl_map_ws.addWidget(gb_map_ws)
-        vl_map_ws.addStretch(1)
+        # Webserver + ehem. „Externe Programme“ vor dem Stretch im Protokolle-Tab
+        _ins = max(0, vl_rotor_emu.count() - 1)
+        vl_rotor_emu.insertWidget(_ins, gb_map_ws)
+        vl_rotor_emu.insertWidget(_ins + 1, gb_external_programs)
+        vl_rotor_emu.insertWidget(_ins + 2, gb_map_airscout)
         self.chk_map_webserver_enabled.stateChanged.connect(self._on_map_webserver_toggled)
 
         # Navigation: vertikale Liste links (scrollbar bei vielen Einträgen), Inhalt rechts
@@ -1660,10 +1641,7 @@ class SettingsWindow(QDialog):
         self._settings_stack.addWidget(_scroll_page(pg_ui))
         self._settings_stack.addWidget(_scroll_page(pg_links))
         self._settings_stack.addWidget(_scroll_page(pg_rotor_emulation))
-        self._settings_stack.addWidget(_scroll_page(pg_external_programs))
         self._settings_stack.addWidget(_scroll_page(pg_ant))
-        self._settings_stack.addWidget(_scroll_page(pg_compass))
-        self._settings_stack.addWidget(_scroll_page(pg_map_webserver))
         self._settings_stack.addWidget(_scroll_page(pg_stats))
         self._settings_stack.addWidget(_scroll_page(pg_controller))
         self._settings_stack.addWidget(_scroll_page(self._rig_bridge_tab))
@@ -1681,17 +1659,25 @@ class SettingsWindow(QDialog):
         self._settings_stack.addWidget(_scroll_page(self._weather_tab))
         self._network_tab = NetworkModulesTab(self.cfg, self)
         self._network_tab.save_requested.connect(self._on_network_modules_save_requested)
-        self._settings_stack.addWidget(_scroll_page(self._network_tab))
+        gb_network = QGroupBox(t("settings.tab_network"))
+        _vl_network = QVBoxLayout(gb_network)
+        _vl_network.setContentsMargins(
+            px_to_dip(self, 8),
+            px_to_dip(self, 8),
+            px_to_dip(self, 8),
+            px_to_dip(self, 8),
+        )
+        _vl_network.addWidget(self._network_tab)
+        vl_links.insertWidget(max(0, vl_links.count() - 1), gb_network)
         self._tab_profiles_index = 0
-        self._tab_antenna_index = 5
-        self._tab_map_webserver_index = 7
-        self._tab_statistics_index = 8
-        self._tab_controller_index = 9
-        self._tab_rig_bridge_index = 10
-        self._tab_com0com_index = 11
-        self._tab_shortcuts_index = 12
-        self._tab_weather_index = 13
-        self._tab_network_index = 14
+        self._tab_connections_index = 2
+        self._tab_antenna_index = 4
+        self._tab_statistics_index = 5
+        self._tab_controller_index = 6
+        self._tab_rig_bridge_index = 7
+        self._tab_com0com_index = 8
+        self._tab_shortcuts_index = 9
+        self._tab_weather_index = 10
         self._calvalid_timer = QTimer(self)
         self._calvalid_timer.setInterval(5000)
         self._calvalid_timer.timeout.connect(self._poll_getcalvalid_once)
@@ -1713,17 +1699,13 @@ class SettingsWindow(QDialog):
             t("settings.group_ui"),
             t("settings.tab_connections"),
             t("settings.tab_rotor_emulation"),
-            t("settings.tab_external_programs"),
             t("settings.tab_antenna"),
-            t("settings.tab_compass"),
-            t("settings.tab_map_webserver"),
             t("settings.tab_statistics"),
             t("settings.tab_controller"),
             "Rig-Bridge",
             t("com0com.tab_title"),
             t("settings.tab_shortcuts"),
             t("settings.tab_weather"),
-            t("settings.tab_network"),
         ):
             self._settings_nav.addItem(_lbl)
         self._settings_nav.currentRowChanged.connect(self._on_settings_nav_changed)
@@ -1826,7 +1808,7 @@ class SettingsWindow(QDialog):
         main.addLayout(btnrow)
 
     def _apply_settings_window_open_size(self) -> None:
-        """Beim Öffnen: Zielhöhe 780 Referenzpixel (skaliert), Breite unverändert."""
+        """Beim Öffnen: Zielhöhe 680 Referenzpixel (skaliert), Breite unverändert."""
         w = self.width()
         if w <= 0:
             w = px_to_dip(self, self._settings_base_width_dip)
@@ -3055,7 +3037,7 @@ class SettingsWindow(QDialog):
         self._settings_stack.setCurrentIndex(row)
         if row == getattr(self, "_tab_profiles_index", -1):
             self.refresh_profiles_list()
-        if row == getattr(self, "_tab_network_index", -1):
+        if row == getattr(self, "_tab_connections_index", -1):
             self._network_tab.on_tab_shown()
         if row == getattr(self, "_tab_statistics_index", -1):
             self._start_calvalid_timer()
@@ -4488,7 +4470,7 @@ class SettingsWindow(QDialog):
         cl["com_port"] = str(
             self.cb_cont_usb_com.currentData() or self.cb_cont_usb_com.currentText() or ""
         ).strip()
-        cl["baudrate"] = int(self.sp_cont_usb_baud.value())
+        cl["baudrate"] = 115200
         cl.setdefault("tcp_ip", "")
         cl.setdefault("tcp_port", 8886)
         cl.setdefault("udp_bind_port", 0)
@@ -4800,7 +4782,7 @@ class SettingsWindow(QDialog):
         cl["com_port"] = str(
             self.cb_cont_usb_com.currentData() or self.cb_cont_usb_com.currentText() or ""
         ).strip()
-        cl["baudrate"] = int(self.sp_cont_usb_baud.value())
+        cl["baudrate"] = 115200
 
     def _mark_controller_remote_in_snapshot(self, want_remote: bool) -> None:
         """Nach Mode-Switch: Snapshot-Remote-Bit anpassen, damit Speichern nicht nochmal umschaltet."""
@@ -5074,10 +5056,6 @@ class SettingsWindow(QDialog):
             finally:
                 self.chk_cont_usb_remote.blockSignals(False)
             cl = self.cfg.get("controller_link") if isinstance(self.cfg.get("controller_link"), dict) else {}
-            try:
-                self.sp_cont_usb_baud.setValue(int(cl.get("baudrate", 115200)))
-            except (TypeError, ValueError):
-                self.sp_cont_usb_baud.setValue(115200)
             try:
                 self._refresh_com_ports_into(
                     self.cb_cont_usb_com, select=str(cl.get("com_port", "") or "")

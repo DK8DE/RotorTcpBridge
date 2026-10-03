@@ -146,18 +146,27 @@ class PstAxisServer:
                             except Exception:
                                 pass
 
-                            # Log: PstRotator Anfrage
-                            self.log.write(
-                                "PST",
-                                f"{self.axis.upper()} RX cmd={cmd.cmd} az_d10={cmd.az_d10} el_d10={cmd.el_d10} raw={pkt.hex()}",
-                            )
-
                             if cmd.cmd == CMD_SET:
+                                self.log.write(
+                                    "PST",
+                                    f"{self.axis.upper()} Anfrage SET von {addr} "
+                                    f"az_d10={cmd.az_d10} el_d10={cmd.el_d10}",
+                                )
                                 self._apply_set(cmd)
                             elif cmd.cmd == CMD_STOP:
+                                self.log.write(
+                                    "PST",
+                                    f"{self.axis.upper()} Anfrage STOP von {addr}",
+                                )
                                 self._apply_stop()
                             elif cmd.cmd == CMD_STATUS:
                                 pass
+                            else:
+                                self.log.write(
+                                    "PST",
+                                    f"{self.axis.upper()} Anfrage cmd={cmd.cmd} von {addr} "
+                                    f"az_d10={cmd.az_d10} el_d10={cmd.el_d10}",
+                                )
 
                             # Antwort: Position je Achse – deaktivierte oder unbekannte Achse liefert 0°.
                             # MacDoppler/HRD erwarten 0 für nicht vorhandene Achsen statt ungültiger Werte.
@@ -182,10 +191,18 @@ class PstAxisServer:
                                 else 0
                             )
                             reply = encode_reply(az_d10, el_d10, ph=10, pv=10)
-                            self.log.write(
-                                "PST",
-                                f"{self.axis.upper()} TX reply_len={len(reply)} az={az_d10} el={el_d10} hex={reply.hex()}",
-                            )
+                            if cmd.cmd == CMD_STATUS:
+                                self.log.write(
+                                    "PST",
+                                    f"{self.axis.upper()} Anfrage STATUS (Positionsabfrage) von {addr} "
+                                    f"→ AZ={az_d10 / 10.0:.1f}° EL={float(el_d10) / 10.0:.1f}°",
+                                )
+                            else:
+                                self.log.write(
+                                    "PST",
+                                    f"{self.axis.upper()} TX Antwort an {addr} "
+                                    f"AZ={az_d10 / 10.0:.1f}° EL={float(el_d10) / 10.0:.1f}°",
+                                )
                             c.sendall(reply)
 
                     except socket.timeout:

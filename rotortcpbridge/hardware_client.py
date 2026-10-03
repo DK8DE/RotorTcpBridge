@@ -87,6 +87,9 @@ class HardwareClient:
         self._serial_write_lock = threading.Lock()
 
         self.on_async_telegram: Optional[Callable[[Telegram], None]] = None
+        # Optionale Rohzeilen-Hooks (z. B. Controller-Remote-USB-Proxy)
+        self.on_rx_line: Optional[Callable[[str], None]] = None
+        self.on_tx_line: Optional[Callable[[str, int], None]] = None
         # Antworten auf unsere Requests haben DST = eigene Master-ID; andere Master nicht als Pending matchen
         self._pending_reply_dst: int = 0
         self._last_rx_any_ts: float = 0.0
@@ -123,6 +126,8 @@ class HardwareClient:
         self._update_no_rx_timeout()
 
     def start(self):
+        if self._running:
+            return
         self._running = True
         self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
@@ -149,6 +154,16 @@ class HardwareClient:
         self._sock = None
         self._udp_sock = None
         self._ser = None
+        # Alte Threads beenden, sonst Race beim erneuten start() (Toggle Remote USB).
+        cur = threading.current_thread()
+        for t in (self._worker_thread, self._reader_thread):
+            if t is not None and t.is_alive() and t is not cur:
+                try:
+                    t.join(timeout=2.0)
+                except Exception:
+                    pass
+        self._worker_thread = None
+        self._reader_thread = None
 
     def is_connected(self) -> bool:
         return self._sock is not None or self._udp_sock is not None or self._ser is not None
@@ -158,9 +173,31 @@ class HardwareClient:
 
         TCP: 5s (Serial-Server antwortet bei jeder Anfrage).
         COM: 30s (RS485-Bus kann still sein, wenn kein Rotor angeschlossen).
+        ``no_rx_timeout_s`` in cfg überschreibt (0 = nie wegen Stille trennen).
         """
+        try:
+            if "no_rx_timeout_s" in (self.cfg or {}):
+                self._no_rx_timeout_s = max(0.0, float(self.cfg.get("no_rx_timeout_s")))
+                return
+        except Exception:
+            pass
         mode = str(self.cfg.get("mode", "com") or "com").strip().lower()
         self._no_rx_timeout_s = 30.0 if mode == "com" else 5.0
+
+    def clear_pending(self, reason: str = "clear") -> None:
+        """Ausstehende Anfrage verwerfen (z. B. nach Remote-USB-Umschaltung)."""
+        with self._lock:
+            pending = self._pending
+            self._pending = None
+        if pending is not None and pending.on_done:
+            try:
+                pending.on_done(None, reason)
+            except Exception:
+                pass
+        try:
+            self._clear_reply_gate()
+        except Exception:
+            pass
 
     def set_expected_response_dst(self, master_id: int) -> None:
         """Nur Telegramme mit ``dst == master_id`` dürfen ein ausstehendes TX-Match sein."""
@@ -277,7 +314,24 @@ class HardwareClient:
             com = self.cfg.get("com_port", "COM1")
             baud = int(self.cfg.get("baudrate", 115200))
             try:
-                self._ser = serial.Serial(com, baud, timeout=0.2)
+                # DTR/RTS nicht toggeln — sonst ESP32-S3 USB-CDC Reset bei jedem Reconnect.
+                self._ser = serial.Serial()
+                self._ser.port = str(com)
+                self._ser.baudrate = int(baud)
+                self._ser.timeout = 0.2
+                self._ser.dsrdtr = False
+                self._ser.rtscts = False
+                try:
+                    self._ser.dtr = False
+                    self._ser.rts = False
+                except Exception:
+                    pass
+                self._ser.open()
+                try:
+                    self._ser.dtr = False
+                    self._ser.rts = False
+                except Exception:
+                    pass
                 self._last_rx_any_ts = time.time()
                 self._last_tx_any_ts = 0.0
                 self._connected_since_ts = time.time()
@@ -311,6 +365,12 @@ class HardwareClient:
             self._wire_tx_seq = (int(self._wire_tx_seq) % _LOG_SEQ_WRAP) + 1
             seq = int(self._wire_tx_seq)
         self.log.write("TX", f"#{seq} {s}")
+        try:
+            cb = self.on_tx_line
+            if cb is not None:
+                cb(s, seq)
+        except Exception:
+            pass
         # Vor dem Write merken (sonst kann das Echo schneller da sein als der Eintrag);
         # danach auf die echte Schreibzeit korrigieren, da _write_with_pacing wartet.
         self._note_tx_line(s, seq)
@@ -688,6 +748,12 @@ class HardwareClient:
                                 )
                             continue
                         self.log.write("RX", f"pkt={chunk_id} {raw}")
+                        try:
+                            cb = self.on_rx_line
+                            if cb is not None:
+                                cb(raw)
+                        except Exception:
+                            pass
                         # Echte Antwort vom Bus → Half-Duplex-Gate oeffnen
                         self._clear_reply_gate()
                         tel = parse(raw)
@@ -797,6 +863,7 @@ class HardwareClient:
                 last_rx = float(self._last_rx_any_ts or 0.0)
                 if (
                     since > 0.0
+                    and float(self._no_rx_timeout_s) > 0.0
                     and (now - since) > 3.0
                     and last_rx > 0.0
                     and (now - last_rx) > float(self._no_rx_timeout_s)

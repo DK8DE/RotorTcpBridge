@@ -75,6 +75,13 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         setposcc_controller_src_id: int = 0,
     ):
         self.hw = hw
+        self.ctrl_hw: Optional[HardwareClient] = None
+        self.usb_remote: bool = False
+        self._controller_cont_id: int = 0
+        try:
+            self._controller_cont_id = max(0, min(254, int(setposcc_controller_src_id)))
+        except Exception:
+            self._controller_cont_id = 0
         self.log = log
         self.master_id = master_id
         # SETPOSCC vom Bus: diese Master-IDs nicht ins UI übernehmen (z. B. [2] bei Stör-Telegrammen)
@@ -281,6 +288,137 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             self.hw.set_expected_response_dst(int(self.master_id))
         except Exception:
             pass
+        try:
+            if self.ctrl_hw is not None:
+                self.ctrl_hw.set_expected_response_dst(int(self.master_id))
+        except Exception:
+            pass
+
+    def set_controller_cont_id(self, cont_id: int) -> None:
+        try:
+            self._controller_cont_id = max(0, min(254, int(cont_id)))
+            self.setposcc_controller_src_id = int(self._controller_cont_id)
+        except Exception:
+            pass
+
+    def set_controller_link(self, hw: Optional[HardwareClient], enabled: bool) -> None:
+        """USB-Link zum Display-Controller und Routing-Flag."""
+        self.ctrl_hw = hw
+        self.usb_remote = bool(enabled) and hw is not None
+        try:
+            if self.ctrl_hw is not None:
+                self.ctrl_hw.set_expected_response_dst(int(self.master_id))
+        except Exception:
+            pass
+
+    def _hw_for_dst(self, dst: int) -> HardwareClient:
+        """SETCON*/GETCON* an den Controller: bei Remote-USB über USB-Link."""
+        try:
+            d = int(dst)
+        except Exception:
+            return self.hw
+        if (
+            self.usb_remote
+            and self.ctrl_hw is not None
+            and (
+                d == int(self._controller_cont_id)
+                or d == int(BROADCAST_DST)
+            )
+        ):
+            return self.ctrl_hw
+        return self.hw
+
+    def on_controller_link_telegram(self, tel: Telegram) -> None:
+        """Telegramm vom Display-USB (Proxy): lokale UI-State für Fahrbefehle übernehmen.
+
+        Remote-USB: der Controller ist *nicht* Bus-Master — die Bridge muss selbst pollen.
+        Deshalb kein ``note_foreign_master_activity`` (das würde GETPOSDG stoppen).
+        """
+        if tel is None:
+            return
+        try:
+            cmd_u = str(tel.cmd or "").strip().upper()
+        except Exception:
+            return
+        if cmd_u not in (
+            "SETPOSDG",
+            "SETPOSCC",
+            "STOP",
+            "NSTOP",
+            "SETREF",
+            "SETASELECT",
+        ):
+            return
+        try:
+            self._apply_local_state_for_ui_command(
+                int(tel.dst),
+                cmd_u,
+                str(tel.params or ""),
+                from_bus_sniff=True,
+                bus_src=int(tel.src) if tel.src is not None else None,
+            )
+        except Exception:
+            pass
+        if cmd_u == "SETPOSDG":
+            try:
+                # Kein Fremd-Master-Yield: Bridge bleibt Soft-Master auf dem Rotor-COM.
+                self.clear_foreign_master_follow()
+            except Exception:
+                pass
+            try:
+                self.note_setposdg_poll_restrict()
+            except Exception:
+                pass
+            # Falls DST nicht zu slave_az/el passte: trotzdem Moving + Ziel setzen.
+            try:
+                dst = int(tel.dst)
+                ax = None
+                if dst == int(self.slave_az):
+                    ax = self.az
+                elif dst == int(self.slave_el):
+                    ax = self.el
+                if ax is not None:
+                    ax.moving = True
+                    ax.last_motion_ts = time.time()
+                    ax.external_panel_move_active = True
+                    ax.pos_poll_inflight = False
+                    ax.pos_poll_next_due_ts = 0.0
+            except Exception:
+                pass
+            # Sofort GETPOSDG — sonst Rotor-Deadman (ERR:10) weil nach SETPOSDG niemand pollt.
+            try:
+                now = time.time()
+                dst = int(tel.dst)
+                if dst == int(self.slave_az) and self.enable_az:
+                    self._poll_pos(
+                        self.slave_az,
+                        self.az,
+                        "AZ",
+                        now,
+                        expected_period_s=0.05,
+                        high_priority=True,
+                    )
+                elif dst == int(self.slave_el) and self.enable_el:
+                    self._poll_pos(
+                        self.slave_el,
+                        self.el,
+                        "EL",
+                        now,
+                        expected_period_s=0.05,
+                        high_priority=True,
+                    )
+            except Exception:
+                pass
+        elif cmd_u == "SETPOSCC":
+            try:
+                self.note_setposcc_bus_activity()
+            except Exception:
+                pass
+        elif cmd_u in ("STOP", "NSTOP"):
+            try:
+                self.clear_foreign_master_follow()
+            except Exception:
+                pass
 
     def reset_bus_discovery_state(self) -> None:
         """Nach Profilwechsel: Encoder-/Rotor-/Antennen-Caches und Bootstrap-Flags zurücksetzen."""
@@ -1162,12 +1300,33 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         axis: Optional[AxisState] = None,
         *,
         set_target: bool = False,
+        foreign_master_id: Optional[int] = None,
     ) -> None:
         """Anderer Master spricht unseren Rotor an — eigenes Polling pausieren, ACKs mitauswerten.
 
         - Jedes fremde ``ACK_GETPOSDG`` verlängert das Hold-Fenster (``_FOREIGN_POLL_HOLD_S``).
         - Fremdes ``SETPOSDG`` / Winkel-``ACK_SETPOSDG``: Follow bis Soll≈Ist (oder Stale-Timeout).
+
+        Remote-USB: Controller-ID (USB-only) ignorieren — echte Bus-Master (z. B. App ID 7)
+        lösen weiterhin Yield aus, sonst Bus-Kollisionen.
         """
+        try:
+            fid = int(foreign_master_id) if foreign_master_id is not None else None
+        except Exception:
+            fid = None
+        if fid is not None:
+            try:
+                if fid == int(self.master_id):
+                    return
+            except Exception:
+                pass
+            if bool(getattr(self, "usb_remote", False)):
+                try:
+                    cont = int(getattr(self, "_controller_cont_id", 0) or 0)
+                except Exception:
+                    cont = 0
+                if cont > 0 and fid == cont:
+                    return
         now = time.time()
         try:
             prev = float(getattr(self, "_foreign_poll_seen_until", 0.0) or 0.0)
@@ -1189,6 +1348,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
     def clear_foreign_master_follow(self, axis: Optional[AxisState] = None) -> None:
         """Eigenes SETPOSDG / Ankunft: Follow-Modus beenden."""
+        self._foreign_poll_seen_until = 0.0
         axes = (
             [axis]
             if axis is not None
@@ -1352,7 +1512,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         except Exception:
             return
         line = build(int(self.master_id), int(BROADCAST_DST), "SETCONIDF", str(n))
-        self.hw.send_line_fire_and_forget(line)
+        self._hw_for_dst(int(BROADCAST_DST)).send_line_fire_and_forget(line)
 
     def send_ui_command(
         self,
@@ -1407,7 +1567,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         # eingehende ACKs (z. B. ACK_GET…) können vorübergehend fälschlich dem Request zugeordnet werden.
         if str(cmd).strip().upper() == "SETPOSCC":
             expect_prefix = None
-        self.hw.send_request(
+        self._hw_for_dst(int(dst)).send_request(
             HwRequest(
             line=line,
             expect_prefix=expect_prefix,
@@ -1862,6 +2022,16 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         return
             except Exception:
                 pass
+
+        # Encoder-SETPOSCC-Vorschau nicht durch PST/SPID löschen — sonst springt
+        # der Sollzeiger (v. a. Web) zwischen neuem CC und altem SPID-Ziel.
+        try:
+            if self.cc_poll_hold_active(time.time()):
+                cc = getattr(self.az, "compass_target_d10", None)
+                if cc is not None and abs(int(cc) - int(az_d10)) > 2:
+                    return
+        except Exception:
+            pass
 
         self.az.compass_target_d10 = None
         self.az.target_d10 = az_d10

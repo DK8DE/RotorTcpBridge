@@ -134,9 +134,10 @@ from .led_widget import Led
 from .log_window import LogWindow
 from .settings_window import SettingsWindow
 from .weather_window import WeatherWindow
-from .map_window import MapWindow
+from .map_window import MAP_WEB_LIVE_INTERVAL_MS, MapWindow
 from .about_window import AboutWindow
 from .rotor_configuration import CommandButtonsWindow
+from .rotor_overview_window import RotorOverviewWindow
 from .warnings_errors_window import WarningsErrorsWindow
 from .rig_freq_utils import (
     apply_rig_freq_band_alert_styles,
@@ -294,12 +295,17 @@ class MainWindow(QMainWindow):
         rig_bridge_manager=None,
         pst_serial=None,
         rotctld_server=None,
+        map_webserver=None,
+        controller_remote_proxy=None,
+        ctrl_hw=None,
     ):
         super().__init__()
         self.cfg = cfg
         self.ctrl = controller
         self.pst = pst_server
         self.hw = hw_client
+        self.ctrl_hw = ctrl_hw
+        self._controller_remote_proxy = controller_remote_proxy
         self.save_cfg_cb = save_cfg_cb
         self.logbuf = logbuf
         self._udp_ucxlog = udp_ucxlog
@@ -309,6 +315,7 @@ class MainWindow(QMainWindow):
         self._rig_bridge_manager = rig_bridge_manager
         self.pst_serial = pst_serial
         self._rotctld_server = rotctld_server
+        self._map_webserver = map_webserver
         if aswatch_bridge is not None:
             try:
                 aswatch_bridge.users.connect(
@@ -390,6 +397,9 @@ class MainWindow(QMainWindow):
         self._act_win_map = QAction(t("main.btn_map"), self)
         self._act_win_map.triggered.connect(self._open_map)
         self._menu_window.addAction(self._act_win_map)
+        self._act_win_rotor_overview = QAction(t("main.menu_rotor_overview"), self)
+        self._act_win_rotor_overview.triggered.connect(self._open_rotor_overview)
+        self._menu_window.addAction(self._act_win_rotor_overview)
         self._act_win_weather = QAction(t("main.btn_weather"), self)
         self._act_win_weather.triggered.connect(self._open_weather)
         self._menu_window.addAction(self._act_win_weather)
@@ -512,6 +522,7 @@ class MainWindow(QMainWindow):
         self._srv_led_d = led_d
         self.led_pst = Led(led_d, self)
         self.led_rotctld = Led(led_d, self)
+        self.led_map_web = Led(led_d, self)
         self.led_ucxlog = Led(led_d, self)
         self.led_pst_udp = Led(led_d, self)
         self.led_aswatch = Led(led_d, self)
@@ -530,6 +541,11 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         self.lbl_rotctld.setWordWrap(False)
+        self.lbl_map_web = QLabel("")
+        self.lbl_map_web.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.lbl_map_web.setWordWrap(False)
         self.lbl_hw = QLabel("")
         self.lbl_hw.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -565,6 +581,16 @@ class MainWindow(QMainWindow):
         rotctld_row_w.setLayout(rotctld_row)
         srv_form.addRow(t("main.srv_rotctld_label"), rotctld_row_w)
         self._srv_row_rotctld_w = rotctld_row_w
+
+        map_web_row = QHBoxLayout()
+        map_web_row.setContentsMargins(0, 0, 0, 0)
+        map_web_row.setSpacing(px_to_dip(self, 6))
+        map_web_row.addWidget(self._srv_led_wrap(self.led_map_web))
+        map_web_row.addWidget(self.lbl_map_web, 1)
+        map_web_row_w = QWidget()
+        map_web_row_w.setLayout(map_web_row)
+        srv_form.addRow(t("main.srv_map_web_label"), map_web_row_w)
+        self._srv_row_map_web_w = map_web_row_w
 
         ucxlog_row = QHBoxLayout()
         ucxlog_row.setContentsMargins(0, 0, 0, 0)
@@ -772,6 +798,7 @@ class MainWindow(QMainWindow):
             on_map_page_ready_cb=self._on_map_page_ready,
             rig_bridge_manager=self._rig_bridge_manager,
         )
+        self._rotor_overview_win: RotorOverviewWindow | None = None
         # Broadcast zuerst: Sync-Slots dürfen den TX nicht verhindern; Fire-and-Forget ist separat
         self._antenna_bridge.selection_changed.connect(self._on_antenna_broadcast_aselect)
         self._antenna_bridge.selection_changed.connect(self._sync_main_antenna_combo_from_bridge)
@@ -806,8 +833,11 @@ class MainWindow(QMainWindow):
             udp_pst=self._udp_pst,
             pst_target_push=self._pst_target_push,
             rotctld_server=self._rotctld_server,
+            map_webserver=self._map_webserver,
             switch_profile_cb=self._switch_rotor_profile,
             profiles_changed_cb=self._refresh_profile_menu,
+            controller_remote_proxy=self._controller_remote_proxy,
+            ctrl_hw=self.ctrl_hw,
             parent=None,
         )
         self._statistics_win = StatisticsWindow(self.cfg, self.ctrl, parent=None)
@@ -823,6 +853,9 @@ class MainWindow(QMainWindow):
 
         self.btn_open_compass.clicked.connect(self._open_compass)
         self.btn_open_map.clicked.connect(self._open_map)
+
+        self._wire_map_webserver()
+        QTimer.singleShot(400, self._start_map_webserver_if_enabled)
 
         self._fixed_w = None
         self._fixed_h = None
@@ -1256,10 +1289,16 @@ class MainWindow(QMainWindow):
         self._switch_rotor_profile(profile_id)
 
     def _wait_hw_connected_for_profile_push(self, timeout_s: float = 4.0) -> bool:
-        """Kurz warten bis Hardware-Link steht (nach update_cfg / Safe-Reconnect)."""
+        """Kurz warten bis Hardware-Link steht (nach update_cfg / Safe-Reconnect).
+
+        Im Controller-Remote-USB-Modus wartet auf den USB-Controller-Link,
+        weil SETCON* dorthin gehen.
+        """
         import time
 
-        hw = getattr(self, "hw", None)
+        chw = self.cfg.get("controller_hw") if isinstance(self.cfg.get("controller_hw"), dict) else {}
+        use_ctrl = bool(chw.get("enabled", True)) and bool(chw.get("usb_remote", False))
+        hw = self.ctrl_hw if use_ctrl else getattr(self, "hw", None)
         if hw is None:
             return False
         try:
@@ -1327,6 +1366,23 @@ class MainWindow(QMainWindow):
             self.hw.update_cfg(self.cfg.get("hardware_link") or {})
         except Exception as e:
             self._log_exception("_switch_rotor_profile hw.update_cfg", e)
+        try:
+            proxy = getattr(self, "_controller_remote_proxy", None)
+            if proxy is not None:
+                from ..controller_remote_usb import ControllerRemoteUsbProxy
+
+                proxy.update_cfg(self.cfg)
+                want = ControllerRemoteUsbProxy.want_remote(self.cfg)
+                if bool(proxy.is_active()) != want:
+                    import threading
+
+                    threading.Thread(
+                        target=lambda: proxy.apply_mode(want, timeout_s=8.0),
+                        name="remote-usb-profile",
+                        daemon=True,
+                    ).start()
+        except Exception as e:
+            self._log_exception("_switch_rotor_profile remote_proxy.update_cfg", e)
 
         try:
             from ..rotor_backup import apply_live_ids_from_cfg
@@ -1416,6 +1472,12 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self._log_exception("_switch_rotor_profile rotctld", e)
 
+        if self._map_webserver is not None:
+            try:
+                self._apply_map_webserver_from_cfg(show_error=False)
+            except Exception as e:
+                self._log_exception("_switch_rotor_profile map_webserver", e)
+
         try:
             if self._rig_bridge_manager is not None and "rig_bridge" in self.cfg:
                 self._rig_bridge_manager.update_config(self.cfg["rig_bridge"])
@@ -1504,6 +1566,7 @@ class MainWindow(QMainWindow):
         self._menu_window.setTitle(t("main.menu_window"))
         self._act_win_compass.setText(t("main.btn_compass"))
         self._act_win_map.setText(t("main.btn_map"))
+        self._act_win_rotor_overview.setText(t("main.menu_rotor_overview"))
         self._act_win_weather.setText(t("main.btn_weather"))
         self._act_win_warnings_errors.setText(t("main.menu_win_warnings_errors"))
         self._menu_help.setTitle(t("main.menu_help"))
@@ -1568,6 +1631,9 @@ class MainWindow(QMainWindow):
             lab = sf.labelForField(self._srv_row_rotctld_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_rotctld_label"))
+            lab = sf.labelForField(self._srv_row_map_web_w)
+            if isinstance(lab, QLabel):
+                lab.setText(t("main.srv_map_web_label"))
             lab = sf.labelForField(self._srv_row_ucxlog_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_ucxlog_prefix"))
@@ -1639,6 +1705,7 @@ class MainWindow(QMainWindow):
                 "_log_win",
                 "_compass_win",
                 "_map_win",
+                "_rotor_overview_win",
                 "_statistics_win",
                 "_weather_win",
                 "_warnings_errors_win",
@@ -1678,6 +1745,7 @@ class MainWindow(QMainWindow):
                 on_map_page_ready_cb=self._on_map_page_ready,
                 rig_bridge_manager=self._rig_bridge_manager,
             )
+            self._rotor_overview_win = None
             try:
                 self._antenna_bridge.selection_changed.disconnect()
             except TypeError:
@@ -1703,6 +1771,7 @@ class MainWindow(QMainWindow):
                 parent=None,
                 after_slave_ids_changed_cb=self._on_rotor_slave_ids_changed_from_commands,
             )
+            self._wire_map_webserver()
         except Exception:
             pass
         self._after_settings_applied()
@@ -1733,12 +1802,131 @@ class MainWindow(QMainWindow):
                 udp_pst=self._udp_pst,
                 pst_target_push=self._pst_target_push,
                 rotctld_server=self._rotctld_server,
+                map_webserver=self._map_webserver,
                 switch_profile_cb=self._switch_rotor_profile,
                 profiles_changed_cb=self._refresh_profile_menu,
+                controller_remote_proxy=self._controller_remote_proxy,
+                ctrl_hw=self.ctrl_hw,
                 parent=None,
             )
         except Exception:
             pass
+
+    def _wire_map_webserver(self) -> None:
+        """MapWindow-Provider an den HTTP-Karten-Webserver hängen."""
+        srv = getattr(self, "_map_webserver", None)
+        mw = getattr(self, "_map_win", None)
+        if srv is None or mw is None:
+            return
+        self._map_web_html_cache = ""
+        self._map_web_compass_html_cache = ""
+        self._map_web_live_cache: dict = {}
+        self._map_web_compass_cache: dict = {}
+        self._map_web_aswatch_cache: tuple = ([], 0)
+        self._map_web_aircraft_cache: list = []
+        self._map_web_asnearest_cache: list = []
+        try:
+            srv.configure(
+                html_provider=lambda: getattr(self, "_map_web_html_cache", "") or "",
+                compass_html_provider=lambda: getattr(self, "_map_web_compass_html_cache", "") or "",
+                live_provider=lambda: dict(getattr(self, "_map_web_live_cache", {}) or {}),
+                compass_provider=lambda: dict(getattr(self, "_map_web_compass_cache", {}) or {}),
+                setaz_handler=mw.apply_web_setaz,
+                ui_action_handler=mw.apply_web_ui_action,
+                aswatch_provider=lambda: tuple(
+                    getattr(self, "_map_web_aswatch_cache", ([], 0))
+                ),
+                aircraft_provider=lambda: list(
+                    getattr(self, "_map_web_aircraft_cache", []) or []
+                ),
+                asnearest_provider=lambda: list(
+                    getattr(self, "_map_web_asnearest_cache", []) or []
+                ),
+            )
+        except Exception as e:
+            self._log_exception("_wire_map_webserver", e)
+        if not hasattr(self, "_map_web_cache_timer") or self._map_web_cache_timer is None:
+            self._map_web_cache_timer = QTimer(self)
+            self._map_web_cache_timer.timeout.connect(self._tick_map_webserver_cache)
+        self._map_web_cache_timer.setInterval(MAP_WEB_LIVE_INTERVAL_MS)
+        # Timer läuft dauerhaft; Tick no-opt wenn Server aus (Settings kann live starten)
+        if not self._map_web_cache_timer.isActive():
+            self._map_web_cache_timer.start()
+
+    def _tick_map_webserver_cache(self) -> None:
+        """Live-/HTML-Caches für den Webserver im UI-Thread aktualisieren."""
+        srv = getattr(self, "_map_webserver", None)
+        mw = getattr(self, "_map_win", None)
+        if srv is None or mw is None or not getattr(srv, "running", False):
+            return
+        try:
+            # HTML nur selten neu bauen (schwer); Live-State jedes Tick
+            params = mw._get_params()
+            rotor_target = float(params.get("rotor_az_deg", 0.0))
+            if not mw._refresh_timer.isActive():
+                mw._advance_smooth_rotor_az(rotor_target)
+            self._map_web_live_cache = mw.get_web_live_payload()
+            self._map_web_compass_cache = mw.get_web_compass_payload()
+            self._map_web_aswatch_cache = mw.get_web_aswatch()
+            self._map_web_aircraft_cache = mw.get_web_aircraft()
+            self._map_web_asnearest_cache = mw.get_web_asnearest()
+            now = time.time()
+            last = float(getattr(self, "_map_web_html_cache_ts", 0.0) or 0.0)
+            if (now - last) >= 2.0 or not getattr(self, "_map_web_html_cache", ""):
+                self._map_web_html_cache = mw.get_web_map_html()
+                self._map_web_compass_html_cache = mw.get_web_compass_html()
+                self._map_web_html_cache_ts = now
+        except Exception:
+            pass
+
+    def _start_map_webserver_if_enabled(self) -> None:
+        """Beim App-Start starten, wenn aktiviert; bei Port-Konflikt melden."""
+        self._apply_map_webserver_from_cfg(show_error=True)
+
+    def _apply_map_webserver_from_cfg(self, *, show_error: bool = False) -> None:
+        srv = getattr(self, "_map_webserver", None)
+        if srv is None:
+            return
+        mws = self.cfg.get("map_webserver", {}) or {}
+        enabled = bool(mws.get("enabled", False))
+        host = str(mws.get("listen_host", "0.0.0.0") or "0.0.0.0")
+        try:
+            port = int(mws.get("listen_port", 80))
+        except Exception:
+            port = 80
+        try:
+            if hasattr(srv, "set_password"):
+                srv.set_password(str(mws.get("password", "") or ""))
+        except Exception:
+            pass
+        timer = getattr(self, "_map_web_cache_timer", None)
+        try:
+            if enabled:
+                ok, err = srv.restart(host, port)
+                if timer is not None and not timer.isActive():
+                    timer.start()
+                if not ok:
+                    mws["enabled"] = False
+                    try:
+                        self.save_cfg_cb(self.cfg)
+                    except Exception:
+                        pass
+                    if show_error:
+                        QMessageBox.warning(
+                            self,
+                            t("settings.tab_map_webserver"),
+                            t(
+                                "settings.map_webserver_port_busy",
+                                host=host,
+                                port=port,
+                                detail=str(err or ""),
+                            ),
+                        )
+            else:
+                if getattr(srv, "running", False):
+                    srv.stop()
+        except Exception as e:
+            self._log_exception("_apply_map_webserver_from_cfg", e)
 
     def _after_settings_applied(self):
         apply_theme_mode(self.cfg)
@@ -1768,6 +1956,11 @@ class MainWindow(QMainWindow):
                     self._rotctld_server.stop()
             except Exception as e:
                 self._log_exception("_after_settings_applied rotctld start/stop", e)
+        # Karten-Webserver starten/stoppen je nach Einstellung
+        try:
+            self._apply_map_webserver_from_cfg(show_error=False)
+        except Exception as e:
+            self._log_exception("_after_settings_applied map_webserver", e)
         # PST-Serial (com0com) Listener analog aktualisieren
         if self.pst_serial is not None:
             try:
@@ -2116,6 +2309,47 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _open_rotor_overview(self):
+        try:
+            win = getattr(self, "_rotor_overview_win", None)
+            try:
+                from PySide6 import shiboken6
+
+                if win is not None and not shiboken6.isValid(win):
+                    win = None
+                    self._rotor_overview_win = None
+            except Exception:
+                pass
+            if win is None:
+                win = RotorOverviewWindow(parent=None)
+                self._rotor_overview_win = win
+                try:
+                    win.destroyed.connect(lambda *_: setattr(self, "_rotor_overview_win", None))
+                except Exception:
+                    pass
+            else:
+                try:
+                    win.retranslate()
+                except Exception:
+                    pass
+            self._bring_tool_window_to_front(win)
+        except Exception as exc:
+            import traceback
+
+            traceback.print_exc()
+            try:
+                self.logbuf.write("WARN", f"Rotorübersicht öffnen fehlgeschlagen: {exc}")
+            except Exception:
+                pass
+            try:
+                QMessageBox.warning(
+                    self,
+                    t("main.menu_rotor_overview"),
+                    t("overview.open_fail", err=str(exc)),
+                )
+            except Exception:
+                print(f"[overview] open failed: {exc}", flush=True)
+
     def _on_park_clicked(self) -> None:
         """Parken: Hom-Winkel per SETPOSDG anfahren (aus GETHOMEPOS-Cache)."""
         try:
@@ -2339,6 +2573,7 @@ class MainWindow(QMainWindow):
         ui = self.cfg.get("ui", {})
         pst_on = bool(self.cfg.get("pst_server", {}).get("enabled", False))
         rotctld_on = bool(self.cfg.get("rotctld_server", {}).get("enabled", False))
+        map_web_on = bool(self.cfg.get("map_webserver", {}).get("enabled", False))
         ucxlog_on = bool(ui.get("udp_ucxlog_enabled", False))
         pst_udp_on = bool(ui.get("udp_pst_enabled", False))
         aswatch_on = bool(ui.get("aswatch_udp_enabled", False))
@@ -2349,6 +2584,7 @@ class MainWindow(QMainWindow):
         try:
             self._srv_form.setRowVisible(self._srv_row_pst_w, pst_on)
             self._srv_form.setRowVisible(self._srv_row_rotctld_w, rotctld_on)
+            self._srv_form.setRowVisible(self._srv_row_map_web_w, map_web_on)
             self._srv_form.setRowVisible(self._srv_row_ucxlog_w, ucxlog_on)
             self._srv_form.setRowVisible(self._srv_row_pst_udp_w, pst_udp_on)
             self._srv_form.setRowVisible(self._srv_row_aswatch_w, aswatch_on)
@@ -2865,6 +3101,15 @@ class MainWindow(QMainWindow):
             if not self._rotctld_blink_active:
                 self.led_rotctld.set_state(True)
 
+        mws_srv = getattr(self, "_map_webserver", None)
+        mws_on = bool(getattr(mws_srv, "running", False)) if mws_srv is not None else False
+        try:
+            self.led_map_web.set_state(mws_on)
+            map_web_cfg_on = bool(self.cfg.get("map_webserver", {}).get("enabled", False))
+            self._srv_form.setRowVisible(self._srv_row_map_web_w, map_web_cfg_on)
+        except Exception as e:
+            self._log_exception("_tick map_web led", e)
+
         udp = getattr(self, "_udp_ucxlog", None)
         if udp is not None:
             if getattr(udp, "packet_received_flag", False):
@@ -3226,6 +3471,19 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             _rcport = 4533
         self.lbl_rotctld.setText(f"{_rch}:{_rcport}")
+
+        mws = self.cfg.get("map_webserver", {}) or {}
+        _mwh = str(
+            getattr(self._map_webserver, "host", None)
+            or mws.get("listen_host", "0.0.0.0")
+            or "0.0.0.0"
+        ).strip()
+        _mwp = getattr(self._map_webserver, "port", None)
+        try:
+            _mwport = int(_mwp) if _mwp is not None else int(mws.get("listen_port", 80))
+        except (TypeError, ValueError):
+            _mwport = 80
+        self.lbl_map_web.setText(f"{_mwh}:{_mwport}")
 
         hl = self.cfg["hardware_link"]
         mode = str(hl.get("mode", "tcp") or "tcp").strip().lower()

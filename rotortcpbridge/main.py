@@ -1,5 +1,6 @@
 from __future__ import annotations
 import sys
+import threading
 
 # Scheme-Registrierung VOR allen anderen Imports (sonst ignoriert Qt sie)
 import rotortcpbridge.webengine_schemes  # noqa: F401
@@ -16,9 +17,11 @@ from .app_icon import get_app_icon
 from .i18n import load_lang
 from .logutil import LogBuffer
 from .hardware_client import HardwareClient
+from .controller_remote_usb import ControllerRemoteUsbProxy
 from .rotor_controller import RotorController
 from .pst_server import PstDualServer
 from .rotctld_server import RotctldServer, DEFAULT_ROTCTLD_PORT
+from .map_webserver import MapWebServer, DEFAULT_MAP_WEBSERVER_HOST, DEFAULT_MAP_WEBSERVER_PORT
 from .pst_serial import PstSerialManager
 from .udp_ucxlog import UdpUcxLogListener
 from .udp_aswatchlist import UdpAswatchlistListener
@@ -118,6 +121,8 @@ def main():
     hw = HardwareClient(cfg["hardware_link"], log)
     hw.start()
 
+    ctrl_hw = HardwareClient(cfg.get("controller_link") or {}, log)
+
     rb = cfg["rotor_bus"]
     chw = cfg.get("controller_hw") or {}
     ctrl = RotorController(
@@ -134,6 +139,16 @@ def main():
         setposcc_controller_src_id=int(chw.get("cont_id", 2) or 0),
     )
     ctrl.update_polling(cfg.get("polling_ms", {}))
+
+    remote_proxy = ControllerRemoteUsbProxy(hw, ctrl_hw, ctrl, log)
+    remote_proxy.update_cfg(cfg)
+    # Mode-Switch nicht im GUI-Start-Thread blockieren (früher: activate + Wait → langer Start).
+    if ControllerRemoteUsbProxy.want_remote(cfg):
+        threading.Thread(
+            target=lambda: remote_proxy.apply_mode(True, timeout_s=10.0),
+            name="remote-usb-boot",
+            daemon=True,
+        ).start()
 
     pst = PstDualServer(
         cfg["pst_server"]["listen_host"],
@@ -159,6 +174,15 @@ def main():
     )
     if bool(rotctld_cfg.get("enabled", False)):
         rotctld.start()
+
+    # Antennenkarte als HTTP-Webserver (Start erst nach MapWindow-Wiring in MainWindow)
+    mws_cfg = cfg.get("map_webserver", {}) or {}
+    map_webserver = MapWebServer(
+        str(mws_cfg.get("listen_host", DEFAULT_MAP_WEBSERVER_HOST)),
+        int(mws_cfg.get("listen_port", DEFAULT_MAP_WEBSERVER_PORT)),
+        log,
+        password=str(mws_cfg.get("password", "rotor") or ""),
+    )
 
     # SPID BIG-RAS / CAT über serielle Schnittstelle (com0com etc.)
     # Der Manager bekommt einen Zeiger auf die Rig-Bridge, damit
@@ -207,6 +231,17 @@ def main():
         save_config(new_cfg)
         ctrl.update_polling(new_cfg.get("polling_ms", {}))
         hw.update_cfg(new_cfg["hardware_link"])
+        try:
+            remote_proxy.update_cfg(new_cfg)
+            want = ControllerRemoteUsbProxy.want_remote(new_cfg)
+            if bool(remote_proxy.is_active()) != want:
+                threading.Thread(
+                    target=lambda: remote_proxy.apply_mode(want, timeout_s=8.0),
+                    name="remote-usb-cfg",
+                    daemon=True,
+                ).start()
+        except Exception as exc:
+            log.write("WARN", f"Controller Remote USB update: {exc}")
         log.write("INFO", "Config gespeichert")
 
     install_rotortiles_handler()
@@ -251,6 +286,9 @@ def main():
         rig_bridge_manager=rig_bridge_manager,
         pst_serial=pst_serial,
         rotctld_server=rotctld,
+        map_webserver=map_webserver,
+        controller_remote_proxy=remote_proxy,
+        ctrl_hw=ctrl_hw,
     )
     main_window_holder["window"] = w
     w.resize(1100, 650)
@@ -260,6 +298,18 @@ def main():
 
     rc = app.exec()
     try:
+        remote_proxy.stop()
+    except Exception:
+        pass
+    try:
+        ctrl_hw.stop()
+    except Exception:
+        pass
+    try:
+        hw.stop()
+    except Exception:
+        pass
+    try:
         rig_bridge_manager.stop_all()
     except Exception:
         pass
@@ -268,6 +318,10 @@ def main():
     udp_pst.stop()
     try:
         rotctld.stop()
+    except Exception:
+        pass
+    try:
+        map_webserver.stop()
     except Exception:
         pass
     try:

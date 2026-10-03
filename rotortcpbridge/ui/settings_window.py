@@ -120,8 +120,11 @@ class SettingsWindow(QDialog):
         udp_pst=None,
         pst_target_push=None,
         rotctld_server=None,
+        map_webserver=None,
         switch_profile_cb=None,
         profiles_changed_cb=None,
+        controller_remote_proxy=None,
+        ctrl_hw=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -131,7 +134,10 @@ class SettingsWindow(QDialog):
         self._udp_pst = udp_pst
         self._pst_target_push = pst_target_push
         self._rotctld_server = rotctld_server
+        self._map_webserver = map_webserver
         self.hw = hw_client
+        self.ctrl_hw = ctrl_hw
+        self._controller_remote_proxy = controller_remote_proxy
         self.save_cfg_cb = save_cfg_cb
         self.logbuf = logbuf
         self.after_apply_cb = after_apply_cb
@@ -844,6 +850,7 @@ class SettingsWindow(QDialog):
         self.sp_imax_el.setToolTip(tt("settings.strom_imax_tooltip"))
         self._lbl_imax_el = QLabel(t("settings.strom_imax_el"))
         fl_strom_lim.addRow(self._lbl_imax_el, self.sp_imax_el)
+        vl_st.addWidget(self.gb_strom_limits)
         self._snapshot_iwarn_az: int | None = None
         self._snapshot_imax_az: int | None = None
         self._snapshot_iwarn_el: int | None = None
@@ -987,7 +994,6 @@ class SettingsWindow(QDialog):
         self.btn_apply_cal_el.setToolTip(tt("settings.stats_apply_from_cal_tooltip"))
         fl_hm_el.addRow(self.btn_apply_cal_el)
         vl_st.addWidget(self.gb_hm_el)
-        vl_st.addWidget(self.gb_strom_limits)
         vl_st.addStretch(1)
 
         _chw = cfg.setdefault("controller_hw", {})
@@ -1014,6 +1020,40 @@ class SettingsWindow(QDialog):
         self.chk_hw_controller_enabled.setToolTip(tt("settings.controller_hw_enable_tooltip"))
         self.chk_hw_controller_enabled.toggled.connect(self._on_hw_controller_toggled)
         vl_ctrl.addWidget(self.chk_hw_controller_enabled)
+        self.chk_cont_usb_remote = QCheckBox(t("settings.controller_usb_remote"))
+        self.chk_cont_usb_remote.setChecked(bool(_chw.get("usb_remote", False)))
+        self.chk_cont_usb_remote.setToolTip(tt("settings.controller_usb_remote_tooltip"))
+        self.chk_cont_usb_remote.toggled.connect(self._on_cont_usb_remote_toggled)
+        vl_ctrl.addWidget(self.chk_cont_usb_remote)
+        _clink = cfg.get("controller_link") if isinstance(cfg.get("controller_link"), dict) else {}
+        self._row_cont_usb_port = QWidget()
+        _lay_usb = QHBoxLayout(self._row_cont_usb_port)
+        _lay_usb.setContentsMargins(0, 0, 0, 0)
+        _lay_usb.setSpacing(px_to_dip(self, 8))
+        self.cb_cont_usb_com = QComboBox()
+        self.cb_cont_usb_com.setToolTip(tt("settings.controller_usb_port_tooltip"))
+        _lay_usb.addWidget(self.cb_cont_usb_com, 1)
+        self.btn_cont_usb_refresh = QPushButton("↻")
+        self.btn_cont_usb_refresh.setFixedWidth(30)
+        self.btn_cont_usb_refresh.setToolTip(tt("settings.btn_com_refresh_tooltip"))
+        self.btn_cont_usb_refresh.clicked.connect(
+            lambda: self._refresh_com_ports_into(
+                self.cb_cont_usb_com,
+                select=str((_clink or {}).get("com_port", "") or ""),
+            )
+        )
+        _lay_usb.addWidget(self.btn_cont_usb_refresh, 0)
+        self.sp_cont_usb_baud = QSpinBox()
+        self.sp_cont_usb_baud.setRange(1200, 921600)
+        self.sp_cont_usb_baud.setSingleStep(100)
+        try:
+            self.sp_cont_usb_baud.setValue(int((_clink or {}).get("baudrate", 115200)))
+        except (TypeError, ValueError):
+            self.sp_cont_usb_baud.setValue(115200)
+        self.sp_cont_usb_baud.setToolTip(tt("settings.controller_usb_baud_tooltip"))
+        _lay_usb.addWidget(QLabel(t("settings.controller_usb_baud")), 0)
+        _lay_usb.addWidget(self.sp_cont_usb_baud, 0)
+        vl_ctrl.addWidget(self._row_cont_usb_port)
         self.gb_controller = QGroupBox(t("settings.controller_group"))
         fl_ctrl = QFormLayout(self.gb_controller)
         self.sp_controller_id = QSpinBox()
@@ -1521,6 +1561,74 @@ class SettingsWindow(QDialog):
         vl_compass.addWidget(self._gb_wind_dir_display)
         vl_compass.addStretch(1)
 
+        # --- Karten-Webserver (nach Kompass) -----------------------------------
+        _mws_cfg = self.cfg.get("map_webserver", {}) or {}
+        pg_map_webserver = QWidget()
+        vl_map_ws = QVBoxLayout(pg_map_webserver)
+        _mws_pad = px_to_dip(self, 5)
+        vl_map_ws.setContentsMargins(_mws_pad, _mws_pad, _mws_pad, _mws_pad)
+        vl_map_ws.setSpacing(10)
+        self._lbl_map_webserver_info = QLabel(t("settings.map_webserver_info"))
+        self._lbl_map_webserver_info.setWordWrap(True)
+        self.chk_map_webserver_enabled = QCheckBox(t("settings.chk_map_webserver_enabled"))
+        self.chk_map_webserver_enabled.setChecked(bool(_mws_cfg.get("enabled", False)))
+        self.chk_map_webserver_enabled.setToolTip(tt("settings.chk_map_webserver_enabled_tooltip"))
+        self.ed_map_webserver_host = QLineEdit(
+            str(_mws_cfg.get("listen_host", "0.0.0.0") or "0.0.0.0")
+        )
+        self.ed_map_webserver_host.setMinimumWidth(_conn_ip_w)
+        self.ed_map_webserver_host.setToolTip(tt("settings.map_webserver_listen_host_tooltip"))
+        self.sp_map_webserver_port = QSpinBox()
+        self.sp_map_webserver_port.setRange(1, 65535)
+        try:
+            _mws_port = int(_mws_cfg.get("listen_port", 80))
+        except Exception:
+            _mws_port = 80
+        self.sp_map_webserver_port.setValue(max(1, min(65535, _mws_port)))
+        self.sp_map_webserver_port.setToolTip(tt("settings.map_webserver_port_tooltip"))
+        self.ed_map_webserver_password = QLineEdit(
+            str(_mws_cfg.get("password", "rotor") or "")
+        )
+        self.ed_map_webserver_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.ed_map_webserver_password.setPlaceholderText(
+            t("settings.map_webserver_password_placeholder")
+        )
+        self.ed_map_webserver_password.setMinimumWidth(_conn_ip_w)
+        self.ed_map_webserver_password.setToolTip(tt("settings.map_webserver_password_tooltip"))
+        w_map_ws = QWidget()
+        fl_map_ws = QFormLayout(w_map_ws)
+        fl_map_ws.setContentsMargins(0, 0, 0, 0)
+        fl_map_ws.addRow(self._lbl_map_webserver_info)
+        fl_map_ws.addRow(self.chk_map_webserver_enabled)
+        fl_map_ws.addRow(t("settings.map_webserver_listen_host"), self.ed_map_webserver_host)
+        fl_map_ws.addRow(t("settings.map_webserver_port"), self.sp_map_webserver_port)
+        fl_map_ws.addRow(
+            t("settings.map_webserver_password"), self.ed_map_webserver_password
+        )
+        row_map_ws_status = QWidget()
+        hl_map_ws = QHBoxLayout(row_map_ws_status)
+        hl_map_ws.setContentsMargins(0, 0, 0, 0)
+        hl_map_ws.setSpacing(8)
+        hl_map_ws.addWidget(QLabel(t("rig.lbl_status")))
+        self._led_map_webserver_running = Led(_pst_led_d, self)
+        self._led_map_webserver_running.setToolTip(tt("settings.map_webserver_led_running_tooltip"))
+        hl_map_ws.addWidget(self._led_map_webserver_running, 0, Qt.AlignmentFlag.AlignLeft)
+        hl_map_ws.addSpacing(10)
+        self._lbl_map_webserver_bind = QLabel("")
+        self._lbl_map_webserver_bind.setWordWrap(True)
+        hl_map_ws.addWidget(self._lbl_map_webserver_bind, 1)
+        hl_map_ws.addStretch(1)
+        fl_map_ws.addRow(row_map_ws_status)
+        self._lbl_map_webserver_url = QLabel("")
+        self._lbl_map_webserver_url.setWordWrap(True)
+        fl_map_ws.addRow(self._lbl_map_webserver_url)
+        gb_map_ws = QGroupBox(t("settings.tab_map_webserver"))
+        _vl_map_ws_box = QVBoxLayout(gb_map_ws)
+        _vl_map_ws_box.addWidget(w_map_ws)
+        vl_map_ws.addWidget(gb_map_ws)
+        vl_map_ws.addStretch(1)
+        self.chk_map_webserver_enabled.stateChanged.connect(self._on_map_webserver_toggled)
+
         # Navigation: vertikale Liste links (scrollbar bei vielen Einträgen), Inhalt rechts
         # Breite ca. 2/3 der vorherigen Sidebar (ein Drittel schmaler)
         _nav_w_min = px_to_dip(self, 88)
@@ -1555,6 +1663,7 @@ class SettingsWindow(QDialog):
         self._settings_stack.addWidget(_scroll_page(pg_external_programs))
         self._settings_stack.addWidget(_scroll_page(pg_ant))
         self._settings_stack.addWidget(_scroll_page(pg_compass))
+        self._settings_stack.addWidget(_scroll_page(pg_map_webserver))
         self._settings_stack.addWidget(_scroll_page(pg_stats))
         self._settings_stack.addWidget(_scroll_page(pg_controller))
         self._settings_stack.addWidget(_scroll_page(self._rig_bridge_tab))
@@ -1575,13 +1684,14 @@ class SettingsWindow(QDialog):
         self._settings_stack.addWidget(_scroll_page(self._network_tab))
         self._tab_profiles_index = 0
         self._tab_antenna_index = 5
-        self._tab_statistics_index = 7
-        self._tab_controller_index = 8
-        self._tab_rig_bridge_index = 9
-        self._tab_com0com_index = 10
-        self._tab_shortcuts_index = 11
-        self._tab_weather_index = 12
-        self._tab_network_index = 13
+        self._tab_map_webserver_index = 7
+        self._tab_statistics_index = 8
+        self._tab_controller_index = 9
+        self._tab_rig_bridge_index = 10
+        self._tab_com0com_index = 11
+        self._tab_shortcuts_index = 12
+        self._tab_weather_index = 13
+        self._tab_network_index = 14
         self._calvalid_timer = QTimer(self)
         self._calvalid_timer.setInterval(5000)
         self._calvalid_timer.timeout.connect(self._poll_getcalvalid_once)
@@ -1606,6 +1716,7 @@ class SettingsWindow(QDialog):
             t("settings.tab_external_programs"),
             t("settings.tab_antenna"),
             t("settings.tab_compass"),
+            t("settings.tab_map_webserver"),
             t("settings.tab_statistics"),
             t("settings.tab_controller"),
             "Rig-Bridge",
@@ -1681,6 +1792,14 @@ class SettingsWindow(QDialog):
 
         self.btn_com_refresh.clicked.connect(self._refresh_com_ports)
         self._refresh_com_ports(select=cfg["hardware_link"].get("com_port", ""))
+        try:
+            self._refresh_com_ports_into(
+                self.cb_cont_usb_com,
+                select=str((cfg.get("controller_link") or {}).get("com_port", "") or ""),
+            )
+        except Exception:
+            pass
+        self._apply_controller_usb_remote_ui()
 
         self.lbl_status = QLabel("")
         self.lbl_status.setStyleSheet("color: gray; font-style: italic;")
@@ -1730,6 +1849,8 @@ class SettingsWindow(QDialog):
         self._connect_settings_nav_os_theme_signals()
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(True)
+        if hasattr(self.ctrl, "request_immediate_stats"):
+            self.ctrl.request_immediate_stats()
         self._antenna_giveup_done = False
         self._update_antenna_visibility()
         self._shortcuts_tab.refresh_el_visibility()
@@ -1762,15 +1883,11 @@ class SettingsWindow(QDialog):
         self._update_strom_cal_buttons_enabled()
         if self._settings_nav.currentRow() == getattr(self, "_tab_statistics_index", -1):
             self._start_calvalid_timer()
-            if hasattr(self.ctrl, "set_settings_strom_tab_open"):
-                self.ctrl.set_settings_strom_tab_open(True)
-            if hasattr(self.ctrl, "request_immediate_cal_data"):
-                QTimer.singleShot(0, self.ctrl.request_immediate_cal_data)
         # Snapshots: nur geänderte Werte gehen auf den Bus (SETANTOFF / SETCON* …)
         self._capture_antenna_snapshots_from_ui()
         # Vergleichsbasis für SETCON* beim Speichern (sonst snap=None → kein Schreiben)
         self._snapshot_controller = self._controller_snapshot_from_ui()
-        # Wind-Baseline nur aus Bus (siehe _sync_weather_wind_enable_from_ctrl); nicht aus UI überschreiben
+        self._snapshot_wind_enable = bool(self._weather_tab.wind_enable_wanted())
         QTimer.singleShot(0, self._load_park_home_from_bus)
         QTimer.singleShot(0, self._load_strom_limits_from_bus)
         # Antennennamen vom Rotor (GETANTNAME1–3 am AZ-Slave, nicht Display-Controller)
@@ -1828,8 +1945,6 @@ class SettingsWindow(QDialog):
             pass
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(False)
-        if hasattr(self.ctrl, "set_settings_strom_tab_open"):
-            self.ctrl.set_settings_strom_tab_open(False)
         super().hideEvent(event)
 
     def changeEvent(self, event: QEvent) -> None:
@@ -1849,8 +1964,6 @@ class SettingsWindow(QDialog):
             self._stop_calvalid_timer()
             if hasattr(self.ctrl, "set_settings_window_open"):
                 self.ctrl.set_settings_window_open(False)
-            if hasattr(self.ctrl, "set_settings_strom_tab_open"):
-                self.ctrl.set_settings_strom_tab_open(False)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._disconnect_settings_nav_os_theme_signals()
@@ -1862,8 +1975,6 @@ class SettingsWindow(QDialog):
         self._stop_calvalid_timer()
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(False)
-        if hasattr(self.ctrl, "set_settings_strom_tab_open"):
-            self.ctrl.set_settings_strom_tab_open(False)
         super().closeEvent(event)
 
     def _on_antenna_giveup(self) -> None:
@@ -2037,14 +2148,13 @@ class SettingsWindow(QDialog):
             setattr(self, dl_attr, min(dl, now + 15.0) if dl > now else 0.0)
         setattr(self, prev_attr, st)
         if want_poll:
-            # Prio 5: unter Fahrt-GETPOSDG (0), Fortschritt trotzdem aktuell halten
             try:
                 self.ctrl.send_ui_command(
                     int(dst),
                     "GETCALSTATE",
                     "0",
                     expect_prefix=None,
-                    priority=5,
+                    priority=0,
                     apply_local_state=False,
                 )
             except Exception:
@@ -2090,16 +2200,6 @@ class SettingsWindow(QDialog):
         """GETCALVALID je Achse nur wenn AZ/EL unter Verbindung aktiv."""
         if not self.isVisible() or not self._calvalid_tab_active():
             return
-        # Während Fahrt kein Sync-GET (Deadman / Positions-Poll hat Vorrang)
-        try:
-            if bool(
-                self.ctrl._motion_poll_restrict_active(
-                    time.time(), float(self.ctrl._cfg_poll.get("pos_fast", 200)) / 1000.0
-                )
-            ):
-                return
-        except Exception:
-            pass
         sync = getattr(self.ctrl, "sync_ui_command_response", None)
         if sync is None:
             return
@@ -2271,65 +2371,46 @@ class SettingsWindow(QDialog):
 
     def _on_apply_cal_heatmap_az(self) -> None:
         """CAL-Bins (AZ): Min/Max in Normfelder übernehmen, Schwellen mit Rand."""
-        self._apply_cal_heatmap("az")
-
-    def _on_apply_cal_heatmap_el(self) -> None:
-        """CAL-Bins (EL): Min/Max übernehmen."""
-        self._apply_cal_heatmap("el")
-
-    def _apply_cal_heatmap(self, which: str, *, _retry: int = 0) -> None:
-        """Werte aus Kalibrierung übernehmen; fehlende CAL-Bins einmal vom Bus nachladen."""
-        axis = self.ctrl.az if which == "az" else getattr(self.ctrl, "el", None)
-        if axis is None or getattr(axis, "cal_state", 0) != 2:
-            if _retry == 0 and hasattr(self.ctrl, "request_immediate_cal_data"):
-                try:
-                    self.ctrl.request_immediate_cal_data()
-                except Exception:
-                    pass
-                self.lbl_status.setText(t("settings.stats_cal_loading"))
-                QTimer.singleShot(600, lambda: self._apply_cal_heatmap(which, _retry=1))
-                return
+        az = self.ctrl.az
+        if getattr(az, "cal_state", 0) != 2:
             self.lbl_status.setText(t("settings.stats_cal_no_data"))
             return
         mn, mx = compute_bin_min_max(
-            getattr(axis, "cal_bins_cw", None),
-            getattr(axis, "cal_bins_ccw", None),
-            which == "el",
+            getattr(az, "cal_bins_cw", None),
+            getattr(az, "cal_bins_ccw", None),
+            False,
         )
         if mn is None or mx is None:
-            if _retry < 8:
-                # CAL-Bins nachladen und erneut versuchen
-                try:
-                    if which == "az" and hasattr(self.ctrl, "_fetch_cal_bins"):
-                        if not bool(getattr(self.ctrl, "_cal_bins_inflight_az", False)):
-                            self.ctrl._fetch_cal_bins(
-                                int(self.sp_slave_az.value()), self.ctrl.az, "AZ", priority=5
-                            )
-                    elif which == "el" and hasattr(self.ctrl, "_fetch_cal_bins_el"):
-                        if not bool(getattr(self.ctrl, "_cal_bins_inflight_el", False)):
-                            self.ctrl._fetch_cal_bins_el(
-                                int(self.sp_slave_el.value()), self.ctrl.el, "EL", priority=5
-                            )
-                except Exception:
-                    pass
-                self.lbl_status.setText(t("settings.stats_cal_loading"))
-                QTimer.singleShot(700, lambda: self._apply_cal_heatmap(which, _retry=_retry + 1))
-                return
             self.lbl_status.setText(t("settings.stats_cal_no_data"))
             return
         margin = 50
-        if which == "az":
-            self.sp_norm_min_az.setValue(int(mn))
-            self.sp_norm_max_az.setValue(int(mx))
-            self.sp_thr_blue_az.setValue(max(0, int(mn) - margin))
-            self.sp_thr_red_az.setValue(min(65535, int(mx) + margin))
-            self.chk_heatmap_custom_az.setChecked(True)
-        else:
-            self.sp_norm_min_el.setValue(int(mn))
-            self.sp_norm_max_el.setValue(int(mx))
-            self.sp_thr_blue_el.setValue(max(0, int(mn) - margin))
-            self.sp_thr_red_el.setValue(min(65535, int(mx) + margin))
-            self.chk_heatmap_custom_el.setChecked(True)
+        self.sp_norm_min_az.setValue(int(mn))
+        self.sp_norm_max_az.setValue(int(mx))
+        self.sp_thr_blue_az.setValue(max(0, int(mn) - margin))
+        self.sp_thr_red_az.setValue(min(65535, int(mx) + margin))
+        self.chk_heatmap_custom_az.setChecked(True)
+        self.lbl_status.setText(t("settings.stats_apply_ok"))
+
+    def _on_apply_cal_heatmap_el(self) -> None:
+        """CAL-Bins (EL): Min/Max übernehmen."""
+        el = getattr(self.ctrl, "el", None)
+        if el is None or getattr(el, "cal_state", 0) != 2:
+            self.lbl_status.setText(t("settings.stats_cal_no_data"))
+            return
+        mn, mx = compute_bin_min_max(
+            getattr(el, "cal_bins_cw", None),
+            getattr(el, "cal_bins_ccw", None),
+            True,
+        )
+        if mn is None or mx is None:
+            self.lbl_status.setText(t("settings.stats_cal_no_data"))
+            return
+        margin = 50
+        self.sp_norm_min_el.setValue(int(mn))
+        self.sp_norm_max_el.setValue(int(mx))
+        self.sp_thr_blue_el.setValue(max(0, int(mn) - margin))
+        self.sp_thr_red_el.setValue(min(65535, int(mx) + margin))
+        self.chk_heatmap_custom_el.setChecked(True)
         self.lbl_status.setText(t("settings.stats_apply_ok"))
 
     def _heatmap_scale_valid(self) -> bool:
@@ -2979,14 +3060,8 @@ class SettingsWindow(QDialog):
         if row == getattr(self, "_tab_statistics_index", -1):
             self._start_calvalid_timer()
             QTimer.singleShot(0, self._load_strom_limits_from_bus)
-            if hasattr(self.ctrl, "set_settings_strom_tab_open"):
-                self.ctrl.set_settings_strom_tab_open(True)
-            if hasattr(self.ctrl, "request_immediate_cal_data"):
-                QTimer.singleShot(0, self.ctrl.request_immediate_cal_data)
         else:
             self._stop_calvalid_timer()
-            if hasattr(self.ctrl, "set_settings_strom_tab_open"):
-                self.ctrl.set_settings_strom_tab_open(False)
         if row == getattr(self, "_tab_antenna_index", -1):
             QTimer.singleShot(0, self._load_rotor_antenna_names_from_bus)
         if row == getattr(self, "_tab_controller_index", -1):
@@ -3449,14 +3524,6 @@ class SettingsWindow(QDialog):
         self._update_antenna_offset_enabled()
         self.update_encoder_dependent_ui()
         self._update_weather_tab_visibility()
-        # Wind-Baseline nachziehen, sobald GETWINDENABLE bekannt wird
-        if getattr(self, "_snapshot_wind_enable", None) is None and bool(
-            getattr(self.ctrl, "wind_enabled_known", False)
-        ):
-            try:
-                self._sync_weather_wind_enable_from_ctrl()
-            except Exception:
-                pass
 
     def _wind_sensor_available_for_ui(self) -> bool:
         """True wenn Wind-Anzeige/Sensor aktiv (gleiche Logik wie Hauptfenster-Wetterbutton)."""
@@ -3497,16 +3564,12 @@ class SettingsWindow(QDialog):
             pass
 
     def _sync_weather_wind_enable_from_ctrl(self) -> None:
-        """Checkbox an GETWINDENABLE angleichen; ohne bekannte Baseline kein Snapshot."""
+        """Checkbox an GETWINDENABLE angleichen; sonst Default aus."""
         tab = getattr(self, "_weather_tab", None)
         if tab is None or not hasattr(tab, "set_wind_enable_checked"):
             return
         wind_known = bool(getattr(self.ctrl, "wind_enabled_known", False))
-        if not wind_known:
-            tab.set_wind_enable_checked(False)
-            self._snapshot_wind_enable = None
-            return
-        checked = bool(getattr(self.ctrl, "wind_enabled", False))
+        checked = bool(getattr(self.ctrl, "wind_enabled", False)) if wind_known else False
         tab.set_wind_enable_checked(checked)
         self._snapshot_wind_enable = bool(tab.wind_enable_wanted())
 
@@ -3523,8 +3586,7 @@ class SettingsWindow(QDialog):
             return True
         want = bool(tab.wind_enable_wanted())
         snap = getattr(self, "_snapshot_wind_enable", None)
-        # Keine Baseline (noch nicht vom Bus) oder unverändert → kein Write
-        if snap is None or bool(snap) == want:
+        if snap is not None and bool(snap) == want:
             return True
         try:
             dst = int(self.sp_slave_az.value())
@@ -3586,6 +3648,7 @@ class SettingsWindow(QDialog):
         self._tick_pst_tcp_status()
         self._tick_udp_pst_status()
         self._tick_rotctld_status()
+        self._tick_map_webserver_status()
 
     def _sync_rotctld_cfg_from_ui(self) -> None:
         """Hamlib-rotctld-Gruppe → ``cfg['rotctld_server']``."""
@@ -3641,6 +3704,97 @@ class SettingsWindow(QDialog):
             port = 4533
         self._lbl_rotctld_bind.setText(
             t("settings.rotctld_bind_detail", host=host, port=port)
+        )
+
+    def _sync_map_webserver_cfg_from_ui(self) -> None:
+        """Karten-Webserver-Gruppe → ``cfg['map_webserver']``."""
+        mws = self.cfg.setdefault("map_webserver", {})
+        mws["enabled"] = bool(self.chk_map_webserver_enabled.isChecked())
+        mws["listen_host"] = self.ed_map_webserver_host.text().strip() or "0.0.0.0"
+        mws["listen_port"] = int(self.sp_map_webserver_port.value())
+        mws["password"] = self.ed_map_webserver_password.text()
+
+    def _apply_map_webserver_live(self, *, show_error: bool = True) -> None:
+        """Karten-Webserver anhand der aktuellen Config starten/neu binden/stoppen."""
+        srv = getattr(self, "_map_webserver", None)
+        if srv is None:
+            return
+        mws = self.cfg.get("map_webserver", {}) or {}
+        try:
+            if hasattr(srv, "set_password"):
+                srv.set_password(str(mws.get("password", "") or ""))
+        except Exception:
+            pass
+        try:
+            if bool(mws.get("enabled")):
+                ok, err = srv.restart(
+                    str(mws.get("listen_host", "0.0.0.0")),
+                    int(mws.get("listen_port", 80)),
+                )
+                if not ok:
+                    # Checkbox/Config zurücksetzen, damit UI und Realität übereinstimmen
+                    mws["enabled"] = False
+                    try:
+                        self.chk_map_webserver_enabled.blockSignals(True)
+                        self.chk_map_webserver_enabled.setChecked(False)
+                    finally:
+                        self.chk_map_webserver_enabled.blockSignals(False)
+                    try:
+                        self.save_cfg_cb(self.cfg)
+                    except Exception:
+                        pass
+                    if show_error:
+                        host = str(mws.get("listen_host", "0.0.0.0"))
+                        try:
+                            port = int(mws.get("listen_port", 80))
+                        except Exception:
+                            port = 80
+                        QMessageBox.warning(
+                            self,
+                            t("settings.tab_map_webserver"),
+                            t(
+                                "settings.map_webserver_port_busy",
+                                host=host,
+                                port=port,
+                                detail=str(err or ""),
+                            ),
+                        )
+            else:
+                srv.stop()
+        except Exception as exc:
+            self.logbuf.write("WARN", f"map_webserver live: {exc}")
+
+    def _on_map_webserver_toggled(self, _state: object = None) -> None:
+        """Webserver-Checkbox: sofort speichern und Dienst anwenden."""
+        self._sync_map_webserver_cfg_from_ui()
+        try:
+            self.save_cfg_cb(self.cfg)
+        except Exception as exc:
+            self.logbuf.write(
+                "WARN", f"map_webserver live: Config speichern fehlgeschlagen: {exc}"
+            )
+        self._apply_map_webserver_live(show_error=True)
+        self._tick_map_webserver_status()
+
+    def _tick_map_webserver_status(self) -> None:
+        """Status-LED und Bind-/URL-Text für den Karten-Webserver."""
+        srv = getattr(self, "_map_webserver", None)
+        try:
+            on = bool(getattr(srv, "running", False)) if srv is not None else False
+        except Exception:
+            on = False
+        self._led_map_webserver_running.set_state(on)
+        host = (self.ed_map_webserver_host.text() or "").strip() or "0.0.0.0"
+        try:
+            port = int(self.sp_map_webserver_port.value())
+        except Exception:
+            port = 80
+        self._lbl_map_webserver_bind.setText(
+            t("settings.map_webserver_bind_detail", host=host, port=port)
+        )
+        url_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+        self._lbl_map_webserver_url.setText(
+            t("settings.map_webserver_url_hint", host=url_host, port=port)
         )
 
     def _sync_udp_pst_cfg_from_ui(self) -> None:
@@ -3921,7 +4075,11 @@ class SettingsWindow(QDialog):
         self.ed_location_lon.setValue(ll[1])
 
     def _refresh_com_ports(self, select: str = ""):
-        """Befuellt die COM-Port-Auswahl der Busverbindung.
+        """Befuellt die COM-Port-Auswahl der Busverbindung."""
+        self._refresh_com_ports_into(self.cb_hw_com, select=select)
+
+    def _refresh_com_ports_into(self, combo: QComboBox, select: str = ""):
+        """Befuellt eine COM-Port-ComboBox.
 
         Im Dropdown erscheint ``COMn — <Geraetebeschreibung>`` (soweit die
         Beschreibung vom Windows-Geraetemanager bekannt ist). Der reine
@@ -3931,14 +4089,14 @@ class SettingsWindow(QDialog):
         entries = list_serial_port_entries()
         current = (
             select
-            or str(self.cb_hw_com.currentData() or "").strip()
-            or self.cb_hw_com.currentText().strip()
+            or str(combo.currentData() or "").strip()
+            or combo.currentText().strip()
         )
-        self.cb_hw_com.clear()
+        combo.clear()
 
         if not entries:
             if current:
-                self.cb_hw_com.addItem(current, current)
+                combo.addItem(current, current)
             return
 
         _MAX_LABEL = 50
@@ -3946,25 +4104,25 @@ class SettingsWindow(QDialog):
             label = f"{dev} — {desc}" if desc else dev
             if len(label) > _MAX_LABEL:
                 label = label[: _MAX_LABEL - 1].rstrip() + "…"
-            self.cb_hw_com.addItem(label, dev)
-            idx = self.cb_hw_com.count() - 1
+            combo.addItem(label, dev)
+            idx = combo.count() - 1
             if desc:
-                self.cb_hw_com.setItemData(
+                combo.setItemData(
                     idx, f"{dev} — {desc}", Qt.ItemDataRole.ToolTipRole
                 )
 
         if current:
-            idx = self.cb_hw_com.findData(current)
+            idx = combo.findData(current)
             if idx < 0:
-                idx = self.cb_hw_com.findText(current)
+                idx = combo.findText(current)
             if idx >= 0:
-                self.cb_hw_com.setCurrentIndex(idx)
+                combo.setCurrentIndex(idx)
             else:
                 # Alter Port (aktuell nicht angeschlossen) trotzdem beibehalten,
                 # sonst verliert der Nutzer die Config-Zuordnung nach einem
                 # Refresh ohne angestecktes Geraet.
-                self.cb_hw_com.addItem(current, current)
-                self.cb_hw_com.setCurrentIndex(self.cb_hw_com.count() - 1)
+                combo.addItem(current, current)
+                combo.setCurrentIndex(combo.count() - 1)
 
     def _apply_ids_live(self):
         self.ctrl.update_ids(
@@ -4036,7 +4194,7 @@ class SettingsWindow(QDialog):
         self._update_el_rotor_type_combo_enabled()
 
     def _on_el_rotor_type_combo_changed(self, _index: int = 0) -> None:
-        """Dropdown: GUI sofort umstellen; SETROTORTYPE nur bei echter Änderung."""
+        """Dropdown: GUI sofort umstellen und SETROTORTYPE an EL-Slave senden."""
         if not self.chk_enable_el.isChecked():
             return
         typ = self._el_rotor_type_from_ui()
@@ -4044,13 +4202,6 @@ class SettingsWindow(QDialog):
             self.cfg.setdefault("rotor_bus", {})["el_rotor_type"] = int(typ)
         except Exception:
             pass
-        # Vor lokalem Apply prüfen — sonst wäre der Diff immer „gleich“.
-        already_same = False
-        if bool(getattr(self.ctrl, "el_rotor_type_known", False)):
-            try:
-                already_same = int(getattr(self.ctrl, "el_rotor_type", -1) or -1) == int(typ)
-            except Exception:
-                already_same = False
         if hasattr(self.ctrl, "apply_el_rotor_type_from_value"):
             try:
                 self.ctrl.apply_el_rotor_type_from_value(
@@ -4060,8 +4211,6 @@ class SettingsWindow(QDialog):
                 )
             except Exception:
                 pass
-        if already_same:
-            return
         try:
             dst = int(self.sp_slave_el.value())
         except Exception:
@@ -4124,6 +4273,7 @@ class SettingsWindow(QDialog):
         )
 
         self._sync_rotctld_cfg_from_ui()
+        self._sync_map_webserver_cfg_from_ui()
 
         self.cfg["rotor_bus"]["master_id"] = int(self.sp_master.value())
         self.cfg["rotor_bus"]["slave_az"] = int(self.sp_slave_az.value())
@@ -4289,6 +4439,7 @@ class SettingsWindow(QDialog):
 
         chw = self.cfg.setdefault("controller_hw", {})
         chw["enabled"] = bool(self.chk_hw_controller_enabled.isChecked())
+        chw["usb_remote"] = bool(self.chk_cont_usb_remote.isChecked())
         chw["cont_id"] = int(self.sp_controller_id.value())
         chw["cont_id_configured"] = True
         chw["ant_name_1"] = self._antenna_display_name(0)
@@ -4304,6 +4455,43 @@ class SettingsWindow(QDialog):
         chw["antenna_realign_on_switch"] = bool(self.chk_cont_antenna_realign.isChecked())
         chw["az_rotor_id"] = int(self.sp_cont_az_rotor_id.value())
         chw["el_rotor_id"] = int(self.sp_cont_el_rotor_id.value())
+        # Remote USB: Controller spricht denselben Rotor wie die Software — IDs angleichen,
+        # sonst GETPOSDG an falsche Slave-ID → Initialisiere/Timeout ohne Position.
+        if bool(self.chk_cont_usb_remote.isChecked()):
+            try:
+                az = int(self.sp_slave_az.value()) if self.chk_enable_az.isChecked() else 0
+            except Exception:
+                az = int(chw["az_rotor_id"])
+            try:
+                el = int(self.sp_slave_el.value()) if self.chk_enable_el.isChecked() else 0
+            except Exception:
+                el = int(chw["el_rotor_id"])
+            if int(chw["az_rotor_id"]) != az:
+                chw["az_rotor_id"] = az
+                self.sp_cont_az_rotor_id.blockSignals(True)
+                try:
+                    self.sp_cont_az_rotor_id.setValue(az)
+                finally:
+                    self.sp_cont_az_rotor_id.blockSignals(False)
+            if int(chw["el_rotor_id"]) != el:
+                chw["el_rotor_id"] = el
+                self.sp_cont_el_rotor_id.blockSignals(True)
+                try:
+                    self.sp_cont_el_rotor_id.setValue(el)
+                finally:
+                    self.sp_cont_el_rotor_id.blockSignals(False)
+        cl = self.cfg.setdefault("controller_link", {})
+        if not isinstance(cl, dict):
+            cl = {}
+            self.cfg["controller_link"] = cl
+        cl["mode"] = "com"
+        cl["com_port"] = str(
+            self.cb_cont_usb_com.currentData() or self.cb_cont_usb_com.currentText() or ""
+        ).strip()
+        cl["baudrate"] = int(self.sp_cont_usb_baud.value())
+        cl.setdefault("tcp_ip", "")
+        cl.setdefault("tcp_port", 8886)
+        cl.setdefault("udp_bind_port", 0)
 
         # AZ-Versatz, Öffnungswinkel, Dipol, Reichweite und Namen in den Rotor schreiben
         # (SETANTOFF1–3, SETANGLE1–3, SETANTDP1–3, SETANTDIS1–3, SETANTNAME1–3).
@@ -4389,8 +4577,8 @@ class SettingsWindow(QDialog):
                     for slot in (1, 2, 3):
                         new_name = self._antenna_display_name(slot - 1)
                         old_name = snapshot_antname[slot - 1]
-                        # Keine Baseline oder unverändert → kein NVS-Write
-                        if old_name is None or str(old_name) == str(new_name):
+                        # None = noch nie vom Rotor gelesen → trotzdem schreiben, wenn Wert gesetzt
+                        if old_name is not None and str(old_name) == str(new_name):
                             continue
                         wrote_antenna_hw = True
                         self.lbl_status.setText(t("settings.status_antname_saving", slot=slot))
@@ -4466,6 +4654,7 @@ class SettingsWindow(QDialog):
             int(self.cfg["pst_server"]["listen_port_el"]),
         )
         self._apply_rotctld_server_live()
+        self._apply_map_webserver_live(show_error=True)
 
         if lang_changed:
             load_lang(new_lang)
@@ -4600,6 +4789,126 @@ class SettingsWindow(QDialog):
         # Sofort in cfg, damit Backup/Restore ohne „Übernehmen“ den Haken respektiert.
         self.cfg.setdefault("controller_hw", {})["enabled"] = bool(checked)
         self._apply_controller_enabled_ui()
+        self._apply_controller_usb_remote_ui()
+
+    def _sync_controller_link_cfg_from_ui(self) -> None:
+        cl = self.cfg.setdefault("controller_link", {})
+        if not isinstance(cl, dict):
+            cl = {}
+            self.cfg["controller_link"] = cl
+        cl["mode"] = "com"
+        cl["com_port"] = str(
+            self.cb_cont_usb_com.currentData() or self.cb_cont_usb_com.currentText() or ""
+        ).strip()
+        cl["baudrate"] = int(self.sp_cont_usb_baud.value())
+
+    def _mark_controller_remote_in_snapshot(self, want_remote: bool) -> None:
+        """Nach Mode-Switch: Snapshot-Remote-Bit anpassen, damit Speichern nicht nochmal umschaltet."""
+        snap = getattr(self, "_snapshot_controller", None)
+        if snap is None:
+            return
+        cur = list(snap)
+        while len(cur) < 15:
+            cur.append(0)
+        cur[14] = 1 if want_remote else 0
+        self._snapshot_controller = tuple(cur)
+
+    def _on_cont_usb_remote_toggled(self, checked: bool) -> None:
+        if getattr(self, "_controller_suppress_dirty", False):
+            return
+        if getattr(self, "_controller_mode_switch_busy", False):
+            return
+        self.cfg.setdefault("controller_hw", {})["usb_remote"] = bool(checked)
+        self._apply_controller_usb_remote_ui()
+        proxy = getattr(self, "_controller_remote_proxy", None)
+        if proxy is None:
+            return
+        try:
+            self._sync_controller_link_cfg_from_ui()
+            import threading
+
+            from PySide6.QtCore import QTimer
+
+            cfg_snap = dict(self.cfg)
+            want = bool(checked)
+            self._controller_mode_switch_busy = True
+            try:
+                self.chk_cont_usb_remote.setEnabled(False)
+            except Exception:
+                pass
+            try:
+                self.lbl_status.setText(
+                    t("settings.controller_status_remote_usb_on")
+                    if want
+                    else t("settings.controller_status_reading")
+                )
+                self._set_controller_wait_visible(True)
+            except Exception:
+                pass
+
+            def _switch() -> None:
+                ok = False
+                try:
+                    proxy.update_cfg(cfg_snap)
+                    ok = bool(proxy.apply_mode(want, timeout_s=8.0))
+                except Exception:
+                    ok = False
+
+                def _after() -> None:
+                    self._controller_mode_switch_busy = False
+                    try:
+                        self.chk_cont_usb_remote.setEnabled(self._controller_hw_enabled())
+                    except Exception:
+                        pass
+                    try:
+                        self._set_controller_wait_visible(False)
+                    except Exception:
+                        pass
+                    if ok:
+                        try:
+                            self._mark_controller_remote_in_snapshot(want)
+                        except Exception:
+                            pass
+                        try:
+                            self._load_controller_from_bus()
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            self.lbl_status.setText(
+                                t("settings.controller_status_usb_offline")
+                                if want
+                                else t("settings.controller_status_write_fail")
+                            )
+                            self._set_controller_led_ok(False)
+                        except Exception:
+                            pass
+
+                try:
+                    QTimer.singleShot(0, self, _after)
+                except Exception:
+                    try:
+                        _after()
+                    except Exception:
+                        pass
+
+            threading.Thread(
+                target=_switch,
+                name="remote-usb-mode",
+                daemon=True,
+            ).start()
+        except Exception:
+            self._controller_mode_switch_busy = False
+
+    def _apply_controller_usb_remote_ui(self) -> None:
+        on = self._controller_hw_enabled() and bool(
+            getattr(self, "chk_cont_usb_remote", None)
+            and self.chk_cont_usb_remote.isChecked()
+        )
+        if hasattr(self, "chk_cont_usb_remote"):
+            self.chk_cont_usb_remote.setEnabled(self._controller_hw_enabled())
+        if hasattr(self, "_row_cont_usb_port"):
+            self._row_cont_usb_port.setEnabled(on)
 
     def _apply_controller_enabled_ui(self) -> None:
         """Gruppe „Hardware-Controller“ ein-/ausgrauen; Checkbox bleibt bedienbar."""
@@ -4608,6 +4917,20 @@ class SettingsWindow(QDialog):
         self.gb_controller.setEnabled(self._controller_hw_enabled())
         self._update_antenna_offset_enabled()
         self.update_encoder_dependent_ui()
+        self._apply_controller_usb_remote_ui()
+
+    def _controller_link_connected(self) -> bool:
+        """True wenn der Link für Controller-GET/SET steht (USB oder Rotor-Bus)."""
+        if bool(getattr(self, "chk_cont_usb_remote", None) and self.chk_cont_usb_remote.isChecked()):
+            hw = getattr(self, "ctrl_hw", None) or getattr(self.ctrl, "ctrl_hw", None)
+            try:
+                return bool(hw is not None and hw.is_connected())
+            except Exception:
+                return False
+        try:
+            return bool(self.hw.is_connected())
+        except Exception:
+            return False
 
     def _update_wind_dir_display_row_visibility(self) -> None:
         """Wind-Richtung (UI): nur sinnvoll mit Windmesser (Controller)."""
@@ -4652,19 +4975,16 @@ class SettingsWindow(QDialog):
         self._update_conled_brightness_label()
 
     def _on_conled_brightness_released(self) -> None:
-        """SETCONLEDP beim Loslassen nur bei echter Änderung; Snapshot → kein Doppel-Write beim Speichern."""
+        """SETCONLEDP beim Loslassen (nur bei echter Änderung durch Ziehen); Snapshot → kein Doppel-Write beim Speichern."""
         self._update_conled_brightness_label()
         if not self._controller_hw_enabled():
             return
-        if not self.hw.is_connected():
+        if not self._controller_link_connected():
             return
         if not hasattr(self.ctrl, "sync_ui_command_response"):
             return
-        val = int(self.sl_cont_display_brightness.value())
-        snap = getattr(self, "_snapshot_controller", None)
-        if snap is not None and len(snap) > 5 and int(snap[5]) == val:
-            return
         dst = self._controller_bus_dst()
+        val = int(self.sl_cont_display_brightness.value())
         r = self.ctrl.sync_ui_command_response(
             dst, "SETCONLEDP", str(val), "ACK_SETCONLEDP"
         )
@@ -4675,7 +4995,7 @@ class SettingsWindow(QDialog):
 
     def _controller_snapshot_from_ui(
         self,
-    ) -> tuple[int, int, int, int, int, int, int, int, int, int, int, int, int, int]:
+    ) -> tuple:
         return (
             int(self.sp_controller_id.value()),
             int(self.sp_cont_pwm_slow.value()),
@@ -4691,6 +5011,7 @@ class SettingsWindow(QDialog):
             1 if self.chk_az_dipole_3.isChecked() else 0,
             int(self.sp_cont_az_rotor_id.value()),
             int(self.sp_cont_el_rotor_id.value()),
+            1 if self.chk_cont_usb_remote.isChecked() else 0,
         )
 
     def _apply_controller_from_cfg_only(self) -> None:
@@ -4747,6 +5068,33 @@ class SettingsWindow(QDialog):
                 )
             except (TypeError, ValueError):
                 self.sp_cont_el_rotor_id.setValue(0)
+            self.chk_cont_usb_remote.blockSignals(True)
+            try:
+                self.chk_cont_usb_remote.setChecked(bool(ch.get("usb_remote", False)))
+            finally:
+                self.chk_cont_usb_remote.blockSignals(False)
+            cl = self.cfg.get("controller_link") if isinstance(self.cfg.get("controller_link"), dict) else {}
+            try:
+                self.sp_cont_usb_baud.setValue(int(cl.get("baudrate", 115200)))
+            except (TypeError, ValueError):
+                self.sp_cont_usb_baud.setValue(115200)
+            try:
+                self._refresh_com_ports_into(
+                    self.cb_cont_usb_com, select=str(cl.get("com_port", "") or "")
+                )
+            except Exception:
+                pass
+            self._apply_controller_usb_remote_ui()
+            # cfg hat Vorrang — Proxy an Config halten (nicht an falsch gelesenen Bus)
+            try:
+                self.cfg.setdefault("controller_hw", {})["usb_remote"] = bool(
+                    self.chk_cont_usb_remote.isChecked()
+                )
+                proxy = getattr(self, "_controller_remote_proxy", None)
+                if proxy is not None:
+                    proxy.update_cfg(self.cfg)
+            except Exception:
+                pass
             ui_dips = list((self.cfg.get("ui") or {}).get("antenna_dipoles_az", [False, False, False]))
             while len(ui_dips) < 3:
                 ui_dips.append(False)
@@ -4945,8 +5293,37 @@ class SettingsWindow(QDialog):
         if not hasattr(self.ctrl, "sync_ui_command_response"):
             self._apply_controller_from_cfg_only()
             return
-        if not self.hw.is_connected():
+        if getattr(self, "_controller_mode_switch_busy", False):
+            # Mode-Switch läuft — danach kommt ohnehin ein Load.
+            return
+        want_remote = bool(self.chk_cont_usb_remote.isChecked())
+        proxy = getattr(self, "_controller_remote_proxy", None)
+        # Routing setzen — Mode-Switch macht apply_mode, Load darf nicht nochmal umschalten.
+        try:
+            if want_remote:
+                if proxy is not None and not bool(proxy.is_active()):
+                    # Noch nicht im Remote-Mode (z. B. Start): einmalig anstoßen.
+                    proxy.update_cfg(self.cfg)
+                    if not bool(proxy.apply_mode(True, timeout_s=6.0)):
+                        self._apply_controller_from_cfg_only()
+                        try:
+                            self.lbl_status.setText(t("settings.controller_status_usb_offline"))
+                        except Exception:
+                            pass
+                        return
+                else:
+                    self.ctrl.set_controller_link(self.ctrl_hw, True)
+            else:
+                self.ctrl.set_controller_link(self.ctrl_hw, False)
+        except Exception:
+            pass
+        if not self._controller_link_connected():
             self._apply_controller_from_cfg_only()
+            if want_remote:
+                try:
+                    self.lbl_status.setText(t("settings.controller_status_usb_offline"))
+                except Exception:
+                    pass
             return
         if not self._controller_bus_read_enabled():
             self._apply_controller_from_cfg_only()
@@ -4957,10 +5334,12 @@ class SettingsWindow(QDialog):
         self._set_controller_wait_visible(True)
         QApplication.processEvents()
         c = self.ctrl
+        # Kurze Timeouts: bei Ausfall nicht 5 s × 12 GETs warten.
+        _to = 1.2
         self._controller_suppress_dirty = True
         try:
             acks: list[bool] = []
-            p = c.sync_ui_command_response(dst, "GETCONTID", "0", "ACK_GETCONTID")
+            p = c.sync_ui_command_response(dst, "GETCONTID", "0", "ACK_GETCONTID", timeout_s=_to)
             acks.append(_sync_got_ack_value(p))
             if p is not None and _sync_got_ack_value(p):
                 v = self._parse_hw_int(p)
@@ -4971,11 +5350,11 @@ class SettingsWindow(QDialog):
             for sp, cmd, exp, lo, hi in (
                 (self.sp_cont_pwm_slow, "GETCONSPWM", "ACK_GETCONSPWM", 0, 100),
                 (self.sp_cont_pwm_fast, "GETCONFPWM", "ACK_GETCONFPWM", 0, 100),
-                (self.sp_cont_beep_freq, "GETCONFRQ", "ACK_GETCONFRQ", 100, 4000),
+                (self.sp_cont_beep_freq, "GETCONFRQ", "ACK_GETCONFRQ", 200, 4000),
                 (self.sp_cont_beep_vol, "GETLSL", "ACK_GETLSL", 0, 50),
                 (self.sl_cont_display_brightness, "GETCONLEDP", "ACK_GETCONLEDP", 0, 100),
             ):
-                rp = c.sync_ui_command_response(dst, cmd, "0", exp)
+                rp = c.sync_ui_command_response(dst, cmd, "0", exp, timeout_s=_to)
                 if cmd in ("GETCONFRQ", "GETLSL", "GETCONLEDP"):
                     if _sync_nak_notimpl(rp):
                         acks.append(True)
@@ -4994,7 +5373,9 @@ class SettingsWindow(QDialog):
             if self._rotor_has_abs_encoder_type3():
                 acks.append(True)
             else:
-                rp_ano = c.sync_ui_command_response(dst, "GETCONANO", "0", "ACK_GETCONANO")
+                rp_ano = c.sync_ui_command_response(
+                    dst, "GETCONANO", "0", "ACK_GETCONANO", timeout_s=_to
+                )
                 if _sync_nak_notimpl(rp_ano):
                     acks.append(True)
                 elif rp_ano is not None and str(rp_ano).startswith(SYNC_UI_NAK_PREFIX):
@@ -5007,7 +5388,9 @@ class SettingsWindow(QDialog):
                             w = self._parse_hw_int(str(rp_ano).split(";")[0].strip())
                         if w is not None:
                             self.chk_cont_wind_anemo.setChecked(bool(int(w)))
-            rp_del = c.sync_ui_command_response(dst, "GETCONDELTA", "0", "ACK_GETCONDELTA")
+            rp_del = c.sync_ui_command_response(
+                dst, "GETCONDELTA", "0", "ACK_GETCONDELTA", timeout_s=_to
+            )
             if _sync_nak_notimpl(rp_del):
                 acks.append(True)
             elif rp_del is not None and str(rp_del).startswith(SYNC_UI_NAK_PREFIX):
@@ -5024,7 +5407,9 @@ class SettingsWindow(QDialog):
                             self.cb_cont_encoder_delta.setCurrentIndex(0)
                         elif wi == 10:
                             self.cb_cont_encoder_delta.setCurrentIndex(1)
-            rp_cha = c.sync_ui_command_response(dst, "GETCONCHA", "0", "ACK_GETCONCHA")
+            rp_cha = c.sync_ui_command_response(
+                dst, "GETCONCHA", "0", "ACK_GETCONCHA", timeout_s=_to
+            )
             if _sync_nak_notimpl(rp_cha):
                 acks.append(True)
             elif rp_cha is not None and str(rp_cha).startswith(SYNC_UI_NAK_PREFIX):
@@ -5041,7 +5426,7 @@ class SettingsWindow(QDialog):
                 (self.sp_cont_az_rotor_id, "GETCONTAZID", "ACK_GETCONTAZID"),
                 (self.sp_cont_el_rotor_id, "GETCONTELID", "ACK_GETCONTELID"),
             ):
-                rp_id = c.sync_ui_command_response(dst, cmd, "0", exp)
+                rp_id = c.sync_ui_command_response(dst, cmd, "0", exp, timeout_s=_to)
                 if _sync_nak_notimpl(rp_id):
                     acks.append(True)
                     continue
@@ -5055,10 +5440,17 @@ class SettingsWindow(QDialog):
                         w = self._parse_hw_int(str(rp_id).split(";")[0].strip())
                     if w is not None:
                         sp.setValue(max(0, min(254, int(w))))
-            # LED: alle Kern-Abfragen mit ACK; Piep/LED-Ring + neue IDs: NAK NOTIMPL zählt als Bus-OK.
-            # Anzahl = 1 (GETCONTID) + 5 PWM/Beep/LED-Ring + GETCONANO + GETCONDELTA + GETCONCHA
-            # + GETCONTAZID + GETCONTELID
-            _n_ctrl_reads = 1 + 5 + 1 + 1 + 1 + 2
+            rp_rem = c.sync_ui_command_response(
+                dst, "GETCONREMOTE", "0", "ACK_GETCONREMOTE", timeout_s=_to
+            )
+            if _sync_nak_notimpl(rp_rem):
+                acks.append(True)
+            elif rp_rem is not None and str(rp_rem).startswith(SYNC_UI_NAK_PREFIX):
+                acks.append(False)
+            else:
+                # Checkbox bleibt Config-Quelle — Bus-Wert überschreibt den Haken nicht.
+                acks.append(_sync_got_ack_value(rp_rem))
+            _n_ctrl_reads = 1 + 5 + 1 + 1 + 1 + 2 + 1
             all_ok = len(acks) == _n_ctrl_reads and all(acks)
             self.lbl_status.setText(t("settings.controller_status_saved"))
             self._set_controller_led_ok(all_ok)
@@ -5075,6 +5467,9 @@ class SettingsWindow(QDialog):
         if not hasattr(self.ctrl, "sync_ui_command_response"):
             self._snapshot_controller = self._controller_snapshot_from_ui()
             return True
+        if getattr(self, "_controller_mode_switch_busy", False):
+            # Umschaltung läuft (Toggle) — Config ist schon gesetzt; kein paralleles Write.
+            return True
         snap = getattr(self, "_snapshot_controller", None)
         cur = self._controller_snapshot_from_ui()
         if snap is not None and len(snap) < len(cur):
@@ -5083,63 +5478,127 @@ class SettingsWindow(QDialog):
             snap = cur
         if snap == cur:
             return True
-        if not self.hw.is_connected():
-            self._snapshot_controller = cur
-            return True
+
+        want_remote = bool(cur[14]) if len(cur) > 14 else False
+        was_remote = bool(snap[14]) if len(snap) > 14 else False
+        proxy = getattr(self, "_controller_remote_proxy", None)
         c = self.ctrl
         all_ok = True
         dst = int(cur[0])
+        _to = 1.5
+
+        try:
+            self._sync_controller_link_cfg_from_ui()
+        except Exception:
+            pass
+        if proxy is not None:
+            try:
+                proxy.update_cfg(self.cfg)
+            except Exception:
+                pass
+
+        # 1) Mode einmalig sicherstellen (Toggle hat das meist schon erledigt).
+        proxy_active = bool(proxy.is_active()) if proxy is not None else False
+        if want_remote != proxy_active:
+            if proxy is None:
+                all_ok = False
+            else:
+                try:
+                    if not bool(proxy.apply_mode(want_remote, timeout_s=8.0)):
+                        all_ok = False
+                except Exception:
+                    all_ok = False
+            if not all_ok:
+                return False
+        elif want_remote:
+            try:
+                c.set_controller_link(self.ctrl_hw, True)
+            except Exception:
+                pass
+        else:
+            try:
+                c.set_controller_link(self.ctrl_hw, False)
+            except Exception:
+                pass
+
+        if not self._controller_link_connected():
+            # Offline: Config behalten, kein Write-Fail für reine Mode/UI-Änderungen.
+            self._snapshot_controller = cur
+            return True
+
+        # 2) Nur geänderte Werte schreiben — SETCONREMOTE nicht nochmal (apply_mode).
         if snap[0] != cur[0]:
-            # Ziel: bisherige Adresse (Adresswechsel), außer Snapshot war noch 0 (erstes Speichern):
-            # dann an die eingetragene neue ID senden (Gerät erwartet dort).
             id_dst = int(cur[0]) if int(snap[0]) == 0 else int(snap[0])
-            r = c.sync_ui_command_response(id_dst, "SETCONTID", str(int(cur[0])), "ACK_SETCONTID")
+            r = c.sync_ui_command_response(
+                id_dst, "SETCONTID", str(int(cur[0])), "ACK_SETCONTID", timeout_s=_to
+            )
             if not _sync_got_ack_value(r):
                 all_ok = False
         if snap[1] != cur[1]:
-            r = c.sync_ui_command_response(dst, "SETCONSPWM", str(int(cur[1])), "ACK_SETCONSPWM")
+            r = c.sync_ui_command_response(
+                dst, "SETCONSPWM", str(int(cur[1])), "ACK_SETCONSPWM", timeout_s=_to
+            )
             if not _sync_got_ack_value(r):
                 all_ok = False
         if snap[2] != cur[2]:
-            r = c.sync_ui_command_response(dst, "SETCONFPWM", str(int(cur[2])), "ACK_SETCONFPWM")
+            r = c.sync_ui_command_response(
+                dst, "SETCONFPWM", str(int(cur[2])), "ACK_SETCONFPWM", timeout_s=_to
+            )
             if not _sync_got_ack_value(r):
                 all_ok = False
         if snap[3] != cur[3]:
-            r = c.sync_ui_command_response(dst, "SETCONFRQ", str(int(cur[3])), "ACK_SETCONFRQ")
+            r = c.sync_ui_command_response(
+                dst, "SETCONFRQ", str(int(cur[3])), "ACK_SETCONFRQ", timeout_s=_to
+            )
             if not _sync_got_ack_value(r):
                 all_ok = False
         if snap[4] != cur[4]:
-            r = c.sync_ui_command_response(dst, "SETLSL", str(int(cur[4])), "ACK_SETLSL")
+            r = c.sync_ui_command_response(
+                dst, "SETLSL", str(int(cur[4])), "ACK_SETLSL", timeout_s=_to
+            )
             if not _sync_got_ack_value(r):
                 all_ok = False
         if snap[5] != cur[5]:
-            r = c.sync_ui_command_response(dst, "SETCONLEDP", str(int(cur[5])), "ACK_SETCONLEDP")
+            r = c.sync_ui_command_response(
+                dst, "SETCONLEDP", str(int(cur[5])), "ACK_SETCONLEDP", timeout_s=_to
+            )
             if not _sync_got_ack_value(r):
                 all_ok = False
         if snap[6] != cur[6] and not self._rotor_has_abs_encoder_type3():
-            r = c.sync_ui_command_response(dst, "SETCONANO", str(int(cur[6])), "ACK_SETCONANO")
+            r = c.sync_ui_command_response(
+                dst, "SETCONANO", str(int(cur[6])), "ACK_SETCONANO", timeout_s=_to
+            )
             if not _sync_got_ack_value(r):
                 all_ok = False
         if snap[7] != cur[7]:
-            r = c.sync_ui_command_response(dst, "SETCONDELTA", str(int(cur[7])), "ACK_SETCONDELTA")
+            r = c.sync_ui_command_response(
+                dst, "SETCONDELTA", str(int(cur[7])), "ACK_SETCONDELTA", timeout_s=_to
+            )
             if not _sync_got_ack_value(r):
                 all_ok = False
         if snap[8] != cur[8]:
-            r = c.sync_ui_command_response(dst, "SETCONCHA", str(int(cur[8])), "ACK_SETCONCHA")
+            r = c.sync_ui_command_response(
+                dst, "SETCONCHA", str(int(cur[8])), "ACK_SETCONCHA", timeout_s=_to
+            )
             if not _sync_got_ack_value(r):
                 all_ok = False
         if len(cur) > 12 and (len(snap) <= 12 or snap[12] != cur[12]):
             r = c.sync_ui_command_response(
-                dst, "SETCONTAZID", str(int(cur[12])), "ACK_SETCONTAZID"
+                dst, "SETCONTAZID", str(int(cur[12])), "ACK_SETCONTAZID", timeout_s=_to
             )
             if not _sync_got_ack_value(r):
                 all_ok = False
         if len(cur) > 13 and (len(snap) <= 13 or snap[13] != cur[13]):
             r = c.sync_ui_command_response(
-                dst, "SETCONTELID", str(int(cur[13])), "ACK_SETCONTELID"
+                dst, "SETCONTELID", str(int(cur[13])), "ACK_SETCONTELID", timeout_s=_to
             )
             if not _sync_got_ack_value(r):
                 all_ok = False
+
+        # Nur-Mode-Wechsel ohne andere Diffs: nach apply_mode fertig.
+        if was_remote != want_remote and all_ok:
+            pass
+
         if all_ok:
             self._snapshot_controller = cur
         return all_ok
@@ -5153,7 +5612,7 @@ class SettingsWindow(QDialog):
                 t("settings.controller_broadcast_disabled"),
             )
             return
-        if not self.hw.is_connected():
+        if not self._controller_link_connected():
             QMessageBox.information(
                 self,
                 t("settings.title"),
@@ -5175,6 +5634,10 @@ class SettingsWindow(QDialog):
         ch = self.cfg.setdefault("controller_hw", {})
         ch["cont_id_configured"] = True
         ch["cont_id"] = int(cid)
+        try:
+            self.ctrl.set_controller_cont_id(int(cid))
+        except Exception:
+            pass
         self.lbl_status.setText(t("settings.controller_setconidf_sent"))
         QApplication.processEvents()
         # Kurze Pause, dann alle Controller-Werte wie beim Öffnen der Seite vom Bus lesen

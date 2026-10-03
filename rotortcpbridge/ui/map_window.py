@@ -25,6 +25,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
+# ~30 Hz — Browser-SSE, Web-Live-Cache und Desktop-Karten-Refresh (Beam-Glättung)
+MAP_WEB_LIVE_INTERVAL_MS = 33
+
 from ..angle_utils import (
     antenna_bearing_from_rotor_and_offset,
     antenna_dipole_enabled,
@@ -61,6 +64,12 @@ from .favorite_selection_sync import (
 )
 from .elevation_window import ElevationProfileWindow, initial_elevation_freq_mhz
 from .map_html import build_map_html
+from .web_compass_state import (
+    get_web_compass_html,
+    get_web_compass_payload,
+    handle_web_compass_action,
+    web_effective_az_target_d10,
+)
 from .rig_freq_utils import format_rig_freq_mhz, rig_freq_out_of_band_hz
 from .map_tiles import (
     ONLINE_TILE_URL_DARK,
@@ -96,6 +105,10 @@ def _map_antenna_swatch_icon(antenna_index: int, size_px: int = 14) -> QIcon:
 
 
 class MapWindow(QDialog):
+    # HTTP-Worker-Thread → UI-Thread (Kartensteuerung aus dem Browser)
+    web_setaz_requested = Signal(float, float, object)
+    # action-name, payload-dict (aus Browser-API, QueuedConnection)
+    web_ui_action_requested = Signal(str, object)
     """Fenster mit Leaflet-Karte, Antennen-Beam und Klick-zu-Rotor."""
 
     def __init__(
@@ -306,7 +319,7 @@ class MapWindow(QDialog):
         layout.addLayout(status_bar)
 
         self._refresh_timer = QTimer(self)
-        self._refresh_timer.setInterval(50)
+        self._refresh_timer.setInterval(MAP_WEB_LIVE_INTERVAL_MS)
         self._refresh_timer.timeout.connect(self._refresh_map)
         self._map_loaded = False
         self._map_dark_mode: Optional[bool] = None
@@ -332,6 +345,18 @@ class MapWindow(QDialog):
         self._elevation_win: Optional[ElevationProfileWindow] = None
         # ASWATCHLIST (AirScout/KST): andere Stationen auf der Karte
         self._aswatch_last: list = []
+        self._web_compass_open: bool = False
+        self._web_dwell_az_seconds_per_ant: list[list[float]] = [[], [], []]
+        self._web_dwell_prev_mono: float | None = None
+        self._web_scan_active: bool = False
+        self._web_scan_a: float | None = None
+        self._web_scan_b: float | None = None
+        self._web_scan_next_is_b: bool = True
+        self._web_scan_cmd_ts: float = 0.0
+        self._web_scan_saw_moving: bool = False
+        self._web_scan_rotor_tgt: float | None = None
+        self._web_cc_latch_az_d10: Optional[int] = None
+        self._web_cc_latch_az_ts: float = 0.0
         # ASNEAREST: mögliche Flugzeug-Reflexionspunkte (nur link_ok → Karte)
         self._aircraft_last: list = []
         # ASNEAREST: Zusammenfassung (Rufzeichen, km, min) für Infopanel
@@ -341,6 +366,12 @@ class MapWindow(QDialog):
         # Live-Soll-Vorschau beim Maus-Hover über die Karte (Anzeige-Azimut)
         self._hover_preview_display_az: Optional[float] = None
         self._sync_satellite_controls()
+        self.web_setaz_requested.connect(
+            self._on_web_setaz_requested, Qt.ConnectionType.QueuedConnection
+        )
+        self.web_ui_action_requested.connect(
+            self._on_web_ui_action_requested, Qt.ConnectionType.QueuedConnection
+        )
 
     def _filter_aswatch_for_map(self, items: list) -> list:
         """Nur Marker, deren dest_key in der aktuellen ASNEAREST-Liste steht (optional)."""
@@ -585,7 +616,8 @@ class MapWindow(QDialog):
         if not ref_ok and cc is None and last_set is None:
             return None, None
         try:
-            tgt_d10 = int(cc) if cc is not None else int(getattr(az_axis, "target_d10", 0))
+            # Latch wie Web-Kompass: kurz gelöschtes SETPOSCC nicht mit altem target_d10 ersetzen
+            tgt_d10 = int(web_effective_az_target_d10(self))
         except Exception:
             return None, None
         axis_last_set_ts = float(getattr(az_axis, "last_set_sent_ts", 0.0) or 0.0)
@@ -595,12 +627,13 @@ class MapWindow(QDialog):
             and axis_last_set_ts <= 0.0
             and axis_last_set_target_d10 is None
             and cc is None
+            and getattr(self, "_web_cc_latch_az_d10", None) is None
         )
         if unknown_target:
             return None, None
         pos_d10 = getattr(az_axis, "pos_d10", None)
         target_rotor_az = az_pos_deg_from_d10(int(tgt_d10))
-        if pos_d10 is not None and cc is None:
+        if pos_d10 is not None and cc is None and getattr(self, "_web_cc_latch_az_d10", None) is None:
             cur_rotor = az_pos_deg_from_d10(int(pos_d10))
             if abs(shortest_delta_az_rotor_deg(cur_rotor, target_rotor_az)) < 0.2:
                 return None, None
@@ -614,7 +647,13 @@ class MapWindow(QDialog):
         if range_km <= 0:
             range_km = 100.0
         range_km = min(4000.0, range_km)
-        if self._target_lat is not None and self._target_lon is not None:
+        # SETPOSCC / Bus-Soll hat Vorrang vor altem Kartenklick-Marker
+        cc_active = cc is not None or getattr(self, "_web_cc_latch_az_d10", None) is not None
+        if (
+            not cc_active
+            and self._target_lat is not None
+            and self._target_lon is not None
+        ):
             bearing_display = bearing_deg(lat, lon, self._target_lat, self._target_lon)
         else:
             bearing_display = antenna_bearing_from_rotor_and_offset(target_rotor_az, offset)
@@ -1103,20 +1142,12 @@ class MapWindow(QDialog):
         except Exception:
             cur = None
         try:
-            cc_d10 = getattr(az_axis, "compass_target_d10", None)
-            if cc_d10 is not None:
-                tgt_d10 = int(cc_d10)
-            else:
-                tgt_d10 = getattr(az_axis, "target_d10", None)
+            tgt_d10 = int(web_effective_az_target_d10(self))
             max_d10 = az_max_d10_from_axis(az_axis)
-            tgt = (
-                antenna_bearing_from_rotor_and_offset(
-                    az_pos_deg_from_d10(int(tgt_d10), max_d10=max_d10),
-                    off,
-                    max_d10=max_d10,
-                )
-                if tgt_d10 is not None
-                else None
+            tgt = antenna_bearing_from_rotor_and_offset(
+                az_pos_deg_from_d10(int(tgt_d10), max_d10=max_d10),
+                off,
+                max_d10=max_d10,
             )
         except Exception:
             tgt = None
@@ -1127,12 +1158,15 @@ class MapWindow(QDialog):
             int(tgt_d10 or 0) == 0
             and float(getattr(az_axis, "last_set_sent_ts", 0.0) or 0.0) <= 0.0
             and getattr(az_axis, "last_set_sent_target_d10", None) is None
+            and getattr(az_axis, "compass_target_d10", None) is None
+            and getattr(self, "_web_cc_latch_az_d10", None) is None
         )
         if cur is not None and unknown_target and ref_ok:
             tgt = cur
         if (
             not ref_ok
             and getattr(az_axis, "compass_target_d10", None) is None
+            and getattr(self, "_web_cc_latch_az_d10", None) is None
             and getattr(az_axis, "last_set_sent_target_d10", None) is None
         ):
             tgt = None
@@ -1376,6 +1410,32 @@ class MapWindow(QDialog):
                 "if (typeof window.clearClickMarker === 'function') window.clearClickMarker();"
             )
 
+    def _maybe_clear_map_target_on_external_az(self) -> bool:
+        """Kartenklick-Marker löschen, wenn SETPOSCC/Motorziel vom Klick abweicht."""
+        if self._map_click_rotor_az is None or self._target_lat is None:
+            return False
+        az_axis = getattr(self.ctrl, "az", None)
+        if az_axis is None or not bool(getattr(az_axis, "online", False)):
+            return False
+        try:
+            # SETPOSCC (Vorschau) oder Motorziel — beides darf den Kartenklick ablösen
+            eff_d10 = int(web_effective_az_target_d10(self))
+            extern_az = float(eff_d10) / 10.0
+            if abs(shortest_delta_deg(extern_az, float(self._map_click_rotor_az))) > 2.0:
+                self._clear_map_target()
+                return True
+        except Exception:
+            try:
+                tgt_d10 = getattr(az_axis, "target_d10", None)
+                if tgt_d10 is not None:
+                    extern_az = float(tgt_d10) / 10.0
+                    if abs(shortest_delta_deg(extern_az, float(self._map_click_rotor_az))) > 2.0:
+                        self._clear_map_target()
+                        return True
+            except Exception:
+                pass
+        return False
+
     def _on_elevation_profile(self) -> None:
         """Höhenprofil-Fenster zwischen Heimstation und gewähltem Ziel öffnen."""
         # Bereits offenes Fenster in den Vordergrund holen
@@ -1414,6 +1474,50 @@ class MapWindow(QDialog):
             self._elevation_win.apply_internet_status(self._internet_online)
         self._elevation_win.show()
 
+    def _advance_smooth_rotor_az(self, rotor_target: float) -> float:
+        """Geglätteten Rotor-Azimut einen Tick weiterführen (Desktop + Webserver)."""
+        if self._smooth_rotor_az is None:
+            self._smooth_rotor_az = float(rotor_target)
+        else:
+            delta = shortest_delta_az_rotor_deg(self._smooth_rotor_az, float(rotor_target))
+            nxt = self._smooth_rotor_az + delta * self._SMOOTH_FACTOR
+            if nxt >= 359.95 and float(rotor_target) >= 359.95:
+                self._smooth_rotor_az = min(360.0, nxt)
+            else:
+                self._smooth_rotor_az = wrap_deg(nxt)
+        return float(self._smooth_rotor_az)
+
+    def _build_live_beam_payload(self, params: dict, smooth_az: float) -> dict:
+        """Gemeinsames Live-Payload für Desktop-JS und Browser-SSE."""
+        ui = self.cfg.get("ui", {}) or {}
+        antenna_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
+        beams = self._compute_beams(smooth_az, antenna_idx)
+        tb_line, tb_color = self._compute_az_target_bearing_line(antenna_idx)
+        offs = ui.get("antenna_offsets_az", [0.0, 0.0, 0.0])
+        offset_sel = float(offs[antenna_idx]) if antenna_idx < len(offs) else 0.0
+        azimuth = antenna_bearing_from_rotor_and_offset(float(smooth_az or 0.0), offset_sel)
+        return {
+            "lat": params["lat"],
+            "lon": params["lon"],
+            "azimuth": azimuth,
+            "opening": params["opening"],
+            "range_km": params["range_km"],
+            "beams": beams,
+            "location_str": params["location_str"],
+            "info_standort": params["info_standort"],
+            "info_offnung": params["info_offnung"],
+            "info_reichweite": params["info_reichweite"],
+            "rig_freq_show": params.get("rig_freq_show", False),
+            "info_frequenz": params.get("info_frequenz", "Frequenz"),
+            "rig_freq_text": params.get("rig_freq_text", "—"),
+            "rig_freq_out_of_band": bool(params.get("rig_freq_out_of_band", False)),
+            "horizon_dist_km": params.get("horizon_dist_km", 0.0),
+            "popup_antenna": params.get("popup_antenna", "Antennenstandort"),
+            "popup_target": params.get("popup_target", "Ziel"),
+            "target_bearing_line": tb_line,
+            "target_bearing_color": tb_color,
+        }
+
     def _refresh_map(self) -> None:
         """Beam-Daten aktualisieren ohne Karten-Zoom/Zentrum zu ändern.
         Azimuth wird geglättet für flüssige Bewegung ohne Ruckeln."""
@@ -1421,64 +1525,21 @@ class MapWindow(QDialog):
         if hide_homing != getattr(self, "_homing_ui_hidden_for_abs_enc", False):
             self._homing_ui_hidden_for_abs_enc = hide_homing
             self.update_homing_buttons_visibility()
-        # ── Fremd-Bewegungserkennung: Rotor extern bewegt? → Marker löschen ──
-        if self._map_click_rotor_az is not None and self._target_lat is not None:
-            az_axis = getattr(self.ctrl, "az", None)
-            if az_axis is not None and bool(getattr(az_axis, "online", False)):
-                tgt_d10 = getattr(az_axis, "target_d10", None)
-                if tgt_d10 is not None:
-                    extern_az = float(tgt_d10) / 10.0
-                    if abs(shortest_delta_deg(extern_az, self._map_click_rotor_az)) > 2.0:
-                        self._clear_map_target()
+        self._maybe_clear_map_target_on_external_az()
 
         params = self._get_params()
         # dark_mode immer direkt aus Config (force_dark_mode) – auch für Offline-Tiles
         dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", True))
         params["dark_mode"] = dark
         rotor_target = float(params.get("rotor_az_deg", 0.0))
-        if self._smooth_rotor_az is None:
-            self._smooth_rotor_az = rotor_target
-        else:
-            delta = shortest_delta_az_rotor_deg(self._smooth_rotor_az, rotor_target)
-            nxt = self._smooth_rotor_az + delta * self._SMOOTH_FACTOR
-            if nxt >= 359.95 and rotor_target >= 359.95:
-                self._smooth_rotor_az = min(360.0, nxt)
-            else:
-                self._smooth_rotor_az = wrap_deg(nxt)
-        ui = self.cfg.get("ui", {})
-        antenna_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
-        params["beams"] = self._compute_beams(self._smooth_rotor_az, antenna_idx)
-        tb_line, tb_color = self._compute_az_target_bearing_line(antenna_idx)
-        params["target_bearing_line"] = tb_line
-        params["target_bearing_color"] = tb_color
-        offs = ui.get("antenna_offsets_az", [0.0, 0.0, 0.0])
-        offset_sel = float(offs[antenna_idx]) if antenna_idx < len(offs) else 0.0
-        params["azimuth"] = antenna_bearing_from_rotor_and_offset(
-            float(self._smooth_rotor_az or 0.0), offset_sel
-        )
+        smooth = self._advance_smooth_rotor_az(rotor_target)
+        live = self._build_live_beam_payload(params, smooth)
+        params["beams"] = live["beams"]
+        params["target_bearing_line"] = live["target_bearing_line"]
+        params["target_bearing_color"] = live["target_bearing_color"]
+        params["azimuth"] = live["azimuth"]
         if self._map_loaded:
-            data = {
-                "lat": params["lat"],
-                "lon": params["lon"],
-                "azimuth": params["azimuth"],
-                "opening": params["opening"],
-                "range_km": params["range_km"],
-                "beams": params["beams"],
-                "location_str": params["location_str"],
-                "info_standort": params["info_standort"],
-                "info_offnung": params["info_offnung"],
-                "info_reichweite": params["info_reichweite"],
-                "rig_freq_show": params.get("rig_freq_show", False),
-                "info_frequenz": params.get("info_frequenz", "Frequenz"),
-                "rig_freq_text": params.get("rig_freq_text", "—"),
-                "rig_freq_out_of_band": bool(params.get("rig_freq_out_of_band", False)),
-                "horizon_dist_km": params.get("horizon_dist_km", 0.0),
-                "popup_antenna": params.get("popup_antenna", "Antennenstandort"),
-                "popup_target": params.get("popup_target", "Ziel"),
-                "target_bearing_line": tb_line,
-                "target_bearing_color": tb_color,
-            }
-            js = f"if (typeof window.updateBeam === 'function') window.updateBeam({json.dumps(data)});"
+            js = f"if (typeof window.updateBeam === 'function') window.updateBeam({json.dumps(live)});"
             self._view.page().runJavaScript(js)
         else:
             html = build_map_html(params, dark=dark)
@@ -1567,6 +1628,406 @@ class MapWindow(QDialog):
         dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", True))
         if self._elevation_win is not None and self._elevation_win.isVisible():
             self._elevation_win.apply_theme(dark)
+
+    def get_web_chrome_state(self) -> dict:
+        """Wind + Statusleiste + Toolbar-Daten für den Browser-Webserver."""
+        ui = self.cfg.get("ui", {}) or {}
+        antenna_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
+        labels = self._get_antenna_dropdown_items()
+        ant_colors: list[str] = []
+        for i in range(3):
+            stroke = _MAP_ANTENNA_BEAM_COLORS[i][0]
+            try:
+                ant_colors.append(QColor(stroke).name())
+            except Exception:
+                ant_colors.append(str(stroke))
+        favs = self._get_favorites()
+        favs_sorted = sorted(
+            favs,
+            key=lambda f: (
+                0 if f["name"] and f["name"][0].isdigit() else 1,
+                f["name"].lower(),
+            ),
+        )
+        wind_on = (
+            bool(getattr(self.ctrl, "wind_enabled", False))
+            if getattr(self.ctrl, "wind_enabled_known", False)
+            else False
+        )
+        wdir = None
+        wkmh = None
+        try:
+            tel = getattr(getattr(self.ctrl, "az", None), "telemetry", None)
+            if tel is not None:
+                wdir = getattr(tel, "wind_dir_deg", None)
+                wkmh = getattr(tel, "wind_kmh", None)
+                if not wind_on and (wdir is not None or wkmh is not None):
+                    wind_on = True
+        except Exception:
+            pass
+        mode = str(ui.get("wind_dir_display", "to") or "to").strip().lower()
+        if mode not in ("from", "to"):
+            mode = "to"
+        off = self._get_antenna_offset_az()
+        az_axis = getattr(self.ctrl, "az", None)
+        ist_txt = "–"
+        soll_txt = "–"
+        moving = False
+        online = False
+        referenced = False
+        ref_blink = False
+        temp_motor = "–"
+        temp_ambient = "–"
+        if az_axis is not None:
+            try:
+                pos_d10 = getattr(az_axis, "pos_d10", None)
+                max_d10 = az_max_d10_from_axis(az_axis)
+                cur = (
+                    antenna_bearing_from_rotor_and_offset(
+                        az_pos_deg_from_d10(int(pos_d10), max_d10=max_d10),
+                        off,
+                        max_d10=max_d10,
+                    )
+                    if pos_d10 is not None
+                    else None
+                )
+            except Exception:
+                cur = None
+            try:
+                tgt_d10 = int(web_effective_az_target_d10(self))
+                max_d10 = az_max_d10_from_axis(az_axis)
+                tgt = antenna_bearing_from_rotor_and_offset(
+                    az_pos_deg_from_d10(int(tgt_d10), max_d10=max_d10),
+                    off,
+                    max_d10=max_d10,
+                )
+            except Exception:
+                tgt = None
+                tgt_d10 = None
+            ref_ok = bool(getattr(az_axis, "referenced", False))
+            unknown_target = (tgt_d10 is None) or (
+                int(tgt_d10 or 0) == 0
+                and float(getattr(az_axis, "last_set_sent_ts", 0.0) or 0.0) <= 0.0
+                and getattr(az_axis, "last_set_sent_target_d10", None) is None
+                and getattr(az_axis, "compass_target_d10", None) is None
+                and getattr(self, "_web_cc_latch_az_d10", None) is None
+            )
+            if cur is not None and unknown_target and ref_ok:
+                tgt = cur
+            if (
+                not ref_ok
+                and getattr(az_axis, "compass_target_d10", None) is None
+                and getattr(self, "_web_cc_latch_az_d10", None) is None
+                and getattr(az_axis, "last_set_sent_target_d10", None) is None
+            ):
+                tgt = None
+            ist_txt = fmt_deg(cur) if cur is not None else "–"
+            if self._hover_preview_display_az is not None:
+                soll_txt = fmt_deg(self._hover_preview_display_az)
+            else:
+                soll_txt = fmt_deg(tgt) if tgt is not None else "–"
+            moving = bool(getattr(az_axis, "moving", False))
+            online = bool(getattr(az_axis, "online", False))
+            referenced = bool(getattr(az_axis, "referenced", False))
+            ref_blink = bool(getattr(az_axis, "ref_poll_active", False)) and moving
+            try:
+                tel = getattr(az_axis, "telemetry", None)
+                ta = getattr(tel, "temp_ambient_c", None) if tel else None
+                tm = getattr(tel, "temp_motor_c", None) if tel else None
+                temp_motor = f"{float(tm):.1f} °C" if tm is not None else "–"
+                temp_ambient = f"{float(ta):.1f} °C" if ta is not None else "–"
+            except Exception:
+                pass
+        hide_homing = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        return {
+            "labels": {
+                "ist_prefix": t("compass.ist_prefix"),
+                "soll": t("compass.soll_label"),
+                "moving": t("axis.moving_label"),
+                "online": t("axis.online_label"),
+                "ref": t("compass.ref_led_label_az"),
+                "temp_motor": t("weather.temp_motor_label"),
+                "temp_ambient": t("weather.temp_ambient_label"),
+                "fav_placeholder": t("compass.fav_dropdown_placeholder"),
+                "fav_name_ph": t("compass.fav_name_placeholder"),
+                "fav_save": t("compass.fav_btn_save"),
+                "fav_delete": t("compass.fav_btn_delete"),
+                "ort": t("map.ort_label"),
+                "locator": t("map.locator_label"),
+                "locator_ph": t("compass.locator_placeholder"),
+                "search_ph": t("map.search_placeholder"),
+                "elevation": t("map.btn_elevation"),
+                "offline": t("map.chk_offline"),
+                "hover": t("map.chk_hover_preview"),
+                "satellite": t("map.btn_street")
+                if bool(getattr(self, "_map_satellite", False))
+                else t("map.btn_satellite"),
+                "locator_chk": t("map.chk_locator"),
+                "toggle_controls": t("map.web_toggle_controls"),
+                "toggle_controls_show": t("map.web_toggle_controls_show"),
+                "toggle_controls_hide": t("map.web_toggle_controls_hide"),
+                "open_compass": t("map.web_open_compass"),
+                "back_to_map": t("map.web_back_to_map"),
+                "search_pick_title": t("map.search_pick_title"),
+                "search_pick_body": t("map.search_pick_body"),
+                "search_not_found": t("map.search_not_found_body"),
+                "search_error": t("map.search_error_title"),
+                "search_cancel": t("map.search_cancel"),
+                "search_searching": t("map.search_searching"),
+            },
+            "antennas": {
+                "index": antenna_idx,
+                "items": labels,
+                "colors": ant_colors,
+                "visible": bool(getattr(self.ctrl, "enable_az", True)),
+            },
+            "favorites": [
+                {
+                    "name": f["name"],
+                    "az": float(f["az"]),
+                    "el": float(f["el"]),
+                    "label": f"{f['name']} ({f['az']:.1f}°, {f['el']:.1f}°)",
+                }
+                for f in favs_sorted
+            ],
+            "flags": {
+                "offline": bool(ui.get("map_offline", False)),
+                "hover": bool(ui.get("map_hover_preview", True)),
+                "satellite": bool(getattr(self, "_map_satellite", False)),
+                "locator": bool(ui.get("map_locator_overlay", False)),
+                "ref_visible": not hide_homing,
+            },
+            "status": {
+                "ist": ist_txt,
+                "soll": soll_txt,
+                "moving": moving,
+                "online": online,
+                "referenced": referenced,
+                "ref_blink": ref_blink,
+                "temp_motor": temp_motor,
+                "temp_ambient": temp_ambient,
+            },
+            "wind": {
+                "visible": bool(wind_on),
+                "dir_deg": float(wdir) if wdir is not None else None,
+                "kmh": float(wkmh) if wkmh is not None else None,
+                "mode": mode,
+            },
+        }
+
+    def get_web_live_payload(self) -> dict:
+        """Live-Daten für Map-Webserver (SSE /api/events → updateBeam + Chrome)."""
+        # Auch ohne offenes Desktop-Kartenfenster: SETPOSCC löst sticky Kartenklick ab
+        cleared = self._maybe_clear_map_target_on_external_az()
+        params = self._get_params()
+        dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", True))
+        params["dark_mode"] = dark
+        rotor_target = float(params.get("rotor_az_deg", 0.0))
+        smooth = (
+            float(self._smooth_rotor_az)
+            if self._smooth_rotor_az is not None
+            else rotor_target
+        )
+        payload = self._build_live_beam_payload(params, smooth)
+        try:
+            payload["chrome"] = self.get_web_chrome_state()
+        except Exception:
+            payload["chrome"] = {}
+        if cleared:
+            try:
+                payload.setdefault("chrome", {})["clear_map_target"] = True
+            except Exception:
+                pass
+        elif self._target_lat is None:
+            try:
+                payload.setdefault("chrome", {})["clear_map_target"] = True
+            except Exception:
+                pass
+        return payload
+
+    def get_web_map_html(self) -> str:
+        """Vollständige Leaflet-Seite für den Browser-Webserver."""
+        params = self._get_params()
+        dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", True))
+        params["dark_mode"] = dark
+        # Browser im LAN: immer Online-Tiles (kein rotortiles:/lokaler Offline-Server)
+        params["offline"] = False
+        params["web_mode"] = True
+        ui = self.cfg.get("ui", {}) or {}
+        antenna_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
+        rotor_az = float(params.get("rotor_az_deg", 0.0))
+        params["beams"] = self._compute_beams(rotor_az, antenna_idx)
+        tb_line, tb_color = self._compute_az_target_bearing_line(antenna_idx)
+        params["target_bearing_line"] = tb_line
+        params["target_bearing_color"] = tb_color
+        try:
+            params["web_chrome"] = self.get_web_chrome_state()
+        except Exception:
+            params["web_chrome"] = {}
+        return build_map_html(params, dark=dark)
+
+    def get_web_compass_html(self) -> str:
+        return get_web_compass_html(self)
+
+    def get_web_compass_payload(self) -> dict:
+        return get_web_compass_payload(self)
+
+    def apply_web_setaz(self, lat: float, lon: float, asnearest_dest: str | None = None) -> None:
+        """Kartenklick aus dem Browser → UI-Thread (Signal), gleiche Pipeline wie Desktop."""
+        self.web_setaz_requested.emit(float(lat), float(lon), asnearest_dest)
+
+    def apply_web_ui_action(self, action: str, payload: dict | None = None) -> None:
+        """Chrome-Aktion aus dem Browser → UI-Thread."""
+        self.web_ui_action_requested.emit(str(action or ""), dict(payload or {}))
+
+    @Slot(float, float, object)
+    def _on_web_setaz_requested(
+        self, lat: float, lon: float, asnearest_dest: object = None
+    ) -> None:
+        dest = str(asnearest_dest).strip() if asnearest_dest else None
+        self._on_map_click(float(lat), float(lon), asnearest_dest=dest or None)
+
+    @Slot(str, object)
+    def _on_web_ui_action_requested(self, action: str, payload: object = None) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        act = str(action or "").strip().lower()
+        try:
+            if handle_web_compass_action(self, act, data):
+                return
+            if act == "antenna":
+                idx = max(0, min(2, int(data.get("index", 0))))
+                self._cb_antenna.blockSignals(True)
+                self._cb_antenna.setCurrentIndex(idx)
+                self._cb_antenna.blockSignals(False)
+                self._on_antenna_changed()
+            elif act == "fav_select":
+                idx = int(data.get("index", -1))
+                favs = self._get_favorites()
+                favs_sorted = sorted(
+                    favs,
+                    key=lambda f: (
+                        0 if f["name"] and f["name"][0].isdigit() else 1,
+                        f["name"].lower(),
+                    ),
+                )
+                if 0 <= idx < len(favs_sorted):
+                    f = favs_sorted[idx]
+                    # Dropdown-Index +1 wenn Placeholder (keine Favoriten wäre Index 0 Platzhalter)
+                    self._cb_fav.blockSignals(True)
+                    found = -1
+                    for i in range(self._cb_fav.count()):
+                        d = self._cb_fav.itemData(i)
+                        if (
+                            isinstance(d, dict)
+                            and d.get("name") == f.get("name")
+                            and abs(float(d.get("az", 0) or 0) - float(f.get("az", 0) or 0)) < 0.01
+                        ):
+                            found = i
+                            break
+                    if found >= 0:
+                        self._cb_fav.setCurrentIndex(found)
+                    self._cb_fav.blockSignals(False)
+                    if found >= 0:
+                        self._on_fav_activated(found)
+            elif act == "fav_save":
+                name = str(data.get("name") or "").strip()
+                self._ed_fav_name.setText(name)
+                self._on_fav_save()
+            elif act == "fav_delete":
+                idx = int(data.get("index", -1))
+                favs = self._get_favorites()
+                favs_sorted = sorted(
+                    favs,
+                    key=lambda f: (
+                        0 if f["name"] and f["name"][0].isdigit() else 1,
+                        f["name"].lower(),
+                    ),
+                )
+                if 0 <= idx < len(favs_sorted):
+                    f = favs_sorted[idx]
+                    for i in range(self._cb_fav.count()):
+                        d = self._cb_fav.itemData(i)
+                        if (
+                            isinstance(d, dict)
+                            and d.get("name") == f.get("name")
+                            and abs(float(d.get("az", 0) or 0) - float(f.get("az", 0) or 0)) < 0.01
+                        ):
+                            self._cb_fav.setCurrentIndex(i)
+                            self._on_fav_delete()
+                            break
+            elif act == "locator":
+                raw = str(data.get("locator") or "").strip()
+                self._ed_map_loc.setText(raw)
+                self._on_map_locator_entered()
+            elif act == "place_search":
+                q = str(data.get("query") or "").strip()
+                self._ed_place_search.setText(q)
+                # Ohne Bestätigungsdialog im Browser-Kontext suchen
+                if q and not bool(self._chk_offline.isChecked()):
+                    if self._geocode_thread is not None and self._geocode_thread.isRunning():
+                        return
+                    self._ed_place_search.setEnabled(False)
+                    self._geocode_thread = GeocodeThread(q)
+                    self._geocode_thread.results_ready.connect(self._on_web_geocode_results)
+                    self._geocode_thread.error_occurred.connect(self._on_geocode_error)
+                    self._geocode_thread.finished.connect(self._on_geocode_finished)
+                    self._geocode_thread.start()
+            elif act == "elevation":
+                self._on_elevation_profile()
+            elif act == "toggle_offline":
+                on = bool(data.get("value", False))
+                self._chk_offline.blockSignals(True)
+                self._chk_offline.setChecked(on)
+                self._chk_offline.blockSignals(False)
+                self._on_offline_changed()
+            elif act == "toggle_hover":
+                on = bool(data.get("value", True))
+                self._chk_hover.blockSignals(True)
+                self._chk_hover.setChecked(on)
+                self._chk_hover.blockSignals(False)
+                self._on_hover_preview_changed()
+            elif act == "toggle_satellite":
+                on = bool(data.get("value", False))
+                # Im Browser lokal umschalten; Sync über chrome.flags.satellite
+                if on and self._chk_offline.isChecked():
+                    return
+                self._map_satellite = bool(on)
+                self._btn_satellite.blockSignals(True)
+                self._btn_satellite.setChecked(bool(on))
+                self._btn_satellite.blockSignals(False)
+                self._update_satellite_button_label()
+                self._apply_satellite_mode_js()
+            elif act == "toggle_locator":
+                on = bool(data.get("value", False))
+                self._chk_locator.blockSignals(True)
+                self._chk_locator.setChecked(on)
+                self._chk_locator.blockSignals(False)
+                self._on_locator_changed()
+        except Exception:
+            pass
+
+    def _on_web_geocode_results(self, results: list) -> None:
+        """Browser-Ortssuche: ersten Treffer nehmen (kein Dialog)."""
+        if not results:
+            return
+        r = results[0] if isinstance(results[0], dict) else None
+        if r is None:
+            return
+        try:
+            self._apply_geocode_target(float(r["lat"]), float(r["lon"]))
+        except Exception:
+            pass
+
+    def get_web_aswatch(self) -> tuple:
+        items = self._filter_aswatch_for_map(getattr(self, "_aswatch_last", []) or [])
+        total = len(getattr(self, "_aswatch_last", []) or [])
+        return items, total
+
+    def get_web_aircraft(self) -> list:
+        return list(getattr(self, "_aircraft_last", []) or [])
+
+    def get_web_asnearest(self) -> list:
+        return list(getattr(self, "_asnearest_summary_last", []) or [])
 
     def closeEvent(self, event):
         if self._geocode_thread is not None and self._geocode_thread.isRunning():

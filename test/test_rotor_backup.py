@@ -36,6 +36,7 @@ def test_gui_backup_includes_all_default_top_level_keys() -> None:
         "pwm": {"value_pct": 80.0},
         "behavior": {"auto_reference_on_connect": True},
         "controller_hw": {"enabled": True, "cont_id": 2},
+        "controller_link": {"mode": "com", "com_port": ""},
     }
     gui = extract_gui_config_for_backup(cfg)
     for key in DEFAULT_CONFIG:

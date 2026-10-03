@@ -38,6 +38,7 @@ from ..angle_utils import (
     raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
     wrap_deg,
+    shortest_delta_az_rotor_deg,
     shortest_delta_deg,
 )
 from ..geo_utils import bearing_deg, effective_station_lat_lon, haversine_km, maidenhead_to_lat_lon
@@ -1428,6 +1429,14 @@ class CompassWindow(QDialog):
     def _az_target_display_deg(self, tgt: Optional[float], off_az: float) -> Optional[float]:
         if tgt is None:
             return None
+        # Bus/Encoder SETPOSCC: immer Rotor+Versatz — Dipol-Klick-Latch gilt nur lokal.
+        try:
+            if getattr(self.ctrl.az, "compass_target_d10", None) is not None:
+                return antenna_bearing_from_rotor_and_offset(
+                    tgt, off_az, max_d10=self._az_max_d10()
+                )
+        except Exception:
+            pass
         if self._selected_antenna_dipole_enabled() and self._az_soll_display_bearing is not None:
             return wrap_deg(self._az_soll_display_bearing)
         return antenna_bearing_from_rotor_and_offset(tgt, off_az, max_d10=self._az_max_d10())
@@ -1621,31 +1630,34 @@ class CompassWindow(QDialog):
         self._scan_saw_moving = False
 
     def _tick_scan(self) -> None:
-        """Nach Erreichen von Winkel n zum anderen Winkel wechseln."""
+        """Nach Erreichen von Winkel n zum anderen Winkel wechseln.
+
+        Wichtig: nicht nur ``moving=False`` — die Firmware meldet oft vor dem
+        Ist-Ziel „nicht fährt“. Umschalten erst, wenn Ist nahe am SCAN-Soll ist.
+        """
         if not self._scan_active:
+            return
+        now = time.time()
+        # Kurz nach dem Befehl warten, bis moving gesetzt/angefahren wird
+        if (now - float(self._scan_cmd_ts or 0.0)) < 0.5:
             return
         try:
             moving = bool(getattr(self.ctrl.az, "moving", False))
         except Exception:
             moving = False
-        now = time.time()
-        # Kurz nach dem Befehl warten, bis moving gesetzt/angefahren wird
-        if (now - float(self._scan_cmd_ts or 0.0)) < 0.45:
-            return
         if moving:
             self._scan_saw_moving = True
             return
-        if not self._scan_saw_moving:
-            # Fallback: schon am Ziel (sehr nah) ohne moving gesehen
-            try:
-                cur = raw_rotor_az_deg_from_axis(getattr(self.ctrl, "az", None))
-                tgt = self._target_az
-                if cur is None or tgt is None:
-                    return
-                if abs(float(cur) - float(tgt)) > 0.6:
-                    return
-            except Exception:
+        try:
+            cur = raw_rotor_az_deg_from_axis(getattr(self.ctrl, "az", None))
+            tgt = self._target_az
+            if cur is None or tgt is None:
                 return
+            err = abs(shortest_delta_az_rotor_deg(float(cur), float(tgt)))
+            if err > 0.8:
+                return
+        except Exception:
+            return
         # Ziel erreicht → andere Seite
         self._scan_leg = 2 if self._scan_leg == 1 else 1
         self._scan_goto_current_leg()
@@ -2337,6 +2349,28 @@ class CompassWindow(QDialog):
         off_az = self._get_antenna_offset_az()
         max_d10_az = self._az_max_d10()
 
+        # Bus/Encoder SETPOSCC hat Vorrang vor STOP-Hold und Dipol-Klick-Latch
+        # (Karte/Web lesen compass_target_d10 direkt — Desktop muss mitziehen).
+        try:
+            cc_live = getattr(self.ctrl.az, "compass_target_d10", None)
+        except Exception:
+            cc_live = None
+        if cc_live is not None:
+            try:
+                cc_i = int(cc_live)
+                local_d10 = (
+                    int(round(float(self._target_az) * 10.0))
+                    if self._target_az is not None
+                    else None
+                )
+                if local_d10 is None or abs(cc_i - local_d10) > 2:
+                    self._stop_az_ts = None
+                    self._clear_az_dipole_soll_display()
+                    self._target_az = az_pos_deg_from_d10(cc_i, max_d10=max_d10_az)
+                    self._cc_display_latch_az_d10 = cc_i
+            except Exception:
+                pass
+
         try:
             wind_kmh = self.ctrl.az.telemetry.wind_kmh
         except Exception:
@@ -2367,6 +2401,7 @@ class CompassWindow(QDialog):
         unknown_target = False
 
         # Nach STOP: Soll bleibt fix auf STOP-Position; Ist rollt aus und kommt zurück.
+        # Ausnahme: neues SETPOSCC (oben) hat STOP-Hold bereits aufgehoben.
         if self._stop_az_ts is not None:
             if self._target_az is not None:
                 tgt = self._target_az
@@ -2641,6 +2676,25 @@ class CompassWindow(QDialog):
         except Exception:
             cur = None
         # EL: kein Antennenversatz
+
+        try:
+            cc_live_el = getattr(self.ctrl.el, "compass_target_d10", None)
+        except Exception:
+            cc_live_el = None
+        if cc_live_el is not None:
+            try:
+                cc_i = int(cc_live_el)
+                local_d10 = (
+                    int(round(float(self._target_el) * 10.0))
+                    if self._target_el is not None
+                    else None
+                )
+                if local_d10 is None or abs(cc_i - local_d10) > 2:
+                    self._stop_el_ts = None
+                    self._target_el = self._clamp_el(float(cc_i) / 10.0)
+                    self._cc_display_latch_el_d10 = cc_i
+            except Exception:
+                pass
 
         tgt: Optional[float] = None
         unknown_target = False

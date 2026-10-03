@@ -78,6 +78,18 @@ def test_setposcc_hold_blocks_poll_restrict_until_setposdg() -> None:
     assert c._setposcc_poll_hold is False
 
 
+def test_usb_remote_yields_to_bus_master_but_not_controller() -> None:
+    """Remote-USB: App-ID auf dem Bus → Yield; Controller-ID (USB) → kein Yield."""
+    c = _ctrl()
+    c.usb_remote = True
+    c._controller_cont_id = 2
+    c.note_foreign_master_activity(c.az, set_target=True, foreign_master_id=2)
+    assert c.foreign_master_yield_active() is False
+    c.note_foreign_master_activity(c.az, set_target=True, foreign_master_id=7)
+    assert c.foreign_master_yield_active() is True
+    assert bool(getattr(c.az, "foreign_follow_active", False)) is True
+
+
 def test_setposcc_hold_expires_without_setposdg() -> None:
     """Sicherheitsnetz: ohne SETPOSDG löst sich der CC-Hold nach dem Timeout."""
     import time as _t

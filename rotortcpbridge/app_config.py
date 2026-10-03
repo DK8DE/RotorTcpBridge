@@ -56,6 +56,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "az_shortest_path": False,
         "az_report_mod360": False,
     },
+    # Antennenkarte als HTTP-Webserver im LAN (Anzeige + Steuerung).
+    "map_webserver": {
+        "enabled": False,
+        "listen_host": "0.0.0.0",
+        "listen_port": 80,
+        # Leer → Laufzeit-Default „rotor“ (siehe MapWebServer).
+        "password": "rotor",
+    },
     # SPID BIG-RAS / CAT über serielle Schnittstelle (z. B. com0com). Jeder
     # Listener bedient entweder den Rotor (ROT2PROG-13-Byte-Frames, AZ+EL in
     # einem Frame) oder ein Funkgeraet (CAT-Protokoll des aktiven Rig-Profils).
@@ -75,6 +83,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "udp_bind_port": 0,
         "com_port": "COM1",
         "baudrate": 115200,
+    },
+    # USB-Seriell zum Display-Controller (Controller Remote USB)
+    "controller_link": {
+        "mode": "com",
+        "tcp_ip": "",
+        "tcp_port": 8886,
+        "udp_bind_port": 0,
+        "com_port": "",
+        "baudrate": 115200,
+        # Controller darf während Software-Homing/Polling schweigen — COM nicht wegen
+        # 30s-Stille trennen (sonst DTR-Reset → Display-Neustart alle ~Minute).
+        "no_rx_timeout_s": 0,
     },
     # RS485-Netzwerk-Konverter (Ebyte NE2/NA11x, DK8DE WLAN/RS485, …).
     # Einträge: name, vendor (ne2|na11x|dk8de_wlan|generic), host, at_port,
@@ -105,6 +125,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "el_rotor_id": 0,
         # Antenne beim Wechsel nachdrehen (SETCONCHA) — Standard aus
         "antenna_realign_on_switch": False,
+        # Controller Remote USB: alles über USB-Serial statt RS485 am Controller
+        "usb_remote": False,
     },
     "spid": {"ph": 10, "pv": 10},
     "polling_ms": {
@@ -405,6 +427,23 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
         cfg["rotctld_server"].setdefault("az_shortest_path", False)
         cfg["rotctld_server"].setdefault("az_report_mod360", False)
 
+    if "map_webserver" in cfg and isinstance(cfg["map_webserver"], dict):
+        mws = cfg["map_webserver"]
+        mws.setdefault("enabled", False)
+        mws.setdefault("listen_host", "0.0.0.0")
+        mws.setdefault("listen_port", 80)
+        mws.setdefault("password", "rotor")
+    else:
+        cfg.setdefault(
+            "map_webserver",
+            {
+                "enabled": False,
+                "listen_host": "0.0.0.0",
+                "listen_port": 80,
+                "password": "rotor",
+            },
+        )
+
     if "ui" in cfg and isinstance(cfg["ui"], dict):
         cfg["ui"].setdefault("udp_pst_az_shortest_path", False)
         cfg["ui"].setdefault("udp_pst_az_report_mod360", False)
@@ -440,6 +479,28 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
                 sel = 0
             chw_m["el_rotor_id"] = max(0, min(254, sel))
         chw_m.setdefault("antenna_realign_on_switch", False)
+        chw_m.setdefault("usb_remote", False)
+
+    # Migration: USB-Link zum Display-Controller (Controller Remote USB)
+    if "controller_link" not in cfg or not isinstance(cfg.get("controller_link"), dict):
+        cfg["controller_link"] = {
+            "mode": "com",
+            "tcp_ip": "",
+            "tcp_port": 8886,
+            "udp_bind_port": 0,
+            "com_port": "",
+            "baudrate": 115200,
+            "no_rx_timeout_s": 0,
+        }
+    else:
+        cl = cfg["controller_link"]
+        cl.setdefault("mode", "com")
+        cl.setdefault("tcp_ip", "")
+        cl.setdefault("tcp_port", 8886)
+        cl.setdefault("udp_bind_port", 0)
+        cl.setdefault("com_port", "")
+        cl.setdefault("baudrate", 115200)
+        cl.setdefault("no_rx_timeout_s", 0)
 
     # Antennen-Namen: immer 3 Einträge (ohne AZ nur Config/Defaults, kein GETANTNAME).
     if "ui" in cfg and isinstance(cfg["ui"], dict):

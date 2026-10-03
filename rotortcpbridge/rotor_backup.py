@@ -26,6 +26,7 @@ _GUI_CONFIG_KEYS = (
     "pst_serial",
     "rotor_bus",
     "hardware_link",
+    "controller_link",
     "network_modules",
     "network_scan",
     "ui",
@@ -359,7 +360,9 @@ def apply_live_ids_from_cfg(ctrl: Any, cfg: Dict[str, Any]) -> None:
     chw = cfg.get("controller_hw") if isinstance(cfg.get("controller_hw"), dict) else {}
     try:
         cid = int(chw.get("cont_id", 2) or 0)
-        if hasattr(ctrl, "setposcc_controller_src_id"):
+        if hasattr(ctrl, "set_controller_cont_id"):
+            ctrl.set_controller_cont_id(cid)
+        elif hasattr(ctrl, "setposcc_controller_src_id"):
             ctrl.setposcc_controller_src_id = max(0, min(254, cid))
     except Exception:
         pass
@@ -397,6 +400,7 @@ def controller_hw_norm(chw: Optional[Dict[str, Any]]) -> Dict[str, int]:
         "antenna_realign_on_switch": 1 if bool(ch.get("antenna_realign_on_switch", False)) else 0,
         "az_rotor_id": _clamp_cont_id(ch.get("az_rotor_id", 20), 20),
         "el_rotor_id": _clamp_cont_id(ch.get("el_rotor_id", 0), 0),
+        "usb_remote": 1 if bool(ch.get("usb_remote", False)) else 0,
     }
 
 
@@ -466,6 +470,19 @@ def push_controller_hw_diff(
         ("az_rotor_id", "SETCONTAZID", "ACK_SETCONTAZID"),
         ("el_rotor_id", "SETCONTELID", "ACK_SETCONTELID"),
     )
+    # Remote-USB: immer sicherstellen (nicht nur bei Toggle) — Flag kann auf dem
+    # Controller nach Reset/Flash fehlen, während die Software-Config schon „an“ ist.
+    if int(new_n["usb_remote"]) == 1:
+        r = ctrl.sync_ui_command_response(dst, "SETCONREMOTE", "1", "ACK_SETCONREMOTE", timeout_s=1.5)
+        if not _ok(r):
+            all_ok = False
+        try:
+            setter = getattr(ctrl, "set_controller_link", None)
+            if callable(setter):
+                setter(getattr(ctrl, "ctrl_hw", None), True)
+        except Exception:
+            pass
+
     for key, cmd, ack in pairs:
         if not _changed(key):
             continue
@@ -483,6 +500,18 @@ def push_controller_hw_diff(
         )
         if not _ok(r):
             all_ok = False
+
+    # Remote-USB ausschalten zuletzt (vorherige SETs noch über USB).
+    if _changed("usb_remote") and int(new_n["usb_remote"]) == 0:
+        r = ctrl.sync_ui_command_response(dst, "SETCONREMOTE", "0", "ACK_SETCONREMOTE", timeout_s=1.5)
+        if not _ok(r):
+            all_ok = False
+        try:
+            setter = getattr(ctrl, "set_controller_link", None)
+            if callable(setter):
+                setter(getattr(ctrl, "ctrl_hw", None), False)
+        except Exception:
+            pass
 
     return all_ok
 

@@ -10,15 +10,15 @@
 L.Maidenhead = L.FeatureGroup.extend({
 	options: {
 		// A set of Polygon options, used to style each grid square.
-		// The default is to enable fill but make it transparent, so that
-		// the polygons can trigger mouse/pointer events.
-		// (as per https://leafletjs.com/reference-1.5.0.html#polygon)
+		// Default: keine Pointer-Events — sonst fangen die Raster-Polygone
+		// Touch/Drag/Pinch auf Mobile ab und die Basemap wirkt „tot“.
 		polygonStyle: {
 			color: "black",
 			weight: 1.5,
-			fill: true,
+			fill: false,
 			fillColor: "transparent",
 			fillOpacity: 0,
+			interactive: false,
 		},
 
 		// Callback function for creating markers in the center of the seen
@@ -78,13 +78,13 @@ L.Maidenhead = L.FeatureGroup.extend({
 
 		this._map = map;
 
-		map.on("move zoom moveend zoomend", this._update, this);
+		map.on("moveend zoomend", this._update, this);
 		this._update();
 	},
 
 	onRemove: function onRemove(map) {
 		L.FeatureGroup.prototype.onRemove.call(this, map);
-		map.off("move zoom moveend zoomend", this._update, this);
+		map.off("moveend zoomend", this._update, this);
 	},
 
 	_update: function _update() {

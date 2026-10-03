@@ -191,6 +191,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                 self.note_foreign_master_activity(
                                     self.az if dst == saz else self.el,
                                     set_target=True,
+                                    foreign_master_id=int(tel.src),
                                 )
                             else:
                                 self.note_setposdg_poll_restrict()
@@ -204,6 +205,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             self.note_foreign_master_activity(
                                 self.az if dst == saz else self.el,
                                 set_target=True,
+                                foreign_master_id=int(tel.src),
                             )
                         except Exception:
                             pass
@@ -406,7 +408,11 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     else:
                         # Fremder Master pollt denselben Rotor → unser Polling pausieren.
                         try:
-                            self.note_foreign_master_activity(axis_state, set_target=False)
+                            self.note_foreign_master_activity(
+                                axis_state,
+                                set_target=False,
+                                foreign_master_id=int(tel.dst),
+                            )
                         except Exception:
                             pass
                     d10 = parse_getposdg_ist_d10(tel.params)
@@ -662,9 +668,12 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         )
                         if looks_like_angle and angle_deg is not None:
                             try:
-                                self.note_foreign_master_activity(
-                                    axis_state, set_target=True
-                                )
+                                if int(tel.dst) != int(self.master_id):
+                                    self.note_foreign_master_activity(
+                                        axis_state,
+                                        set_target=True,
+                                        foreign_master_id=int(tel.dst),
+                                    )
                             except Exception:
                                 pass
                             # bus_src = fremder Master (DST des ACK)
@@ -688,7 +697,9 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                 try:
                                     if int(tel.dst) != int(self.master_id):
                                         self.note_foreign_master_activity(
-                                            axis_state, set_target=True
+                                            axis_state,
+                                            set_target=True,
+                                            foreign_master_id=int(tel.dst),
                                         )
                                 except Exception:
                                     pass
@@ -1281,7 +1292,9 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         if foreign_ack:
                             try:
                                 self.note_foreign_master_activity(
-                                    axis_state, set_target=False
+                                    axis_state,
+                                    set_target=False,
+                                    foreign_master_id=int(tel.dst),
                                 )
                             except Exception:
                                 pass

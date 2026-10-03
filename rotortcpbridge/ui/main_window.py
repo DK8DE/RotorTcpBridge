@@ -25,8 +25,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QFormLayout,
 )
-from PySide6.QtGui import QAction, QActionGroup, QFont, QGuiApplication
-from PySide6.QtCore import QEvent, QEventLoop, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QFont, QGuiApplication
+from PySide6.QtCore import QEvent, QEventLoop, QUrl, Qt, QTimer, Signal
 
 from .antenna_sync import AntennaSelectionBridge
 
@@ -138,6 +138,7 @@ from .weather_window import WeatherWindow
 from .map_window import MAP_WEB_LIVE_INTERVAL_MS, MapWindow
 from .about_window import AboutWindow
 from .rotor_configuration import CommandButtonsWindow
+from ..rotor_overview_service import RotorOverviewService
 from .rotor_overview_window import RotorOverviewWindow
 from .warnings_errors_window import WarningsErrorsWindow
 from .rig_freq_utils import (
@@ -440,6 +441,10 @@ class MainWindow(QMainWindow):
         self._act_win_rotor_overview = QAction(t("main.menu_rotor_overview"), self)
         self._act_win_rotor_overview.triggered.connect(self._open_rotor_overview)
         self._menu_window.addAction(self._act_win_rotor_overview)
+        self._act_win_rotor_overview_web = QAction(t("main.menu_rotor_overview_web"), self)
+        self._act_win_rotor_overview_web.setToolTip(tt("main.menu_rotor_overview_web_tooltip"))
+        self._act_win_rotor_overview_web.triggered.connect(self._open_rotor_overview_web)
+        self._menu_window.addAction(self._act_win_rotor_overview_web)
         self._act_win_weather = QAction(t("main.btn_weather"), self)
         self._act_win_weather.triggered.connect(self._open_weather)
         self._menu_window.addAction(self._act_win_weather)
@@ -898,6 +903,7 @@ class MainWindow(QMainWindow):
             rig_bridge_manager=self._rig_bridge_manager,
         )
         self._rotor_overview_win: RotorOverviewWindow | None = None
+        self._overview_service = RotorOverviewService()
         # Broadcast zuerst: Sync-Slots dürfen den TX nicht verhindern; Fire-and-Forget ist separat
         self._antenna_bridge.selection_changed.connect(self._on_antenna_broadcast_aselect)
         self._antenna_bridge.selection_changed.connect(self._sync_main_antenna_combo_from_bridge)
@@ -2121,6 +2127,8 @@ class MainWindow(QMainWindow):
         self._act_win_compass.setText(t("main.btn_compass"))
         self._act_win_map.setText(t("main.btn_map"))
         self._act_win_rotor_overview.setText(t("main.menu_rotor_overview"))
+        self._act_win_rotor_overview_web.setText(t("main.menu_rotor_overview_web"))
+        self._act_win_rotor_overview_web.setToolTip(tt("main.menu_rotor_overview_web_tooltip"))
         self._act_win_weather.setText(t("main.btn_weather"))
         self._act_win_warnings_errors.setText(t("main.menu_win_warnings_errors"))
         self._menu_protocols.setTitle(t("main.menu_protocols"))
@@ -2402,17 +2410,27 @@ class MainWindow(QMainWindow):
             return
         self._map_web_html_cache = ""
         self._map_web_compass_html_cache = ""
+        self._map_web_overview_html_cache = ""
         self._map_web_live_cache: dict = {}
         self._map_web_compass_cache: dict = {}
+        self._map_web_overview_cache: dict = {}
         self._map_web_aswatch_cache: tuple = ([], 0)
         self._map_web_aircraft_cache: list = []
         self._map_web_asnearest_cache: list = []
         try:
+            ov = getattr(self, "_overview_service", None)
             srv.configure(
                 html_provider=lambda: getattr(self, "_map_web_html_cache", "") or "",
                 compass_html_provider=lambda: getattr(self, "_map_web_compass_html_cache", "") or "",
+                overview_html_provider=lambda: getattr(self, "_map_web_overview_html_cache", "") or "",
                 live_provider=lambda: dict(getattr(self, "_map_web_live_cache", {}) or {}),
                 compass_provider=lambda: dict(getattr(self, "_map_web_compass_cache", {}) or {}),
+                overview_provider=lambda: dict(getattr(self, "_map_web_overview_cache", {}) or {}),
+                overview_action_handler=(
+                    (lambda action, payload: ov.handle_action(action, payload))
+                    if ov is not None
+                    else None
+                ),
                 setaz_handler=mw.apply_web_setaz,
                 ui_action_handler=mw.apply_web_ui_action,
                 aswatch_provider=lambda: tuple(
@@ -2439,9 +2457,20 @@ class MainWindow(QMainWindow):
         """Live-/HTML-Caches für den Webserver im UI-Thread aktualisieren."""
         srv = getattr(self, "_map_webserver", None)
         mw = getattr(self, "_map_win", None)
-        if srv is None or mw is None or not getattr(srv, "running", False):
+        ov = getattr(self, "_overview_service", None)
+        running = bool(srv is not None and getattr(srv, "running", False))
+        if not running:
+            if ov is not None:
+                try:
+                    ov.release("web")
+                except Exception:
+                    pass
+            return
+        if mw is None:
             return
         try:
+            if ov is not None:
+                ov.acquire("web")
             # HTML nur selten neu bauen (schwer); Live-State jedes Tick
             params = mw._get_params()
             rotor_target = float(params.get("rotor_az_deg", 0.0))
@@ -2452,11 +2481,15 @@ class MainWindow(QMainWindow):
             self._map_web_aswatch_cache = mw.get_web_aswatch()
             self._map_web_aircraft_cache = mw.get_web_aircraft()
             self._map_web_asnearest_cache = mw.get_web_asnearest()
+            if ov is not None:
+                self._map_web_overview_cache = ov.live_payload()
             now = time.time()
             last = float(getattr(self, "_map_web_html_cache_ts", 0.0) or 0.0)
             if (now - last) >= 2.0 or not getattr(self, "_map_web_html_cache", ""):
                 self._map_web_html_cache = mw.get_web_map_html()
                 self._map_web_compass_html_cache = mw.get_web_compass_html()
+                if ov is not None:
+                    self._map_web_overview_html_cache = ov.build_web_html()
                 self._map_web_html_cache_ts = now
         except Exception:
             pass
@@ -2483,11 +2516,17 @@ class MainWindow(QMainWindow):
             pass
         timer = getattr(self, "_map_web_cache_timer", None)
         try:
+            ov = getattr(self, "_overview_service", None)
             if enabled:
                 ok, err = srv.restart(host, port)
                 if timer is not None and not timer.isActive():
                     timer.start()
-                if not ok:
+                if ok:
+                    if ov is not None:
+                        ov.acquire("web")
+                else:
+                    if ov is not None:
+                        ov.release("web")
                     mws["enabled"] = False
                     try:
                         self.save_cfg_cb(self.cfg)
@@ -2507,6 +2546,8 @@ class MainWindow(QMainWindow):
             else:
                 if getattr(srv, "running", False):
                     srv.stop()
+                if ov is not None:
+                    ov.release("web")
         except Exception as e:
             self._log_exception("_apply_map_webserver_from_cfg", e)
 
@@ -3091,7 +3132,10 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             if win is None:
-                win = RotorOverviewWindow(parent=None)
+                win = RotorOverviewWindow(
+                    parent=None,
+                    service=getattr(self, "_overview_service", None),
+                )
                 self._rotor_overview_win = win
                 try:
                     win.destroyed.connect(lambda *_: setattr(self, "_rotor_overview_win", None))
@@ -3119,6 +3163,49 @@ class MainWindow(QMainWindow):
                 )
             except Exception:
                 print(f"[overview] open failed: {exc}", flush=True)
+
+    def _map_webserver_browser_base_url(self) -> tuple[str | None, str]:
+        """``(url_base, error_key)`` für Browser-Links auf den Karten-Webserver."""
+        mws = self.cfg.get("map_webserver", {}) or {}
+        if not bool(mws.get("enabled", False)):
+            return None, "main.rotor_overview_web_disabled"
+        srv = getattr(self, "_map_webserver", None)
+        if srv is None or not bool(getattr(srv, "running", False)):
+            return None, "main.rotor_overview_web_not_running"
+        host = str(getattr(srv, "host", None) or mws.get("listen_host") or "127.0.0.1").strip()
+        if host in ("0.0.0.0", "::", ""):
+            host = "127.0.0.1"
+        try:
+            port = int(getattr(srv, "port", None) or mws.get("listen_port") or 80)
+        except Exception:
+            port = 80
+        return f"http://{host}:{port}", ""
+
+    def _open_rotor_overview_web(self) -> None:
+        """Rotorübersicht im Standardbrowser unter ``/rotoren`` öffnen."""
+        base, err_key = self._map_webserver_browser_base_url()
+        if not base:
+            QMessageBox.information(
+                self,
+                t("main.menu_rotor_overview_web"),
+                t(err_key or "main.rotor_overview_web_disabled"),
+            )
+            return
+        url = f"{base}/rotoren"
+        try:
+            ok = QDesktopServices.openUrl(QUrl(url))
+        except Exception as exc:
+            ok = False
+            try:
+                self.logbuf.write("WARN", f"Rotorübersicht Web öffnen: {exc}")
+            except Exception:
+                pass
+        if not ok:
+            QMessageBox.warning(
+                self,
+                t("main.menu_rotor_overview_web"),
+                t("main.rotor_overview_web_open_fail", url=url),
+            )
 
     def _on_park_clicked(self) -> None:
         """Parken: Hom-Winkel per SETPOSDG anfahren (aus GETHOMEPOS-Cache)."""

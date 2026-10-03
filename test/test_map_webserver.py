@@ -102,6 +102,50 @@ def test_map_webserver_serves_html_and_setaz() -> None:
         srv.stop()
 
 
+def test_map_webserver_serves_rotoren_overview() -> None:
+    port = _free_port()
+    actions: list[tuple] = []
+    overview = {"sites": [{"id": "a", "name": "A", "online": True}], "status_text": "ok"}
+
+    def _action(action, payload):
+        actions.append((action, payload))
+        if action == "save_config":
+            return {"ok": True, "config": payload.get("config") or {}, "data": overview}
+        return {"ok": True}
+
+    srv = MapWebServer(
+        "127.0.0.1",
+        port,
+        _Log(),
+        password="rotor",
+        html_provider=lambda: "<html><body>map-ok</body></html>",
+        overview_html_provider=lambda: "<html><body>rotoren-ok</body></html>",
+        overview_provider=lambda: dict(overview),
+        overview_action_handler=_action,
+    )
+    ok, err = srv.start()
+    assert ok, err
+    try:
+        with _urlopen(f"http://127.0.0.1:{port}/rotoren") as resp:
+            body = resp.read().decode("utf-8")
+            assert "rotoren-ok" in body
+        with _urlopen(f"http://127.0.0.1:{port}/api/overview") as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            assert data["ok"] is True
+            assert data["data"]["status_text"] == "ok"
+        with _urlopen(
+            f"http://127.0.0.1:{port}/api/overview/action",
+            data=json.dumps({"action": "reload"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        ) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            assert result["ok"] is True
+        assert actions and actions[0][0] == "reload"
+    finally:
+        srv.stop()
+
+
 def test_map_webserver_serves_compass_and_ui_set_az() -> None:
     port = _free_port()
     actions: list[tuple] = []
@@ -143,6 +187,56 @@ def test_map_webserver_serves_compass_and_ui_set_az() -> None:
         assert actions
         assert actions[0][0] == "set_az"
         assert float(actions[0][1].get("deg")) == pytest.approx(123.4)
+    finally:
+        srv.stop()
+
+
+def test_map_webserver_locator_invalid_returns_error() -> None:
+    port = _free_port()
+
+    def _ui(action, payload):
+        if str(action).lower() == "locator":
+            raw = str((payload or {}).get("locator") or "").strip()
+            if raw and raw.lower() == "schrott":
+                return {
+                    "ok": False,
+                    "error": "locator_invalid",
+                    "title": "Locator ungültig",
+                    "message": "Bitte gültigen Locator",
+                }
+        return {"ok": True}
+
+    srv = MapWebServer(
+        "127.0.0.1",
+        port,
+        _Log(),
+        password="rotor",
+        html_provider=lambda: "<html></html>",
+        ui_action_handler=_ui,
+    )
+    ok, err = srv.start()
+    assert ok, err
+    try:
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _urlopen(
+                f"http://127.0.0.1:{port}/api/ui",
+                data=json.dumps({"action": "locator", "locator": "schrott"}).encode(
+                    "utf-8"
+                ),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        assert ei.value.code == 400
+        body = json.loads(ei.value.read().decode("utf-8"))
+        assert body["ok"] is False
+        assert body["error"] == "locator_invalid"
+        with _urlopen(
+            f"http://127.0.0.1:{port}/api/ui",
+            data=json.dumps({"action": "locator", "locator": "JN49"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        ) as resp:
+            assert json.loads(resp.read().decode("utf-8"))["ok"] is True
     finally:
         srv.stop()
 

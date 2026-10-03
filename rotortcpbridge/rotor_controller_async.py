@@ -15,6 +15,7 @@ from .rotor_parse_utils import (
     parse_getposdg_ist_d10,
     parse_int,
     parse_setposcc_params,
+    parse_setposdg_params,
 )
 
 # GETPOSDG wird ohne Inflight oft hintereinander gesendet; veraltete ACKs würden sonst die Ist-Position
@@ -158,20 +159,27 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 dst = int(tel.dst)
                 saz = int(self.slave_az)
                 sel = int(self.slave_el)
-                if dst == saz or dst == sel:
+                axis_dst = dst
+                if dst not in (saz, sel):
+                    try:
+                        resolved = self.resolve_panel_axis_dst(
+                            dst=dst,
+                            params=str(tel.params or ""),
+                            cmd="SETPOSDG",
+                        )
+                    except Exception:
+                        resolved = None
+                    if resolved is None:
+                        return
+                    axis_dst = int(resolved)
+                if axis_dst == saz or axis_dst == sel:
                     should_restrict = False
                     try:
-                        p = str(tel.params or "").strip()
-                        if ";" in p:
-                            p = p.split(";")[-1]
-                        # Serial-Mitschnitt kann zusätzliche Felder nach ":" enthalten.
-                        # Für SETPOSDG nur den ersten Winkelteil verwenden.
-                        if ":" in p:
-                            p = p.split(":", 1)[0]
-                        p = p.replace(" ", "")
-                        v = float(p.replace(",", "."))
-                        d10 = int(round(v * 10.0))
-                        axs = self.az if dst == saz else self.el
+                        v, _rid = parse_setposdg_params(str(tel.params or ""))
+                        d10 = int(round(float(v) * 10.0)) if v is not None else None
+                        if d10 is None:
+                            raise ValueError("no angle")
+                        axs = self.az if axis_dst == saz else self.el
                         cur_tgt = int(getattr(axs, "target_d10", 0))
                         cur_pos = int(getattr(axs, "pos_d10", 0))
                         should_restrict = True
@@ -189,7 +197,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         try:
                             if int(tel.src) != int(self.master_id):
                                 self.note_foreign_master_activity(
-                                    self.az if dst == saz else self.el,
+                                    self.az if axis_dst == saz else self.el,
                                     set_target=True,
                                     foreign_master_id=int(tel.src),
                                 )
@@ -203,16 +211,20 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     elif int(tel.src) != int(self.master_id):
                         try:
                             self.note_foreign_master_activity(
-                                self.az if dst == saz else self.el,
+                                self.az if axis_dst == saz else self.el,
                                 set_target=True,
                                 foreign_master_id=int(tel.src),
                             )
                         except Exception:
                             pass
                     self._apply_local_state_for_ui_command(
-                        dst, "SETPOSDG", tel.params, from_bus_sniff=True, bus_src=int(tel.src)
+                        axis_dst,
+                        "SETPOSDG",
+                        tel.params,
+                        from_bus_sniff=True,
+                        bus_src=int(tel.src),
                     )
-                    ax = self.az if dst == saz else self.el
+                    ax = self.az if axis_dst == saz else self.el
                     ax.online = True
                     ax.last_rx_ts = time.time()
             except Exception:

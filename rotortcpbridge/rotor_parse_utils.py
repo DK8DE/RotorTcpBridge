@@ -66,6 +66,33 @@ def parse_setposcc_params(params: str) -> tuple[Optional[float], Optional[int]]:
     return parse_float(raw), None
 
 
+def parse_setposdg_params(params: str) -> tuple[Optional[float], Optional[int]]:
+    """SETPOSDG-Payload → (Winkel Grad, optionale Rotor-ID).
+
+    - ``160,00`` → ``(160.0, None)``
+    - ``151,30;20`` → ``(151.3, 20)`` (Remote-USB / Panel, analog SETPOSCC)
+    - ``92,30:114,3`` → ``(92.3, None)`` (Serial-Mitschnitt mit Zusatzfeld)
+    """
+    raw = str(params or "").strip()
+    if not raw:
+        return None, None
+    angle, rid = parse_setposcc_params(raw)
+    if rid is not None:
+        return angle, rid
+    p = raw
+    if ";" in p:
+        p = p.split(";")[-1]
+    if ":" in p:
+        p = p.split(":", 1)[0]
+    p = p.replace(" ", "")
+    return parse_float(p), None
+
+
+def format_deg_param(deg: float) -> str:
+    """Winkel für SETPOSDG/CC-PARAMS (Komma, 2 Nachkommastellen)."""
+    return f"{float(deg):.2f}".replace(".", ",")
+
+
 def parse_getposdg_ist_d10(params: str) -> Optional[int]:
     """Ist-Position aus ACK_GETPOSDG als 0,1°-Einheiten (eine Nachkommastelle)."""
     try:

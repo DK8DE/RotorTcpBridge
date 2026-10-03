@@ -12,6 +12,7 @@ from collections import deque
 from typing import Any, Deque, FrozenSet, Optional, Tuple
 
 from .hardware_client import HardwareClient, HwRequest
+from .rotor_parse_utils import format_deg_param, parse_setposcc_params, parse_setposdg_params
 from .rs485_protocol import build, parse
 
 # Software-TX die das Display sehen muss (Soll/Steuerung). Routine-GETs nicht spiegeln.
@@ -58,6 +59,8 @@ class ControllerRemoteUsbProxy:
         self._dedup: Deque[Tuple[str, float]] = deque(maxlen=96)
         self._dedup_s = 1.5
         self._cfg: dict = {}
+        # Letzte SETPOSCC-Achse (Slave-ID), falls SETPOSDG ohne ;rotor_id an Bridge-DST kommt.
+        self._last_cc_axis_dst: Optional[int] = None
 
     def is_active(self) -> bool:
         return bool(self._active)
@@ -537,6 +540,76 @@ class ControllerRemoteUsbProxy:
             pass
         return True
 
+    def _rewrite_ctrl_line_for_rotor(self, line: str) -> Tuple[str, Any]:
+        """Panel-Telegramme an Bridge-DST → Slave-DST umschreiben (Remote-USB).
+
+        Display sendet oft ``#2:1:SETPOSCC:151,30;20`` / ``SETPOSDG`` an die Software-ID.
+        Unverändert auf RS485 weitergeleitet ignoriert der Rotor das — keine Fahrt.
+        """
+        tel = parse(line)
+        if tel is None or not bool(getattr(tel, "ok", False)):
+            return line, tel
+        cmd_u = str(tel.cmd or "").strip().upper()
+        if cmd_u not in ("SETPOSDG", "SETPOSCC", "STOP", "NSTOP", "SETREF"):
+            return line, tel
+        try:
+            saz = int(getattr(self.ctrl, "slave_az", 0) or 0)
+            sel = int(getattr(self.ctrl, "slave_el", 0) or 0)
+            mid = int(getattr(self.ctrl, "master_id", 0) or 0)
+            dst = int(tel.dst)
+            src = int(tel.src)
+        except Exception:
+            return line, tel
+        if dst in (saz, sel) and saz > 0:
+            if cmd_u == "SETPOSCC":
+                self._last_cc_axis_dst = dst
+            return line, tel
+
+        new_dst: Optional[int] = None
+        new_params = str(tel.params or "")
+        resolver = getattr(self.ctrl, "resolve_panel_axis_dst", None)
+        if callable(resolver):
+            try:
+                new_dst = resolver(dst=dst, params=new_params, cmd=cmd_u)
+            except Exception:
+                new_dst = None
+        if new_dst is None:
+            rid = None
+            try:
+                if cmd_u == "SETPOSDG":
+                    _, rid = parse_setposdg_params(new_params)
+                elif cmd_u == "SETPOSCC":
+                    _, rid = parse_setposcc_params(new_params)
+            except Exception:
+                rid = None
+            if rid in (saz, sel):
+                new_dst = int(rid)
+            elif dst == mid or dst == self._cont_id():
+                if cmd_u == "SETPOSDG" and self._last_cc_axis_dst in (saz, sel):
+                    new_dst = int(self._last_cc_axis_dst)
+                elif bool(getattr(self.ctrl, "enable_az", True)) and saz > 0:
+                    new_dst = saz
+                elif bool(getattr(self.ctrl, "enable_el", False)) and sel > 0:
+                    new_dst = sel
+        if new_dst is None or int(new_dst) == dst:
+            return line, tel
+
+        if cmd_u == "SETPOSCC":
+            self._last_cc_axis_dst = int(new_dst)
+        if cmd_u == "SETPOSDG":
+            try:
+                ang, _rid = parse_setposdg_params(new_params)
+                if ang is not None:
+                    new_params = format_deg_param(ang)
+            except Exception:
+                pass
+        try:
+            out = build(src, int(new_dst), cmd_u, new_params)
+            out_tel = parse(out)
+            return out, out_tel if out_tel is not None else tel
+        except Exception:
+            return line, tel
+
     def _forward_to_rotor(self, line: str, cmd_u: str) -> None:
         self._note_dedup(line)
         try:
@@ -564,8 +637,13 @@ class ControllerRemoteUsbProxy:
         line = str(raw or "").strip()
         if not line or not self._should_forward_ctrl_to_rotor(line):
             return
-        tel = parse(line)
+        line, tel = self._rewrite_ctrl_line_for_rotor(line)
         cmd_u = str(tel.cmd or "").strip().upper() if tel is not None else ""
+        if not cmd_u:
+            tel2 = parse(line)
+            cmd_u = str(tel2.cmd or "").strip().upper() if tel2 is not None else ""
+            if tel is None:
+                tel = tel2
         self._forward_to_rotor(line, cmd_u)
         try:
             if tel is not None and hasattr(self.ctrl, "on_controller_link_telegram"):

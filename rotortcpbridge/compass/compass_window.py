@@ -2619,6 +2619,23 @@ class CompassWindow(QDialog):
                     tgt = az_pos_deg_from_d10(td, max_d10=max_d10_az)
             else:
                 self._cc_display_latch_az_d10 = None
+                # Web/Karte setzen target_d10, nicht immer _target_az. Veraltetes Latch
+                # sonst bei Ankunft (moving→False) kurzer Soll-Sprung auf das alte Ziel.
+                try:
+                    td = int(getattr(self.ctrl.az, "target_d10", 0))
+                    last_sent = getattr(self.ctrl.az, "last_set_sent_target_d10", None)
+                    motor_d10 = int(last_sent) if last_sent is not None else td
+                    latch_d10 = int(round(float(self._target_az) * 10.0))
+                    has_motor = (
+                        last_sent is not None
+                        or float(getattr(self.ctrl.az, "last_set_sent_ts", 0.0) or 0.0) > 0.0
+                    )
+                    if has_motor and abs(motor_d10 - latch_d10) > 2:
+                        self._target_az = az_pos_deg_from_d10(
+                            motor_d10, max_d10=max_d10_az
+                        )
+                except Exception:
+                    pass
                 tgt = self._target_az
         elif tgt is None:
             try:
@@ -2901,6 +2918,20 @@ class CompassWindow(QDialog):
                     tgt = self._clamp_el(float(td) / 10.0)
             else:
                 self._cc_display_latch_el_d10 = None
+                # Wie AZ: Web/externe Ziele → Latch an Motorziel anbinden.
+                try:
+                    td = int(getattr(self.ctrl.el, "target_d10", 0))
+                    last_sent = getattr(self.ctrl.el, "last_set_sent_target_d10", None)
+                    motor_d10 = int(last_sent) if last_sent is not None else td
+                    latch_d10 = int(round(float(self._target_el) * 10.0))
+                    has_motor = (
+                        last_sent is not None
+                        or float(getattr(self.ctrl.el, "last_set_sent_ts", 0.0) or 0.0) > 0.0
+                    )
+                    if has_motor and abs(motor_d10 - latch_d10) > 2:
+                        self._target_el = self._clamp_el(float(motor_d10) / 10.0)
+                except Exception:
+                    pass
                 tgt = self._target_el
         elif tgt is None:
             try:

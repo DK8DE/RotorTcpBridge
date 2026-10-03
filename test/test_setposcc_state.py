@@ -225,6 +225,42 @@ def test_setposcc_controller_to_bridge_updates_compass() -> None:
     assert c.az.compass_target_d10 == 920
 
 
+def test_controller_link_setposcc_bridge_dst_updates_compass() -> None:
+    """USB-Remote: on_controller_link_telegram mit DST=Master + ;rotor_id."""
+    c = RotorController(
+        _hw_stub(),
+        master_id=1,
+        slave_az=20,
+        slave_el=21,
+        log=_Log(),
+        setposcc_controller_src_id=2,
+    )
+    c.az.moving = False
+    tel = Telegram(src=2, dst=1, cmd="SETPOSCC", params="151,30;20", cs=0.0, ok=True)
+    c.on_controller_link_telegram(tel)
+    assert c.az.compass_target_d10 == 1513
+    assert c.az.moving is False
+
+
+def test_controller_link_setposdg_bridge_dst_starts_move() -> None:
+    """USB-Remote: SETPOSDG an Bridge-DST → Achse aus ;rotor_id, Moving + Ziel."""
+    c = RotorController(
+        _hw_stub(),
+        master_id=1,
+        slave_az=20,
+        slave_el=21,
+        log=_Log(),
+        setposcc_controller_src_id=2,
+    )
+    c.az.pos_d10 = 0
+    c.az.target_d10 = 0
+    tel = Telegram(src=2, dst=1, cmd="SETPOSDG", params="90,00;20", cs=0.0, ok=True)
+    c.on_controller_link_telegram(tel)
+    assert c.az.target_d10 == 900
+    assert c.az.moving is True
+    assert c.az.external_panel_move_active is True
+
+
 def test_setposcc_controller_src_filter_requires_cont_id() -> None:
     """Mit gesetztem Controller (cont_id=2): nur SRC 2 zählt für SETPOSCC."""
     c = RotorController(
@@ -357,12 +393,14 @@ def test_setposcc_to_slave_from_controller_still_applies() -> None:
     assert c.az.compass_target_d10 == 880
 
 
-def test_compass_window_open_clears_strom_flags_for_fresh_sync() -> None:
-    """Beim Anzeigen des Kompass: alte Strom-Flags weg, bis UI wieder notify setzt."""
+def test_compass_window_close_clears_strom_flags() -> None:
+    """Beim Schließen des Kompass: Strom-Flags weg (kein GETACCBINS mehr)."""
     c = RotorController(_hw_stub(), master_id=1, slave_az=20, slave_el=21, log=_Log())
     c.set_statistics_window_open(False)
-    c.set_compass_strom_heatmap_active(True, True)
     c.set_compass_window_open(True)
+    c.set_compass_strom_heatmap_active(True, True)
+    assert c._acc_bins_poll_enabled() is True
+    c.set_compass_window_open(False)
     assert c._compass_strom_heatmap_az is False
     assert c._compass_strom_heatmap_el is False
     assert c._acc_bins_poll_enabled() is False

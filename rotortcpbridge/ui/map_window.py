@@ -1755,6 +1755,9 @@ class MapWindow(QDialog):
                 "ort": t("map.ort_label"),
                 "locator": t("map.locator_label"),
                 "locator_ph": t("compass.locator_placeholder"),
+                "locator_invalid_title": t("compass.locator_invalid_title"),
+                "locator_invalid_body": t("compass.locator_invalid_body"),
+                "dialog_ok": "OK",
                 "search_ph": t("map.search_placeholder"),
                 "elevation": t("map.btn_elevation"),
                 "offline": t("map.chk_offline"),
@@ -1876,9 +1879,30 @@ class MapWindow(QDialog):
         """Kartenklick aus dem Browser → UI-Thread (Signal), gleiche Pipeline wie Desktop."""
         self.web_setaz_requested.emit(float(lat), float(lon), asnearest_dest)
 
-    def apply_web_ui_action(self, action: str, payload: dict | None = None) -> None:
-        """Chrome-Aktion aus dem Browser → UI-Thread."""
-        self.web_ui_action_requested.emit(str(action or ""), dict(payload or {}))
+    def apply_web_ui_action(self, action: str, payload: dict | None = None) -> dict:
+        """Chrome-Aktion aus dem Browser → UI-Thread.
+
+        Gibt sofort ein Ergebnis-Dict zurück (für HTTP). Locator wird synchron
+        geprüft, damit die Webseite die Fehlermeldung zeigt (ohne App-Popup).
+        """
+        data = dict(payload or {})
+        act = str(action or "").strip().lower()
+        if act == "locator":
+            raw = str(data.get("locator") or "").strip()
+            if not raw:
+                return {"ok": True}
+            from ..geo_utils import maidenhead_to_lat_lon
+            from ..i18n import t
+
+            if maidenhead_to_lat_lon(raw) is None:
+                return {
+                    "ok": False,
+                    "error": "locator_invalid",
+                    "title": t("compass.locator_invalid_title"),
+                    "message": t("compass.locator_invalid_body"),
+                }
+        self.web_ui_action_requested.emit(act, data)
+        return {"ok": True}
 
     @Slot(float, float, object)
     def _on_web_setaz_requested(
@@ -1956,9 +1980,17 @@ class MapWindow(QDialog):
                             self._on_fav_delete()
                             break
             elif act == "locator":
+                # Ohne QMessageBox — ungültige Locator werden schon in
+                # apply_web_ui_action abgefangen und an die Webseite gemeldet.
                 raw = str(data.get("locator") or "").strip()
+                if not raw:
+                    return
+                ll = maidenhead_to_lat_lon(raw)
+                if ll is None:
+                    return
+                lat_d, lon_d = ll
                 self._ed_map_loc.setText(raw)
-                self._on_map_locator_entered()
+                self._on_map_click(float(lat_d), float(lon_d), asnearest_dest=None)
             elif act == "place_search":
                 q = str(data.get("query") or "").strip()
                 self._ed_place_search.setText(q)

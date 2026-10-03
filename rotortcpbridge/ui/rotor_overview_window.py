@@ -31,9 +31,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from ..angle_utils import antenna_bearing_from_rotor_and_offset, fmt_deg
 from ..app_icon import get_app_icon
-from ..geo_utils import beam_polygon_points, maidenhead_to_lat_lon
+from ..geo_utils import maidenhead_to_lat_lon
 from ..i18n import t
 from ..rotor_overview_config import (
     deep_copy_config,
@@ -45,16 +44,14 @@ from ..rotor_overview_config import (
     site_from_profile,
 )
 from ..rotor_overview_monitor import RotorOverviewMonitor, SiteLiveState
+from ..rotor_overview_service import RotorOverviewService, fill_from_stroke
 from .map_widgets import MapWebPage
 from .rotor_overview_html import build_overview_html
 from .ui_utils import px_to_dip
 
 
 def _fill_from_stroke(stroke: str) -> str:
-    c = QColor(stroke)
-    if not c.isValid():
-        return "#87CEEB"
-    return c.lighter(160).name()
+    return fill_from_stroke(stroke)
 
 
 class RotorOverviewSiteDialog(QDialog):
@@ -388,7 +385,7 @@ class RotorOverviewWindow(QDialog):
 
     site_state_changed = Signal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, service: RotorOverviewService | None = None):
         super().__init__(parent)
         self.setWindowTitle(t("overview.title"))
         self.setWindowIcon(get_app_icon())
@@ -397,9 +394,18 @@ class RotorOverviewWindow(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
-        self._cfg = load_overview_config()
-        self._live: Dict[str, SiteLiveState] = {}
+        self._service = service
+        if self._service is not None:
+            self._cfg = self._service.get_config()
+            self._live = self._service.get_live_snapshot()
+            self._monitor = None
+            self._service.add_cfg_listener(self._on_service_cfg_changed)
+        else:
+            self._cfg = load_overview_config()
+            self._live = {}
+            self._monitor = RotorOverviewMonitor(on_update=self._emit_state)
         self._page_ready = False
+        self._cfg_rev_seen = self._service.revision if self._service is not None else 0
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -455,7 +461,6 @@ class RotorOverviewWindow(QDialog):
         root.addWidget(self._view, 1)
 
         self.site_state_changed.connect(self._on_site_state)
-        self._monitor = RotorOverviewMonitor(on_update=self._emit_state)
         self._ui_timer = QTimer(self)
         self._ui_timer.setInterval(500)
         self._ui_timer.timeout.connect(self._push_sites_js)
@@ -472,6 +477,13 @@ class RotorOverviewWindow(QDialog):
         if isinstance(st, SiteLiveState):
             self._live[st.site_id] = st
 
+    def _on_service_cfg_changed(self) -> None:
+        if self._service is None:
+            return
+        self._cfg = self._service.get_config()
+        self._cfg_rev_seen = self._service.revision
+        self._push_sites_js()
+
     def retranslate(self) -> None:
         self.setWindowTitle(t("overview.title"))
         self._menu_settings.setTitle(t("overview.menu_settings"))
@@ -484,47 +496,36 @@ class RotorOverviewWindow(QDialog):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self._cfg = dlg.result_cfg()
-        save_overview_config(self._cfg)
-        self._reload_monitor()
+        if self._service is not None:
+            self._service.replace_config(self._cfg, persist=True)
+            self._cfg = self._service.get_config()
+        else:
+            save_overview_config(self._cfg)
+            self._reload_monitor()
         self._push_sites_js()
 
     def _reload_monitor(self) -> None:
-        self._monitor.start(list(self._cfg.get("sites") or []))
+        if self._service is not None:
+            self._service.restart_monitor()
+        elif self._monitor is not None:
+            self._monitor.start(list(self._cfg.get("sites") or []))
         self._update_status()
 
     def _update_status(self) -> None:
-        n = len([s for s in (self._cfg.get("sites") or []) if s.get("enabled")])
-        online = sum(1 for st in self._live.values() if st.online)
+        if self._service is not None:
+            n, online = self._service.status_counts()
+        else:
+            n = len([s for s in (self._cfg.get("sites") or []) if s.get("enabled")])
+            online = sum(1 for st in self._live.values() if st.online)
         self._status.setText(t("overview.status_line", sites=n, online=online))
 
-    def _site_beams(self, site: dict, az_deg: Optional[float]) -> List[dict]:
-        if az_deg is None:
-            return []
-        lat = float(site["lat"])
-        lon = float(site["lon"])
-        beams: List[dict] = []
-        for ant in site.get("antennas") or []:
-            if not ant.get("enabled"):
-                continue
-            bearing = antenna_bearing_from_rotor_and_offset(
-                float(az_deg), float(ant.get("offset_deg") or 0.0)
-            )
-            opening = float(ant.get("opening_deg") or 30.0)
-            range_km = float(ant.get("range_km") or 100.0)
-            stroke = str(ant.get("color") or "#5BA3D0")
-            fill = _fill_from_stroke(stroke)
-            poly = beam_polygon_points(lat, lon, bearing, opening, range_km)
-            beams.append(
-                {
-                    "polygon": [[p[0], p[1]] for p in poly],
-                    "stroke": stroke,
-                    "fill": fill,
-                    "name": ant.get("name") or "",
-                }
-            )
-        return beams
-
     def _render_sites(self) -> List[dict]:
+        if self._service is not None:
+            return self._service.render_sites()
+        # Fallback ohne Service (Tests / Standalone)
+        from ..angle_utils import antenna_bearing_from_rotor_and_offset, fmt_deg
+        from ..geo_utils import beam_polygon_points
+
         out: List[dict] = []
         for site in self._cfg.get("sites") or []:
             if not site.get("enabled"):
@@ -548,6 +549,32 @@ class RotorOverviewWindow(QDialog):
                 if ant.get("enabled"):
                     color = str(ant.get("color") or color)
                     break
+            beams = []
+            if az is not None:
+                lat = float(site["lat"])
+                lon = float(site["lon"])
+                for ant in site.get("antennas") or []:
+                    if not ant.get("enabled"):
+                        continue
+                    bearing = antenna_bearing_from_rotor_and_offset(
+                        float(az), float(ant.get("offset_deg") or 0.0)
+                    )
+                    stroke = str(ant.get("color") or "#5BA3D0")
+                    poly = beam_polygon_points(
+                        lat,
+                        lon,
+                        bearing,
+                        float(ant.get("opening_deg") or 30.0),
+                        float(ant.get("range_km") or 100.0),
+                    )
+                    beams.append(
+                        {
+                            "polygon": [[p[0], p[1]] for p in poly],
+                            "stroke": stroke,
+                            "fill": _fill_from_stroke(stroke),
+                            "name": ant.get("name") or "",
+                        }
+                    )
             out.append(
                 {
                     "id": sid,
@@ -558,7 +585,7 @@ class RotorOverviewWindow(QDialog):
                     "az_text": az_text,
                     "ref_text": ref_text,
                     "marker_color": color,
-                    "beams": self._site_beams(site, float(az) if az is not None else None),
+                    "beams": beams,
                 }
             )
         return out
@@ -610,6 +637,11 @@ class RotorOverviewWindow(QDialog):
         self._push_sites_js()
 
     def _push_sites_js(self) -> None:
+        if self._service is not None:
+            self._live = self._service.get_live_snapshot()
+            if self._service.revision != self._cfg_rev_seen:
+                self._cfg = self._service.get_config()
+                self._cfg_rev_seen = self._service.revision
         self._update_status()
         if not self._page_ready:
             return
@@ -627,12 +659,19 @@ class RotorOverviewWindow(QDialog):
         super().showEvent(event)
         if not self._ui_timer.isActive():
             self._ui_timer.start()
-        self._reload_monitor()
+        if self._service is not None:
+            self._service.acquire("window")
+            self._cfg = self._service.get_config()
+        else:
+            self._reload_monitor()
         self._apply_dark_mode_js()
 
     def hideEvent(self, event) -> None:
         self._ui_timer.stop()
-        self._monitor.stop()
+        if self._service is not None:
+            self._service.release("window")
+        elif self._monitor is not None:
+            self._monitor.stop()
         # Kartenausschnitt speichern
         try:
             self._view.page().runJavaScript(
@@ -647,15 +686,31 @@ class RotorOverviewWindow(QDialog):
         if not isinstance(result, dict):
             return
         try:
-            self._cfg["map_center_lat"] = float(result.get("lat", self._cfg.get("map_center_lat")))
-            self._cfg["map_center_lon"] = float(result.get("lon", self._cfg.get("map_center_lon")))
-            self._cfg["map_zoom"] = int(result.get("zoom", self._cfg.get("map_zoom")))
-            save_overview_config(self._cfg)
+            lat = float(result.get("lat", self._cfg.get("map_center_lat")))
+            lon = float(result.get("lon", self._cfg.get("map_center_lon")))
+            zoom = int(result.get("zoom", self._cfg.get("map_zoom")))
+            if self._service is not None:
+                self._service.save_view(lat, lon, zoom)
+                self._cfg = self._service.get_config()
+            else:
+                self._cfg["map_center_lat"] = lat
+                self._cfg["map_center_lon"] = lon
+                self._cfg["map_zoom"] = zoom
+                save_overview_config(self._cfg)
         except Exception:
             pass
 
     def closeEvent(self, event) -> None:
         self._ui_timer.stop()
-        self._monitor.stop()
-        save_overview_config(self._cfg)
+        if self._service is not None:
+            try:
+                self._service.remove_cfg_listener(self._on_service_cfg_changed)
+            except Exception:
+                pass
+            self._service.release("window")
+            save_overview_config(self._service.get_config())
+        else:
+            if self._monitor is not None:
+                self._monitor.stop()
+            save_overview_config(self._cfg)
         super().closeEvent(event)

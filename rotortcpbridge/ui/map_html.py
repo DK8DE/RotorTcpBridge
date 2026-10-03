@@ -332,6 +332,36 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     body.map-dark #webGeoPickList button {
       background:rgba(42,42,46,0.9); border-color:rgba(180,180,190,0.3); }
     #webGeoPickActions { display:flex; justify-content:flex-end; gap:8px; flex:0 0 auto; }
+    #webUiMsgOverlay {
+      display:none; position:fixed; inset:0; z-index:1400;
+      align-items:center; justify-content:center;
+      background:rgba(0,0,0,0.45); padding:16px;
+      pointer-events:auto; touch-action:manipulation;
+    }
+    #webUiMsgOverlay.show { display:flex; }
+    #webUiMsgBox {
+      width:min(420px, calc(100vw - 32px)); max-width:100%;
+      display:flex; flex-direction:column; gap:10px; padding:16px 18px;
+      border-radius:10px; border:1px solid rgba(128,128,128,0.4);
+      background:rgba(255,255,255,0.96); color:#1a1a1a;
+      box-shadow:0 8px 28px rgba(0,0,0,0.35); font:13px/1.35 sans-serif;
+    }
+    body.map-dark #webUiMsgBox {
+      background:rgba(28,28,30,0.96); border-color:rgba(180,180,190,0.3); color:#eaeaea;
+      box-shadow:0 8px 28px rgba(0,0,0,0.55);
+    }
+    #webUiMsgTitle { font-weight:700; font-size:15px; text-align:center; }
+    #webUiMsgBody {
+      font-size:13px; line-height:1.4; text-align:center; white-space:pre-wrap; opacity:0.95;
+    }
+    #webUiMsgActions { display:flex; justify-content:center; margin-top:4px; }
+    #webUiMsgOk {
+      min-width:96px; cursor:pointer; font-weight:700; padding:8px 18px; border-radius:6px;
+      border:1px solid rgba(128,128,128,0.4); background:rgba(255,255,255,0.85); color:inherit;
+    }
+    body.map-dark #webUiMsgOk {
+      background:rgba(42,42,46,0.95); border-color:rgba(180,180,190,0.3);
+    }
 """
         if wind_arrow_data_url:
             web_wind_html = (
@@ -395,6 +425,13 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     <div id="webGeoPickList"></div>
     <div id="webGeoPickActions">
       <button type="button" id="webGeoPickCancel">Abbrechen</button>
+    </div>
+  </div>
+  <div id="webUiMsgOverlay" role="dialog" aria-modal="true" aria-labelledby="webUiMsgTitle">
+    <div id="webUiMsgBox">
+      <div id="webUiMsgTitle"></div>
+      <div id="webUiMsgBody"></div>
+      <div id="webUiMsgActions"><button type="button" id="webUiMsgOk">OK</button></div>
     </div>
   </div>"""
 
@@ -555,16 +592,41 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     const WEB_MODE = {str(web_mode).lower()};
     const WEB_CHROME_INIT = {web_chrome_json};
     function _webApi(action, extra) {{
-      if (!WEB_MODE) return;
+      if (!WEB_MODE) return Promise.resolve({{ ok: true }});
       const body = Object.assign({{ action: action }}, extra || {{}});
-      fetch('/api/ui', {{
+      return fetch('/api/ui', {{
         method: 'POST',
         headers: {{ 'Content-Type': 'application/json' }},
         body: JSON.stringify(body)
-      }}).catch(function() {{}});
+      }}).then(function(r) {{
+        return r.text().then(function(txt) {{
+          let data = {{}};
+          try {{ data = txt ? JSON.parse(txt) : {{}}; }} catch (e) {{ data = {{}}; }}
+          if (typeof data.ok !== 'boolean') data.ok = !!r.ok;
+          return data;
+        }});
+      }}).catch(function() {{ return {{ ok: false }}; }});
     }}
     function _webChromeLabels() {{
       return (WEB_CHROME_INIT && WEB_CHROME_INIT.labels) || {{}};
+    }}
+    function _webHideUiError() {{
+      const ov = document.getElementById('webUiMsgOverlay');
+      if (ov) ov.classList.remove('show');
+    }}
+    function _webShowUiError(data) {{
+      if (!data || data.ok) {{ _webHideUiError(); return; }}
+      const Lbl = _webChromeLabels();
+      const title = data.title || Lbl.locator_invalid_title || 'Fehler';
+      const msg = data.message || data.error || Lbl.locator_invalid_body || '';
+      const tEl = document.getElementById('webUiMsgTitle');
+      const bEl = document.getElementById('webUiMsgBody');
+      const okBtn = document.getElementById('webUiMsgOk');
+      const ov = document.getElementById('webUiMsgOverlay');
+      if (tEl) tEl.textContent = title;
+      if (bEl) bEl.textContent = msg;
+      if (okBtn) okBtn.textContent = Lbl.dialog_ok || 'OK';
+      if (ov) ov.classList.add('show');
     }}
     function _webHideGeoPick() {{
       const box = document.getElementById('webGeoPick');
@@ -875,8 +937,14 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
           try {{ ev.stopPropagation(); }} catch (e) {{}}
         }}
         if (!locIn) return;
-        try {{ locIn.blur(); }} catch (e) {{}}
-        _webApi('locator', {{ locator: locIn.value || '' }});
+        _webApi('locator', {{ locator: locIn.value || '' }}).then(function(data) {{
+          _webShowUiError(data);
+          if (data && !data.ok) {{
+            try {{ locIn.focus(); locIn.select(); }} catch (e) {{}}
+          }} else {{
+            try {{ locIn.blur(); }} catch (e) {{}}
+          }}
+        }});
       }}
       if (locForm) {{
         locForm.addEventListener('submit', function(ev) {{ _webRunLocator(ev); }});
@@ -887,6 +955,20 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         }});
         locIn.addEventListener('search', function(ev) {{ _webRunLocator(ev); }});
       }}
+      const uiMsgOk = document.getElementById('webUiMsgOk');
+      if (uiMsgOk) uiMsgOk.addEventListener('click', function() {{ _webHideUiError(); }});
+      const uiMsgOv = document.getElementById('webUiMsgOverlay');
+      if (uiMsgOv) {{
+        uiMsgOv.addEventListener('click', function(ev) {{
+          if (ev.target === uiMsgOv) _webHideUiError();
+        }});
+        if (typeof L !== 'undefined' && L.DomEvent) {{
+          try {{ L.DomEvent.disableClickPropagation(uiMsgOv); }} catch (e) {{}}
+        }}
+      }}
+      document.addEventListener('keydown', function(ev) {{
+        if (ev.key === 'Escape') _webHideUiError();
+      }});
       const geoCancel = document.getElementById('webGeoPickCancel');
       if (geoCancel) geoCancel.addEventListener('click', function() {{ _webHideGeoPick(); }});
       const geoPick = document.getElementById('webGeoPick');

@@ -39,8 +39,11 @@ class MapWebServer:
         password: Optional[str] = None,
         html_provider: Optional[Callable[[], str]] = None,
         compass_html_provider: Optional[Callable[[], str]] = None,
+        overview_html_provider: Optional[Callable[[], str]] = None,
         live_provider: Optional[Callable[[], dict]] = None,
         compass_provider: Optional[Callable[[], dict]] = None,
+        overview_provider: Optional[Callable[[], dict]] = None,
+        overview_action_handler: Optional[Callable[..., dict]] = None,
         setaz_handler: Optional[Callable[..., None]] = None,
         ui_action_handler: Optional[Callable[..., None]] = None,
         aswatch_provider: Optional[Callable[[], tuple]] = None,
@@ -53,8 +56,11 @@ class MapWebServer:
         self._password_cfg = str(password if password is not None else DEFAULT_MAP_WEBSERVER_PASSWORD)
         self.html_provider = html_provider
         self.compass_html_provider = compass_html_provider
+        self.overview_html_provider = overview_html_provider
         self.live_provider = live_provider
         self.compass_provider = compass_provider
+        self.overview_provider = overview_provider
+        self.overview_action_handler = overview_action_handler
         self.setaz_handler = setaz_handler
         self.ui_action_handler = ui_action_handler
         self.aswatch_provider = aswatch_provider
@@ -90,8 +96,11 @@ class MapWebServer:
         password: Optional[str] = None,
         html_provider: Optional[Callable[[], str]] = None,
         compass_html_provider: Optional[Callable[[], str]] = None,
+        overview_html_provider: Optional[Callable[[], str]] = None,
         live_provider: Optional[Callable[[], dict]] = None,
         compass_provider: Optional[Callable[[], dict]] = None,
+        overview_provider: Optional[Callable[[], dict]] = None,
+        overview_action_handler: Optional[Callable[..., dict]] = None,
         setaz_handler: Optional[Callable[..., None]] = None,
         ui_action_handler: Optional[Callable[..., None]] = None,
         aswatch_provider: Optional[Callable[[], tuple]] = None,
@@ -104,10 +113,16 @@ class MapWebServer:
             self.html_provider = html_provider
         if compass_html_provider is not None:
             self.compass_html_provider = compass_html_provider
+        if overview_html_provider is not None:
+            self.overview_html_provider = overview_html_provider
         if live_provider is not None:
             self.live_provider = live_provider
         if compass_provider is not None:
             self.compass_provider = compass_provider
+        if overview_provider is not None:
+            self.overview_provider = overview_provider
+        if overview_action_handler is not None:
+            self.overview_action_handler = overview_action_handler
         if setaz_handler is not None:
             self.setaz_handler = setaz_handler
         if ui_action_handler is not None:
@@ -389,11 +404,17 @@ class MapWebServer:
                 if path == "/compass":
                     self._handle_compass()
                     return
+                if path in ("/rotoren", "/rotoren/"):
+                    self._handle_overview()
+                    return
                 if path == "/api/state":
                     self._handle_state()
                     return
                 if path == "/api/compass":
                     self._handle_compass_state()
+                    return
+                if path == "/api/overview":
+                    self._handle_overview_state()
                     return
                 if path == "/api/events":
                     self._handle_sse()
@@ -412,6 +433,9 @@ class MapWebServer:
                     return
                 if path == "/api/geocode":
                     self._handle_geocode()
+                    return
+                if path == "/api/overview/action":
+                    self._handle_overview_action()
                     return
                 self._send_json(404, {"ok": False, "error": "not_found"})
 
@@ -467,6 +491,61 @@ class MapWebServer:
                 except Exception as exc:
                     self._send_json(500, {"ok": False, "error": str(exc)})
 
+            def _handle_overview(self) -> None:
+                try:
+                    html = ""
+                    if callable(server.overview_html_provider):
+                        html = str(server.overview_html_provider() or "")
+                    if not html:
+                        html = (
+                            "<!DOCTYPE html><html><body><p>Overview unavailable</p></body></html>"
+                        )
+                    self._send(
+                        200,
+                        html.encode("utf-8"),
+                        "text/html; charset=utf-8",
+                    )
+                except Exception as exc:
+                    self._send_json(500, {"ok": False, "error": str(exc)})
+
+            def _handle_overview_state(self) -> None:
+                try:
+                    data = {}
+                    if callable(server.overview_provider):
+                        data = server.overview_provider() or {}
+                    self._send_json(200, {"ok": True, "data": data})
+                except Exception as exc:
+                    self._send_json(500, {"ok": False, "error": str(exc)})
+
+            def _handle_overview_action(self) -> None:
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except Exception:
+                    length = 0
+                raw = self.rfile.read(max(0, min(length, 512 * 1024))) if length > 0 else b"{}"
+                try:
+                    payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+                except Exception:
+                    self._send_json(400, {"ok": False, "error": "invalid_json"})
+                    return
+                action = str(payload.get("action") or "").strip()
+                if not action:
+                    self._send_json(400, {"ok": False, "error": "action_required"})
+                    return
+                try:
+                    server.last_rx_ts = time.time()
+                    if callable(server.overview_action_handler):
+                        result = server.overview_action_handler(action, payload) or {}
+                        if not isinstance(result, dict):
+                            result = {"ok": True}
+                        if "ok" not in result:
+                            result = {"ok": True, **result}
+                        self._send_json(200 if result.get("ok") else 400, result)
+                    else:
+                        self._send_json(503, {"ok": False, "error": "unavailable"})
+                except Exception as exc:
+                    self._send_json(500, {"ok": False, "error": str(exc)})
+
             def _handle_setaz(self) -> None:
                 try:
                     length = int(self.headers.get("Content-Length") or 0)
@@ -514,9 +593,15 @@ class MapWebServer:
                     return
                 try:
                     server.last_rx_ts = time.time()
+                    result: Any = {"ok": True}
                     if callable(server.ui_action_handler):
-                        server.ui_action_handler(action, payload)
-                    self._send_json(200, {"ok": True})
+                        result = server.ui_action_handler(action, payload)
+                        if not isinstance(result, dict):
+                            result = {"ok": True}
+                        elif "ok" not in result:
+                            result = {"ok": True, **result}
+                    code = 200 if result.get("ok") else 400
+                    self._send_json(code, result)
                 except Exception as exc:
                     self._send_json(500, {"ok": False, "error": str(exc)})
 
@@ -580,6 +665,13 @@ class MapWebServer:
                             try:
                                 comp = server.compass_provider() or {}
                                 if not self._sse_write("compass", comp):
+                                    break
+                            except Exception:
+                                pass
+                        if callable(server.overview_provider):
+                            try:
+                                ov = server.overview_provider() or {}
+                                if not self._sse_write("overview", ov):
                                     break
                             except Exception:
                                 pass

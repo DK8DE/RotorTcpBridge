@@ -80,6 +80,28 @@ def build_compass_html(params: dict) -> str:
       font-size:11px; color:#aaa; font-weight:700; letter-spacing:1px;
       text-align:center; text-transform:uppercase;
     }}
+    #uiMsgOverlay {{
+      display:none; position:fixed; inset:0; z-index:1300;
+      align-items:center; justify-content:center;
+      background:rgba(0,0,0,0.45); padding:16px;
+    }}
+    #uiMsgOverlay.show {{ display:flex; }}
+    #uiMsgBox {{
+      width:min(420px, calc(100vw - 32px)); max-width:100%;
+      display:flex; flex-direction:column; gap:10px; padding:16px 18px;
+      border-radius:10px; border:1px solid {border}; background:{panel_bg};
+      box-shadow:0 8px 28px rgba(0,0,0,0.45); color:{fg};
+    }}
+    #uiMsgTitle {{ font-weight:700; font-size:15px; text-align:center; }}
+    #uiMsgBody {{
+      font-size:13px; line-height:1.4; text-align:center; white-space:pre-wrap; opacity:0.95;
+    }}
+    #uiMsgActions {{ display:flex; justify-content:center; margin-top:4px; }}
+    #uiMsgOk {{
+      min-width:96px; width:auto !important; cursor:pointer; font-weight:700;
+      padding:8px 18px; border-radius:6px; border:1px solid {border};
+      background:rgba(40,40,42,0.95); color:{fg};
+    }}
     .val {{
       font-size:26px; font-weight:700; text-align:center; line-height:1.15;
       background:rgba(30,30,30,0.55); border-radius:5px; padding:6px 4px;
@@ -328,6 +350,13 @@ def build_compass_html(params: dict) -> str:
     <div id="geoPickList"></div>
     <div style="display:flex;justify-content:flex-end;"><button type="button" id="geoPickCancel">Abbrechen</button></div>
   </div>
+  <div id="uiMsgOverlay" role="dialog" aria-modal="true" aria-labelledby="uiMsgTitle">
+    <div id="uiMsgBox">
+      <div id="uiMsgTitle"></div>
+      <div id="uiMsgBody"></div>
+      <div id="uiMsgActions"><button type="button" id="uiMsgOk">OK</button></div>
+    </div>
+  </div>
   <script>
     const INIT = {init_json};
     const CHROME0 = {chrome_json};
@@ -354,7 +383,31 @@ def build_compass_html(params: dict) -> str:
         method: 'POST',
         headers: {{ 'Content-Type': 'application/json' }},
         body: JSON.stringify(body)
-      }}).catch(function() {{}});
+      }}).then(function(r) {{
+        return r.text().then(function(txt) {{
+          let data = {{}};
+          try {{ data = txt ? JSON.parse(txt) : {{}}; }} catch (e) {{ data = {{}}; }}
+          if (typeof data.ok !== 'boolean') data.ok = !!r.ok;
+          return data;
+        }});
+      }}).catch(function() {{ return {{ ok: false }}; }});
+    }}
+    function hideUiError() {{
+      const ov = document.getElementById('uiMsgOverlay');
+      if (ov) ov.classList.remove('show');
+    }}
+    function showUiError(data) {{
+      if (!data || data.ok) {{ hideUiError(); return; }}
+      const title = data.title || labels.locator_invalid_title || 'Fehler';
+      const msg = data.message || data.error || labels.locator_invalid_body || '';
+      const tEl = document.getElementById('uiMsgTitle');
+      const bEl = document.getElementById('uiMsgBody');
+      const okBtn = document.getElementById('uiMsgOk');
+      const ov = document.getElementById('uiMsgOverlay');
+      if (tEl) tEl.textContent = title;
+      if (bEl) bEl.textContent = msg;
+      if (okBtn) okBtn.textContent = labels.dialog_ok || 'OK';
+      if (ov) ov.classList.add('show');
     }}
     function setLed(el, on, blink) {{
       if (!el) return;
@@ -364,6 +417,7 @@ def build_compass_html(params: dict) -> str:
     }}
     let pwmHoldUntil = {{ az: 0, el: 0 }};
     let pwmSendTimer = {{ az: null, el: null }};
+    let pwmPointerDown = {{ az: false, el: false }};
     function applyPwmSlider(axis, data, slId, valId) {{
       const sl = document.getElementById(slId);
       const lab = document.getElementById(valId);
@@ -372,8 +426,9 @@ def build_compass_html(params: dict) -> str:
       sl.min = String(Math.max(0, Math.min(100, mn)));
       sl.max = '100';
       sl.disabled = !data.pwm_enabled;
-      if (Date.now() < (pwmHoldUntil[axis] || 0)) return;
-      if (document.activeElement === sl) return;
+      // Nur während lokaler Bedienung sperren — nicht bei reinem Fokus
+      // (sonst bleibt Desktop→Web nach einem Klick auf den Web-Slider stecken).
+      if (pwmPointerDown[axis] || Date.now() < (pwmHoldUntil[axis] || 0)) return;
       if (!data.pwm_enabled) {{
         sl.value = '0';
         if (lab) lab.textContent = '0';
@@ -383,6 +438,7 @@ def build_compass_html(params: dict) -> str:
       let iv = Number(data.pwm);
       const cur = parseInt(sl.value, 10);
       if (iv === 99 && cur === 100) return;
+      if (iv === cur) return;
       sl.value = String(iv);
       if (lab) lab.textContent = String(iv);
     }}
@@ -394,15 +450,34 @@ def build_compass_html(params: dict) -> str:
         if (isNaN(v)) return;
         api('set_pwm', {{ axis: axis, pct: v }});
       }}
+      function markLocal() {{
+        pwmHoldUntil[axis] = Date.now() + 1200;
+      }}
+      sl.addEventListener('pointerdown', function() {{
+        pwmPointerDown[axis] = true;
+        markLocal();
+      }});
+      sl.addEventListener('pointerup', function() {{
+        pwmPointerDown[axis] = false;
+        markLocal();
+      }});
+      sl.addEventListener('pointercancel', function() {{
+        pwmPointerDown[axis] = false;
+        markLocal();
+      }});
+      sl.addEventListener('blur', function() {{
+        pwmPointerDown[axis] = false;
+      }});
       sl.addEventListener('input', function() {{
-        pwmHoldUntil[axis] = Date.now() + 1000;
+        markLocal();
         const lab = document.getElementById(valId);
         if (lab) lab.textContent = sl.value;
         if (pwmSendTimer[axis]) clearTimeout(pwmSendTimer[axis]);
         pwmSendTimer[axis] = setTimeout(send, 150);
       }});
       sl.addEventListener('change', function() {{
-        pwmHoldUntil[axis] = Date.now() + 1000;
+        pwmPointerDown[axis] = false;
+        markLocal();
         if (pwmSendTimer[axis]) clearTimeout(pwmSendTimer[axis]);
         send();
       }});
@@ -1147,7 +1222,24 @@ def build_compass_html(params: dict) -> str:
       }});
       document.getElementById('locForm').addEventListener('submit', function(ev) {{
         ev.preventDefault();
-        api('locator', {{ locator: document.getElementById('edLoc').value || '' }});
+        const ed = document.getElementById('edLoc');
+        api('locator', {{ locator: (ed && ed.value) || '' }}).then(function(data) {{
+          showUiError(data);
+          if (data && !data.ok && ed) {{
+            try {{ ed.focus(); ed.select(); }} catch (e) {{}}
+          }}
+        }});
+      }});
+      const uiMsgOk = document.getElementById('uiMsgOk');
+      if (uiMsgOk) uiMsgOk.addEventListener('click', hideUiError);
+      const uiMsgOv = document.getElementById('uiMsgOverlay');
+      if (uiMsgOv) {{
+        uiMsgOv.addEventListener('click', function(ev) {{
+          if (ev.target === uiMsgOv) hideUiError();
+        }});
+      }}
+      document.addEventListener('keydown', function(ev) {{
+        if (ev.key === 'Escape') hideUiError();
       }});
       document.getElementById('btnScan').addEventListener('click', function() {{
         api('az_scan', {{

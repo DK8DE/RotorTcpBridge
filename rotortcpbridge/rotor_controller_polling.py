@@ -58,17 +58,23 @@ def merge_strom_bin_block(
     parts: list[str],
     start_val: int,
     count_val: int,
+    *,
+    values_off: int = 3,
 ) -> tuple[bool, bool]:
     """Schreibt Rohwerte in ``bins`` [0..71].
+
+    ``values_off``: Index des ersten Bin-Werts in ``parts``
+    (LIVE/ACC: 3 = DIR;START;COUNT;…, CAL neu: 4 = STAGE;DIR;START;COUNT;…).
 
     Rückgabe ``(success, plausible)``: success=False nur bei Parse-Fehler.
     plausible=False = Null-Padding/Lücken (trotzdem geschrieben, UI soll Daten sehen).
     """
-    if count_val < 1 or count_val > 12 or len(parts) < 3 + count_val:
+    off = max(0, int(values_off))
+    if count_val < 1 or count_val > 12 or len(parts) < off + count_val:
         return False, False
     vals: list[int] = []
     for i in range(count_val):
-        v = parse_int(parts[3 + i])
+        v = parse_int(parts[off + i])
         if v is None:
             return False, False
         vals.append(int(v))
@@ -78,6 +84,89 @@ def merge_strom_bin_block(
         if 0 <= j < 72:
             bins[j] = v
     return True, plausible
+
+
+_CAL_BIN_STARTS = (0, 12, 24, 36, 48, 60)
+# DIR/START-Raster für CAL/LIVE/ACC (12 Blöcke à 12 Werte)
+_CAL_LIVE_BLOCKS_MOD = [
+    (1, 0),
+    (1, 12),
+    (1, 24),
+    (1, 36),
+    (1, 48),
+    (1, 60),
+    (2, 0),
+    (2, 12),
+    (2, 24),
+    (2, 36),
+    (2, 48),
+    (2, 60),
+]
+# GETCALBINS: STAGE 1–3 × DIR/START (36 Requests)
+_CAL_STAGE_BLOCKS_MOD = [
+    (stage, d, s) for stage in (1, 2, 3) for (d, s) in _CAL_LIVE_BLOCKS_MOD
+]
+
+
+def parse_cal_bins_ack(
+    parts: list[str],
+) -> tuple[int, int, int, int, int] | None:
+    """GETCALBINS-ACK: ``(stage, dir, start, count, values_off)``.
+
+    Neu: ``STAGE;DIR;START;COUNT;…`` (stage 1–3, values_off=4).
+    Alt: ``DIR;START;COUNT;…`` → stage=1, values_off=3 (Fallback).
+    """
+    if len(parts) < 4:
+        return None
+    a0 = parse_int(parts[0])
+    a1 = parse_int(parts[1])
+    a2 = parse_int(parts[2])
+    if a0 is None or a1 is None or a2 is None:
+        return None
+    # Neu: STAGE;DIR;START;COUNT
+    if a0 in (1, 2, 3) and a1 in (1, 2) and a2 in _CAL_BIN_STARTS:
+        a3 = parse_int(parts[3])
+        if a3 is not None and 1 <= int(a3) <= 12:
+            return int(a0), int(a1), int(a2), int(a3), 4
+    # Legacy: DIR;START;COUNT
+    if a0 in (1, 2) and a1 in _CAL_BIN_STARTS and 1 <= int(a2) <= 12:
+        return 1, int(a0), int(a1), int(a2), 3
+    return None
+
+
+def clear_cal_bins(axis_state: AxisState) -> None:
+    """Alle drei CAL-Stufen und Alias-Listen verwerfen."""
+    axis_state.cal_bins_stage_cw = [None, None, None]
+    axis_state.cal_bins_stage_ccw = [None, None, None]
+    axis_state.cal_bins_cw = None
+    axis_state.cal_bins_ccw = None
+
+
+def cal_bins_all_stages_present(axis_state: AxisState) -> bool:
+    cw = getattr(axis_state, "cal_bins_stage_cw", None) or []
+    ccw = getattr(axis_state, "cal_bins_stage_ccw", None) or []
+    if len(cw) < 3 or len(ccw) < 3:
+        return False
+    return all(cw[i] is not None and ccw[i] is not None for i in range(3))
+
+
+def publish_cal_bins_stages(
+    axis_state: AxisState,
+    stages_cw: list[list[int]],
+    stages_ccw: list[list[int]],
+) -> None:
+    """Temp-Stufen (3×72) in AxisState übernehmen; Alias = STAGE 3."""
+    out_cw: list = [None, None, None]
+    out_ccw: list = [None, None, None]
+    for i in range(3):
+        if i < len(stages_cw) and stages_cw[i] is not None:
+            out_cw[i] = list(stages_cw[i])
+        if i < len(stages_ccw) and stages_ccw[i] is not None:
+            out_ccw[i] = list(stages_ccw[i])
+    axis_state.cal_bins_stage_cw = out_cw
+    axis_state.cal_bins_stage_ccw = out_ccw
+    axis_state.cal_bins_cw = list(out_cw[2]) if out_cw[2] is not None else None
+    axis_state.cal_bins_ccw = list(out_ccw[2]) if out_ccw[2] is not None else None
 
 
 # Mindestabstand zwischen GETACCBINS-Rundenstarts (s), solange noch „komplett werden“ nötig ist.
@@ -1203,7 +1292,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         )
 
     def _poll_cal_state(self, dst: int, axis_state: AxisState, priority: int = 5) -> None:
-        """GETCALSTATE abfragen (state;progress). state: 0=IDLE,1=RUNNING,2=DONE,3=ABORT."""
+        """GETCALSTATE abfragen (state;progress;stage). state: 0=IDLE,1=RUNNING,2=DONE,3=ABORT."""
         self.hw.send_request(
             HwRequest(
                 line=build(self.master_id, dst, "GETCALSTATE", "0"),
@@ -1215,7 +1304,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         )
 
     def _bins_block_idx_from_tel(self, tel: Optional[Telegram]) -> Optional[int]:
-        """DIR/START aus ACK-Params → Index in _CAL_LIVE_BLOCKS (CAL/LIVE/ACC gleiches Raster)."""
+        """DIR/START aus ACK-Params → Index in _CAL_LIVE_BLOCKS (LIVE/ACC, ohne STAGE)."""
         if tel is None:
             return None
         parts = (tel.params or "").strip().split(";")
@@ -1227,6 +1316,19 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             return None
         for i, (d, s) in enumerate(self._CAL_LIVE_BLOCKS):
             if d == dir_val and s == start_val:
+                return i
+        return None
+
+    def _cal_bins_block_idx_from_tel(self, tel: Optional[Telegram]) -> Optional[int]:
+        """STAGE/DIR/START → Index in _CAL_STAGE_BLOCKS (0..35)."""
+        if tel is None:
+            return None
+        parsed = parse_cal_bins_ack((tel.params or "").strip().split(";"))
+        if parsed is None:
+            return None
+        stage, dir_val, start_val, _count, _off = parsed
+        for i, (st, d, s) in enumerate(self._CAL_STAGE_BLOCKS):
+            if st == stage and d == dir_val and s == start_val:
                 return i
         return None
 
@@ -1508,7 +1610,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
     ) -> None:
         """CAL-Bin-ACK aus Async-Pfad, wenn HW-Pending auf ein anderes ACK wartet (z. B. GETLIVEBINS)."""
         dst = int(self.slave_az)
-        idx = self._bins_block_idx_from_tel(tel)
+        idx = self._cal_bins_block_idx_from_tel(tel)
         if idx is None:
             idx = int(getattr(self, "_cal_bins_received_az", 0) or 0)
         if tel:
@@ -1516,29 +1618,20 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             axis_state.online = True
         temp_cw, temp_ccw = self._cal_bins_temp_cw, self._cal_bins_temp_ccw
         if tel and tel.params and temp_cw is not None and temp_ccw is not None:
-            parts = (tel.params or "").strip().split(";")
-            if len(parts) >= 4:
-                dir_val = parse_int(parts[0])
-                start_val = parse_int(parts[1])
-                count_val = parse_int(parts[2])
-                if dir_val is not None and start_val is not None and count_val is not None:
-                    bins = temp_cw if dir_val == 1 else temp_ccw
-                    if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
-                        ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
-                        if not ok_m:
-                            pass
-                        elif not plausible:
-                            self.log.write(
-                                "WARN",
-                                f"AZ GETCALBINS Block {idx + 1} (async): verdächtige Nullen/Lücken, Rohwerte übernommen",
-                            )
+            self._merge_cal_ack_into_temp(
+                (tel.params or "").strip().split(";"),
+                temp_cw,
+                temp_ccw,
+                log_prefix="AZ",
+                block_no=idx + 1,
+            )
         self._cal_bins_received_az = idx + 1
         self._send_next_cal_block(dst, axis_state, idx + 1)
 
     def _async_reconcile_cal_bins_ack_el(
         self, tel: Optional[Telegram], axis_state: AxisState, dst: int
     ) -> None:
-        idx = self._bins_block_idx_from_tel(tel)
+        idx = self._cal_bins_block_idx_from_tel(tel)
         if idx is None:
             return
         if tel:
@@ -1546,22 +1639,13 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             axis_state.online = True
         temp_cw, temp_ccw = self._cal_bins_temp_cw_el, self._cal_bins_temp_ccw_el
         if tel and tel.params and temp_cw is not None and temp_ccw is not None:
-            parts = (tel.params or "").strip().split(";")
-            if len(parts) >= 4:
-                dir_val = parse_int(parts[0])
-                start_val = parse_int(parts[1])
-                count_val = parse_int(parts[2])
-                if dir_val is not None and start_val is not None and count_val is not None:
-                    bins = temp_cw if dir_val == 1 else temp_ccw
-                    if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
-                        ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
-                        if not ok_m:
-                            pass
-                        elif not plausible:
-                            self.log.write(
-                                "WARN",
-                                f"EL GETCALBINS Block {idx + 1} (async): verdächtige Nullen/Lücken, Rohwerte übernommen",
-                            )
+            self._merge_cal_ack_into_temp(
+                (tel.params or "").strip().split(";"),
+                temp_cw,
+                temp_ccw,
+                log_prefix="EL",
+                block_no=idx + 1,
+            )
         self._send_next_cal_block_el(int(dst), axis_state, idx + 1)
 
     def _async_reconcile_live_bins_ack_az(
@@ -1630,44 +1714,56 @@ class RotorControllerPollingMixin(_RotorPollingHost):
     _ACC_BINS_INTER_BLOCK_DELAY_S = 0.012
     _ACC_BINS_FINALIZE_GAP_S = 1.0
 
-    _CAL_LIVE_BLOCKS = [
-        (1, 0),
-        (1, 12),
-        (1, 24),
-        (1, 36),
-        (1, 48),
-        (1, 60),
-        (2, 0),
-        (2, 12),
-        (2, 24),
-        (2, 36),
-        (2, 48),
-        (2, 60),
-    ]
+    _CAL_LIVE_BLOCKS = _CAL_LIVE_BLOCKS_MOD
+    _CAL_STAGE_BLOCKS = _CAL_STAGE_BLOCKS_MOD
+
+    def _merge_cal_ack_into_temp(
+        self,
+        parts: list[str],
+        temp_cw: list[list[int]] | None,
+        temp_ccw: list[list[int]] | None,
+        *,
+        log_prefix: str,
+        block_no: int,
+    ) -> None:
+        parsed = parse_cal_bins_ack(parts)
+        if parsed is None or temp_cw is None or temp_ccw is None:
+            return
+        stage, dir_val, start_val, count_val, values_off = parsed
+        si = stage - 1
+        if not (0 <= si < 3):
+            return
+        bins = temp_cw[si] if dir_val == 1 else temp_ccw[si]
+        if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
+            ok_m, plausible = merge_strom_bin_block(
+                bins, parts, start_val, count_val, values_off=values_off
+            )
+            if ok_m and not plausible:
+                self.log.write(
+                    "WARN",
+                    f"{log_prefix} GETCALBINS Stage {stage} Block {block_no}: "
+                    f"verdächtige Nullen/Lücken, Rohwerte übernommen",
+                )
 
     def _fetch_cal_bins(
         self, dst: int, axis_state: AxisState, axis_name: str, priority: int = 3
     ) -> None:
-        """CAL-Bins sequentiell abfragen (1 Block → warten → nächster), um Bus nicht zu überlasten."""
+        """CAL-Bins aller 3 PWM-Stufen sequentiell abfragen (STAGE;DIR;START;COUNT)."""
         if self._cal_bins_inflight_az:
             return
         self._cal_bins_inflight_az = True
         self._cal_bins_received_az = 0
-        self._cal_bins_temp_cw = [0] * 72
-        self._cal_bins_temp_ccw = [0] * 72
+        self._cal_bins_temp_cw = [[0] * 72 for _ in range(3)]
+        self._cal_bins_temp_ccw = [[0] * 72 for _ in range(3)]
         self._cal_bins_priority_az = priority
         self._send_next_cal_block(dst, axis_state, 0)
 
     def _send_next_cal_block(self, dst: int, axis_state: AxisState, idx: int) -> None:
-        if idx >= len(self._CAL_LIVE_BLOCKS):
-            # Alle 12 Blöcke empfangen: Temp in axis_state übernehmen (nur wenn noch DONE)
-            if (
-                self._cal_bins_temp_cw
-                and self._cal_bins_temp_ccw
-                and getattr(axis_state, "cal_state", 0) == 2
-            ):
-                axis_state.cal_bins_cw = list(self._cal_bins_temp_cw)
-                axis_state.cal_bins_ccw = list(self._cal_bins_temp_ccw)
+        if idx >= len(self._CAL_STAGE_BLOCKS):
+            if self._cal_bins_temp_cw and self._cal_bins_temp_ccw:
+                publish_cal_bins_stages(
+                    axis_state, self._cal_bins_temp_cw, self._cal_bins_temp_ccw
+                )
             self._cal_bins_temp_cw = None
             self._cal_bins_temp_ccw = None
             self._cal_bins_inflight_az = False
@@ -1676,8 +1772,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 self._fetch_live_bins(dst, axis_state, "AZ")
                 self._last_live_bins_az = time.time()
             return
-        direction, start = self._CAL_LIVE_BLOCKS[idx]
-        params = f"{direction};{start};12"
+        stage, direction, start = self._CAL_STAGE_BLOCKS[idx]
+        params = f"{stage};{direction};{start};12"
         line = build(self.master_id, dst, "GETCALBINS", params)
         ctrl = self
         temp_cw, temp_ccw = self._cal_bins_temp_cw, self._cal_bins_temp_ccw
@@ -1687,24 +1783,18 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 axis_state.last_rx_ts = time.time()
                 axis_state.online = True
             if err:
-                ctrl.log.write("WARN", f"AZ GETCALBINS Block {idx + 1} fehlgeschlagen: {err}")
+                ctrl.log.write(
+                    "WARN",
+                    f"AZ GETCALBINS Stage {stage} Block {idx + 1} fehlgeschlagen: {err}",
+                )
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
-                parts = (tel.params or "").strip().split(";")
-                if len(parts) >= 4:
-                    dir_val = parse_int(parts[0])
-                    start_val = parse_int(parts[1])
-                    count_val = parse_int(parts[2])
-                    if dir_val is not None and start_val is not None and count_val is not None:
-                        bins = temp_cw if dir_val == 1 else temp_ccw
-                        if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
-                            ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
-                            if not ok_m:
-                                pass
-                            elif not plausible:
-                                ctrl.log.write(
-                                    "WARN",
-                                    f"AZ GETCALBINS Block {idx + 1}: verdächtige Nullen/Lücken, Rohwerte übernommen",
-                                )
+                ctrl._merge_cal_ack_into_temp(
+                    (tel.params or "").strip().split(";"),
+                    temp_cw,
+                    temp_ccw,
+                    log_prefix="AZ",
+                    block_no=idx + 1,
+                )
             ctrl._cal_bins_received_az = idx + 1
             ctrl._send_next_cal_block(dst, axis_state, idx + 1)
 
@@ -1726,20 +1816,17 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         if self._cal_bins_inflight_el:
             return
         self._cal_bins_inflight_el = True
-        self._cal_bins_temp_cw_el = [0] * 72
-        self._cal_bins_temp_ccw_el = [0] * 72
+        self._cal_bins_temp_cw_el = [[0] * 72 for _ in range(3)]
+        self._cal_bins_temp_ccw_el = [[0] * 72 for _ in range(3)]
         self._cal_bins_priority_el = priority
         self._send_next_cal_block_el(dst, axis_state, 0)
 
     def _send_next_cal_block_el(self, dst: int, axis_state: AxisState, idx: int) -> None:
-        if idx >= len(self._CAL_LIVE_BLOCKS):
-            if (
-                self._cal_bins_temp_cw_el
-                and self._cal_bins_temp_ccw_el
-                and getattr(axis_state, "cal_state", 0) == 2
-            ):
-                axis_state.cal_bins_cw = list(self._cal_bins_temp_cw_el)
-                axis_state.cal_bins_ccw = list(self._cal_bins_temp_ccw_el)
+        if idx >= len(self._CAL_STAGE_BLOCKS):
+            if self._cal_bins_temp_cw_el and self._cal_bins_temp_ccw_el:
+                publish_cal_bins_stages(
+                    axis_state, self._cal_bins_temp_cw_el, self._cal_bins_temp_ccw_el
+                )
             self._cal_bins_temp_cw_el = None
             self._cal_bins_temp_ccw_el = None
             self._cal_bins_inflight_el = False
@@ -1748,8 +1835,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 self._fetch_live_bins_el(dst, axis_state, "EL")
                 self._last_live_bins_el = time.time()
             return
-        direction, start = self._CAL_LIVE_BLOCKS[idx]
-        params = f"{direction};{start};12"
+        stage, direction, start = self._CAL_STAGE_BLOCKS[idx]
+        params = f"{stage};{direction};{start};12"
         line = build(self.master_id, dst, "GETCALBINS", params)
         ctrl = self
         temp_cw, temp_ccw = self._cal_bins_temp_cw_el, self._cal_bins_temp_ccw_el
@@ -1759,24 +1846,18 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 axis_state.last_rx_ts = time.time()
                 axis_state.online = True
             if err:
-                ctrl.log.write("WARN", f"EL GETCALBINS Block {idx + 1} fehlgeschlagen: {err}")
+                ctrl.log.write(
+                    "WARN",
+                    f"EL GETCALBINS Stage {stage} Block {idx + 1} fehlgeschlagen: {err}",
+                )
             if tel and tel.params and temp_cw is not None and temp_ccw is not None:
-                parts = (tel.params or "").strip().split(";")
-                if len(parts) >= 4:
-                    dir_val = parse_int(parts[0])
-                    start_val = parse_int(parts[1])
-                    count_val = parse_int(parts[2])
-                    if dir_val is not None and start_val is not None and count_val is not None:
-                        bins = temp_cw if dir_val == 1 else temp_ccw
-                        if bins and 0 <= start_val < 72 and 1 <= count_val <= 12:
-                            ok_m, plausible = merge_strom_bin_block(bins, parts, start_val, count_val)
-                            if not ok_m:
-                                pass
-                            elif not plausible:
-                                ctrl.log.write(
-                                    "WARN",
-                                    f"EL GETCALBINS Block {idx + 1}: verdächtige Nullen/Lücken, Rohwerte übernommen",
-                                )
+                ctrl._merge_cal_ack_into_temp(
+                    (tel.params or "").strip().split(";"),
+                    temp_cw,
+                    temp_ccw,
+                    log_prefix="EL",
+                    block_no=idx + 1,
+                )
             ctrl._send_next_cal_block_el(dst, axis_state, idx + 1)
 
         prio = getattr(self, "_cal_bins_priority_el", 3)

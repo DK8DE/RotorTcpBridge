@@ -187,7 +187,11 @@ class UdpPstRotator:
             )
         except OSError as e:
             self._running = False
-            self.bind_error_msg = f"UDP PST-Rotator: Port {self._port} ist bereits belegt.\n\n{e}"
+            from .net_bind_error import format_bind_error
+
+            self.bind_error_msg = format_bind_error(
+                bind_listen, self._port, e, proto_name="UDP PST-Rotator"
+            )
             self.log.write(
                 "ERROR", f"UDP PST-Rotator bind fehlgeschlagen auf Port {self._port}: {e}"
             )

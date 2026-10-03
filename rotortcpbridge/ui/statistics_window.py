@@ -44,6 +44,21 @@ def _make_stat_row(
     return row
 
 
+def _cal_stage_rings(axis) -> list[tuple] | None:
+    """Drei CAL-Stufen (40/60/100 % PWM) als Ringliste, oder None wenn nichts da."""
+    cw_s = getattr(axis, "cal_bins_stage_cw", None) or []
+    ccw_s = getattr(axis, "cal_bins_stage_ccw", None) or []
+    rings = []
+    any_data = False
+    for i in range(3):
+        cw = cw_s[i] if i < len(cw_s) else None
+        ccw = ccw_s[i] if i < len(ccw_s) else None
+        if cw is not None or ccw is not None:
+            any_data = True
+        rings.append((cw, ccw))
+    return rings if any_data else None
+
+
 class StatisticsWindow(QDialog):
     """Fenster mit Statistik-Kompassen: AZ (Vollkreis), ggf. EL (Viertelkreis)."""
 
@@ -98,7 +113,7 @@ class StatisticsWindow(QDialog):
         if hasattr(self.ctrl, "set_statistics_window_open"):
             self.ctrl.set_statistics_window_open(True)
         if hasattr(self.ctrl, "request_immediate_stats"):
-            self.ctrl.request_immediate_stats()  # Priorität 0, sofort vor GETPOSDG
+            self.ctrl.request_immediate_stats()  # Priorität 0, unmittelbar vor GETPOSDG
         self._timer.start(200)
         self._tick()
 
@@ -137,6 +152,20 @@ class StatisticsWindow(QDialog):
             except Exception:
                 pass
 
+    def _apply_cal_widget(self, widget: StatisticCompassWidget, axis, live_cw, live_ccw) -> None:
+        """CAL: 3 Stufen-Ringe (innen 40 %, außen 100 %); Fallback LIVE / alte Alias-Bins."""
+        rings = _cal_stage_rings(axis)
+        if rings is not None:
+            widget.set_multi_bins(rings)
+            return
+        cal_cw = getattr(axis, "cal_bins_cw", None)
+        cal_ccw = getattr(axis, "cal_bins_ccw", None)
+        cal_state = getattr(axis, "cal_state", 0)
+        if cal_cw is not None or cal_ccw is not None or cal_state == 2:
+            widget.set_bins(cal_cw, cal_ccw)
+        else:
+            widget.set_bins(live_cw, live_ccw)
+
     @Slot()
     def _tick(self) -> None:
         try:
@@ -151,18 +180,10 @@ class StatisticsWindow(QDialog):
                 w.set_heatmap_scale(el_sc)
 
             az = self.ctrl.az
-            cal_state = getattr(az, "cal_state", 0)
             live_cw = getattr(az, "live_bins_cw", None)
             live_ccw = getattr(az, "live_bins_ccw", None)
 
-            if cal_state == 2:
-                self.stat_cal.set_bins(
-                    getattr(az, "cal_bins_cw", None),
-                    getattr(az, "cal_bins_ccw", None),
-                )
-            else:
-                self.stat_cal.set_bins(live_cw, live_ccw)
-
+            self._apply_cal_widget(self.stat_cal, az, live_cw, live_ccw)
             self.stat_live.set_bins(live_cw, live_ccw)
             acc_cw = getattr(az, "acc_bins_cw", None)
             acc_ccw = getattr(az, "acc_bins_ccw", None)
@@ -173,16 +194,9 @@ class StatisticsWindow(QDialog):
             if el_on:
                 el = getattr(self.ctrl, "el", None)
                 if el is not None:
-                    el_cal = getattr(el, "cal_state", 0)
                     el_live_cw = getattr(el, "live_bins_cw", None)
                     el_live_ccw = getattr(el, "live_bins_ccw", None)
-                    if el_cal == 2:
-                        self.stat_cal_el.set_bins(
-                            getattr(el, "cal_bins_cw", None),
-                            getattr(el, "cal_bins_ccw", None),
-                        )
-                    else:
-                        self.stat_cal_el.set_bins(el_live_cw, el_live_ccw)
+                    self._apply_cal_widget(self.stat_cal_el, el, el_live_cw, el_live_ccw)
                     self.stat_live_el.set_bins(el_live_cw, el_live_ccw)
                     self.stat_placeholder_el.set_bins(
                         getattr(el, "acc_bins_cw", None),

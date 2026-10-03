@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 
 from .logutil import LogBuffer
 from .angle_utils import az_d10_for_external_report
+from .net_bind_error import format_bind_error
 
 # Hamlib rotctld Standardport (rigctld nutzt 4532 -> Rotor ungerade, z.B. 4533).
 DEFAULT_ROTCTLD_PORT = 4533
@@ -238,6 +239,7 @@ class RotctldServer:
         self._clients_lock = threading.Lock()
         # Zeitstempel der letzten gueltigen Client-Aktivitaet (fuer UI-LED).
         self.last_rx_ts: float = 0.0
+        self.bind_error_msg: str | None = None
 
     def _az_shortest_path(self) -> bool:
         try:
@@ -257,6 +259,9 @@ class RotctldServer:
 
     def start(self) -> None:
         if self.running:
+            return
+        self.bind_error_msg = None
+        if not self._open_listen_socket():
             return
         self.running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -290,24 +295,32 @@ class RotctldServer:
         self.port = int(port)
         self.start()
 
-    def _loop(self) -> None:
+    def _open_listen_socket(self) -> bool:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._listen_sock = s
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.settimeout(0.5)  # damit stop() schnell wirkt
         try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.settimeout(0.5)
             s.bind((self.host, self.port))
             s.listen(5)
         except Exception as e:
+            self.bind_error_msg = format_bind_error(
+                self.host, self.port, e, proto_name="Hamlib rotctld"
+            )
             self.log.write("ERROR", f"rotctld bind/listen fehlgeschlagen: {e}")
-            self.running = False
             try:
                 s.close()
             except Exception:
                 pass
             self._listen_sock = None
-            return
+            return False
+        self._listen_sock = s
+        return True
 
+    def _loop(self) -> None:
+        s = self._listen_sock
+        if s is None:
+            self.running = False
+            return
         while self.running:
             try:
                 c, addr = s.accept()

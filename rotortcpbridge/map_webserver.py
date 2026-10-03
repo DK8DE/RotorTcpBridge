@@ -275,19 +275,11 @@ class MapWebServer:
             self._running = False
 
     def _format_bind_error(self, exc: BaseException) -> str:
-        errno = getattr(exc, "errno", None)
-        host, port = self.host, int(self.port)
-        if errno in (98, 10048, 48):  # EADDRINUSE (Linux/Win/macOS)
-            return (
-                f"Port {port} auf {host} ist bereits belegt. "
-                f"Anderen Port wählen oder den blockierenden Dienst beenden."
-            )
-        if errno in (13, 10013, 1):  # EACCES / permission
-            return (
-                f"Keine Berechtigung für {host}:{port} "
-                f"(unter Windows benötigt Port 80 oft Administratorrechte)."
-            )
-        return f"Konnte {host}:{port} nicht binden: {exc}"
+        from .net_bind_error import format_bind_error
+
+        return format_bind_error(
+            self.host, int(self.port), exc, proto_name="Karten-Webserver"
+        )
 
     def _make_handler(self):
         server = self

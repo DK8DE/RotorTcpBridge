@@ -120,6 +120,11 @@ class SettingsWindow(QDialog):
         udp_pst=None,
         pst_target_push=None,
         rotctld_server=None,
+        gs232_server=None,
+        easycomm_server=None,
+        dcu1_server=None,
+        n1mm_rotor=None,
+        udp_ucxlog=None,
         map_webserver=None,
         switch_profile_cb=None,
         profiles_changed_cb=None,
@@ -134,6 +139,11 @@ class SettingsWindow(QDialog):
         self._udp_pst = udp_pst
         self._pst_target_push = pst_target_push
         self._rotctld_server = rotctld_server
+        self._gs232_server = gs232_server
+        self._easycomm_server = easycomm_server
+        self._dcu1_server = dcu1_server
+        self._n1mm_rotor = n1mm_rotor
+        self._udp_ucxlog = udp_ucxlog
         self._map_webserver = map_webserver
         self.hw = hw_client
         self.ctrl_hw = ctrl_hw
@@ -728,6 +738,116 @@ class SettingsWindow(QDialog):
         _vl_rotctld_box = QVBoxLayout(gb_rotctld_emulation)
         _vl_rotctld_box.addWidget(w_rotctld)
 
+        gb_gs232_emulation = self._build_proto_tcp_group(
+            cfg_key="gs232_server",
+            prefix="gs232",
+            group_key="settings.group_gs232_server",
+            info_key="settings.gs232_info",
+            enabled_key="settings.chk_gs232_enabled",
+            enabled_tt="settings.chk_gs232_enabled_tooltip",
+            host_tt="settings.gs232_listen_host_tooltip",
+            port_label_key="settings.gs232_port",
+            port_tt="settings.gs232_port_tooltip",
+            led_tt="settings.gs232_led_running_tooltip",
+            default_port=4003,
+            ip_w=_conn_ip_w,
+            led_d=_pst_led_d,
+            on_toggled=self._on_gs232_toggled,
+        )
+        gb_easycomm_emulation = self._build_proto_tcp_group(
+            cfg_key="easycomm_server",
+            prefix="easycomm",
+            group_key="settings.group_easycomm_server",
+            info_key="settings.easycomm_info",
+            enabled_key="settings.chk_easycomm_enabled",
+            enabled_tt="settings.chk_easycomm_enabled_tooltip",
+            host_tt="settings.easycomm_listen_host_tooltip",
+            port_label_key="settings.easycomm_port",
+            port_tt="settings.easycomm_port_tooltip",
+            led_tt="settings.easycomm_led_running_tooltip",
+            default_port=4535,
+            ip_w=_conn_ip_w,
+            led_d=_pst_led_d,
+            on_toggled=self._on_easycomm_toggled,
+        )
+        gb_dcu1_emulation = self._build_proto_tcp_group(
+            cfg_key="dcu1_server",
+            prefix="dcu1",
+            group_key="settings.group_dcu1_server",
+            info_key="settings.dcu1_info",
+            enabled_key="settings.chk_dcu1_enabled",
+            enabled_tt="settings.chk_dcu1_enabled_tooltip",
+            host_tt="settings.dcu1_listen_host_tooltip",
+            port_label_key="settings.dcu1_port",
+            port_tt="settings.dcu1_port_tooltip",
+            led_tt="settings.dcu1_led_running_tooltip",
+            default_port=4004,
+            ip_w=_conn_ip_w,
+            led_d=_pst_led_d,
+            on_toggled=self._on_dcu1_toggled,
+        )
+
+        # --- N1MM Rotor UDP ---------------------------------------------------
+        _n1_cfg = self.cfg.get("n1mm_rotor", {}) or {}
+        self._lbl_n1mm_info = QLabel(t("settings.n1mm_info"))
+        self._lbl_n1mm_info.setWordWrap(True)
+        self.chk_n1mm_enabled = QCheckBox(t("settings.chk_n1mm_enabled"))
+        self.chk_n1mm_enabled.setChecked(bool(_n1_cfg.get("enabled", False)))
+        self.chk_n1mm_enabled.setToolTip(tt("settings.chk_n1mm_enabled_tooltip"))
+        self.chk_n1mm_az_shortest = QCheckBox(t("settings.chk_az_shortest_path"))
+        self.chk_n1mm_az_shortest.setChecked(bool(_n1_cfg.get("az_shortest_path", False)))
+        self.chk_n1mm_az_shortest.setToolTip(tt("settings.chk_az_shortest_path_tooltip"))
+        self.chk_n1mm_az_report_mod360 = QCheckBox(t("settings.chk_az_report_mod360"))
+        self.chk_n1mm_az_report_mod360.setChecked(bool(_n1_cfg.get("az_report_mod360", False)))
+        self.chk_n1mm_az_report_mod360.setToolTip(tt("settings.chk_az_report_mod360_tooltip"))
+        self.ed_n1mm_listen_host = QLineEdit(str(_n1_cfg.get("listen_host", "127.0.0.1")))
+        self.ed_n1mm_listen_host.setMinimumWidth(_conn_ip_w)
+        self.ed_n1mm_listen_host.setToolTip(tt("settings.n1mm_listen_host_tooltip"))
+        self.sp_n1mm_listen_port = QSpinBox()
+        self.sp_n1mm_listen_port.setRange(1, 65535)
+        self.sp_n1mm_listen_port.setValue(int(_n1_cfg.get("listen_port", 12040)))
+        self.sp_n1mm_listen_port.setToolTip(tt("settings.n1mm_listen_port_tooltip"))
+        self.ed_n1mm_broadcast_host = QLineEdit(str(_n1_cfg.get("broadcast_host", "127.0.0.1")))
+        self.ed_n1mm_broadcast_host.setMinimumWidth(_conn_ip_w)
+        self.ed_n1mm_broadcast_host.setToolTip(tt("settings.n1mm_broadcast_host_tooltip"))
+        self.sp_n1mm_broadcast_port = QSpinBox()
+        self.sp_n1mm_broadcast_port.setRange(1, 65535)
+        self.sp_n1mm_broadcast_port.setValue(int(_n1_cfg.get("broadcast_port", 13010)))
+        self.sp_n1mm_broadcast_port.setToolTip(tt("settings.n1mm_broadcast_port_tooltip"))
+        self.ed_n1mm_rotor_name = QLineEdit(str(_n1_cfg.get("rotor_name", "") or ""))
+        self.ed_n1mm_rotor_name.setToolTip(tt("settings.n1mm_rotor_name_tooltip"))
+        w_n1mm = QWidget()
+        fl_n1mm = QFormLayout(w_n1mm)
+        fl_n1mm.setContentsMargins(0, 0, 0, 0)
+        fl_n1mm.addRow(self._lbl_n1mm_info)
+        fl_n1mm.addRow(self.chk_n1mm_enabled)
+        fl_n1mm.addRow(self.chk_n1mm_az_shortest)
+        fl_n1mm.addRow(self.chk_n1mm_az_report_mod360)
+        fl_n1mm.addRow(t("settings.n1mm_listen_host"), self.ed_n1mm_listen_host)
+        fl_n1mm.addRow(t("settings.n1mm_listen_port"), self.sp_n1mm_listen_port)
+        fl_n1mm.addRow(t("settings.n1mm_broadcast_host"), self.ed_n1mm_broadcast_host)
+        fl_n1mm.addRow(t("settings.n1mm_broadcast_port"), self.sp_n1mm_broadcast_port)
+        fl_n1mm.addRow(t("settings.n1mm_rotor_name"), self.ed_n1mm_rotor_name)
+        row_n1mm_status = QWidget()
+        hl_n1mm = QHBoxLayout(row_n1mm_status)
+        hl_n1mm.setContentsMargins(0, 0, 0, 0)
+        hl_n1mm.setSpacing(8)
+        hl_n1mm.addWidget(QLabel(t("rig.lbl_status")))
+        self._led_n1mm_running = Led(_pst_led_d, self)
+        self._led_n1mm_running.setToolTip(tt("settings.n1mm_led_running_tooltip"))
+        hl_n1mm.addWidget(self._led_n1mm_running, 0, Qt.AlignmentFlag.AlignLeft)
+        hl_n1mm.addSpacing(10)
+        self._lbl_n1mm_bind = QLabel("")
+        self._lbl_n1mm_bind.setWordWrap(True)
+        hl_n1mm.addWidget(self._lbl_n1mm_bind, 1)
+        hl_n1mm.addStretch(1)
+        fl_n1mm.addRow(row_n1mm_status)
+        gb_n1mm_emulation = QGroupBox(t("settings.group_n1mm_rotor"))
+        _vl_n1mm_box = QVBoxLayout(gb_n1mm_emulation)
+        _vl_n1mm_box.addWidget(w_n1mm)
+        self.chk_n1mm_enabled.stateChanged.connect(self._on_n1mm_toggled)
+        self.chk_udp_ucxlog.stateChanged.connect(self._on_ucxlog_vs_n1mm_toggled)
+
         pg_links = QWidget()
         vl_links = QVBoxLayout(pg_links)
         vl_links.setContentsMargins(0, 0, 0, 0)
@@ -744,16 +864,27 @@ class SettingsWindow(QDialog):
         vl_rotor_emu.addWidget(gb_spid_emulation)
         vl_rotor_emu.addWidget(gb_udp_pst_emulation)
         vl_rotor_emu.addWidget(gb_rotctld_emulation)
+        vl_rotor_emu.addWidget(gb_gs232_emulation)
+        vl_rotor_emu.addWidget(gb_easycomm_emulation)
+        vl_rotor_emu.addWidget(gb_dcu1_emulation)
+        vl_rotor_emu.addWidget(gb_n1mm_emulation)
         vl_rotor_emu.addStretch(1)
 
         # SPID BIG-RAS (TCP) und UDP PST-Rotator schließen sich aus; beide aus ist erlaubt.
         if self.chk_pst_enabled.isChecked() and self.chk_udp_pst.isChecked():
             self.chk_udp_pst.setChecked(False)
+        # N1MM und UcxLog teilen Port 12040 — nicht gleichzeitig aktiv.
+        if self.chk_n1mm_enabled.isChecked() and self.chk_udp_ucxlog.isChecked():
+            self.chk_n1mm_enabled.setChecked(False)
         self.chk_pst_enabled.stateChanged.connect(self._on_pst_tcp_emulation_toggled)
         self.chk_udp_pst.stateChanged.connect(self._on_udp_pst_emulation_toggled)
         self.chk_pst_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
         self.chk_udp_pst_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
         self.chk_rotctld_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
+        self.chk_gs232_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
+        self.chk_easycomm_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
+        self.chk_dcu1_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
+        self.chk_n1mm_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
 
         def _sync_aswatch_aircraft_row():
             en = self.chk_aswatch_udp.isChecked()
@@ -1833,6 +1964,8 @@ class SettingsWindow(QDialog):
             self.ctrl.set_settings_window_open(True)
         if hasattr(self.ctrl, "request_immediate_stats"):
             self.ctrl.request_immediate_stats()
+        # Menü „Protokolle“ kann enabled-Flags geändert haben → Haken übernehmen.
+        self.sync_protocol_enabled_from_cfg()
         self._antenna_giveup_done = False
         self._update_antenna_visibility()
         self._shortcuts_tab.refresh_el_visibility()
@@ -2041,14 +2174,20 @@ class SettingsWindow(QDialog):
         self.btn_cal_reset_el.setEnabled(en_el)
         self._update_enc_zero_button_ui()
 
-    def _apply_cal_progress_bar_ui(self, pb: QProgressBar, st: int, prog: int) -> None:
-        """Fortschrittsbalken: sichtbar bei Kalibrierfahrt (GETCALSTATE state/progress)."""
+    def _apply_cal_progress_bar_ui(
+        self, pb: QProgressBar, st: int, prog: int, stage: int = 0
+    ) -> None:
+        """Fortschrittsbalken: sichtbar bei Kalibrierfahrt (GETCALSTATE state/progress/stage)."""
         prog = max(0, min(100, int(prog)))
+        stage = max(0, min(3, int(stage)))
         if st == 1:
             pb.setVisible(True)
             pb.setRange(0, 100)
             pb.setValue(prog)
-            pb.setFormat("%p%")
+            if stage >= 1:
+                pb.setFormat(t("settings.cal_progress_stage_fmt").replace("{stage}", str(stage)))
+            else:
+                pb.setFormat("%p%")
         elif st == 2:
             pb.setVisible(True)
             pb.setRange(0, 100)
@@ -2097,7 +2236,8 @@ class SettingsWindow(QDialog):
             prev_attr = "_prev_cal_prog_st_el"
         st = int(getattr(ax, "cal_state", 0))
         prog = int(getattr(ax, "cal_progress", 0))
-        self._apply_cal_progress_bar_ui(pb, st, prog)
+        stage = int(getattr(ax, "cal_stage", 0) or 0)
+        self._apply_cal_progress_bar_ui(pb, st, prog, stage)
         now = time.time()
         dl = float(getattr(self, dl_attr) or 0.0)
         prev = int(getattr(self, prev_attr))
@@ -2142,12 +2282,61 @@ class SettingsWindow(QDialog):
             except Exception:
                 pass
 
-    def _apply_calvalid_led(self, led: Led, r: str | None) -> None:
+    def _apply_calvalid_led(self, led: Led, r: str | None, axis=None) -> None:
         if r is None or str(r).startswith(SYNC_UI_NAK_PREFIX):
             led.set_state(False)
+            if axis is not None:
+                try:
+                    axis.cal_valid = False
+                except Exception:
+                    pass
             return
         s = str(r).strip().split(";")[0].strip()
-        led.set_state(s == "1")
+        ok = s == "1"
+        led.set_state(ok)
+        if axis is not None:
+            try:
+                axis.cal_valid = bool(ok)
+            except Exception:
+                pass
+        # Gespeicherte CAL (IDLE+VALID): Bins nachladen, falls noch nicht vorhanden.
+        if ok and axis is not None:
+            self._request_cal_bins_if_missing(axis)
+
+    def _request_cal_bins_if_missing(self, axis) -> None:
+        """GETCALBINS anstoßen, wenn gültige CAL vorliegt, aber Stufen-Bins fehlen."""
+        try:
+            from ..rotor_controller_polling import cal_bins_all_stages_present
+
+            if cal_bins_all_stages_present(axis):
+                return
+        except Exception:
+            try:
+                if getattr(axis, "cal_bins_cw", None) is not None and getattr(
+                    axis, "cal_bins_ccw", None
+                ) is not None:
+                    return
+            except Exception:
+                return
+        if axis is getattr(self.ctrl, "az", None):
+            if bool(getattr(self.ctrl, "_cal_bins_inflight_az", False)):
+                return
+            try:
+                self.ctrl._fetch_cal_bins(
+                    int(self.sp_slave_az.value()), self.ctrl.az, "AZ", priority=1
+                )
+            except Exception:
+                pass
+            return
+        if axis is getattr(self.ctrl, "el", None):
+            if bool(getattr(self.ctrl, "_cal_bins_inflight_el", False)):
+                return
+            try:
+                self.ctrl._fetch_cal_bins_el(
+                    int(self.sp_slave_el.value()), self.ctrl.el, "EL", priority=1
+                )
+            except Exception:
+                pass
 
     def _poll_getcalvalid_axis(
         self, sync, which: str, led: Led, prev_attr: str
@@ -2168,7 +2357,7 @@ class SettingsWindow(QDialog):
             )
         except Exception:
             r = None
-        self._apply_calvalid_led(led, r)
+        self._apply_calvalid_led(led, r, ax)
         try:
             st = int(getattr(ax, "cal_state", 0))
             prev = getattr(self, prev_attr)
@@ -2351,49 +2540,101 @@ class SettingsWindow(QDialog):
         root.addLayout(row)
         dlg.exec()
 
+    def _apply_cal_heatmap_from_bins(self, which: str) -> bool:
+        """Min/Max aus CAL-Stufen (1–3) in Heatmap-Felder schreiben."""
+        elevation = which == "el"
+        ax = self.ctrl.el if elevation else self.ctrl.az
+        if ax is None:
+            return False
+        mn_all: int | None = None
+        mx_all: int | None = None
+        cw_s = getattr(ax, "cal_bins_stage_cw", None) or []
+        ccw_s = getattr(ax, "cal_bins_stage_ccw", None) or []
+        for i in range(3):
+            cw = cw_s[i] if i < len(cw_s) else None
+            ccw = ccw_s[i] if i < len(ccw_s) else None
+            mn, mx = compute_bin_min_max(cw, ccw, elevation)
+            if mn is None or mx is None:
+                continue
+            mn_all = mn if mn_all is None else min(mn_all, mn)
+            mx_all = mx if mx_all is None else max(mx_all, mx)
+        if mn_all is None or mx_all is None:
+            mn_all, mx_all = compute_bin_min_max(
+                getattr(ax, "cal_bins_cw", None),
+                getattr(ax, "cal_bins_ccw", None),
+                elevation,
+            )
+        if mn_all is None or mx_all is None:
+            return False
+        margin = 50
+        suffix = "el" if elevation else "az"
+        getattr(self, f"sp_norm_min_{suffix}").setValue(int(mn_all))
+        getattr(self, f"sp_norm_max_{suffix}").setValue(int(mx_all))
+        getattr(self, f"sp_thr_blue_{suffix}").setValue(max(0, int(mn_all) - margin))
+        getattr(self, f"sp_thr_red_{suffix}").setValue(min(65535, int(mx_all) + margin))
+        getattr(self, f"chk_heatmap_custom_{suffix}").setChecked(True)
+        self.lbl_status.setText(t("settings.stats_apply_ok"))
+        return True
+
+    def _cal_led_is_green(self, led: Led) -> bool:
+        try:
+            return bool(getattr(led, "_on", False))
+        except Exception:
+            return False
+
     def _on_apply_cal_heatmap_az(self) -> None:
         """CAL-Bins (AZ): Min/Max in Normfelder übernehmen, Schwellen mit Rand."""
+        if self._apply_cal_heatmap_from_bins("az"):
+            return
         az = self.ctrl.az
-        if getattr(az, "cal_state", 0) != 2:
-            self.lbl_status.setText(t("settings.stats_cal_no_data"))
-            return
-        mn, mx = compute_bin_min_max(
-            getattr(az, "cal_bins_cw", None),
-            getattr(az, "cal_bins_ccw", None),
-            False,
+        valid = bool(getattr(az, "cal_valid", False)) or self._cal_led_is_green(
+            self._led_cal_valid
         )
-        if mn is None or mx is None:
-            self.lbl_status.setText(t("settings.stats_cal_no_data"))
+        if valid or getattr(az, "cal_state", 0) == 2:
+            try:
+                az.cal_valid = True
+            except Exception:
+                pass
+            self._request_cal_bins_if_missing(az)
+            self.lbl_status.setText(t("settings.stats_cal_waiting"))
+            QTimer.singleShot(800, lambda: self._retry_apply_cal_heatmap("az"))
             return
-        margin = 50
-        self.sp_norm_min_az.setValue(int(mn))
-        self.sp_norm_max_az.setValue(int(mx))
-        self.sp_thr_blue_az.setValue(max(0, int(mn) - margin))
-        self.sp_thr_red_az.setValue(min(65535, int(mx) + margin))
-        self.chk_heatmap_custom_az.setChecked(True)
-        self.lbl_status.setText(t("settings.stats_apply_ok"))
+        self.lbl_status.setText(t("settings.stats_cal_no_data"))
 
     def _on_apply_cal_heatmap_el(self) -> None:
         """CAL-Bins (EL): Min/Max übernehmen."""
+        if self._apply_cal_heatmap_from_bins("el"):
+            return
         el = getattr(self.ctrl, "el", None)
-        if el is None or getattr(el, "cal_state", 0) != 2:
+        if el is None:
             self.lbl_status.setText(t("settings.stats_cal_no_data"))
             return
-        mn, mx = compute_bin_min_max(
-            getattr(el, "cal_bins_cw", None),
-            getattr(el, "cal_bins_ccw", None),
-            True,
+        valid = bool(getattr(el, "cal_valid", False)) or self._cal_led_is_green(
+            self._led_cal_valid_el
         )
-        if mn is None or mx is None:
+        if valid or getattr(el, "cal_state", 0) == 2:
+            try:
+                el.cal_valid = True
+            except Exception:
+                pass
+            self._request_cal_bins_if_missing(el)
+            self.lbl_status.setText(t("settings.stats_cal_waiting"))
+            QTimer.singleShot(800, lambda: self._retry_apply_cal_heatmap("el"))
+            return
+        self.lbl_status.setText(t("settings.stats_cal_no_data"))
+
+    def _retry_apply_cal_heatmap(self, which: str, attempt: int = 0) -> None:
+        """Nach GETCALBINS erneut übernehmen (mehrere Versuche, bis Bins da sind)."""
+        if self._apply_cal_heatmap_from_bins(which):
+            return
+        if attempt >= 8:
             self.lbl_status.setText(t("settings.stats_cal_no_data"))
             return
-        margin = 50
-        self.sp_norm_min_el.setValue(int(mn))
-        self.sp_norm_max_el.setValue(int(mx))
-        self.sp_thr_blue_el.setValue(max(0, int(mn) - margin))
-        self.sp_thr_red_el.setValue(min(65535, int(mx) + margin))
-        self.chk_heatmap_custom_el.setChecked(True)
-        self.lbl_status.setText(t("settings.stats_apply_ok"))
+        ax = self.ctrl.el if which == "el" else self.ctrl.az
+        self._request_cal_bins_if_missing(ax)
+        QTimer.singleShot(
+            600, lambda: self._retry_apply_cal_heatmap(which, attempt + 1)
+        )
 
     def _heatmap_scale_valid(self) -> bool:
         """Prüft thr_blue ≤ norm_min ≤ norm_max ≤ thr_red wenn Custom aktiv."""
@@ -3630,7 +3871,257 @@ class SettingsWindow(QDialog):
         self._tick_pst_tcp_status()
         self._tick_udp_pst_status()
         self._tick_rotctld_status()
+        self._tick_proto_tcp_status("gs232", "_gs232_server", 4003)
+        self._tick_proto_tcp_status("easycomm", "_easycomm_server", 4535)
+        self._tick_proto_tcp_status("dcu1", "_dcu1_server", 4004)
+        self._tick_n1mm_status()
         self._tick_map_webserver_status()
+
+    def _build_proto_tcp_group(
+        self,
+        *,
+        cfg_key: str,
+        prefix: str,
+        group_key: str,
+        info_key: str,
+        enabled_key: str,
+        enabled_tt: str,
+        host_tt: str,
+        port_label_key: str,
+        port_tt: str,
+        led_tt: str,
+        default_port: int,
+        ip_w: int,
+        led_d: int,
+        on_toggled,
+    ) -> QGroupBox:
+        """Gemeinsame UI-Gruppe für GS-232B / EasyComm / DCU-1 TCP-Server."""
+        sec = self.cfg.get(cfg_key, {}) or {}
+        lbl_info = QLabel(t(info_key))
+        lbl_info.setWordWrap(True)
+        chk_en = QCheckBox(t(enabled_key))
+        chk_en.setChecked(bool(sec.get("enabled", False)))
+        chk_en.setToolTip(tt(enabled_tt))
+        chk_short = QCheckBox(t("settings.chk_az_shortest_path"))
+        chk_short.setChecked(bool(sec.get("az_shortest_path", False)))
+        chk_short.setToolTip(tt("settings.chk_az_shortest_path_tooltip"))
+        chk_mod = QCheckBox(t("settings.chk_az_report_mod360"))
+        chk_mod.setChecked(bool(sec.get("az_report_mod360", False)))
+        chk_mod.setToolTip(tt("settings.chk_az_report_mod360_tooltip"))
+        ed_host = QLineEdit(str(sec.get("listen_host", "127.0.0.1")))
+        ed_host.setMinimumWidth(ip_w)
+        ed_host.setToolTip(tt(host_tt))
+        sp_port = QSpinBox()
+        sp_port.setRange(1, 65535)
+        sp_port.setValue(int(sec.get("listen_port", default_port)))
+        sp_port.setToolTip(tt(port_tt))
+        setattr(self, f"chk_{prefix}_enabled", chk_en)
+        setattr(self, f"chk_{prefix}_az_shortest", chk_short)
+        setattr(self, f"chk_{prefix}_az_report_mod360", chk_mod)
+        setattr(self, f"ed_{prefix}_host", ed_host)
+        setattr(self, f"sp_{prefix}_port", sp_port)
+        w = QWidget()
+        fl = QFormLayout(w)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.addRow(lbl_info)
+        fl.addRow(chk_en)
+        fl.addRow(chk_short)
+        fl.addRow(chk_mod)
+        fl.addRow(t("settings.rotctld_listen_host"), ed_host)
+        fl.addRow(t(port_label_key), sp_port)
+        row_st = QWidget()
+        hl = QHBoxLayout(row_st)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(8)
+        hl.addWidget(QLabel(t("rig.lbl_status")))
+        led = Led(led_d, self)
+        led.setToolTip(tt(led_tt))
+        setattr(self, f"_led_{prefix}_running", led)
+        hl.addWidget(led, 0, Qt.AlignmentFlag.AlignLeft)
+        hl.addSpacing(10)
+        lbl_bind = QLabel("")
+        lbl_bind.setWordWrap(True)
+        setattr(self, f"_lbl_{prefix}_bind", lbl_bind)
+        hl.addWidget(lbl_bind, 1)
+        hl.addStretch(1)
+        fl.addRow(row_st)
+        chk_en.stateChanged.connect(on_toggled)
+        gb = QGroupBox(t(group_key))
+        vl = QVBoxLayout(gb)
+        vl.addWidget(w)
+        return gb
+
+    def _sync_proto_tcp_cfg_from_ui(self, prefix: str, cfg_key: str) -> None:
+        sec = self.cfg.setdefault(cfg_key, {})
+        sec["enabled"] = bool(getattr(self, f"chk_{prefix}_enabled").isChecked())
+        sec["listen_host"] = getattr(self, f"ed_{prefix}_host").text().strip() or "127.0.0.1"
+        sec["listen_port"] = int(getattr(self, f"sp_{prefix}_port").value())
+        shortest = bool(getattr(self, f"chk_{prefix}_az_shortest").isChecked())
+        sec["az_shortest_path"] = shortest
+        sec["az_report_mod360"] = bool(
+            getattr(self, f"chk_{prefix}_az_report_mod360").isChecked() and shortest
+        )
+
+    def _apply_proto_tcp_live(
+        self, prefix: str, cfg_key: str, server_attr: str, default_port: int
+    ) -> None:
+        srv = getattr(self, server_attr, None)
+        if srv is None:
+            return
+        sec = self.cfg.get(cfg_key, {}) or {}
+        try:
+            if bool(sec.get("enabled")):
+                srv.restart(
+                    str(sec.get("listen_host", "127.0.0.1")),
+                    int(sec.get("listen_port", default_port)),
+                )
+            else:
+                srv.stop()
+        except Exception as exc:
+            self.logbuf.write("WARN", f"{prefix} live: {exc}")
+
+    def _on_proto_tcp_toggled(
+        self, prefix: str, cfg_key: str, server_attr: str, default_port: int
+    ) -> None:
+        self._sync_proto_tcp_cfg_from_ui(prefix, cfg_key)
+        try:
+            self.save_cfg_cb(self.cfg)
+        except Exception as exc:
+            self.logbuf.write("WARN", f"{prefix} live: Config speichern fehlgeschlagen: {exc}")
+        self._apply_proto_tcp_live(prefix, cfg_key, server_attr, default_port)
+        self._tick_proto_tcp_status(prefix, server_attr, default_port)
+        self._show_bind_errors()
+
+    def _tick_proto_tcp_status(
+        self, prefix: str, server_attr: str, default_port: int
+    ) -> None:
+        srv = getattr(self, server_attr, None)
+        led = getattr(self, f"_led_{prefix}_running", None)
+        lbl = getattr(self, f"_lbl_{prefix}_bind", None)
+        ed = getattr(self, f"ed_{prefix}_host", None)
+        sp = getattr(self, f"sp_{prefix}_port", None)
+        if led is None or lbl is None or ed is None or sp is None:
+            return
+        try:
+            on = bool(getattr(srv, "running", False)) if srv is not None else False
+        except Exception:
+            on = False
+        led.set_state(on)
+        err = str(getattr(srv, "bind_error_msg", None) or "").strip()
+        if err:
+            lbl.setText(err)
+            return
+        host = (ed.text() or "").strip() or "127.0.0.1"
+        try:
+            port = int(sp.value())
+        except Exception:
+            port = default_port
+        lbl.setText(t("settings.rotctld_bind_detail", host=host, port=port))
+
+    def _on_gs232_toggled(self, _state: object = None) -> None:
+        self._on_proto_tcp_toggled("gs232", "gs232_server", "_gs232_server", 4003)
+
+    def _on_easycomm_toggled(self, _state: object = None) -> None:
+        self._on_proto_tcp_toggled("easycomm", "easycomm_server", "_easycomm_server", 4535)
+
+    def _on_dcu1_toggled(self, _state: object = None) -> None:
+        self._on_proto_tcp_toggled("dcu1", "dcu1_server", "_dcu1_server", 4004)
+
+    def _sync_n1mm_cfg_from_ui(self) -> None:
+        nr = self.cfg.setdefault("n1mm_rotor", {})
+        nr["enabled"] = bool(self.chk_n1mm_enabled.isChecked())
+        nr["listen_host"] = self.ed_n1mm_listen_host.text().strip() or "127.0.0.1"
+        nr["listen_port"] = int(self.sp_n1mm_listen_port.value())
+        nr["broadcast_host"] = self.ed_n1mm_broadcast_host.text().strip() or "127.0.0.1"
+        nr["broadcast_port"] = int(self.sp_n1mm_broadcast_port.value())
+        nr["rotor_name"] = self.ed_n1mm_rotor_name.text().strip()
+        shortest = bool(self.chk_n1mm_az_shortest.isChecked())
+        nr["az_shortest_path"] = shortest
+        nr["az_report_mod360"] = bool(
+            self.chk_n1mm_az_report_mod360.isChecked() and shortest
+        )
+
+    def _apply_n1mm_live(self) -> None:
+        srv = getattr(self, "_n1mm_rotor", None)
+        if srv is None:
+            return
+        nr = self.cfg.get("n1mm_rotor", {}) or {}
+        try:
+            srv.start(
+                enabled=bool(nr.get("enabled", False)),
+                listen_host=str(nr.get("listen_host", "127.0.0.1")),
+                listen_port=int(nr.get("listen_port", 12040)),
+                broadcast_host=str(nr.get("broadcast_host", "127.0.0.1")),
+                broadcast_port=int(nr.get("broadcast_port", 13010)),
+                rotor_name=str(nr.get("rotor_name", "") or ""),
+            )
+        except Exception as exc:
+            self.logbuf.write("WARN", f"N1MM live: {exc}")
+
+    def _stop_ucxlog_listener(self) -> None:
+        udp = getattr(self, "_udp_ucxlog", None)
+        if udp is None:
+            return
+        try:
+            udp.stop()
+        except Exception:
+            pass
+
+    def _on_n1mm_toggled(self, _state: object = None) -> None:
+        if self.chk_n1mm_enabled.checkState() == Qt.CheckState.Checked:
+            if self.chk_udp_ucxlog.isChecked():
+                self.chk_udp_ucxlog.blockSignals(True)
+                self.chk_udp_ucxlog.setChecked(False)
+                self.chk_udp_ucxlog.blockSignals(False)
+                self.cfg.setdefault("ui", {})["udp_ucxlog_enabled"] = False
+                self._stop_ucxlog_listener()
+                self.logbuf.write(
+                    "WARN",
+                    t("settings.n1mm_ucx_conflict_warn"),
+                )
+        self._sync_n1mm_cfg_from_ui()
+        try:
+            self.save_cfg_cb(self.cfg)
+        except Exception as exc:
+            self.logbuf.write("WARN", f"N1MM live: Config speichern fehlgeschlagen: {exc}")
+        self._apply_n1mm_live()
+        self._tick_n1mm_status()
+        self._show_bind_errors()
+
+    def _on_ucxlog_vs_n1mm_toggled(self, _state: object = None) -> None:
+        if self.chk_udp_ucxlog.checkState() == Qt.CheckState.Checked:
+            if self.chk_n1mm_enabled.isChecked():
+                self.chk_n1mm_enabled.blockSignals(True)
+                self.chk_n1mm_enabled.setChecked(False)
+                self.chk_n1mm_enabled.blockSignals(False)
+                self.cfg.setdefault("n1mm_rotor", {})["enabled"] = False
+                self.logbuf.write("WARN", t("settings.n1mm_ucx_conflict_warn"))
+                self._apply_n1mm_live()
+                self._tick_n1mm_status()
+                try:
+                    self.save_cfg_cb(self.cfg)
+                except Exception:
+                    pass
+
+    def _tick_n1mm_status(self) -> None:
+        srv = getattr(self, "_n1mm_rotor", None)
+        try:
+            on = bool(getattr(srv, "running", False)) if srv is not None else False
+        except Exception:
+            on = False
+        self._led_n1mm_running.set_state(on)
+        err = str(getattr(srv, "bind_error_msg", None) or "").strip()
+        if err:
+            self._lbl_n1mm_bind.setText(err)
+            return
+        host = (self.ed_n1mm_listen_host.text() or "").strip() or "127.0.0.1"
+        try:
+            port = int(self.sp_n1mm_listen_port.value())
+        except Exception:
+            port = 12040
+        self._lbl_n1mm_bind.setText(
+            t("settings.rotctld_bind_detail", host=host, port=port)
+        )
 
     def _sync_rotctld_cfg_from_ui(self) -> None:
         """Hamlib-rotctld-Gruppe → ``cfg['rotctld_server']``."""
@@ -3670,6 +4161,7 @@ class SettingsWindow(QDialog):
             self.logbuf.write("WARN", f"rotctld live: Config speichern fehlgeschlagen: {exc}")
         self._apply_rotctld_server_live()
         self._tick_rotctld_status()
+        self._show_bind_errors()
 
     def _tick_rotctld_status(self) -> None:
         """Status-LED und Bind-Text für den Hamlib-rotctld-Server."""
@@ -3679,6 +4171,10 @@ class SettingsWindow(QDialog):
         except Exception:
             on = False
         self._led_rotctld_running.set_state(on)
+        err = str(getattr(srv, "bind_error_msg", None) or "").strip()
+        if err:
+            self._lbl_rotctld_bind.setText(err)
+            return
         host = (self.ed_rotctld_host.text() or "").strip() or "127.0.0.1"
         try:
             port = int(self.sp_rotctld_port.value())
@@ -3801,6 +4297,10 @@ class SettingsWindow(QDialog):
             return
         on = bool(u.is_active)
         self._led_udp_pst_running.set_state(on)
+        err = str(getattr(u, "bind_error_msg", None) or "").strip()
+        if err:
+            self._lbl_udp_pst_bind.setText(err)
+            return
         lh = (self.ed_udp_pst_listen.text() or "").strip() or "127.0.0.1"
         try:
             p = int(self.sp_udp_pst_port.value())
@@ -3812,6 +4312,34 @@ class SettingsWindow(QDialog):
         self._lbl_udp_pst_bind.setText(
             t("settings.udp_pst_bind_detail", listen=lh, port=p, target=tgt, reply_port=p + 1)
         )
+
+    def _show_bind_errors(self) -> None:
+        """Gebündelte Meldung für Bind-Fehler der Emulationsdienste."""
+        msgs: list[str] = []
+        for attr in (
+            "pst",
+            "_rotctld_server",
+            "_gs232_server",
+            "_easycomm_server",
+            "_dcu1_server",
+            "_n1mm_rotor",
+            "_udp_pst",
+            "_map_webserver",
+        ):
+            srv = getattr(self, attr, None)
+            if srv is None:
+                continue
+            msg = getattr(srv, "bind_error_msg", None) or getattr(srv, "last_error", None)
+            if msg:
+                text = str(msg).strip()
+                if text and text not in msgs:
+                    msgs.append(text)
+        if not msgs:
+            return
+        try:
+            QMessageBox.warning(self, t("main.bind_error_title"), "\n\n".join(msgs))
+        except Exception:
+            pass
 
     def _push_antenna_angles_to_config(self) -> None:
         """Öffnungswinkel-Spinboxen sofort in Config schreiben."""
@@ -4115,6 +4643,66 @@ class SettingsWindow(QDialog):
             bool(self.chk_enable_el.isChecked()),
         )
 
+    def sync_protocol_enabled_from_cfg(self) -> None:
+        """Enabled-Haken der Emulationsdienste aus ``cfg`` übernehmen (z. B. nach Menü Protokolle)."""
+        cfg = self.cfg
+        ui = cfg.get("ui") or {}
+
+        def _set_chk(chk, on: bool) -> None:
+            if chk is None:
+                return
+            want = bool(on)
+            if bool(chk.isChecked()) == want:
+                return
+            chk.blockSignals(True)
+            try:
+                chk.setChecked(want)
+            finally:
+                chk.blockSignals(False)
+
+        _set_chk(
+            getattr(self, "chk_pst_enabled", None),
+            bool((cfg.get("pst_server") or {}).get("enabled", False)),
+        )
+        _set_chk(
+            getattr(self, "chk_udp_pst", None),
+            bool(ui.get("udp_pst_enabled", False)),
+        )
+        _set_chk(
+            getattr(self, "chk_rotctld_enabled", None),
+            bool((cfg.get("rotctld_server") or {}).get("enabled", False)),
+        )
+        _set_chk(
+            getattr(self, "chk_gs232_enabled", None),
+            bool((cfg.get("gs232_server") or {}).get("enabled", False)),
+        )
+        _set_chk(
+            getattr(self, "chk_easycomm_enabled", None),
+            bool((cfg.get("easycomm_server") or {}).get("enabled", False)),
+        )
+        _set_chk(
+            getattr(self, "chk_dcu1_enabled", None),
+            bool((cfg.get("dcu1_server") or {}).get("enabled", False)),
+        )
+        _set_chk(
+            getattr(self, "chk_n1mm_enabled", None),
+            bool((cfg.get("n1mm_rotor") or {}).get("enabled", False)),
+        )
+        _set_chk(
+            getattr(self, "chk_udp_ucxlog", None),
+            bool(ui.get("udp_ucxlog_enabled", False)),
+        )
+        _set_chk(
+            getattr(self, "chk_map_webserver_enabled", None),
+            bool((cfg.get("map_webserver") or {}).get("enabled", False)),
+        )
+        try:
+            tab = getattr(self, "_com0com_tab", None)
+            if tab is not None and hasattr(tab, "_load_from_config"):
+                tab._load_from_config()
+        except Exception:
+            pass
+
     def sync_rotor_bus_ids_from_cfg(self) -> None:
         """Nach externer cfg-Änderung (z. B. SETID/SETROTORID im Rotor-Konfigurationsfenster): Master/Slave/Enable aus cfg in die Spinboxen spiegeln."""
         rb = self.cfg.get("rotor_bus") or {}
@@ -4255,6 +4843,13 @@ class SettingsWindow(QDialog):
         )
 
         self._sync_rotctld_cfg_from_ui()
+        self._sync_proto_tcp_cfg_from_ui("gs232", "gs232_server")
+        self._sync_proto_tcp_cfg_from_ui("easycomm", "easycomm_server")
+        self._sync_proto_tcp_cfg_from_ui("dcu1", "dcu1_server")
+        # N1MM vs UcxLog: letzter aktiver Haken gewinnt beim Speichern.
+        if self.chk_n1mm_enabled.isChecked() and self.chk_udp_ucxlog.isChecked():
+            self.chk_udp_ucxlog.setChecked(False)
+        self._sync_n1mm_cfg_from_ui()
         self._sync_map_webserver_cfg_from_ui()
 
         self.cfg["rotor_bus"]["master_id"] = int(self.sp_master.value())
@@ -4718,6 +5313,22 @@ class SettingsWindow(QDialog):
             (
                 getattr(self, "chk_rotctld_az_shortest", None),
                 getattr(self, "chk_rotctld_az_report_mod360", None),
+            ),
+            (
+                getattr(self, "chk_gs232_az_shortest", None),
+                getattr(self, "chk_gs232_az_report_mod360", None),
+            ),
+            (
+                getattr(self, "chk_easycomm_az_shortest", None),
+                getattr(self, "chk_easycomm_az_report_mod360", None),
+            ),
+            (
+                getattr(self, "chk_dcu1_az_shortest", None),
+                getattr(self, "chk_dcu1_az_report_mod360", None),
+            ),
+            (
+                getattr(self, "chk_n1mm_az_shortest", None),
+                getattr(self, "chk_n1mm_az_report_mod360", None),
             ),
         )
         for chk_short, chk_mod in pairs:

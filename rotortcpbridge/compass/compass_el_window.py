@@ -414,7 +414,7 @@ class ElevationCompassWidget(QWidget):
                     self._bins_cw,
                     self._bins_ccw,
                     elevation=True,
-                    ring_width=5.0,
+                    ring_width=2.5,
                     offset_deg=self._heatmap_offset_deg,
                     scale=self._heatmap_scale,
                     auto_smooth_state=self._heatmap_auto_smooth

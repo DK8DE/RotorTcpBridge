@@ -101,11 +101,18 @@ def build_compass_html(params: dict) -> str:
     .windSpeed {{ display:flex; align-items:baseline; justify-content:center; gap:4px; width:100%; }}
     .windSpeed .val {{ flex:1; }}
     .unit {{ font-size:13px; color:#aaa; }}
+    .pwmRow {{ display:flex; align-items:center; gap:6px; }}
+    .pwmRow input[type=range] {{
+      flex:1 1 auto; min-width:0; width:auto; padding:4px 0; border:none; background:transparent;
+      accent-color:#5ee07a;
+    }}
+    .pwmVal {{ flex:0 0 28px; width:28px; text-align:right; font-weight:700; font-size:13px; }}
     #azLeftCol a, #azLeftCol button, #azLeftCol select, #azLeftCol input,
     .side a, .side button, .side select, .side input {{
       font:12px/1.2 sans-serif; padding:6px 8px; border-radius:6px; border:1px solid {border};
       background:rgba(40,40,42,0.9); color:{fg}; width:100%;
     }}
+    .side input[type=range] {{ width:auto; }}
     #azLeftCol a, .side a {{ text-decoration:none; display:block; text-align:center; font-weight:600; }}
     #azLeftCol button, .side button {{ cursor:pointer; }}
     #azLeftCol label.chk, .side label.chk {{
@@ -238,6 +245,11 @@ def build_compass_html(params: dict) -> str:
           </div>
           <div class="card">
             <div class="cardHdr" id="lblCtrl">Steuerung</div>
+            <div class="cardHdr" id="lblPwmAz">Motorspeed %</div>
+            <div class="pwmRow">
+              <input id="slPwmAz" type="range" min="0" max="100" step="1" value="0" />
+              <span class="pwmVal" id="slPwmAzVal">0</span>
+            </div>
             <button type="button" id="btnStopAz">STOP AZ</button>
             <button type="button" id="btnRefAz">AZ Homing</button>
             <div class="cardHdr" id="lblHeat">Ringe</div>
@@ -297,6 +309,11 @@ def build_compass_html(params: dict) -> str:
           </div>
           <div class="card">
             <div class="cardHdr" id="lblElCtrl">Steuerung</div>
+            <div class="cardHdr" id="lblPwmEl">Motorspeed %</div>
+            <div class="pwmRow">
+              <input id="slPwmEl" type="range" min="0" max="100" step="1" value="0" />
+              <span class="pwmVal" id="slPwmElVal">0</span>
+            </div>
             <button type="button" id="btnStopEl">STOP EL</button>
             <button type="button" id="btnRefEl">EL Homing</button>
             <label class="chk"><input type="checkbox" id="chkHeatElStrom" /> <span id="lblHeatElStrom">Strom</span></label>
@@ -344,6 +361,51 @@ def build_compass_html(params: dict) -> str:
       el.classList.remove('on','off','blink');
       if (blink) el.classList.add('blink');
       else el.classList.add(on ? 'on' : 'off');
+    }}
+    let pwmHoldUntil = {{ az: 0, el: 0 }};
+    let pwmSendTimer = {{ az: null, el: null }};
+    function applyPwmSlider(axis, data, slId, valId) {{
+      const sl = document.getElementById(slId);
+      const lab = document.getElementById(valId);
+      if (!sl) return;
+      const mn = (data.pwm_min != null) ? Number(data.pwm_min) : 0;
+      sl.min = String(Math.max(0, Math.min(100, mn)));
+      sl.max = '100';
+      sl.disabled = !data.pwm_enabled;
+      if (Date.now() < (pwmHoldUntil[axis] || 0)) return;
+      if (document.activeElement === sl) return;
+      if (!data.pwm_enabled) {{
+        sl.value = '0';
+        if (lab) lab.textContent = '0';
+        return;
+      }}
+      if (data.pwm == null || isNaN(data.pwm)) return;
+      let iv = Number(data.pwm);
+      const cur = parseInt(sl.value, 10);
+      if (iv === 99 && cur === 100) return;
+      sl.value = String(iv);
+      if (lab) lab.textContent = String(iv);
+    }}
+    function bindPwmSlider(axis, slId, valId) {{
+      const sl = document.getElementById(slId);
+      if (!sl) return;
+      function send() {{
+        const v = parseInt(sl.value, 10);
+        if (isNaN(v)) return;
+        api('set_pwm', {{ axis: axis, pct: v }});
+      }}
+      sl.addEventListener('input', function() {{
+        pwmHoldUntil[axis] = Date.now() + 1000;
+        const lab = document.getElementById(valId);
+        if (lab) lab.textContent = sl.value;
+        if (pwmSendTimer[axis]) clearTimeout(pwmSendTimer[axis]);
+        pwmSendTimer[axis] = setTimeout(send, 150);
+      }});
+      sl.addEventListener('change', function() {{
+        pwmHoldUntil[axis] = Date.now() + 1000;
+        if (pwmSendTimer[axis]) clearTimeout(pwmSendTimer[axis]);
+        send();
+      }});
     }}
     function wrapDeg(d) {{
       let x = Number(d) % 360;
@@ -413,6 +475,24 @@ def build_compass_html(params: dict) -> str:
       else {{ r=255; g=Math.round(255-255*((t-0.75)/0.25)); b=0; }}
       return 'rgb('+r+','+g+','+b+')';
     }}
+    function vToTScaled(v, scale) {{
+      // scale = [thr_blue, norm_min, norm_max, thr_red] — wie Desktop-HeatmapScale
+      if (!scale || scale.length < 4) return null;
+      const tb = Number(scale[0]), nm = Number(scale[1]), nx = Number(scale[2]), tr = Number(scale[3]);
+      if (!(tb <= nm && nm <= nx && nx <= tr)) return null;
+      if (v <= tb) return 0;
+      if (v >= tr) return 1;
+      if (v < nm) {{
+        if (nm <= tb) return 0.25;
+        return 0.25 * (v - tb) / (nm - tb);
+      }}
+      if (v > nx) {{
+        if (tr <= nx) return 0.85;
+        return 0.75 + 0.25 * (v - nx) / (tr - nx);
+      }}
+      if (nx <= nm) return 0.5;
+      return 0.25 + 0.5 * (v - nm) / (nx - nm);
+    }}
     function drawArrow(ctx, cx, cy, len, deg, color, width) {{
       const rad = deg * Math.PI / 180;
       const fx = Math.sin(rad), fy = -Math.cos(rad);
@@ -439,27 +519,63 @@ def build_compass_html(params: dict) -> str:
     function drawDashedArrow(ctx, cx, cy, len, deg, color, width) {{
       const rad = deg * Math.PI / 180;
       const fx = Math.sin(rad), fy = -Math.cos(rad);
+      const rx = Math.cos(rad), ry = Math.sin(rad);
+      const headW = Math.max(7, width);
+      const half = Math.max(2, headW/2);
+      const head = Math.max(11, len * 0.13);
+      const shaft = Math.max(half * 1.2, len - head);
       ctx.save();
       ctx.strokeStyle = color;
       ctx.lineWidth = width;
-      ctx.setLineDash([6, 5]);
+      ctx.lineCap = 'round';
+      ctx.setLineDash([6, 4]);
       ctx.beginPath();
       ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + fx*len*0.85, cy + fy*len*0.85);
+      ctx.lineTo(cx + fx*shaft, cy + fy*shaft);
       ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(cx + fx*len, cy + fy*len);
+      ctx.lineTo(cx + fx*shaft - rx*half*1.4, cy + fy*shaft - ry*half*1.4);
+      ctx.lineTo(cx + fx*shaft + rx*half*1.4, cy + fy*shaft + ry*half*1.4);
+      ctx.closePath();
+      ctx.fill();
       ctx.restore();
     }}
-    function ringRadii(r, modes) {{
-      const n = Math.max(1, (modes||[]).length);
+    function ringBandPx(r, mode) {{
+      // Strom/Standzeit halb so dick; px-Band skaliert sanft mit Radius (mobil tauglich).
+      if (mode === 'strom' || mode === 'dwell') {{
+        return Math.max(2.5, Math.min(5, r * 0.028));
+      }}
+      return Math.max(4, Math.min(9, r * 0.055));
+    }}
+    function ringStackOutside(r, modes) {{
+      // Wie Desktop: Ringe AUSSERHALB des Kreises, damit Gradzahlen frei bleiben.
+      const list = modes || [];
       const out = [];
-      for (let i=0;i<n;i++) {{
-        const outer = r * (0.92 - i * 0.08);
-        const inner = outer - r * 0.07;
-        out.push({{ outer: outer, inner: Math.max(r*0.35, inner), mode: modes[i] }});
+      let inner = r + 1;
+      for (let i = 0; i < list.length; i++) {{
+        const mode = list[i];
+        const band = ringBandPx(r, mode);
+        const gap = 1;
+        const outer = inner + band;
+        out.push({{ outer: outer, inner: inner, mode: mode }});
+        inner = outer + gap;
       }}
       return out;
     }}
-    function drawHeatRing(ctx, cx, cy, inner, outer, binsCw, binsCcw, offsetDeg, elevation, maxDeg) {{
+    function ringStackHeight(r, modes) {{
+      const list = modes || [];
+      if (!list.length) return 0;
+      let h = 1;
+      for (let i = 0; i < list.length; i++) {{
+        h += ringBandPx(r, list[i]);
+        if (i < list.length - 1) h += 1;
+      }}
+      return h;
+    }}
+    function drawHeatRing(ctx, cx, cy, inner, outer, binsCw, binsCcw, offsetDeg, elevation, maxDeg, scale) {{
       const skip = 5;
       const nTotal = elevation ? 36 : 72;
       const used = nTotal - 2*skip;
@@ -470,13 +586,20 @@ def build_compass_html(params: dict) -> str:
         if (v < vmin) vmin = v;
         if (v > vmax) vmax = v;
       }}
-      if (vmax <= vmin) {{ vmin = 0; vmax = 1; }}
+      if (!(vmax > vmin)) {{ vmin = 0; vmax = 1; }}
+      const useScale = scale && scale.length >= 4;
       const span = elevation ? (maxDeg || 90) : 360;
       const seg = span / used;
       for (let k=0; k<used; k++) {{
         const i = skip + k;
         const v = Math.max(binsCw && binsCw[i] || 0, binsCcw && binsCcw[i] || 0);
-        const t = (v - vmin) / (vmax - vmin);
+        let t;
+        if (useScale) {{
+          const ts = vToTScaled(v, scale);
+          t = (ts == null) ? ((v - vmin) / (vmax - vmin)) : ts;
+        }} else {{
+          t = (v - vmin) / (vmax - vmin);
+        }}
         if (elevation) {{
           // EL 0°=links (π), 90°=oben (3π/2): Canvas-Winkel nehmen zu im Uhrzeigersinn
           const sa = Math.PI + (k * seg) * Math.PI / 180;
@@ -538,9 +661,20 @@ def build_compass_html(params: dict) -> str:
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
       const cx = w/2, cy = h/2;
-      const r = Math.min(w, h) * 0.42;
       const az = state.az || {{}};
       const modes = az.heatmap_modes || [];
+      // Radius so wählen, dass äußere Heatmap-Ringe + Rand im Canvas bleiben.
+      const half = Math.min(w, h) * 0.5;
+      let rGuess = half * 0.78;
+      const stackH = ringStackHeight(rGuess, modes);
+      const edgePad = Math.max(6, half * 0.04);
+      rGuess = Math.max(40, half - edgePad - stackH);
+      const r = rGuess;
+      const tickMajor = Math.max(6, Math.min(12, r * 0.08));
+      const tickMinor = Math.max(4, Math.min(8, r * 0.05));
+      const labelInset = Math.max(12, Math.min(26, r * 0.16));
+      const degFontPx = Math.max(8, Math.min(12, r * 0.075));
+      const cardFontPx = Math.max(10, Math.min(16, r * 0.095));
       if (windroseImg && windroseImg.complete) {{
         ctx.save();
         ctx.globalAlpha = 0.15;
@@ -555,7 +689,7 @@ def build_compass_html(params: dict) -> str:
       for (let d=0; d<360; d+=10) {{
         const rad = d * Math.PI / 180;
         const outer = r;
-        const inner = r - ((d % 30 === 0) ? 12 : 7);
+        const inner = r - ((d % 30 === 0) ? tickMajor : tickMinor);
         ctx.beginPath();
         ctx.moveTo(cx + Math.sin(rad)*inner, cy - Math.cos(rad)*inner);
         ctx.lineTo(cx + Math.sin(rad)*outer, cy - Math.cos(rad)*outer);
@@ -564,31 +698,34 @@ def build_compass_html(params: dict) -> str:
         ctx.stroke();
         if (d % 20 === 0) {{
           ctx.fillStyle = '{fg}';
-          ctx.font = '11px sans-serif';
+          ctx.font = degFontPx + 'px sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          const lx = cx + Math.sin(rad)*(r-22);
-          const ly = cy - Math.cos(rad)*(r-22);
+          const lr = r - labelInset;
+          const lx = cx + Math.sin(rad)*lr;
+          const ly = cy - Math.cos(rad)*lr;
           ctx.fillText(String(d), lx, ly);
         }}
       }}
+      // Himmelsrichtungen innen (Ringe liegen außen).
       [['N',0],['O',90],['S',180],['W',270]].forEach(function(p) {{
         const rad = p[1]*Math.PI/180;
         ctx.fillStyle = '{fg}';
-        ctx.font = 'bold 14px sans-serif';
+        ctx.font = 'bold ' + cardFontPx + 'px sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(p[0], cx + Math.sin(rad)*(r+16), cy - Math.cos(rad)*(r+16));
+        const cr = r * 0.70;
+        ctx.fillText(p[0], cx + Math.sin(rad)*cr, cy - Math.cos(rad)*cr);
       }});
       // Beam overlay
       if (az.beam_overlay && az.ist != null) {{
         const open = Number(az.opening_deg || 30);
-        const half = open/2;
+        const halfOpen = open/2;
         const c = azIstForDraw(az);
         const colors = az.beam_color || 'rgba(80,160,255,0.25)';
         function wedge(center) {{
-          const a0 = (center - half - 90) * Math.PI/180;
-          const a1 = (center + half - 90) * Math.PI/180;
+          const a0 = (center - halfOpen - 90) * Math.PI/180;
+          const a1 = (center + halfOpen - 90) * Math.PI/180;
           ctx.beginPath();
           ctx.moveTo(cx, cy);
           ctx.arc(cx, cy, r*0.88, a0, a1, false);
@@ -599,11 +736,11 @@ def build_compass_html(params: dict) -> str:
         wedge(c);
         if (az.dipole) wedge(wrapDeg(c+180));
       }}
-      const rings = ringRadii(r, modes);
+      const rings = ringStackOutside(r, modes);
       const off = Number(az.offset_deg || 0);
       rings.forEach(function(ring) {{
         if (ring.mode === 'strom') {{
-          drawHeatRing(ctx, cx, cy, ring.inner, ring.outer, az.bins_cw, az.bins_ccw, off, false, 360);
+          drawHeatRing(ctx, cx, cy, ring.inner, ring.outer, az.bins_cw, az.bins_ccw, off, false, 360, az.heatmap_scale);
         }} else if (ring.mode === 'om_radar') {{
           drawOmOrDwell(ctx, cx, cy, ring.inner, ring.outer, az.om_counts, 0, off);
         }} else if (ring.mode === 'dwell') {{
@@ -707,6 +844,9 @@ def build_compass_html(params: dict) -> str:
       spoke(0);
       if (maxDeg >= 180) spoke(180);
       else spoke(Math.min(90, maxDeg));
+      const elStrom = (el.heatmap_mode || '') === 'strom';
+      const elBand = elStrom ? ringBandPx(r, 'strom') : 0;
+      const elLabelR = elStrom ? (r + elBand + Math.max(10, r * 0.08)) : (r * 1.12);
       for (let d = 0; d <= maxDeg + 0.01; d += 10) {{
         const p0 = elXY(cx, cy, r * ((d % 30 === 0) ? 0.90 : 0.96), d);
         const p1 = elXY(cx, cy, r, d);
@@ -716,18 +856,17 @@ def build_compass_html(params: dict) -> str:
         ctx.lineWidth = (d % 30 === 0) ? 2 : 1;
         ctx.stroke();
         if (d % 30 === 0) {{
-          const lp = elXY(cx, cy, r * 1.12, d);
+          const lp = elXY(cx, cy, elLabelR, d);
           ctx.fillStyle = '{fg}';
-          ctx.font = '12px sans-serif';
+          ctx.font = Math.max(9, Math.min(12, r * 0.08)) + 'px sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.fillText(String(Math.round(d)), lp.x, lp.y);
         }}
       }}
       ctx.lineWidth = 2;
-      if ((el.heatmap_mode || '') === 'strom') {{
-        const inner = r * 0.78, outer = r * 0.92;
-        drawHeatRing(ctx, cx, cy, inner, outer, el.bins_cw, el.bins_ccw, 0, true, maxDeg);
+      if (elStrom) {{
+        drawHeatRing(ctx, cx, cy, r + 1, r + 1 + elBand, el.bins_cw, el.bins_ccw, 0, true, maxDeg, el.heatmap_scale);
       }}
       function elArrow(deg, color) {{
         if (deg == null || isNaN(deg)) return;
@@ -772,6 +911,8 @@ def build_compass_html(params: dict) -> str:
       set('lblWind', L.wind || 'Wind');
       set('lblConn', L.connection || 'Verbindung');
       set('lblCtrl', L.control || 'Steuerung');
+      set('lblPwmAz', L.motorspeed || 'Motorspeed %');
+      set('lblPwmEl', L.motorspeed || 'Motorspeed %');
       set('lblFav', L.fav_header || 'Favoriten');
       set('lblAnt', L.antenna || 'Antenne');
       set('lblHeat', L.heatmap_rings || 'Ringe');
@@ -840,6 +981,7 @@ def build_compass_html(params: dict) -> str:
       if (refWrap) refWrap.style.display = s.ref_visible === false ? 'none' : '';
       const btnRef = document.getElementById('btnRefAz');
       if (btnRef) btnRef.style.display = s.ref_visible === false ? 'none' : '';
+      applyPwmSlider('az', az, 'slPwmAz', 'slPwmAzVal');
       // antenna
       const ant = document.getElementById('selAnt');
       if (ant && Array.isArray(s.antennas)) {{
@@ -916,6 +1058,7 @@ def build_compass_html(params: dict) -> str:
         if (er) er.style.display = s.ref_visible === false ? 'none' : '';
         const he = document.getElementById('chkHeatElStrom');
         if (he && document.activeElement !== he) he.checked = (el.heatmap_mode || '') === 'strom';
+        applyPwmSlider('el', el, 'slPwmEl', 'slPwmElVal');
       }}
       drawAz();
       drawEl();
@@ -978,6 +1121,7 @@ def build_compass_html(params: dict) -> str:
       }});
       document.getElementById('btnStopAz').addEventListener('click', function() {{ api('stop_az'); }});
       document.getElementById('btnRefAz').addEventListener('click', function() {{ api('ref_az'); }});
+      bindPwmSlider('az', 'slPwmAz', 'slPwmAzVal');
       document.getElementById('selAnt').addEventListener('change', function() {{
         api('antenna', {{ index: parseInt(this.value,10)||0 }});
       }});
@@ -1022,6 +1166,7 @@ def build_compass_html(params: dict) -> str:
       }});
       document.getElementById('btnStopEl').addEventListener('click', function() {{ api('stop_el'); }});
       document.getElementById('btnRefEl').addEventListener('click', function() {{ api('ref_el'); }});
+      bindPwmSlider('el', 'slPwmEl', 'slPwmElVal');
       document.getElementById('chkHeatElStrom').addEventListener('change', function() {{
         api('heatmap_el', {{ mode: this.checked ? 'strom' : 'off' }});
       }});

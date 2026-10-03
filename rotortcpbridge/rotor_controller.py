@@ -130,7 +130,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._last_cal_state_az: float = 0.0
         self._cal_bins_inflight_az: bool = False
         self._cal_bins_fetched_az: bool = False
-        self._cal_bins_received_az: int = 0  # Zähler für 12 Blöcke
+        self._cal_bins_received_az: int = 0  # Zähler für 36 Blöcke (3 Stufen × 12)
         # Live-Bins: GETLIVEBINS alle 30s im Idle (seltener = stabilere Anzeige)
         self._last_live_bins_az: float = 0.0
         self._live_bins_inflight_az: bool = False
@@ -173,7 +173,9 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._settings_window_open: bool = False
         # Einstellungen → Tab Stromwerte: CAL-Status + GETCALBINS (kein ACC)
         self._settings_strom_tab_open: bool = False
-        # Kompass-Fenster offen (Anzeige); Strom-Bins nur wenn Heatmap „strom“ aktiv (siehe set_compass_strom_heatmap_active)
+        # Kompass offen (Desktop-Fenster und/oder Web-Kompass); Strom-Bins nur bei Heatmap „strom“
+        self._compass_ui_desktop_open: bool = False
+        self._compass_ui_web_open: bool = False
         self._compass_window_open: bool = False
         self._compass_strom_heatmap_az: bool = False
         self._compass_strom_heatmap_el: bool = False
@@ -704,14 +706,29 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         if bool(el) and not pe:
             self._acc_bins_compass_initial_el = False
 
-    def set_compass_window_open(self, open: bool) -> None:
-        """Kompass-Fenster offen/geschlossen."""
-        self._compass_window_open = bool(open)
-        # Strom-Flags immer leeren: beim Öffnen kamen sonst stale Werte aus CompassWindow-Init
-        # (cfg) bis zur nächsten Heatmap-Änderung — dann lief GETACCBINS trotz abgewählter Strom-Heatmap.
-        self._compass_strom_heatmap_az = False
-        self._compass_strom_heatmap_el = False
-        if bool(open):
+    def set_compass_window_open(self, open: bool, *, source: str = "desktop") -> None:
+        """Kompass-UI offen/geschlossen.
+
+        ``source``: ``\"desktop\"`` (Qt-Fenster) oder ``\"web\"`` (Karten-Webserver).
+        Desktop und Web zählen getrennt — Polling bleibt aktiv, solange mindestens
+        eine Quelle offen ist. Strom-Flags werden nur geleert, wenn beide zu sind
+        (sonst würde Web-Stromring sterben, sobald das Desktop-Fenster schließt).
+        """
+        src = str(source or "desktop").strip().lower()
+        if src == "web":
+            self._compass_ui_web_open = bool(open)
+        else:
+            self._compass_ui_desktop_open = bool(open)
+        was_open = bool(self._compass_window_open)
+        self._compass_window_open = bool(
+            self._compass_ui_desktop_open or self._compass_ui_web_open
+        )
+        if not self._compass_window_open:
+            self._compass_strom_heatmap_az = False
+            self._compass_strom_heatmap_el = False
+            return
+        if not was_open:
+            # Frisch geöffnet → nächster GETACCBINS-Lauf einmalig komplett.
             self._acc_bins_compass_initial_az = False
             self._acc_bins_compass_initial_el = False
 

@@ -24,6 +24,11 @@ def test_gui_backup_includes_all_default_top_level_keys() -> None:
     cfg = {
         "pst_server": {"enabled": True},
         "rotctld_server": {"listen_port": 4533},
+        "gs232_server": {"enabled": False, "listen_port": 4003},
+        "easycomm_server": {"enabled": False, "listen_port": 4535},
+        "dcu1_server": {"enabled": False, "listen_port": 4004},
+        "n1mm_rotor": {"enabled": False, "listen_port": 12040},
+        "map_webserver": {"enabled": False, "listen_port": 80},
         "pst_serial": {"enabled": True, "listeners": [{"port": "COM9"}]},
         "network_modules": [{"name": "gw", "host": "1.2.3.4"}],
         "network_scan": {"enabled": False},

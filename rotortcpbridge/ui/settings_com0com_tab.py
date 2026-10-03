@@ -623,9 +623,15 @@ class Com0ComTab(QWidget):
         # SPID ROT2PROG nicht. Aendern kann der Nutzer sie danach weiterhin.
         def _on_target_changed(_idx: int, _cb_baud: QComboBox = cb_baud,
                                _cb_target: QComboBox = cb_target) -> None:
-            tgt = str(_cb_target.currentData() or _cb_target.currentText() or "").strip()
+            tgt = str(_cb_target.currentData() or _cb_target.currentText() or "").strip().lower()
             if tgt == "rotor":
                 self._set_baud_combo(_cb_baud, 1200)
+            elif tgt == "gs232":
+                self._set_baud_combo(_cb_baud, 9600)
+            elif tgt == "easycomm":
+                self._set_baud_combo(_cb_baud, 9600)
+            elif tgt == "dcu1":
+                self._set_baud_combo(_cb_baud, 4800)
 
         cb_target.currentIndexChanged.connect(_on_target_changed)
         self.tbl_listeners.setCellWidget(row, 2, cb_target)
@@ -653,12 +659,17 @@ class Com0ComTab(QWidget):
         return row
 
     def _populate_target_combo(self, cb: QComboBox, current: str) -> None:
-        """Befuellt die Ziel-Combobox mit ``Rotor`` + pro Rig-Profil einen
-        Eintrag ``Rig: <Name>``. ``userData`` traegt den serialisierten
-        ``target``-Wert (``"rotor"`` oder ``"rig:<profile_id>"``)."""
+        """Befuellt die Ziel-Combobox mit Rotor-/Protokoll-Targets + Rig-Profilen.
+
+        ``userData``: ``"rotor"`` | ``"gs232"`` | ``"easycomm"`` | ``"dcu1"``
+        | ``"rig:<profile_id>"``.
+        """
         cb.blockSignals(True)
         cb.clear()
         cb.addItem(t("pst_serial.target_rotor"), "rotor")
+        cb.addItem(t("pst_serial.target_gs232"), "gs232")
+        cb.addItem(t("pst_serial.target_easycomm"), "easycomm")
+        cb.addItem(t("pst_serial.target_dcu1"), "dcu1")
         profiles = self._rig_profiles()
         for pr in profiles:
             pid = str(pr.get("id", "")).strip()

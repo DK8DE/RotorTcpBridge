@@ -493,6 +493,53 @@ def list_pairs() -> List[Com0ComPair]:
     return _parse_list_output(out)
 
 
+def _clean_port_name(name: str) -> str:
+    n = (name or "").strip()
+    if not n or n == "-" or n.upper() == "COM#":
+        return ""
+    return n
+
+
+def peer_port(port: str, pairs: Optional[List[Com0ComPair]] = None) -> str:
+    """Andere Seite des com0com-Paars zu ``port`` (leer wenn unbekannt).
+
+    Listener öffnen typischerweise die interne Seite (A); externe Programme
+    nutzen die Gegenseite (B). Diese Hilfsfunktion liefert genau die
+    Gegenseite – unabhängig davon, welche Seite als Listener konfiguriert ist.
+    """
+    want = _clean_port_name(port)
+    if not want:
+        return ""
+    want_cf = want.casefold()
+    if pairs is None:
+        try:
+            pairs = list_pairs()
+        except Exception:
+            pairs = []
+    for pr in pairs or []:
+        a = _clean_port_name(pr.effective_a) or _clean_port_name(pr.side_a_name)
+        b = _clean_port_name(pr.effective_b) or _clean_port_name(pr.side_b_name)
+        if a and a.casefold() == want_cf:
+            return b
+        if b and b.casefold() == want_cf:
+            return a
+    return ""
+
+
+def external_port_for_listener(
+    listener_port: str, pairs: Optional[List[Com0ComPair]] = None
+) -> str:
+    """Port, den externe Programme sehen sollen.
+
+    Entspricht der Gegenseite des com0com-Paars. Fallback: ``listener_port``,
+    falls kein Paar gefunden wird (z. B. nativer COM ohne com0com).
+    """
+    peer = peer_port(listener_port, pairs)
+    if peer:
+        return peer
+    return _clean_port_name(listener_port) or str(listener_port or "").strip()
+
+
 def install_pair(port_a: str = "COM#", port_b: str = "COM#") -> Tuple[int, str]:
     """Neues Paar anlegen.
 

@@ -56,6 +56,42 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "az_shortest_path": False,
         "az_report_mod360": False,
     },
+    # Yaesu GS-232B Emulation (TCP; COM über pst_serial target ``gs232``).
+    "gs232_server": {
+        "enabled": False,
+        "listen_host": "127.0.0.1",
+        "listen_port": 4003,
+        "az_shortest_path": False,
+        "az_report_mod360": False,
+    },
+    # EasyComm II Emulation (TCP; COM über pst_serial target ``easycomm``).
+    "easycomm_server": {
+        "enabled": False,
+        "listen_host": "127.0.0.1",
+        "listen_port": 4535,
+        "az_shortest_path": False,
+        "az_report_mod360": False,
+    },
+    # Hy-Gain DCU-1 Emulation (TCP; COM über pst_serial target ``dcu1``).
+    "dcu1_server": {
+        "enabled": False,
+        "listen_host": "127.0.0.1",
+        "listen_port": 4004,
+        "az_shortest_path": False,
+        "az_report_mod360": False,
+    },
+    # N1MM Logger Rotor-UDP (Empfang 12040, Broadcast 13010). Standard aus
+    # (Konflikt mit UcxLog auf Port 12040).
+    "n1mm_rotor": {
+        "enabled": False,
+        "listen_host": "127.0.0.1",
+        "listen_port": 12040,
+        "broadcast_host": "127.0.0.1",
+        "broadcast_port": 13010,
+        "rotor_name": "",
+        "az_shortest_path": False,
+        "az_report_mod360": False,
+    },
     # Antennenkarte als HTTP-Webserver im LAN (Anzeige + Steuerung).
     "map_webserver": {
         "enabled": False,
@@ -69,11 +105,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # einem Frame) oder ein Funkgeraet (CAT-Protokoll des aktiven Rig-Profils).
     # Das Ziel wird ueber ``target`` festgelegt:
     #   * ``"rotor"``             → SPID-BIG-RAS-Listener
+    #   * ``"gs232"`` / ``"easycomm"`` / ``"dcu1"`` → Textprotokoll-Emulation
     #   * ``"rig:<rig_id>"``     → CAT-Listener, simuliert das Profil ``rig_id``
     "pst_serial": {
         "enabled": False,
         # Einträge: {"port": "COM21", "baudrate": 115200, "enabled": true,
-        #            "target": "rotor" | "rig:<id>"}
+        #            "target": "rotor" | "gs232" | "easycomm" | "dcu1" | "rig:<id>"}
         "listeners": [],
     },
     "hardware_link": {
@@ -426,6 +463,30 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
     if "rotctld_server" in cfg and isinstance(cfg["rotctld_server"], dict):
         cfg["rotctld_server"].setdefault("az_shortest_path", False)
         cfg["rotctld_server"].setdefault("az_report_mod360", False)
+
+    for _proto_key in ("gs232_server", "easycomm_server", "dcu1_server"):
+        if _proto_key in cfg and isinstance(cfg[_proto_key], dict):
+            cfg[_proto_key].setdefault("enabled", False)
+            cfg[_proto_key].setdefault("listen_host", "127.0.0.1")
+            cfg[_proto_key].setdefault("az_shortest_path", False)
+            cfg[_proto_key].setdefault("az_report_mod360", False)
+    if "gs232_server" in cfg and isinstance(cfg["gs232_server"], dict):
+        cfg["gs232_server"].setdefault("listen_port", 4003)
+    if "easycomm_server" in cfg and isinstance(cfg["easycomm_server"], dict):
+        cfg["easycomm_server"].setdefault("listen_port", 4535)
+    if "dcu1_server" in cfg and isinstance(cfg["dcu1_server"], dict):
+        cfg["dcu1_server"].setdefault("listen_port", 4004)
+
+    if "n1mm_rotor" in cfg and isinstance(cfg["n1mm_rotor"], dict):
+        nr = cfg["n1mm_rotor"]
+        nr.setdefault("enabled", False)
+        nr.setdefault("listen_host", "127.0.0.1")
+        nr.setdefault("listen_port", 12040)
+        nr.setdefault("broadcast_host", "127.0.0.1")
+        nr.setdefault("broadcast_port", 13010)
+        nr.setdefault("rotor_name", "")
+        nr.setdefault("az_shortest_path", False)
+        nr.setdefault("az_report_mod360", False)
 
     if "map_webserver" in cfg and isinstance(cfg["map_webserver"], dict):
         mws = cfg["map_webserver"]

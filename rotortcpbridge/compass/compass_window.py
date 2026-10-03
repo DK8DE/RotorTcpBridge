@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from typing import Callable, Optional
 
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -93,6 +95,126 @@ class CompassWindow(QDialog):
         frame.setObjectName(cls._COMPASS_CARD_OBJECT_NAME)
         frame.setFrameShape(QFrame.Shape.NoFrame)
         frame.setStyleSheet(cls._CARD_STYLE)
+
+    def _make_pwm_row(self, axis: str) -> tuple[QWidget, QLabel, QSlider, QLabel]:
+        """Motorspeed-Regler wie in der Main-GUI (Min aus Telemetrie, 0–100 %)."""
+        axis_l = "el" if str(axis).strip().lower() == "el" else "az"
+        wrap = QWidget()
+        v = QVBoxLayout(wrap)
+        v.setContentsMargins(0, 2, 0, 2)
+        v.setSpacing(3)
+        lbl = QLabel(t("axis.motorspeed_label"))
+        lbl.setStyleSheet(
+            "font-size: 11px; font-weight: 700; letter-spacing: 0.4px; color: #aaa;"
+        )
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(0, 100)
+        slider.setSingleStep(1)
+        slider.setPageStep(5)
+        val = QLabel("0")
+        val.setFixedWidth(px_to_dip(self, 28))
+        val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        row.addWidget(slider, 1)
+        row.addWidget(val, 0)
+        v.addWidget(lbl)
+        v.addLayout(row)
+
+        pending: dict[str, float | None] = {"v": None}
+        send_timer = QTimer(self)
+        send_timer.setSingleShot(True)
+        hold_attr = f"_pwm_hold_until_{axis_l}"
+        setattr(self, hold_attr, 0.0)
+
+        def _send(v_pct: float) -> None:
+            try:
+                if axis_l == "az":
+                    self.ctrl.set_pwm_az(v_pct)
+                else:
+                    self.ctrl.set_pwm_el(v_pct)
+            except Exception:
+                pass
+
+        def _flush() -> None:
+            vv = pending.get("v")
+            if vv is not None:
+                _send(float(vv))
+
+        def _schedule(v_pct: float) -> None:
+            pending["v"] = float(v_pct)
+            send_timer.start(150)
+
+        def _set_hold() -> None:
+            setattr(self, hold_attr, float(time.time()) + 1.0)
+
+        def _on_value_changed(n: int) -> None:
+            val.setText(f"{int(n)}")
+
+        def _on_user(n: int) -> None:
+            _set_hold()
+            _schedule(float(int(n)))
+
+        def _on_released() -> None:
+            _set_hold()
+            pending["v"] = float(slider.value())
+            send_timer.stop()
+            _flush()
+
+        def _on_action(_action: int) -> None:
+            _on_user(slider.value())
+
+        send_timer.timeout.connect(_flush)
+        slider.valueChanged.connect(_on_value_changed)
+        slider.sliderReleased.connect(_on_released)
+        slider.actionTriggered.connect(_on_action)
+        slider.sliderMoved.connect(_on_user)
+        return wrap, lbl, slider, val
+
+    def _sync_pwm_slider(self, axis: str) -> None:
+        axis_l = "el" if str(axis).strip().lower() == "el" else "az"
+        slider = getattr(self, "sl_pwm_az" if axis_l == "az" else "sl_pwm_el", None)
+        val_lbl = getattr(self, "lbl_pwm_az_val" if axis_l == "az" else "lbl_pwm_el_val", None)
+        if slider is None:
+            return
+        axis_state = getattr(self.ctrl, axis_l, None)
+        offline = not bool(getattr(axis_state, "online", False))
+        if offline:
+            slider.setEnabled(False)
+            slider.blockSignals(True)
+            slider.setValue(0)
+            slider.blockSignals(False)
+            if val_lbl is not None:
+                val_lbl.setText("0")
+            return
+        tel = getattr(axis_state, "telemetry", None)
+        min_ok = tel is not None and getattr(tel, "pwm_min_pct", None) is not None
+        if min_ok:
+            mn = max(0.0, min(100.0, float(tel.pwm_min_pct)))
+            try:
+                slider.setMinimum(int(math.ceil(mn)))
+            except Exception:
+                slider.setMinimum(int(round(mn)))
+        else:
+            slider.setMinimum(0)
+        slider.setEnabled(bool(getattr(axis_state, "online", False)) and bool(min_ok))
+        hold_until = float(getattr(self, f"_pwm_hold_until_{axis_l}", 0.0) or 0.0)
+        if slider.isSliderDown() or time.time() < hold_until:
+            return
+        if tel is None or getattr(tel, "pwm_max_pct", None) is None:
+            return
+        v = float(tel.pwm_max_pct)
+        iv = 100 if v >= 99.5 else int(round(v))
+        cur = slider.value()
+        if iv == 99 and cur == 100:
+            return
+        slider.blockSignals(True)
+        slider.setValue(max(0, min(100, iv)))
+        slider.blockSignals(False)
+        if val_lbl is not None:
+            val_lbl.setText(f"{iv:d}")
 
     def __init__(
         self,
@@ -558,6 +680,10 @@ class CompassWindow(QDialog):
         self._lbl_ctrl.setStyleSheet(_HDR_STYLE)
         self._lbl_ctrl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         _ctrl_vbox.addWidget(self._lbl_ctrl)
+        self._pwm_az_wrap, self._lbl_pwm_az, self.sl_pwm_az, self.lbl_pwm_az_val = (
+            self._make_pwm_row("az")
+        )
+        _ctrl_vbox.addWidget(self._pwm_az_wrap)
 
         self.btn_stop_az = QPushButton(t("compass.btn_stop_az"))
         self.btn_stop_az.setAutoDefault(False)
@@ -782,6 +908,10 @@ class CompassWindow(QDialog):
         self._lbl_ctrl_el.setStyleSheet(_HDR_STYLE)
         self._lbl_ctrl_el.setAlignment(Qt.AlignmentFlag.AlignCenter)
         _ctrl_el_vbox.addWidget(self._lbl_ctrl_el)
+        self._pwm_el_wrap, self._lbl_pwm_el, self.sl_pwm_el, self.lbl_pwm_el_val = (
+            self._make_pwm_row("el")
+        )
+        _ctrl_el_vbox.addWidget(self._pwm_el_wrap)
         _ctrl_el_vbox.addWidget(self.btn_stop_el)
         _ctrl_el_vbox.addWidget(self.btn_ref_el)
         _ctrl_el_vbox.addWidget(self.cb_heatmap_el)
@@ -919,7 +1049,7 @@ class CompassWindow(QDialog):
         self.update_homing_buttons_visibility()
         self.update_ist_reverse_visibility()
         if hasattr(self.ctrl, "set_compass_window_open"):
-            self.ctrl.set_compass_window_open(True)
+            self.ctrl.set_compass_window_open(True, source="desktop")
         self.sync_heatmap_controls_from_cfg()
         # Zeiger (Position, Antenne) sofort mit höchster Priorität; Heatmap/Stats danach
         if hasattr(self.ctrl, "request_immediate_pos"):
@@ -959,7 +1089,9 @@ class CompassWindow(QDialog):
         except Exception:
             pass
         if hasattr(self.ctrl, "set_compass_window_open"):
-            self.ctrl.set_compass_window_open(False)
+            self.ctrl.set_compass_window_open(False, source="desktop")
+        # Web-Kompass kann noch offen sein → Strom-Flags aus cfg neu setzen.
+        self._reapply_strom_flags_if_other_compass_open()
         super().hideEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
@@ -979,11 +1111,33 @@ class CompassWindow(QDialog):
         if hasattr(self.ctrl, "on_antenna_offsets_changed"):
             self.ctrl.on_antenna_offsets_changed = None
         if hasattr(self.ctrl, "set_compass_window_open"):
-            self.ctrl.set_compass_window_open(False)
+            self.ctrl.set_compass_window_open(False, source="desktop")
+        self._reapply_strom_flags_if_other_compass_open()
         if self._geocode_thread is not None and self._geocode_thread.isRunning():
             self._geocode_thread.requestInterruption()
             self._geocode_thread.wait(2000)
         super().closeEvent(event)
+
+    def _reapply_strom_flags_if_other_compass_open(self) -> None:
+        """Nach Desktop-Close: Web-Kompass kann noch offen sein → Flags aus cfg."""
+        if not bool(getattr(self.ctrl, "_compass_window_open", False)):
+            return
+        if not hasattr(self.ctrl, "set_compass_strom_heatmap_active"):
+            return
+        ui = self.cfg.get("ui", {}) or {}
+        raw = ui.get("compass_heatmap_az_modes", [])
+        modes = (
+            [str(m) for m in raw if str(m) in ("strom", "om_radar", "dwell")]
+            if isinstance(raw, list)
+            else []
+        )
+        el_mode = str(ui.get("compass_heatmap_el", "off")).lower()
+        try:
+            self.ctrl.set_compass_strom_heatmap_active(
+                "strom" in modes, el_mode == "strom"
+            )
+        except Exception:
+            pass
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
@@ -996,7 +1150,8 @@ class CompassWindow(QDialog):
         elif event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
             self._antenna_request_timer.stop()
             if hasattr(self.ctrl, "set_compass_window_open"):
-                self.ctrl.set_compass_window_open(False)
+                self.ctrl.set_compass_window_open(False, source="desktop")
+            self._reapply_strom_flags_if_other_compass_open()
 
     def sync_az_rotor_target_from_controller(self, *_args) -> None:
         """Internes AZ-Soll an ctrl.target_d10; nach Antennenwechsel Soll-Anzeige = Ist.
@@ -1813,6 +1968,8 @@ class CompassWindow(QDialog):
             self._repolish_native_widget(self._btn_open_map)
         for cb in (self.cb_antenna, self.cb_fav, self.cb_heatmap_el):
             self._repolish_native_widget(cb)
+        for sl in (getattr(self, "sl_pwm_az", None), getattr(self, "sl_pwm_el", None)):
+            self._repolish_native_widget(sl)
 
         self._apply_stop_button_palette(self.btn_stop_az)
         self._apply_stop_button_palette(self.btn_stop_el)
@@ -1934,6 +2091,8 @@ class CompassWindow(QDialog):
             self._lbl_rig_freq_h.setText(t("compass.qrg_label").upper())
         self._lbl_ctrl.setText(t("compass.steuerung_label").upper())
         self._lbl_ctrl_el.setText(t("compass.steuerung_label").upper())
+        self._lbl_pwm_az.setText(t("axis.motorspeed_label"))
+        self._lbl_pwm_el.setText(t("axis.motorspeed_label"))
         self._lbl_fav_h.setText(t("compass.fav_header").upper())
         self._lbl_scan_h.setText(t("compass.scan_header").upper())
         self.ed_scan_a.setPlaceholderText(t("compass.scan_a_placeholder"))
@@ -2620,6 +2779,7 @@ class CompassWindow(QDialog):
             self._top_moving_led.set_state(_moving)
             self.az_compass.set_online_led_state(_online)
             self._top_online_led.set_state(_online)
+            self._sync_pwm_slider("az")
         except Exception:
             pass
 
@@ -2847,6 +3007,7 @@ class CompassWindow(QDialog):
             self._top_el_moving_led.set_state(_moving)
             self.el_compass.set_online_led_state(_online)
             self._top_el_online_led.set_state(_online)
+            self._sync_pwm_slider("el")
         except Exception:
             pass
 

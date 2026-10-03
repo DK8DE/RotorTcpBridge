@@ -438,12 +438,14 @@ def paint_az_ring_gap_black(
 
 
 class StatisticCompassWidget(QWidget):
-    """Kompass ohne Zeiger, mit einem 5px Heatmap-Ring. AZ=Vollkreis, EL=90°/180°."""
+    """Kompass ohne Zeiger, mit Heatmap-Ring(en). AZ=Vollkreis, EL=90°/180°."""
 
     def __init__(self, parent=None, elevation: bool = False):
         super().__init__(parent)
         self._bins_cw: Optional[List[int]] = None
         self._bins_ccw: Optional[List[int]] = None
+        # Mehrere konzentrische Ringe (z. B. CAL STAGE 1–3): [(cw, ccw), ...] innen → außen
+        self._multi_rings: Optional[List[Tuple[Optional[List[int]], Optional[List[int]]]]] = None
         self._elevation: bool = bool(elevation)
         self._el_max_deg: float = EL_ARC_DEG
         self._heatmap_scale: Optional[HeatmapScale] = None
@@ -473,8 +475,25 @@ class StatisticCompassWidget(QWidget):
     def set_bins(self, cw: Optional[List[int]], ccw: Optional[List[int]]) -> None:
         """Bins setzen: AZ=72 Werte/Richtung, EL=immer 36 (auf 90°/180° gestreckt)."""
         need = EL_N_SEG if self._elevation else 72
+        self._multi_rings = None
         self._bins_cw = list(cw) if cw is not None and len(cw) >= need else None
         self._bins_ccw = list(ccw) if ccw is not None and len(ccw) >= need else None
+        self.update()
+
+    def set_multi_bins(
+        self, rings: Optional[List[Tuple[Optional[List[int]], Optional[List[int]]]]]
+    ) -> None:
+        """Mehrere konzentrische Heatmap-Ringe (innen = erstes Element)."""
+        need = EL_N_SEG if self._elevation else 72
+        out: List[Tuple[Optional[List[int]], Optional[List[int]]]] = []
+        if rings:
+            for cw, ccw in rings:
+                cwl = list(cw) if cw is not None and len(cw) >= need else None
+                ccwl = list(ccw) if ccw is not None and len(ccw) >= need else None
+                out.append((cwl, ccwl))
+        self._multi_rings = out or None
+        self._bins_cw = None
+        self._bins_ccw = None
         self.update()
 
     def set_heatmap_scale(self, scale: Optional[HeatmapScale]) -> None:
@@ -506,47 +525,57 @@ class StatisticCompassWidget(QWidget):
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
             cx, cy, r = self._geom()
+            band = 5.0
+            gap = 1.0
+            multi = self._multi_rings
+            if multi:
+                stack = len(multi) * band + max(0, len(multi) - 1) * gap
+                r_draw = max(28.0, float(r) - stack)
+                rings = multi
+            else:
+                r_draw = float(r)
+                rings = [(self._bins_cw, self._bins_ccw)]
 
             if self._elevation:
                 arc = float(self._el_max_deg)
-                arc_rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+                arc_rect = QRectF(cx - r_draw, cy - r_draw, 2 * r_draw, 2 * r_draw)
                 painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 # EL: 0° links → Qt-Start 180°, Span CW (negativ)
                 painter.drawArc(arc_rect, int(180 * 16), int(-arc * 16))
-                painter.drawLine(QPointF(cx, cy), QPointF(cx - r, cy))  # 0°
-                end_x = cx - math.cos(math.radians(arc)) * r
-                end_y = cy - math.sin(math.radians(arc)) * r
+                painter.drawLine(QPointF(cx, cy), QPointF(cx - r_draw, cy))  # 0°
+                end_x = cx - math.cos(math.radians(arc)) * r_draw
+                end_y = cy - math.sin(math.radians(arc)) * r_draw
                 painter.drawLine(QPointF(cx, cy), QPointF(end_x, end_y))
                 tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
                 painter.setPen(tick_pen)
                 for a in range(0, int(arc) + 1, 15):
                     rad = math.radians(a)
-                    x1 = cx - math.cos(rad) * (r * 0.85)
-                    y1 = cy - math.sin(rad) * (r * 0.85)
-                    x2 = cx - math.cos(rad) * r
-                    y2 = cy - math.sin(rad) * r
+                    x1 = cx - math.cos(rad) * (r_draw * 0.85)
+                    y1 = cy - math.sin(rad) * (r_draw * 0.85)
+                    x2 = cx - math.cos(rad) * r_draw
+                    y2 = cy - math.sin(rad) * r_draw
                     painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
             else:
                 # Vollkreis (AZ)
                 painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+                painter.drawEllipse(QRectF(cx - r_draw, cy - r_draw, 2 * r_draw, 2 * r_draw))
                 tick_pen = QPen(self.palette().color(QPalette.ColorRole.WindowText), 1)
                 painter.setPen(tick_pen)
                 for a in range(0, 360, 30):
                     rad = math.radians(a)
-                    x1 = cx + math.sin(rad) * (r * 0.85)
-                    y1 = cy - math.cos(rad) * (r * 0.85)
-                    x2 = cx + math.sin(rad) * r
-                    y2 = cy - math.cos(rad) * r
+                    x1 = cx + math.sin(rad) * (r_draw * 0.85)
+                    y1 = cy - math.cos(rad) * (r_draw * 0.85)
+                    x2 = cx + math.sin(rad) * r_draw
+                    y2 = cy - math.cos(rad) * r_draw
                     painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
                 font = painter.font()
                 font.setBold(True)
-                font.setPointSize(max(6, int(r * 0.12)))
+                font.setPointSize(max(6, int(r_draw * 0.12)))
                 painter.setFont(font)
                 fm = QFontMetrics(font)
-                label_r = r * 0.65
+                label_r = r_draw * 0.65
                 for text, angle in [("N", 0), ("O", 90), ("S", 180), ("W", 270)]:
                     rad = math.radians(angle)
                     tx = cx + math.sin(rad) * label_r
@@ -555,19 +584,24 @@ class StatisticCompassWidget(QWidget):
                     h = fm.height()
                     painter.drawText(QPointF(tx - w / 2.0, ty + h / 4.0), text)
 
-            # 5px Heatmap-Ring
-            paint_bins_heatmap_ring(
-                painter,
-                cx,
-                cy,
-                r,
-                self._bins_cw,
-                self._bins_ccw,
-                elevation=self._elevation,
-                ring_width=5.0,
-                scale=self._heatmap_scale,
-                el_arc_deg=float(self._el_max_deg) if self._elevation else EL_ARC_DEG,
-            )
+            inner = r_draw
+            for i, (cw, ccw) in enumerate(rings):
+                if i > 0 and not self._elevation:
+                    paint_az_ring_gap_black(painter, cx, cy, inner, gap_width=gap)
+                    inner += gap
+                paint_bins_heatmap_ring(
+                    painter,
+                    cx,
+                    cy,
+                    inner,
+                    cw,
+                    ccw,
+                    elevation=self._elevation,
+                    ring_width=band,
+                    scale=self._heatmap_scale,
+                    el_arc_deg=float(self._el_max_deg) if self._elevation else EL_ARC_DEG,
+                )
+                inner += band
 
             # Kontur erneut darüber
             painter.setPen(QPen(self.palette().color(QPalette.ColorRole.WindowText), 1))
@@ -575,13 +609,13 @@ class StatisticCompassWidget(QWidget):
             if self._elevation:
                 arc = float(self._el_max_deg)
                 painter.drawArc(
-                    QRectF(cx - r, cy - r, 2 * r, 2 * r),
+                    QRectF(cx - r_draw, cy - r_draw, 2 * r_draw, 2 * r_draw),
                     int(180 * 16),
                     int(-arc * 16),
                 )
-                painter.drawLine(QPointF(cx, cy), QPointF(cx - r, cy))
-                end_x = cx - math.cos(math.radians(arc)) * r
-                end_y = cy - math.sin(math.radians(arc)) * r
+                painter.drawLine(QPointF(cx, cy), QPointF(cx - r_draw, cy))
+                end_x = cx - math.cos(math.radians(arc)) * r_draw
+                end_y = cy - math.sin(math.radians(arc)) * r_draw
                 painter.drawLine(QPointF(cx, cy), QPointF(end_x, end_y))
             else:
-                painter.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+                painter.drawEllipse(QRectF(cx - r_draw, cy - r_draw, 2 * r_draw, 2 * r_draw))

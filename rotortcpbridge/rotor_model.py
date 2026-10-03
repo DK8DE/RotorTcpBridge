@@ -303,9 +303,19 @@ class AxisState:
     # Nach Ankunft am Ziel: einmaliges GETPOSDG nach kurzer Pause (Settle-Wert).
     pos_settle_poll_due_ts: float = 0.0
 
-    # Kalibrier-Bins (nur wenn GETCALSTATE=2 DONE): 72 Stromwerte in mV pro Richtung
-    cal_state: int = 0  # 0=IDLE, 1=RUNNING, 2=DONE, 3=ABORT
-    cal_progress: int = 0  # GETCALSTATE Fortschritt 0..100 (nur sinnvoll bei state==1)
+    # Kalibrier-Bins (GETCALBINS): 72 Stromwerte in mV pro Richtung, je STAGE 1–3
+    # (ca. 40/60/100 % PWM). GETCALSTATE: state;progress;stage —
+    # state 0=IDLE, 1=RUNNING, 2=DONE, 3=ABORT; stage 0=inaktiv, 1–3=Stufe.
+    # Nach erfolgreicher Kalibrierung geht die Firmware oft wieder auf IDLE;
+    # gespeicherte CAL bleibt über GETCALVALID=1 gültig — Bins nicht löschen.
+    cal_state: int = 0
+    cal_progress: int = 0  # GETCALSTATE Fortschritt 0..100 (über alle 3 Stufen)
+    cal_stage: int = 0  # GETCALSTATE STAGE 0..3
+    cal_valid: Optional[bool] = None  # GETCALVALID: None=unbekannt, True/False
+    # Index 0..2 = STAGE 1..3; jedes Element Liste mit 72 Werten oder None
+    cal_bins_stage_cw: list = field(default_factory=lambda: [None, None, None])
+    cal_bins_stage_ccw: list = field(default_factory=lambda: [None, None, None])
+    # Alias STAGE 3 (100 % PWM) — Abwärtskompatibilität Heatmap/ältere UI
     cal_bins_cw: Optional[list] = None  # DIR=1, 72 Werte
     cal_bins_ccw: Optional[list] = None  # DIR=2, 72 Werte
     # Live-Bins (GETLIVEBINS): 72 aktuelle Stromwerte in mV pro Richtung

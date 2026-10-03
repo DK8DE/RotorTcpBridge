@@ -391,8 +391,8 @@ SPECS_DATA: list[dict] = [
         "name": "SETCAL",
         "kind": "none",
         "params_literal": "0",
-        "help_text": "Kalibrierfahrt starten (0→360→0), Stromprofil lernen. Nur wenn referenziert (REFF).",
-        "help_text_en": "Start calibration run (0→360→0), learn current profile. Only when homed (REFF).",
+        "help_text": "Kalibrierfahrt starten: 3 Stufen bei ca. 40/60/100 % PWM (je CW/CCW), Stromprofil lernen. Nur wenn referenziert (REFF).",
+        "help_text_en": "Start calibration run: 3 stages at about 40/60/100% PWM (CW/CCW each), learn current profile. Only when homed (REFF).",
     },
     {
         "name": "ABORTCAL",
@@ -419,8 +419,8 @@ SPECS_DATA: list[dict] = [
         "name": "GETCALSTATE",
         "kind": "none",
         "params_literal": "0",
-        "help_text": "Status Kalibrierfahrt. Antwort: state;progress. state: 0=IDLE,1=RUNNING,2=DONE,3=ABORT.",
-        "help_text_en": "Calibration run status. Response: state;progress. state: 0=IDLE,1=RUNNING,2=DONE,3=ABORT.",
+        "help_text": "Status Kalibrierfahrt. Antwort: state;progress;stage. state: 0=IDLE,1=RUNNING,2=DONE,3=ABORT. stage: 0=inaktiv, 1–3=PWM-Stufe. Progress über alle 3 Stufen (je ⅓).",
+        "help_text_en": "Calibration run status. Response: state;progress;stage. state: 0=IDLE,1=RUNNING,2=DONE,3=ABORT. stage: 0=inactive, 1–3=PWM stage. Progress spans all 3 stages (⅓ each).",
     },
     {
         "name": "GETLOADSTAT",
@@ -439,9 +439,9 @@ SPECS_DATA: list[dict] = [
     {
         "name": "GETCALBINS",
         "kind": "none",
-        "params_literal": "0",
-        "help_text": "Kalibrier-Bins lesen (72 Bins). Params: dir;start;count.",
-        "help_text_en": "Read calibration bins (72 bins). Params: dir;start;count.",
+        "params_literal": "1;1;0;12",
+        "help_text": "Kalibrier-Bins lesen (72 Bins je Richtung). Params: stage;dir;start;count. stage 1–3 = PWM-Stufen (ca. 40/60/100 %).",
+        "help_text_en": "Read calibration bins (72 bins per direction). Params: stage;dir;start;count. stage 1–3 = PWM stages (~40/60/100%).",
     },
     {
         "name": "GETLIVEBINS",
@@ -468,8 +468,8 @@ SPECS_DATA: list[dict] = [
         "name": "GETDELTABINS",
         "kind": "none",
         "params_literal": "0",
-        "help_text": "Delta-Bins (Live minus Cal) in % lesen. Werte können negativ sein.",
-        "help_text_en": "Read delta bins (live minus cal) in %. Values can be negative.",
+        "help_text": "Delta-Bins in % lesen (PWM-interpoliert gegen die 3 CAL-Stufen; wie Warnlogik). Werte können negativ sein.",
+        "help_text_en": "Read delta bins in % (PWM-interpolated against the 3 CAL stages; same as warn logic). Values can be negative.",
     },
     {
         "name": "GETWARN",

@@ -708,13 +708,12 @@ class CompassWidget(QWidget):
             # Öffnungswinkel-Overlay (wie Karte, innerhalb des Kreises, schwach)
             self._draw_antenna_beam_overlay(painter, cx, cy, r)
 
-            # Heatmap-Ringe: Farbring 7px, dazwischen 1px schwarz; innen nach außen = Strom → OM-Radar → Standzeit
-            ring_w = 7.0
+            # Heatmap-Ringe: Strom/Standzeit 3.5px, OM 7px; dazwischen 1px schwarz
             gap_w = 1.0
-            step = ring_w + gap_w
             modes = self._heatmap_modes if self._heatmap_visible else []
+            inner_r = float(r)
             for i, mode in enumerate(modes):
-                inner_r = r + float(i) * step
+                ring_w = 3.5 if mode in ("strom", "dwell") else 7.0
                 if mode == "strom" and (self._bins_cw or self._bins_ccw):
                     paint_bins_heatmap_ring(
                         painter,
@@ -757,6 +756,7 @@ class CompassWidget(QWidget):
                     )
                 if i < len(modes) - 1:
                     paint_az_ring_gap_black(painter, cx, cy, inner_r + ring_w, gap_w)
+                inner_r += ring_w + (gap_w if i < len(modes) - 1 else 0.0)
 
             # Rotes Dreieck: Anschlag der Antenne (auf Kreislinie, nach innen zeigend)
             self._draw_anschlag_triangle(painter, cx, cy, r)

@@ -23,6 +23,11 @@ from .command_catalog import command_specs, CommandSpec
 _GUI_CONFIG_KEYS = (
     "pst_server",
     "rotctld_server",
+    "gs232_server",
+    "easycomm_server",
+    "dcu1_server",
+    "n1mm_rotor",
+    "map_webserver",
     "pst_serial",
     "rotor_bus",
     "hardware_link",

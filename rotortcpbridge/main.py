@@ -21,6 +21,10 @@ from .controller_remote_usb import ControllerRemoteUsbProxy
 from .rotor_controller import RotorController
 from .pst_server import PstDualServer
 from .rotctld_server import RotctldServer, DEFAULT_ROTCTLD_PORT
+from .gs232_server import Gs232Server, DEFAULT_GS232_PORT
+from .easycomm_server import EasycommServer, DEFAULT_EASYCOMM_PORT
+from .dcu1_server import Dcu1Server, DEFAULT_DCU1_PORT
+from .n1mm_rotor_udp import N1mmRotorUdp
 from .map_webserver import MapWebServer, DEFAULT_MAP_WEBSERVER_HOST, DEFAULT_MAP_WEBSERVER_PORT
 from .pst_serial import PstSerialManager
 from .udp_ucxlog import UdpUcxLogListener
@@ -175,6 +179,41 @@ def main():
     if bool(rotctld_cfg.get("enabled", False)):
         rotctld.start()
 
+    gs232_cfg = cfg.get("gs232_server", {}) or {}
+    gs232 = Gs232Server(
+        str(gs232_cfg.get("listen_host", "127.0.0.1")),
+        int(gs232_cfg.get("listen_port", DEFAULT_GS232_PORT)),
+        ctrl,
+        log,
+        cfg=cfg,
+    )
+    if bool(gs232_cfg.get("enabled", False)):
+        gs232.start()
+
+    easycomm_cfg = cfg.get("easycomm_server", {}) or {}
+    easycomm = EasycommServer(
+        str(easycomm_cfg.get("listen_host", "127.0.0.1")),
+        int(easycomm_cfg.get("listen_port", DEFAULT_EASYCOMM_PORT)),
+        ctrl,
+        log,
+        cfg=cfg,
+    )
+    if bool(easycomm_cfg.get("enabled", False)):
+        easycomm.start()
+
+    dcu1_cfg = cfg.get("dcu1_server", {}) or {}
+    dcu1 = Dcu1Server(
+        str(dcu1_cfg.get("listen_host", "127.0.0.1")),
+        int(dcu1_cfg.get("listen_port", DEFAULT_DCU1_PORT)),
+        ctrl,
+        log,
+        cfg=cfg,
+    )
+    if bool(dcu1_cfg.get("enabled", False)):
+        dcu1.start()
+
+    n1mm_rotor = N1mmRotorUdp(ctrl, log, cfg=cfg)
+
     # Antennenkarte als HTTP-Webserver (Start erst nach MapWindow-Wiring in MainWindow)
     mws_cfg = cfg.get("map_webserver", {}) or {}
     map_webserver = MapWebServer(
@@ -202,13 +241,31 @@ def main():
     except Exception as exc:
         log.write("WARN", f"Rig-Bridge Autostart fehlgeschlagen: {exc}")
 
-    # UDP UcxLog-Listener (wenn aktiviert)
+    # UDP UcxLog-Listener (wenn aktiviert). Konflikt mit N1MM auf 12040:
+    # N1MM hat Vorrang, falls beide in der Config aktiv wären.
     udp_ucxlog = UdpUcxLogListener(ctrl, log, cfg=cfg)
     ui_cfg = cfg.get("ui", {})
+    n1mm_cfg = cfg.get("n1mm_rotor", {}) or {}
+    n1mm_on = bool(n1mm_cfg.get("enabled", False))
+    ucx_on = bool(ui_cfg.get("udp_ucxlog_enabled", False))
+    if n1mm_on and ucx_on:
+        log.write(
+            "WARN",
+            "N1MM Rotor UDP und UcxLog gleichzeitig aktiv — UcxLog wird nicht gestartet (Port 12040).",
+        )
+        ucx_on = False
     udp_ucxlog.start(
-        enabled=bool(ui_cfg.get("udp_ucxlog_enabled", False)),
+        enabled=ucx_on,
         port=int(ui_cfg.get("udp_ucxlog_port", 12040)),
         listen_host=str(ui_cfg.get("udp_ucxlog_listen_host", "127.0.0.1")),
+    )
+    n1mm_rotor.start(
+        enabled=n1mm_on,
+        listen_host=str(n1mm_cfg.get("listen_host", "127.0.0.1")),
+        listen_port=int(n1mm_cfg.get("listen_port", 12040)),
+        broadcast_host=str(n1mm_cfg.get("broadcast_host", "127.0.0.1")),
+        broadcast_port=int(n1mm_cfg.get("broadcast_port", 13010)),
+        rotor_name=str(n1mm_cfg.get("rotor_name", "") or ""),
     )
 
     # UDP PST-Rotator-Emulation (wenn aktiviert)
@@ -286,6 +343,10 @@ def main():
         rig_bridge_manager=rig_bridge_manager,
         pst_serial=pst_serial,
         rotctld_server=rotctld,
+        gs232_server=gs232,
+        easycomm_server=easycomm,
+        dcu1_server=dcu1,
+        n1mm_rotor=n1mm_rotor,
         map_webserver=map_webserver,
         controller_remote_proxy=remote_proxy,
         ctrl_hw=ctrl_hw,
@@ -314,10 +375,26 @@ def main():
     except Exception:
         pass
     udp_ucxlog.stop()
+    try:
+        n1mm_rotor.stop()
+    except Exception:
+        pass
     udp_aswatch.stop()
     udp_pst.stop()
     try:
         rotctld.stop()
+    except Exception:
+        pass
+    try:
+        gs232.stop()
+    except Exception:
+        pass
+    try:
+        easycomm.stop()
+    except Exception:
+        pass
+    try:
+        dcu1.stop()
     except Exception:
         pass
     try:

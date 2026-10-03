@@ -10,6 +10,7 @@ from functools import partial
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QFileDialog,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -279,6 +280,28 @@ class MainWindow(QMainWindow):
         for i, (w, *_rest) in enumerate(self._rig_hamlib_extra_rows):
             w.setVisible(i < n_extra)
 
+    def _ensure_pst_serial_rows(self, n: int) -> None:
+        """Zeilen für com0com-/Serial-Listener in der Verbindungsübersicht."""
+        lay = getattr(self, "_lay_pst_serial_stack", None)
+        if lay is None:
+            return
+        while len(self._pst_serial_rows) < n:
+            led = Led(self._srv_led_d, self)
+            lbl = QLabel("")
+            lbl.setWordWrap(False)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(px_to_dip(self, 6))
+            row.addWidget(self._srv_led_wrap(led))
+            row.addWidget(lbl, 1)
+            w = QWidget()
+            w.setLayout(row)
+            lay.addWidget(w)
+            self._pst_serial_rows.append((w, led, lbl))
+        for i, (w, *_rest) in enumerate(self._pst_serial_rows):
+            w.setVisible(i < n)
+
     def __init__(
         self,
         cfg: dict,
@@ -295,6 +318,10 @@ class MainWindow(QMainWindow):
         rig_bridge_manager=None,
         pst_serial=None,
         rotctld_server=None,
+        gs232_server=None,
+        easycomm_server=None,
+        dcu1_server=None,
+        n1mm_rotor=None,
         map_webserver=None,
         controller_remote_proxy=None,
         ctrl_hw=None,
@@ -315,6 +342,10 @@ class MainWindow(QMainWindow):
         self._rig_bridge_manager = rig_bridge_manager
         self.pst_serial = pst_serial
         self._rotctld_server = rotctld_server
+        self._gs232_server = gs232_server
+        self._easycomm_server = easycomm_server
+        self._dcu1_server = dcu1_server
+        self._n1mm_rotor = n1mm_rotor
         self._map_webserver = map_webserver
         if aswatch_bridge is not None:
             try:
@@ -346,6 +377,12 @@ class MainWindow(QMainWindow):
         self._rotctld_blink_active = False
         self._rotctld_prev_last_rx_ts = 0.0
         self._rotctld_blink_sequence = (True, False, True, False, True, False, True, False, True)
+        self._proto_blink = {
+            "gs232": {"phase": 0, "active": False, "prev_rx": 0.0},
+            "easycomm": {"phase": 0, "active": False, "prev_rx": 0.0},
+            "dcu1": {"phase": 0, "active": False, "prev_rx": 0.0},
+            "n1mm": {"phase": 0, "active": False, "prev_rx": 0.0},
+        }
         self._aswatch_blink_phase = 0
         self._aswatch_blink_active = False
         self._aswatch_blink_sequence = (True, False, True, False, True, False, True, False, True)
@@ -358,6 +395,9 @@ class MainWindow(QMainWindow):
         self._rig_blink_sequence = (True, False, True, False, True, False, True, False, True)
         self._last_rig_srv_vis: tuple | None = None
         self._rig_hamlib_extra_rows: list[tuple[QWidget, Led, QLabel, QLabel, Led]] = []
+        self._pst_serial_rows: list[tuple[QWidget, Led, QLabel]] = []
+        self._pst_serial_blink: dict[str, dict] = {}
+        self._last_pst_serial_vis: tuple | None = None
         self._aswatch_markers_last: list = []
         self._aswatch_aircraft_last: list = []
         self._asnearest_summary_last: list = []
@@ -408,6 +448,12 @@ class MainWindow(QMainWindow):
         self._act_win_warnings_errors.triggered.connect(self._open_warnings_errors)
         self._menu_window.addAction(self._act_win_warnings_errors)
 
+        self._menu_protocols = menubar.addMenu(t("main.menu_protocols"))
+        self._proto_menu_suppress = False
+        self._proto_actions: dict[str, QAction] = {}
+        self._build_protocols_menu()
+        self._menu_protocols.aboutToShow.connect(self._on_protocols_menu_about_to_show)
+
         self._menu_help = menubar.addMenu(t("main.menu_help"))
         self._act_version = QAction(t("main.menu_version"), self)
         self._act_version.triggered.connect(self._open_about)
@@ -415,6 +461,9 @@ class MainWindow(QMainWindow):
         self._act_log = QAction(t("main.btn_log"), self)
         self._act_log.triggered.connect(self._toggle_log)
         self._menu_help.addAction(self._act_log)
+        self._act_bug_report = QAction(t("main.menu_bug_report"), self)
+        self._act_bug_report.triggered.connect(self._on_bug_report)
+        self._menu_help.addAction(self._act_bug_report)
 
         self._tray_icon: QSystemTrayIcon | None = None
         self._tray_menu: QMenu | None = None
@@ -432,6 +481,7 @@ class MainWindow(QMainWindow):
         self._menu_setup.setStyleSheet(_menu_bold)
         self._menu_profile.setStyleSheet(_menu_bold)
         self._menu_window.setStyleSheet(_menu_bold)
+        self._menu_protocols.setStyleSheet(_menu_bold)
         self._menu_help.setStyleSheet(_menu_bold)
 
         root = QWidget()
@@ -522,6 +572,10 @@ class MainWindow(QMainWindow):
         self._srv_led_d = led_d
         self.led_pst = Led(led_d, self)
         self.led_rotctld = Led(led_d, self)
+        self.led_gs232 = Led(led_d, self)
+        self.led_easycomm = Led(led_d, self)
+        self.led_dcu1 = Led(led_d, self)
+        self.led_n1mm = Led(led_d, self)
         self.led_map_web = Led(led_d, self)
         self.led_ucxlog = Led(led_d, self)
         self.led_pst_udp = Led(led_d, self)
@@ -541,6 +595,26 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         self.lbl_rotctld.setWordWrap(False)
+        self.lbl_gs232 = QLabel("")
+        self.lbl_gs232.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.lbl_gs232.setWordWrap(False)
+        self.lbl_easycomm = QLabel("")
+        self.lbl_easycomm.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.lbl_easycomm.setWordWrap(False)
+        self.lbl_dcu1 = QLabel("")
+        self.lbl_dcu1.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.lbl_dcu1.setWordWrap(False)
+        self.lbl_n1mm = QLabel("")
+        self.lbl_n1mm.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.lbl_n1mm.setWordWrap(False)
         self.lbl_map_web = QLabel("")
         self.lbl_map_web.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -581,6 +655,24 @@ class MainWindow(QMainWindow):
         rotctld_row_w.setLayout(rotctld_row)
         srv_form.addRow(t("main.srv_rotctld_label"), rotctld_row_w)
         self._srv_row_rotctld_w = rotctld_row_w
+
+        def _add_proto_srv_row(led, lbl, label_key: str, attr: str) -> None:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(px_to_dip(self, 6))
+            row.addWidget(self._srv_led_wrap(led))
+            row.addWidget(lbl, 1)
+            row_w = QWidget()
+            row_w.setLayout(row)
+            srv_form.addRow(t(label_key), row_w)
+            setattr(self, attr, row_w)
+
+        _add_proto_srv_row(self.led_gs232, self.lbl_gs232, "main.srv_gs232_label", "_srv_row_gs232_w")
+        _add_proto_srv_row(
+            self.led_easycomm, self.lbl_easycomm, "main.srv_easycomm_label", "_srv_row_easycomm_w"
+        )
+        _add_proto_srv_row(self.led_dcu1, self.lbl_dcu1, "main.srv_dcu1_label", "_srv_row_dcu1_w")
+        _add_proto_srv_row(self.led_n1mm, self.lbl_n1mm, "main.srv_n1mm_label", "_srv_row_n1mm_w")
 
         map_web_row = QHBoxLayout()
         map_web_row.setContentsMargins(0, 0, 0, 0)
@@ -650,6 +742,13 @@ class MainWindow(QMainWindow):
             )
         except Exception:
             pass
+
+        self._pst_serial_outer = QWidget()
+        self._lay_pst_serial_stack = QVBoxLayout(self._pst_serial_outer)
+        self._lay_pst_serial_stack.setContentsMargins(0, 0, 0, 0)
+        self._lay_pst_serial_stack.setSpacing(px_to_dip(self, 2))
+        srv_form.addRow(t("main.srv_pst_serial_label"), self._pst_serial_outer)
+        self._srv_row_pst_serial_w = self._pst_serial_outer
 
         rig_serial_row = QHBoxLayout()
         rig_serial_row.setContentsMargins(0, 0, 0, 0)
@@ -838,6 +937,11 @@ class MainWindow(QMainWindow):
             udp_pst=self._udp_pst,
             pst_target_push=self._pst_target_push,
             rotctld_server=self._rotctld_server,
+            gs232_server=self._gs232_server,
+            easycomm_server=self._easycomm_server,
+            dcu1_server=self._dcu1_server,
+            n1mm_rotor=self._n1mm_rotor,
+            udp_ucxlog=self._udp_ucxlog,
             map_webserver=self._map_webserver,
             switch_profile_cb=self._switch_rotor_profile,
             profiles_changed_cb=self._refresh_profile_menu,
@@ -1247,13 +1351,455 @@ class MainWindow(QMainWindow):
         QAction-Texte in den geöffneten Menüs sind dagegen korrekt.
         """
         mb = self.menuBar()
-        menus = (self._menu_setup, self._menu_profile, self._menu_window, self._menu_help)
+        menus = (
+            self._menu_setup,
+            self._menu_profile,
+            self._menu_window,
+            self._menu_protocols,
+            self._menu_help,
+        )
         for m in menus:
             act = m.menuAction()
             if act is not None:
                 mb.removeAction(act)
         for m in menus:
             mb.addMenu(m)
+
+    _PROTO_MENU_SPECS: tuple[tuple[str, str], ...] = (
+        ("pst_tcp", "main.proto_pst_tcp"),
+        ("pst_udp", "main.proto_pst_udp"),
+        ("rotctld", "main.proto_rotctld"),
+        ("gs232", "main.proto_gs232"),
+        ("easycomm", "main.proto_easycomm"),
+        ("dcu1", "main.proto_dcu1"),
+        ("n1mm", "main.proto_n1mm"),
+        ("ucxlog", "main.proto_ucxlog"),
+        ("pst_serial", "main.proto_pst_serial"),
+        ("map_web", "main.proto_map_web"),
+    )
+
+    def _build_protocols_menu(self) -> None:
+        """Checkable Actions für Emulationsdienste im Menü Protokolle."""
+        menu = getattr(self, "_menu_protocols", None)
+        if menu is None:
+            return
+        menu.clear()
+        self._proto_actions = {}
+        menu.setToolTipsVisible(True)
+        for key, label_key in self._PROTO_MENU_SPECS:
+            act = QAction(t(label_key), self)
+            act.setCheckable(True)
+            act.setData(key)
+            act.toggled.connect(partial(self._on_protocol_menu_toggled, key))
+            menu.addAction(act)
+            self._proto_actions[key] = act
+        self._sync_protocols_menu_checks()
+        self._update_protocols_menu_tooltips()
+
+    def _on_protocols_menu_about_to_show(self) -> None:
+        self._sync_protocols_menu_checks()
+        self._update_protocols_menu_tooltips()
+
+    def _protocol_label(self, key: str) -> str:
+        for k, label_key in self._PROTO_MENU_SPECS:
+            if k == key:
+                return t(label_key)
+        return key
+
+    def _protocol_enabled(self, key: str) -> bool:
+        return self._protocol_enabled_in_cfg(self.cfg, key)
+
+    @staticmethod
+    def _protocol_enabled_in_cfg(cfg: dict, key: str) -> bool:
+        ui = cfg.get("ui", {}) or {}
+        if key == "pst_tcp":
+            return bool((cfg.get("pst_server") or {}).get("enabled", False))
+        if key == "pst_udp":
+            return bool(ui.get("udp_pst_enabled", False))
+        if key == "rotctld":
+            return bool((cfg.get("rotctld_server") or {}).get("enabled", False))
+        if key == "gs232":
+            return bool((cfg.get("gs232_server") or {}).get("enabled", False))
+        if key == "easycomm":
+            return bool((cfg.get("easycomm_server") or {}).get("enabled", False))
+        if key == "dcu1":
+            return bool((cfg.get("dcu1_server") or {}).get("enabled", False))
+        if key == "n1mm":
+            return bool((cfg.get("n1mm_rotor") or {}).get("enabled", False))
+        if key == "ucxlog":
+            return bool(ui.get("udp_ucxlog_enabled", False))
+        if key == "pst_serial":
+            return bool((cfg.get("pst_serial") or {}).get("enabled", False))
+        if key == "map_web":
+            return bool((cfg.get("map_webserver") or {}).get("enabled", False))
+        return False
+
+    def _sync_protocols_menu_checks(self) -> None:
+        self._proto_menu_suppress = True
+        try:
+            for key, act in (self._proto_actions or {}).items():
+                act.setChecked(self._protocol_enabled(key))
+        finally:
+            self._proto_menu_suppress = False
+
+    def _sync_settings_protocol_checks(self) -> None:
+        sw = getattr(self, "_settings_win", None)
+        if sw is None or not hasattr(sw, "sync_protocol_enabled_from_cfg"):
+            return
+        try:
+            sw.sync_protocol_enabled_from_cfg()
+        except Exception as e:
+            self._log_exception("_sync_settings_protocol_checks", e)
+
+    @staticmethod
+    def _hosts_overlap(h1: str, h2: str) -> bool:
+        a = (h1 or "").strip() or "0.0.0.0"
+        b = (h2 or "").strip() or "0.0.0.0"
+        wild = ("0.0.0.0", "::", "")
+        if a in wild or b in wild:
+            return True
+        return a.casefold() == b.casefold()
+
+    def _effective_protocol_enabled(
+        self, *, force_key: str | None = None, force_enabled: bool | None = None
+    ) -> dict[str, bool]:
+        m = {k: self._protocol_enabled(k) for k, _ in self._PROTO_MENU_SPECS}
+        if force_key is None or force_enabled is None:
+            return m
+        m[force_key] = bool(force_enabled)
+        if force_enabled:
+            if force_key == "pst_tcp":
+                m["pst_udp"] = False
+            elif force_key == "pst_udp":
+                m["pst_tcp"] = False
+            elif force_key == "n1mm":
+                m["ucxlog"] = False
+            elif force_key == "ucxlog":
+                m["n1mm"] = False
+        return m
+
+    def _protocol_bind_endpoints(
+        self, enabled_map: dict[str, bool]
+    ) -> list[tuple[str, str, int, str]]:
+        """(key, host, port, transport) für aktivierte Netz-Dienste."""
+        cfg = self.cfg
+        ui = cfg.get("ui") or {}
+        out: list[tuple[str, str, int, str]] = []
+
+        def _add(key: str, host: str, port: int, transport: str) -> None:
+            try:
+                p = int(port)
+            except (TypeError, ValueError):
+                return
+            if p < 1 or p > 65535:
+                return
+            out.append((key, (host or "").strip() or "0.0.0.0", p, transport))
+
+        if enabled_map.get("pst_tcp"):
+            ps = cfg.get("pst_server") or {}
+            host = str(ps.get("listen_host", "0.0.0.0"))
+            _add("pst_tcp", host, int(ps.get("listen_port_az", 4001)), "tcp")
+            _add("pst_tcp", host, int(ps.get("listen_port_el", 4002)), "tcp")
+        if enabled_map.get("pst_udp"):
+            _add(
+                "pst_udp",
+                str(ui.get("udp_pst_listen_host", "127.0.0.1")),
+                int(ui.get("udp_pst_port", 12000)),
+                "udp",
+            )
+        if enabled_map.get("rotctld"):
+            rc = cfg.get("rotctld_server") or {}
+            _add(
+                "rotctld",
+                str(rc.get("listen_host", "127.0.0.1")),
+                int(rc.get("listen_port", 4533)),
+                "tcp",
+            )
+        for key, cfg_key, default_port in (
+            ("gs232", "gs232_server", 4003),
+            ("easycomm", "easycomm_server", 4535),
+            ("dcu1", "dcu1_server", 4004),
+        ):
+            if not enabled_map.get(key):
+                continue
+            sec = cfg.get(cfg_key) or {}
+            _add(
+                key,
+                str(sec.get("listen_host", "127.0.0.1")),
+                int(sec.get("listen_port", default_port)),
+                "tcp",
+            )
+        if enabled_map.get("n1mm"):
+            nr = cfg.get("n1mm_rotor") or {}
+            _add(
+                "n1mm",
+                str(nr.get("listen_host", "127.0.0.1")),
+                int(nr.get("listen_port", 12040)),
+                "udp",
+            )
+        if enabled_map.get("ucxlog"):
+            _add(
+                "ucxlog",
+                str(ui.get("udp_ucxlog_listen_host", "127.0.0.1")),
+                int(ui.get("udp_ucxlog_port", 12040)),
+                "udp",
+            )
+        if enabled_map.get("map_web"):
+            mws = cfg.get("map_webserver") or {}
+            _add(
+                "map_web",
+                str(mws.get("listen_host", "0.0.0.0")),
+                int(mws.get("listen_port", 80)),
+                "tcp",
+            )
+        return out
+
+    def _find_protocol_port_conflict(
+        self, key: str
+    ) -> tuple[str, int, str] | None:
+        """Beim Aktivieren: (other_key, port, host) wenn Port kollidiert."""
+        enabled_map = self._effective_protocol_enabled(
+            force_key=key, force_enabled=True
+        )
+        endpoints = self._protocol_bind_endpoints(enabled_map)
+        mine = [e for e in endpoints if e[0] == key]
+        others = [e for e in endpoints if e[0] != key]
+        for _k, host, port, transport in mine:
+            for other_key, ohost, oport, otransport in others:
+                if transport != otransport or port != oport:
+                    continue
+                if self._hosts_overlap(host, ohost):
+                    return other_key, port, host
+        # Selbstkollision (z. B. PST AZ/EL gleicher Port)
+        for i, (_k1, h1, p1, t1) in enumerate(mine):
+            for _k2, h2, p2, t2 in mine[i + 1 :]:
+                if t1 == t2 and p1 == p2 and self._hosts_overlap(h1, h2):
+                    return key, p1, h1
+        return None
+
+    def _protocol_menu_tooltip(self, key: str) -> str:
+        cfg = self.cfg
+        ui = cfg.get("ui") or {}
+        if key == "pst_tcp":
+            ps = cfg.get("pst_server") or {}
+            return t(
+                "main.proto_tooltip_tcp_dual",
+                host=str(ps.get("listen_host", "0.0.0.0")),
+                port_az=int(ps.get("listen_port_az", 4001)),
+                port_el=int(ps.get("listen_port_el", 4002)),
+            )
+        if key == "pst_udp":
+            return t(
+                "main.proto_tooltip_udp",
+                host=str(ui.get("udp_pst_listen_host", "127.0.0.1")),
+                port=int(ui.get("udp_pst_port", 12000)),
+            )
+        if key == "rotctld":
+            rc = cfg.get("rotctld_server") or {}
+            return t(
+                "main.proto_tooltip_tcp",
+                host=str(rc.get("listen_host", "127.0.0.1")),
+                port=int(rc.get("listen_port", 4533)),
+            )
+        if key in ("gs232", "easycomm", "dcu1"):
+            cfg_key = {
+                "gs232": "gs232_server",
+                "easycomm": "easycomm_server",
+                "dcu1": "dcu1_server",
+            }[key]
+            defaults = {"gs232": 4003, "easycomm": 4535, "dcu1": 4004}
+            sec = cfg.get(cfg_key) or {}
+            return t(
+                "main.proto_tooltip_tcp",
+                host=str(sec.get("listen_host", "127.0.0.1")),
+                port=int(sec.get("listen_port", defaults[key])),
+            )
+        if key == "n1mm":
+            nr = cfg.get("n1mm_rotor") or {}
+            return t(
+                "main.proto_tooltip_udp_n1mm",
+                listen=str(nr.get("listen_host", "127.0.0.1")),
+                lport=int(nr.get("listen_port", 12040)),
+                bcast=str(nr.get("broadcast_host", "127.0.0.1")),
+                bport=int(nr.get("broadcast_port", 13010)),
+            )
+        if key == "ucxlog":
+            return t(
+                "main.proto_tooltip_udp",
+                host=str(ui.get("udp_ucxlog_listen_host", "127.0.0.1")),
+                port=int(ui.get("udp_ucxlog_port", 12040)),
+            )
+        if key == "pst_serial":
+            ps = cfg.get("pst_serial") or {}
+            ports = []
+            for item in ps.get("listeners") or []:
+                if not isinstance(item, dict):
+                    continue
+                port = str(item.get("port", "") or "").strip()
+                if port:
+                    ports.append(self._pst_serial_display_port(port))
+            if not ports:
+                return t("main.proto_tooltip_serial_off")
+            return t("main.proto_tooltip_serial", detail=", ".join(ports))
+        if key == "map_web":
+            mws = cfg.get("map_webserver") or {}
+            return t(
+                "main.proto_tooltip_tcp",
+                host=str(mws.get("listen_host", "0.0.0.0")),
+                port=int(mws.get("listen_port", 80)),
+            )
+        return ""
+
+    def _update_protocols_menu_tooltips(self) -> None:
+        for key, act in (self._proto_actions or {}).items():
+            tip = self._protocol_menu_tooltip(key)
+            act.setToolTip(tip)
+            act.setStatusTip(tip)
+
+    def _on_protocol_menu_toggled(self, key: str, checked: bool) -> None:
+        if getattr(self, "_proto_menu_suppress", False):
+            return
+        if checked:
+            conflict = self._find_protocol_port_conflict(key)
+            if conflict is not None:
+                other_key, port, host = conflict
+                QMessageBox.warning(
+                    self,
+                    t("app.title"),
+                    t(
+                        "main.proto_port_conflict",
+                        name=self._protocol_label(key),
+                        other=self._protocol_label(other_key),
+                        port=port,
+                        host=host,
+                    ),
+                )
+                self._sync_protocols_menu_checks()
+                return
+        self._set_protocol_enabled(key, bool(checked))
+
+    def _set_protocol_enabled(self, key: str, enabled: bool) -> None:
+        """Config-Flag setzen, Konflikte auflösen, speichern und Dienst anwenden."""
+        ui = self.cfg.setdefault("ui", {})
+        if key == "pst_tcp":
+            self.cfg.setdefault("pst_server", {})["enabled"] = enabled
+            if enabled:
+                ui["udp_pst_enabled"] = False
+        elif key == "pst_udp":
+            ui["udp_pst_enabled"] = enabled
+            if enabled:
+                self.cfg.setdefault("pst_server", {})["enabled"] = False
+        elif key == "rotctld":
+            self.cfg.setdefault("rotctld_server", {})["enabled"] = enabled
+        elif key == "gs232":
+            self.cfg.setdefault("gs232_server", {})["enabled"] = enabled
+        elif key == "easycomm":
+            self.cfg.setdefault("easycomm_server", {})["enabled"] = enabled
+        elif key == "dcu1":
+            self.cfg.setdefault("dcu1_server", {})["enabled"] = enabled
+        elif key == "n1mm":
+            self.cfg.setdefault("n1mm_rotor", {})["enabled"] = enabled
+            if enabled:
+                ui["udp_ucxlog_enabled"] = False
+        elif key == "ucxlog":
+            ui["udp_ucxlog_enabled"] = enabled
+            if enabled:
+                self.cfg.setdefault("n1mm_rotor", {})["enabled"] = False
+        elif key == "pst_serial":
+            ps = self.cfg.setdefault("pst_serial", {})
+            ps["enabled"] = enabled
+            # Listener-Haken mitziehen, damit Settings/Apply denselben Zustand behalten.
+            for item in ps.get("listeners") or []:
+                if isinstance(item, dict):
+                    item["enabled"] = bool(enabled)
+        elif key == "map_web":
+            self.cfg.setdefault("map_webserver", {})["enabled"] = enabled
+        else:
+            return
+        try:
+            self.save_cfg_cb(self.cfg)
+        except Exception as e:
+            self._log_exception("_set_protocol_enabled save", e)
+        self._apply_protocol_toggle(key)
+        # Gegenseitig ausgeschlossene Dienste ebenfalls anwenden
+        if key == "pst_tcp" and enabled:
+            self._apply_protocol_toggle("pst_udp")
+        elif key == "pst_udp" and enabled:
+            self._apply_protocol_toggle("pst_tcp")
+        elif key == "n1mm" and enabled:
+            self._apply_protocol_toggle("ucxlog")
+        elif key == "ucxlog" and enabled:
+            self._apply_protocol_toggle("n1mm")
+        self._sync_protocols_menu_checks()
+        self._sync_settings_protocol_checks()
+        self._update_srv_rows_visibility()
+        self._show_bind_errors()
+
+    def _apply_protocol_toggle(self, key: str) -> None:
+        """Einzelnen Emulationsdienst nach Menü-Toggle starten/stoppen."""
+        try:
+            if key == "pst_tcp":
+                en = bool(self.cfg.get("pst_server", {}).get("enabled", False))
+                if en:
+                    ps = self.cfg.get("pst_server") or {}
+                    self.pst.restart(
+                        str(ps.get("listen_host", "0.0.0.0")),
+                        int(ps.get("listen_port_az", 4001)),
+                        int(ps.get("listen_port_el", 4002)),
+                    )
+                elif getattr(self.pst, "running", False):
+                    self.pst.stop()
+                # Gegenseite UDP ggf. stoppen
+                if self._udp_pst is not None and not bool(
+                    self.cfg.get("ui", {}).get("udp_pst_enabled", False)
+                ):
+                    self._udp_pst.start(enabled=False)
+            elif key == "pst_udp":
+                if self._udp_pst is not None:
+                    ui = self.cfg.get("ui", {})
+                    self._udp_pst.start(
+                        enabled=bool(ui.get("udp_pst_enabled", False)),
+                        port=int(ui.get("udp_pst_port", 12000)),
+                        listen_host=str(ui.get("udp_pst_listen_host", "127.0.0.1")),
+                    )
+                if not bool(self.cfg.get("pst_server", {}).get("enabled", False)):
+                    if getattr(self.pst, "running", False):
+                        self.pst.stop()
+            elif key == "rotctld":
+                srv = self._rotctld_server
+                if srv is None:
+                    return
+                rc = self.cfg.get("rotctld_server") or {}
+                if bool(rc.get("enabled", False)):
+                    srv.restart(
+                        str(rc.get("listen_host", "127.0.0.1")),
+                        int(rc.get("listen_port", 4533)),
+                    )
+                elif getattr(srv, "running", False):
+                    srv.stop()
+            elif key in ("gs232", "easycomm", "dcu1"):
+                self._apply_line_proto_servers_from_cfg()
+            elif key in ("n1mm", "ucxlog"):
+                self._apply_n1mm_from_cfg()
+                if self._udp_ucxlog is not None:
+                    ui = self.cfg.get("ui", {})
+                    self._udp_ucxlog.start(
+                        enabled=bool(ui.get("udp_ucxlog_enabled", False)),
+                        port=int(ui.get("udp_ucxlog_port", 12040)),
+                        listen_host=str(ui.get("udp_ucxlog_listen_host", "127.0.0.1")),
+                    )
+            elif key == "pst_serial":
+                if self.pst_serial is not None:
+                    ps_cfg = self.cfg.get("pst_serial", {}) or {}
+                    self.pst_serial.update_config(ps_cfg)
+                    if bool(ps_cfg.get("enabled", False)):
+                        self.pst_serial.start_all()
+                    else:
+                        self.pst_serial.stop_all()
+            elif key == "map_web":
+                self._apply_map_webserver_from_cfg(show_error=False)
+        except Exception as e:
+            self._log_exception(f"_apply_protocol_toggle {key}", e)
 
     def _refresh_profile_menu(self) -> None:
         """Menü „Profile“ neu aufbauen; nur sichtbar bei mehr als einem Profil."""
@@ -1477,6 +2023,9 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self._log_exception("_switch_rotor_profile rotctld", e)
 
+        self._apply_line_proto_servers_from_cfg()
+        self._apply_n1mm_from_cfg()
+
         if self._map_webserver is not None:
             try:
                 self._apply_map_webserver_from_cfg(show_error=False)
@@ -1574,9 +2123,13 @@ class MainWindow(QMainWindow):
         self._act_win_rotor_overview.setText(t("main.menu_rotor_overview"))
         self._act_win_weather.setText(t("main.btn_weather"))
         self._act_win_warnings_errors.setText(t("main.menu_win_warnings_errors"))
+        self._menu_protocols.setTitle(t("main.menu_protocols"))
+        self._build_protocols_menu()
         self._menu_help.setTitle(t("main.menu_help"))
         self._act_version.setText(t("main.menu_version"))
         self._act_log.setText(t("main.btn_log"))
+        if getattr(self, "_act_bug_report", None) is not None:
+            self._act_bug_report.setText(t("main.menu_bug_report"))
         try:
             if self._tray_icon is not None:
                 self._tray_icon.setToolTip(t("app.title"))
@@ -1636,6 +2189,18 @@ class MainWindow(QMainWindow):
             lab = sf.labelForField(self._srv_row_rotctld_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_rotctld_label"))
+            lab = sf.labelForField(self._srv_row_gs232_w)
+            if isinstance(lab, QLabel):
+                lab.setText(t("main.srv_gs232_label"))
+            lab = sf.labelForField(self._srv_row_easycomm_w)
+            if isinstance(lab, QLabel):
+                lab.setText(t("main.srv_easycomm_label"))
+            lab = sf.labelForField(self._srv_row_dcu1_w)
+            if isinstance(lab, QLabel):
+                lab.setText(t("main.srv_dcu1_label"))
+            lab = sf.labelForField(self._srv_row_n1mm_w)
+            if isinstance(lab, QLabel):
+                lab.setText(t("main.srv_n1mm_label"))
             lab = sf.labelForField(self._srv_row_map_web_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_map_web_label"))
@@ -1645,6 +2210,9 @@ class MainWindow(QMainWindow):
             lab = sf.labelForField(self._srv_row_pst_udp_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_pst_udp_prefix"))
+            lab = sf.labelForField(self._srv_row_pst_serial_w)
+            if isinstance(lab, QLabel):
+                lab.setText(t("main.srv_pst_serial_label"))
             lab = sf.labelForField(self._srv_row_aswatch_w)
             if isinstance(lab, QLabel):
                 lab.setText(t("main.srv_aswatch_label"))
@@ -1811,6 +2379,11 @@ class MainWindow(QMainWindow):
                 udp_pst=self._udp_pst,
                 pst_target_push=self._pst_target_push,
                 rotctld_server=self._rotctld_server,
+                gs232_server=self._gs232_server,
+                easycomm_server=self._easycomm_server,
+                dcu1_server=self._dcu1_server,
+                n1mm_rotor=self._n1mm_rotor,
+                udp_ucxlog=self._udp_ucxlog,
                 map_webserver=self._map_webserver,
                 switch_profile_cb=self._switch_rotor_profile,
                 profiles_changed_cb=self._refresh_profile_menu,
@@ -1937,6 +2510,187 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._log_exception("_apply_map_webserver_from_cfg", e)
 
+    def _apply_line_proto_servers_from_cfg(self) -> None:
+        """GS-232B / EasyComm / DCU-1 TCP-Server aus Config starten/stoppen."""
+        for attr, key, default_port in (
+            ("_gs232_server", "gs232_server", 4003),
+            ("_easycomm_server", "easycomm_server", 4535),
+            ("_dcu1_server", "dcu1_server", 4004),
+        ):
+            srv = getattr(self, attr, None)
+            if srv is None:
+                continue
+            sec = self.cfg.get(key, {}) or {}
+            try:
+                if bool(sec.get("enabled", False)):
+                    if hasattr(srv, "restart"):
+                        srv.restart(
+                            str(sec.get("listen_host", "127.0.0.1")),
+                            int(sec.get("listen_port", default_port)),
+                        )
+                    elif not getattr(srv, "running", False):
+                        srv.start()
+                elif getattr(srv, "running", False):
+                    srv.stop()
+            except Exception as e:
+                self._log_exception(f"_apply_line_proto_servers_from_cfg {key}", e)
+
+    def _apply_n1mm_from_cfg(self) -> None:
+        """N1MM Rotor UDP aus Config; UcxLog bei Konflikt stoppen."""
+        srv = getattr(self, "_n1mm_rotor", None)
+        nr = self.cfg.get("n1mm_rotor", {}) or {}
+        n1mm_on = bool(nr.get("enabled", False))
+        ui = self.cfg.setdefault("ui", {})
+        if n1mm_on and bool(ui.get("udp_ucxlog_enabled", False)):
+            ui["udp_ucxlog_enabled"] = False
+            udp = getattr(self, "_udp_ucxlog", None)
+            if udp is not None:
+                try:
+                    udp.stop()
+                except Exception:
+                    pass
+        if srv is None:
+            return
+        try:
+            srv.start(
+                enabled=n1mm_on,
+                listen_host=str(nr.get("listen_host", "127.0.0.1")),
+                listen_port=int(nr.get("listen_port", 12040)),
+                broadcast_host=str(nr.get("broadcast_host", "127.0.0.1")),
+                broadcast_port=int(nr.get("broadcast_port", 13010)),
+                rotor_name=str(nr.get("rotor_name", "") or ""),
+            )
+        except Exception as e:
+            self._log_exception("_apply_n1mm_from_cfg", e)
+
+    def _tick_proto_led(self, key: str, srv, led) -> None:
+        """LED-Blink bei RX für Line-/UDP-Protokolle."""
+        st = self._proto_blink.setdefault(
+            key, {"phase": 0, "active": False, "prev_rx": 0.0}
+        )
+        on = bool(getattr(srv, "running", False)) if srv is not None else False
+        if not on:
+            st["active"] = False
+            st["prev_rx"] = 0.0
+            led.set_state(False)
+            return
+        try:
+            last_rx_ts = float(getattr(srv, "last_rx_ts", 0.0) or 0.0)
+            prev_rx = float(st.get("prev_rx", 0.0) or 0.0)
+            if last_rx_ts > prev_rx + 1e-9:
+                st["prev_rx"] = last_rx_ts
+                st["phase"] = 0
+                st["active"] = True
+            # N1MM: auch packet_received_flag
+            if getattr(srv, "packet_received_flag", False):
+                srv.packet_received_flag = False
+                st["phase"] = 0
+                st["active"] = True
+        except Exception:
+            pass
+        seq = self._rotctld_blink_sequence
+        if st["active"]:
+            if st["phase"] < len(seq):
+                led.set_state(seq[st["phase"]])
+                st["phase"] += 1
+            else:
+                st["active"] = False
+        if not st["active"]:
+            led.set_state(True)
+
+    def _com0com_pairs_cached(self):
+        """com0com-Paare mit kurzem Cache (Registry-Lesen nicht jeden Tick)."""
+        now = time.time()
+        ts = float(getattr(self, "_com0com_pairs_ts", 0.0) or 0.0)
+        if now - ts < 5.0 and hasattr(self, "_com0com_pairs_cache"):
+            return self._com0com_pairs_cache
+        try:
+            from .. import com0com
+
+            self._com0com_pairs_cache = com0com.list_pairs()
+        except Exception:
+            self._com0com_pairs_cache = []
+        self._com0com_pairs_ts = now
+        return self._com0com_pairs_cache
+
+    def _pst_serial_display_port(self, listener_port: str) -> str:
+        """Extern sichtbarer COM-Port (Gegenseite des com0com-Paars)."""
+        try:
+            from .. import com0com
+
+            return com0com.external_port_for_listener(
+                listener_port, self._com0com_pairs_cached()
+            )
+        except Exception:
+            return str(listener_port or "").strip()
+
+    def _tick_pst_serial_leds(self) -> None:
+        """com0com-/Serial-Listener: Status-LED + Traffic-Blink in der Verbindungsübersicht."""
+        specs = self._pst_serial_enabled_specs()
+        try:
+            self._ensure_pst_serial_rows(len(specs))
+            self._srv_form.setRowVisible(self._srv_row_pst_serial_w, bool(specs))
+        except Exception:
+            pass
+        mgr = getattr(self, "pst_serial", None)
+        active_ports = {port for port, _tgt in specs}
+        for port in list(getattr(self, "_pst_serial_blink", {}).keys()):
+            if port not in active_ports:
+                self._pst_serial_blink.pop(port, None)
+        for i, (port, target) in enumerate(specs):
+            if i >= len(self._pst_serial_rows):
+                break
+            _w, led, lbl = self._pst_serial_rows[i]
+            tgt_lbl = self._pst_serial_target_label(target)
+            # Anzeige: externer Port (für Fremdsoftware), nicht der interne Listener.
+            disp_port = self._pst_serial_display_port(port)
+            listener = None
+            if mgr is not None:
+                try:
+                    listener = mgr.get(port)
+                except Exception:
+                    listener = None
+            on = bool(getattr(listener, "running", False)) if listener is not None else False
+            # Port wirklich geöffnet? (Reconnect-Phase: running, aber noch kein Handle)
+            if on and getattr(listener, "_ser", None) is None:
+                on = False
+            st = self._pst_serial_blink.setdefault(
+                port, {"phase": 0, "active": False, "prev_rx": 0.0}
+            )
+            if not on:
+                st["active"] = False
+                st["prev_rx"] = 0.0
+                led.set_state(False)
+                lbl.setText(
+                    t(
+                        "main.srv_pst_serial_offline",
+                        port=disp_port,
+                        target=tgt_lbl,
+                    )
+                )
+                continue
+            try:
+                last_rx_ts = float(getattr(listener, "last_rx_ts", 0.0) or 0.0)
+                prev_rx = float(st.get("prev_rx", 0.0) or 0.0)
+                if last_rx_ts > prev_rx + 1e-9:
+                    st["prev_rx"] = last_rx_ts
+                    st["phase"] = 0
+                    st["active"] = True
+            except Exception:
+                pass
+            seq = self._rotctld_blink_sequence
+            if st["active"]:
+                if st["phase"] < len(seq):
+                    led.set_state(seq[st["phase"]])
+                    st["phase"] += 1
+                else:
+                    st["active"] = False
+            if not st["active"]:
+                led.set_state(True)
+            lbl.setText(
+                t("main.srv_pst_serial_line", port=disp_port, target=tgt_lbl)
+            )
+
     def _after_settings_applied(self):
         apply_theme_mode(self.cfg)
         # Immer repolish: bei Forced-Dark sonst helle native Win-Menüleiste; bei Systemmodus OS-Farben.
@@ -1945,6 +2699,8 @@ class MainWindow(QMainWindow):
         self._update_groupbox_titles()
         self._update_axis_visibility()
         self._update_srv_rows_visibility()
+        self._sync_protocols_menu_checks()
+        self._update_protocols_menu_tooltips()
         self._apply_fixed_mainwindow_size()
         # PST-Server starten oder stoppen je nach Einstellung
         pst_enabled = bool(self.cfg.get("pst_server", {}).get("enabled", False))
@@ -1965,6 +2721,14 @@ class MainWindow(QMainWindow):
                     self._rotctld_server.stop()
             except Exception as e:
                 self._log_exception("_after_settings_applied rotctld start/stop", e)
+        try:
+            self._apply_line_proto_servers_from_cfg()
+        except Exception as e:
+            self._log_exception("_after_settings_applied line proto servers", e)
+        try:
+            self._apply_n1mm_from_cfg()
+        except Exception as e:
+            self._log_exception("_after_settings_applied n1mm", e)
         # Karten-Webserver starten/stoppen je nach Einstellung
         try:
             self._apply_map_webserver_from_cfg(show_error=False)
@@ -2002,10 +2766,7 @@ class MainWindow(QMainWindow):
                 port=int(ui.get("udp_pst_port", 12000)),
                 listen_host=str(ui.get("udp_pst_listen_host", "127.0.0.1")),
             )
-            if self._udp_pst.bind_error_msg:
-                QMessageBox.warning(
-                    self, t("main.pst_udp_error_title"), self._udp_pst.bind_error_msg
-                )
+        self._show_bind_errors()
         if self._pst_target_push is not None:
             ui = self.cfg.get("ui", {})
             self._pst_target_push.start(
@@ -2577,25 +3338,95 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _pst_serial_enabled_specs(self) -> list[tuple[str, str]]:
+        """Aktivierte com0com-Listener als ``(port, target)``."""
+        ps = self.cfg.get("pst_serial") or {}
+        if not bool(ps.get("enabled", False)):
+            return []
+        out: list[tuple[str, str]] = []
+        for item in ps.get("listeners") or []:
+            if not isinstance(item, dict):
+                continue
+            if not bool(item.get("enabled", True)):
+                continue
+            port = str(item.get("port", "") or "").strip()
+            if not port:
+                continue
+            target = str(item.get("target", "rotor") or "rotor").strip() or "rotor"
+            out.append((port, target))
+        return out
+
+    def _pst_serial_target_label(self, target: str) -> str:
+        tgt = (target or "rotor").strip() or "rotor"
+        low = tgt.lower()
+        if low == "rotor":
+            return t("pst_serial.target_rotor")
+        if low == "gs232":
+            return t("pst_serial.target_gs232")
+        if low == "easycomm":
+            return t("pst_serial.target_easycomm")
+        if low == "dcu1":
+            return t("pst_serial.target_dcu1")
+        if low.startswith("rig:"):
+            pid = tgt.split(":", 1)[1].strip()
+            name = ""
+            rbm = getattr(self, "_rig_bridge_manager", None)
+            if rbm is not None and hasattr(rbm, "list_profiles"):
+                try:
+                    for p in rbm.list_profiles() or []:
+                        if isinstance(p, dict) and str(p.get("id", "")) == pid:
+                            name = str(p.get("name") or "").strip()
+                            break
+                except Exception:
+                    pass
+            if not name:
+                try:
+                    for p in (self.cfg.get("rig_bridge") or {}).get("profiles") or []:
+                        if isinstance(p, dict) and str(p.get("id", "")) == pid:
+                            name = str(p.get("name") or "").strip()
+                            break
+                except Exception:
+                    pass
+            if name:
+                return t("pst_serial.target_rig_label", name=name)
+            return t("pst_serial.target_rig_missing", id=pid)
+        return tgt
+
     def _update_srv_rows_visibility(self) -> None:
         """Server-GroupBox-Zeilen je nach aktivierten Diensten ein-/ausblenden."""
         ui = self.cfg.get("ui", {})
         pst_on = bool(self.cfg.get("pst_server", {}).get("enabled", False))
         rotctld_on = bool(self.cfg.get("rotctld_server", {}).get("enabled", False))
+        gs232_on = bool(self.cfg.get("gs232_server", {}).get("enabled", False))
+        easycomm_on = bool(self.cfg.get("easycomm_server", {}).get("enabled", False))
+        dcu1_on = bool(self.cfg.get("dcu1_server", {}).get("enabled", False))
+        n1mm_on = bool(self.cfg.get("n1mm_rotor", {}).get("enabled", False))
         map_web_on = bool(self.cfg.get("map_webserver", {}).get("enabled", False))
-        ucxlog_on = bool(ui.get("udp_ucxlog_enabled", False))
+        ucxlog_on = bool(ui.get("udp_ucxlog_enabled", False)) and not n1mm_on
         pst_udp_on = bool(ui.get("udp_pst_enabled", False))
+        pst_serial_specs = self._pst_serial_enabled_specs()
+        pst_serial_on = bool(pst_serial_specs)
         aswatch_on = bool(ui.get("aswatch_udp_enabled", False))
         rb = self._active_rig_view()
         rig_mod = bool(rb.get("enabled", False))
         rig_flrig = rig_mod and bool((rb.get("flrig") or {}).get("enabled", False))
         rig_ham = rig_mod and bool((rb.get("hamlib") or {}).get("enabled", False))
         try:
+            self._ensure_pst_serial_rows(len(pst_serial_specs))
+            vis_key = tuple(pst_serial_specs)
+            if vis_key != getattr(self, "_last_pst_serial_vis", None):
+                self._last_pst_serial_vis = vis_key
+                QTimer.singleShot(0, self._apply_fixed_mainwindow_size)
             self._srv_form.setRowVisible(self._srv_row_pst_w, pst_on)
             self._srv_form.setRowVisible(self._srv_row_rotctld_w, rotctld_on)
+            self._srv_form.setRowVisible(self._srv_row_gs232_w, gs232_on)
+            self._srv_form.setRowVisible(self._srv_row_easycomm_w, easycomm_on)
+            self._srv_form.setRowVisible(self._srv_row_dcu1_w, dcu1_on)
+            self._srv_form.setRowVisible(self._srv_row_n1mm_w, n1mm_on)
             self._srv_form.setRowVisible(self._srv_row_map_web_w, map_web_on)
             self._srv_form.setRowVisible(self._srv_row_ucxlog_w, ucxlog_on)
             self._srv_form.setRowVisible(self._srv_row_pst_udp_w, pst_udp_on)
+            self._srv_form.setRowVisible(self._srv_row_pst_serial_w, pst_serial_on)
             self._srv_form.setRowVisible(self._srv_row_aswatch_w, aswatch_on)
             self._srv_form.setRowVisible(self._srv_row_rig_serial_w, rig_mod)
             self._srv_form.setRowVisible(self._srv_row_rig_flrig_w, rig_flrig)
@@ -3002,9 +3833,164 @@ class MainWindow(QMainWindow):
             pass
 
     def _check_pst_udp_startup_error(self) -> None:
-        """Beim Programmstart einmalig prüfen ob PST-UDP-Port belegt war."""
-        if self._udp_pst is not None and self._udp_pst.bind_error_msg:
-            QMessageBox.warning(self, t("main.pst_udp_error_title"), self._udp_pst.bind_error_msg)
+        """Beim Programmstart einmalig alle Bind-Fehler anzeigen."""
+        self._show_bind_errors()
+
+    def _on_bug_report(self) -> None:
+        """Hilfe → Bug Report: Logs, Profile, Config und Rotor-Backup als ZIP."""
+        from datetime import datetime
+        from pathlib import Path
+
+        from ..bug_report import create_bug_report_zip
+        from ..logutil import appdata_dir
+
+        default_name = f"RotorTcpBridge-bugreport-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+        path_str, _ = QFileDialog.getSaveFileName(
+            self,
+            t("main.bug_report_title"),
+            str(appdata_dir() / default_name),
+            "ZIP (*.zip)",
+        )
+        if not path_str:
+            return
+        out = Path(path_str)
+        if out.suffix.lower() != ".zip":
+            out = out.with_suffix(".zip")
+
+        dlg = QProgressDialog(t("main.bug_report_progress"), None, 0, 0, self)
+        dlg.setWindowTitle(t("main.menu_bug_report"))
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+        dlg.show()
+        QApplication.processEvents()
+
+        notes = ""
+        hw_entries: list[dict] = []
+        try:
+            hw_on = bool(self.hw and self.hw.is_connected())
+        except Exception:
+            hw_on = False
+        if not hw_on:
+            notes = t("main.bug_report_hw_offline")
+        else:
+            try:
+                dlg.setLabelText(t("main.bug_report_progress") + " (HW)")
+                QApplication.processEvents()
+                hw_entries = self._bug_report_collect_hw_entries(dlg)
+            except Exception as e:
+                notes = t("main.bug_report_hw_offline") + f"\nHW: {e}"
+                self._log_exception("_on_bug_report hw", e)
+
+        try:
+            create_bug_report_zip(
+                out, cfg=self.cfg, hw_entries=hw_entries, notes=notes
+            )
+            dlg.close()
+            QMessageBox.information(
+                self, t("main.menu_bug_report"), t("main.bug_report_done", path=str(out))
+            )
+        except Exception as e:
+            dlg.close()
+            QMessageBox.warning(
+                self, t("main.menu_bug_report"), t("main.bug_report_failed", err=e)
+            )
+
+    def _bug_report_collect_hw_entries(self, dlg: QProgressDialog | None = None) -> list[dict]:
+        """HW-Parameter wie Rotor-Config-Backup per GET abfragen (synchron)."""
+        from ..command_catalog import command_specs
+        from ..rotor_backup import (
+            build_backup_work,
+            encoder_type_from_backup_entries,
+            get_params_for_get,
+        )
+
+        enc = None
+        try:
+            enc = getattr(getattr(self.ctrl, "az", None), "encoder_type", None)
+            if enc is not None:
+                enc = int(enc)
+        except Exception:
+            enc = None
+        work = build_backup_work(self.cfg, encoder_type=enc)
+        data: list[dict] = []
+        specs = {str(s.name).upper(): s for s in command_specs()}
+        total = max(1, len(work))
+        for i, (dst, set_cmd, get_cmd) in enumerate(work):
+            if dlg is not None:
+                dlg.setLabelText(f"{t('main.bug_report_progress')} {i + 1}/{total}")
+                QApplication.processEvents()
+            spec = specs.get(str(get_cmd).upper())
+            params = get_params_for_get(spec)
+            holder: dict = {"ok": False, "params": ""}
+            loop = QEventLoop()
+
+            def _done(tel, err, _h=holder, _loop=loop):
+                if err or tel is None:
+                    _h["ok"] = False
+                else:
+                    cmd_str = str(getattr(tel, "cmd", "") or "")
+                    if cmd_str.upper().startswith("ACK_"):
+                        _h["ok"] = True
+                        _h["params"] = str(getattr(tel, "params", "") or "").strip()
+                _loop.quit()
+
+            try:
+                self.ctrl.send_ui_command(
+                    int(dst),
+                    str(get_cmd),
+                    params,
+                    expect_prefix=f"ACK_{get_cmd}",
+                    timeout_s=1.2,
+                    priority=0,
+                    on_done=_done,
+                )
+            except Exception:
+                continue
+            QTimer.singleShot(1400, loop.quit)
+            loop.exec()
+            if holder["ok"]:
+                data.append({"dst": int(dst), "cmd": set_cmd, "params": holder["params"]})
+        # encoder_type ggf. aus Daten ableiten (unused, aber API verfügbar halten)
+        _ = encoder_type_from_backup_entries(data)
+        return data
+
+    def _collect_bind_errors(self) -> list[str]:
+        """Alle aktuellen bind_error_msg / last_error der Emulationsdienste."""
+        msgs: list[str] = []
+        for attr in (
+            "pst",
+            "_rotctld_server",
+            "_gs232_server",
+            "_easycomm_server",
+            "_dcu1_server",
+            "_n1mm_rotor",
+            "_udp_pst",
+            "_map_webserver",
+        ):
+            srv = getattr(self, attr, None)
+            if srv is None:
+                continue
+            msg = getattr(srv, "bind_error_msg", None)
+            if not msg:
+                msg = getattr(srv, "last_error", None)
+            if msg:
+                text = str(msg).strip()
+                if text and text not in msgs:
+                    msgs.append(text)
+        return msgs
+
+    def _show_bind_errors(self) -> None:
+        """Gebündelte QMessageBox für Portkonflikte / Bind-Fehler."""
+        msgs = self._collect_bind_errors()
+        if not msgs:
+            return
+        try:
+            QMessageBox.warning(
+                self, t("main.bind_error_title"), "\n\n".join(msgs)
+            )
+        except Exception:
+            pass
 
     def _log_exception(self, context: str, exc: BaseException) -> None:
         """Unerwartete Ausnahme ins Logbuch schreiben (statt still zu schlucken)."""
@@ -3109,6 +4095,17 @@ class MainWindow(QMainWindow):
                     self._rotctld_blink_active = False
             if not self._rotctld_blink_active:
                 self.led_rotctld.set_state(True)
+
+        self._tick_proto_led("gs232", getattr(self, "_gs232_server", None), self.led_gs232)
+        self._tick_proto_led(
+            "easycomm", getattr(self, "_easycomm_server", None), self.led_easycomm
+        )
+        self._tick_proto_led("dcu1", getattr(self, "_dcu1_server", None), self.led_dcu1)
+        self._tick_proto_led("n1mm", getattr(self, "_n1mm_rotor", None), self.led_n1mm)
+        try:
+            self._tick_pst_serial_leds()
+        except Exception as e:
+            self._log_exception("_tick_pst_serial_leds", e)
 
         mws_srv = getattr(self, "_map_webserver", None)
         mws_on = bool(getattr(mws_srv, "running", False)) if mws_srv is not None else False
@@ -3480,6 +4477,31 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             _rcport = 4533
         self.lbl_rotctld.setText(f"{_rch}:{_rcport}")
+
+        for lbl_attr, srv_attr, cfg_key, default_port in (
+            ("lbl_gs232", "_gs232_server", "gs232_server", 4003),
+            ("lbl_easycomm", "_easycomm_server", "easycomm_server", 4535),
+            ("lbl_dcu1", "_dcu1_server", "dcu1_server", 4004),
+        ):
+            sec = self.cfg.get(cfg_key, {}) or {}
+            srv = getattr(self, srv_attr, None)
+            h = str(
+                getattr(srv, "host", None) or sec.get("listen_host", "127.0.0.1") or "127.0.0.1"
+            ).strip()
+            p = getattr(srv, "port", None)
+            try:
+                port = int(p) if p is not None else int(sec.get("listen_port", default_port))
+            except (TypeError, ValueError):
+                port = default_port
+            getattr(self, lbl_attr).setText(f"{h}:{port}")
+
+        nr = self.cfg.get("n1mm_rotor", {}) or {}
+        _n1h = str(nr.get("listen_host", "127.0.0.1") or "127.0.0.1").strip()
+        try:
+            _n1p = int(nr.get("listen_port", 12040))
+        except (TypeError, ValueError):
+            _n1p = 12040
+        self.lbl_n1mm.setText(f"{_n1h}:{_n1p}")
 
         mws = self.cfg.get("map_webserver", {}) or {}
         _mwh = str(

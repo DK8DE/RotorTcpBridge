@@ -38,6 +38,10 @@ except Exception:  # pragma: no cover - pyserial ist eine harte Abhängigkeit
 
 from . import verbose_cat_log
 from .angle_utils import az_d10_for_external_report
+from .dcu1_protocol import process_dcu1_line
+from .easycomm_protocol import process_easycomm_line
+from .gs232_protocol import extract_gs232_commands, process_gs232_line
+from .line_protocol_server import LineProtocolSerialPort
 from .logutil import LogBuffer
 from .rig_bridge.cat_responder import CatResponder, build_responder
 from .spid_rot2prog import (
@@ -47,6 +51,14 @@ from .spid_rot2prog import (
     encode_reply,
     parse_command_packet,
 )
+
+# Textprotokoll-Targets auf com0com (neben SPID ``rotor`` / CAT ``rig:…``).
+_LINE_PROTOCOL_TARGETS = frozenset({"gs232", "easycomm", "dcu1"})
+_LINE_PROTOCOL_DEFAULT_BAUD = {
+    "gs232": 9600,
+    "easycomm": 9600,
+    "dcu1": 4800,
+}
 
 
 def _normalize_port(name: str) -> str:
@@ -655,15 +667,22 @@ class _ListenerCfg:
     port: str
     baudrate: int
     enabled: bool
-    target: str  # "rotor" oder "rig:<profile_id>"
+    target: str  # "rotor" | "gs232" | "easycomm" | "dcu1" | "rig:<profile_id>"
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "_ListenerCfg":
+        tgt = str(d.get("target", "rotor") or "rotor").strip() or "rotor"
+        default_baud = 115200
+        tl = tgt.strip().lower()
+        if tl == "rotor":
+            default_baud = 1200
+        elif tl in _LINE_PROTOCOL_DEFAULT_BAUD:
+            default_baud = _LINE_PROTOCOL_DEFAULT_BAUD[tl]
         return _ListenerCfg(
             port=str(d.get("port", "") or "").strip(),
-            baudrate=int(d.get("baudrate", 115200) or 115200),
+            baudrate=int(d.get("baudrate", default_baud) or default_baud),
             enabled=bool(d.get("enabled", True)),
-            target=str(d.get("target", "rotor") or "rotor").strip() or "rotor",
+            target=tgt,
         )
 
 
@@ -741,7 +760,82 @@ class PstSerialManager:
         return self._ports.get(str(port or "").strip())
 
     def _listener_target_type(self, listener: Any) -> str:
-        return "rig" if isinstance(listener, RigSerialPort) else "rotor"
+        if isinstance(listener, RigSerialPort):
+            return "rig"
+        if isinstance(listener, LineProtocolSerialPort):
+            return str(getattr(listener, "target", "") or "line")
+        return "rotor"
+
+    def _cfg_flag(self, section: str, key: str) -> bool:
+        try:
+            return bool((self._app_cfg or {}).get(section, {}).get(key, False))
+        except Exception:
+            return False
+
+    def _make_line_listener(self, lc: _ListenerCfg, tgt: str) -> LineProtocolSerialPort:
+        """Textprotokoll-Listener (GS-232B / EasyComm / DCU-1)."""
+        pending: list = [None]
+
+        if tgt == "gs232":
+
+            def _proc(line: str, _p=pending):
+                return process_gs232_line(
+                    line,
+                    self._ctrl,
+                    shortest_path=self._cfg_flag("gs232_server", "az_shortest_path"),
+                    report_mod360=self._cfg_flag("gs232_server", "az_report_mod360"),
+                )
+
+            return LineProtocolSerialPort(
+                lc.port,
+                lc.baudrate,
+                self._log,
+                name="GS-232B-COM",
+                process_line=_proc,
+                terminators=b"\r\n",
+                target="gs232",
+                extract_commands=extract_gs232_commands,
+            )
+
+        if tgt == "easycomm":
+
+            def _proc(line: str, _p=pending):
+                return process_easycomm_line(
+                    line,
+                    self._ctrl,
+                    shortest_path=self._cfg_flag("easycomm_server", "az_shortest_path"),
+                    report_mod360=self._cfg_flag("easycomm_server", "az_report_mod360"),
+                )
+
+            return LineProtocolSerialPort(
+                lc.port,
+                lc.baudrate,
+                self._log,
+                name="EasyComm-COM",
+                process_line=_proc,
+                terminators=b"\r\n",
+                target="easycomm",
+            )
+
+        # dcu1
+        def _proc(line: str, _p=pending):
+            return process_dcu1_line(
+                line,
+                self._ctrl,
+                shortest_path=self._cfg_flag("dcu1_server", "az_shortest_path"),
+                report_mod360=self._cfg_flag("dcu1_server", "az_report_mod360"),
+                pending_target=_p,
+            )
+
+        return LineProtocolSerialPort(
+            lc.port,
+            lc.baudrate,
+            self._log,
+            name="DCU-1-COM",
+            process_line=_proc,
+            terminators=b";\r\n",
+            target="dcu1",
+        )
 
     def _make_listener(self, lc: _ListenerCfg) -> Any:
         """Anhand ``target`` den passenden Listener-Typ instanziieren."""
@@ -751,6 +845,8 @@ class PstSerialManager:
             return RigSerialPort(
                 lc.port, lc.baudrate, self._rb, profile_id, self._log
             )
+        if tgt in _LINE_PROTOCOL_TARGETS:
+            return self._make_line_listener(lc, tgt)
         # Rotor-Listener (Fallback auch wenn rig_bridge fehlt oder target unbekannt).
         return PstSerialPort(
             lc.port,
@@ -774,6 +870,16 @@ class PstSerialManager:
             profile_id = tgt.split(":", 1)[1].strip()
             if cur.profile_id != profile_id:
                 return True
+            return False
+        wants_line = tgt in _LINE_PROTOCOL_TARGETS
+        has_line = isinstance(cur, LineProtocolSerialPort)
+        if wants_line != has_line:
+            return True
+        if has_line:
+            return str(getattr(cur, "target", "") or "").lower() != tgt
+        # SPID-Rotor: Rebuild wenn Ziel jetzt kein rotor mehr ist.
+        if tgt != "rotor" and not wants_line:
+            return True
         return False
 
     def update_config(self, cfg: Dict[str, Any]) -> None:

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from .spid_rot2prog import parse_command_packet, encode_reply, CMD_SET, CMD_STOP, CMD_STATUS
 from .angle_utils import az_d10_for_external_report
 from .logutil import LogBuffer
+from .net_bind_error import format_bind_error
 
 
 @dataclass
@@ -37,9 +38,13 @@ class PstAxisServer:
         self._listen_sock: socket.socket | None = None
         # Timestamp des letzten gültigen RX-Pakets (für UI "PST Connect" LED)
         self.last_rx_ts: float = 0.0
+        self.bind_error_msg: str | None = None
 
     def start(self):
         if self.running:
+            return
+        self.bind_error_msg = None
+        if not self._open_listen_socket():
             return
         self.running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -57,6 +62,28 @@ class PstAxisServer:
         except Exception:
             pass
         self._listen_sock = None
+
+    def _open_listen_socket(self) -> bool:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.settimeout(0.5)
+            s.bind((self.host, self.port))
+            s.listen(1)
+        except Exception as e:
+            axis = self.axis.upper()
+            self.bind_error_msg = format_bind_error(
+                self.host, self.port, e, proto_name=f"SPID BIG-RAS {axis}"
+            )
+            self.log.write("ERROR", f"PST-{axis} bind/listen fehlgeschlagen: {e}")
+            try:
+                s.close()
+            except Exception:
+                pass
+            self._listen_sock = None
+            return False
+        self._listen_sock = s
+        return True
 
     def _az_shortest_path(self) -> bool:
         try:
@@ -91,21 +118,9 @@ class PstAxisServer:
                 self.ctrl.hold_el_at_current_pos()
 
     def _loop(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._listen_sock = s
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.settimeout(0.5)  # damit stop() schnell wirkt
-        try:
-            s.bind((self.host, self.port))
-            s.listen(1)
-        except Exception as e:
-            self.log.write("ERROR", f"PST-{self.axis.upper()} bind/listen fehlgeschlagen: {e}")
+        s = self._listen_sock
+        if s is None:
             self.running = False
-            try:
-                s.close()
-            except Exception:
-                pass
-            self._listen_sock = None
             return
 
         while self.running:
@@ -249,6 +264,15 @@ class PstDualServer:
         except Exception:
             e = 0.0
         return a if a >= e else e
+
+    @property
+    def bind_error_msg(self) -> str | None:
+        parts = []
+        for srv in (self.az, self.el):
+            msg = getattr(srv, "bind_error_msg", None)
+            if msg:
+                parts.append(str(msg))
+        return "\n\n".join(parts) if parts else None
 
     def start(self):
         # host/ports evtl. aktualisieren

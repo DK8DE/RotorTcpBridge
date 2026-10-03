@@ -1107,38 +1107,56 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         axis_state.telemetry.pwm_min_pct = v
                     return
 
-                # Kalibrier-Status (GETCALSTATE)
+                # Kalibrier-Status (GETCALSTATE): state;progress;stage
                 if tel.cmd.startswith("ACK_GETCALSTATE") or tel.cmd.startswith("ACK_CALSTATE"):
+                    from .rotor_controller_polling import (
+                        cal_bins_all_stages_present,
+                        clear_cal_bins,
+                    )
+
                     parts = (tel.params or "").strip().split(";")
                     state = parse_int(parts[0]) if parts else None
                     if state is not None:
                         axis_state.cal_state = int(state)
+                        if len(parts) > 2:
+                            stg = parse_int(parts[2].strip())
+                            if stg is not None:
+                                axis_state.cal_stage = max(0, min(3, int(stg)))
                         if state == 2:
                             axis_state.cal_progress = 100
+                            axis_state.cal_stage = 0
                         elif state in (0, 3):
                             axis_state.cal_progress = 0
+                            if state == 0:
+                                axis_state.cal_stage = 0
                         elif len(parts) > 1:
                             pg = parse_int(parts[1].strip())
                             if pg is not None:
                                 axis_state.cal_progress = max(0, min(100, int(pg)))
-                        if state != 2 and axis_name == "AZ":
-                            axis_state.cal_bins_cw = None
-                            axis_state.cal_bins_ccw = None
-                            self._cal_bins_fetched_az = False
-                        elif state != 2 and axis_name == "EL":
-                            axis_state.cal_bins_cw = None
-                            axis_state.cal_bins_ccw = None
-                            self._cal_bins_fetched_el = False
-                        elif (
+                        # Bins nur bei ABORT verwerfen. IDLE nach DONE = normal
+                        # (gespeicherte CAL bleibt gültig, GETCALVALID=1).
+                        if state == 3:
+                            clear_cal_bins(axis_state)
+                            if axis_name == "AZ":
+                                self._cal_bins_fetched_az = False
+                            else:
+                                self._cal_bins_fetched_el = False
+                        want_cal_bins = (
                             state == 2
+                            or (
+                                state == 0
+                                and bool(getattr(axis_state, "cal_valid", False))
+                            )
+                        )
+                        if (
+                            want_cal_bins
                             and axis_name == "AZ"
                             and bool(getattr(self, "enable_az", True))
                             and self._cal_data_ui_active()
                             and not self._acc_bins_chain_in_progress()
                         ):
                             if not self._cal_bins_inflight_az and (
-                                axis_state.cal_bins_cw is None
-                                or axis_state.cal_bins_ccw is None
+                                not cal_bins_all_stages_present(axis_state)
                                 or not self._cal_bins_fetched_az
                             ):
                                 self._fetch_cal_bins(int(self.slave_az), axis_state, "AZ")
@@ -1150,7 +1168,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                 self._fetch_live_bins(int(self.slave_az), axis_state, "AZ")
                                 self._last_live_bins_az = time.time()
                         elif (
-                            state == 2
+                            want_cal_bins
                             and axis_name == "EL"
                             and bool(getattr(self, "enable_el", True))
                             and self._cal_data_ui_active()
@@ -1158,8 +1176,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         ):
                             dst_el = int(self.slave_el)
                             if not self._cal_bins_inflight_el and (
-                                axis_state.cal_bins_cw is None
-                                or axis_state.cal_bins_ccw is None
+                                not cal_bins_all_stages_present(axis_state)
                                 or not self._cal_bins_fetched_el
                             ):
                                 self._fetch_cal_bins_el(dst_el, axis_state, "EL")
@@ -1196,22 +1213,41 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             except Exception:
                                 pass
                         return
+                    from .rotor_controller_polling import parse_cal_bins_ack
+
                     parts = (tel.params or "").strip().split(";")
-                    if len(parts) >= 4:
-                        dir_val = parse_int(parts[0])
-                        start_val = parse_int(parts[1])
-                        count_val = parse_int(parts[2])
-                        if dir_val is not None and start_val is not None and count_val is not None:
-                            bins = (
-                                axis_state.cal_bins_cw if dir_val == 1 else axis_state.cal_bins_ccw
-                            )
-                            if bins is not None and 0 <= start_val < 72 and 1 <= count_val <= 12:
-                                for i in range(count_val):
-                                    v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
-                                    if v is not None:
-                                        idx = start_val + i
-                                        if idx < 72:
-                                            bins[idx] = int(v)
+                    parsed = parse_cal_bins_ack(parts)
+                    if parsed is not None:
+                        stage, dir_val, start_val, count_val, values_off = parsed
+                        si = stage - 1
+                        stages = (
+                            axis_state.cal_bins_stage_cw
+                            if dir_val == 1
+                            else axis_state.cal_bins_stage_ccw
+                        )
+                        if (
+                            isinstance(stages, list)
+                            and 0 <= si < len(stages)
+                            and stages[si] is not None
+                            and 0 <= start_val < 72
+                            and 1 <= count_val <= 12
+                        ):
+                            bins = stages[si]
+                            for i in range(count_val):
+                                v = (
+                                    parse_int(parts[values_off + i])
+                                    if (values_off + i) < len(parts)
+                                    else None
+                                )
+                                if v is not None:
+                                    idx = start_val + i
+                                    if idx < 72:
+                                        bins[idx] = int(v)
+                            if stage == 3:
+                                if dir_val == 1:
+                                    axis_state.cal_bins_cw = list(bins)
+                                else:
+                                    axis_state.cal_bins_ccw = list(bins)
                     return
 
                 # Live-Bins (ACK_GETLIVEBINS: dir;start;count;v0;v1;...;vn)

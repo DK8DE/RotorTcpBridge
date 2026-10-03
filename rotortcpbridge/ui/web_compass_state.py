@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -18,6 +19,7 @@ from ..angle_utils import (
     shortest_delta_az_rotor_deg,
     wrap_deg,
 )
+from ..compass.statistic_compass_widget import parse_heatmap_scale
 from ..geo_utils import ANTENNA_BEAM_COLORS, bearing_deg, effective_station_lat_lon, haversine_km
 from ..i18n import t
 from .compass_html import build_compass_html
@@ -207,6 +209,35 @@ def web_om_radar_counts(mw: Any, opening: float, range_km: float) -> list[float]
     return counts
 
 
+def _web_pwm_fields(axis_state: Any, *, enabled_axis: bool) -> dict:
+    """Motorspeed wie Main-GUI: Min aus Telemetrie, aktueller PWM, nur online+Min bedienbar."""
+    if not enabled_axis or axis_state is None:
+        return {"pwm": 0, "pwm_min": 0, "pwm_enabled": False}
+    online = bool(getattr(axis_state, "online", False))
+    tel = getattr(axis_state, "telemetry", None)
+    pwm_min = None
+    pwm = None
+    if tel is not None:
+        try:
+            if getattr(tel, "pwm_min_pct", None) is not None:
+                pwm_min = max(0, min(100, int(math.ceil(float(tel.pwm_min_pct)))))
+        except (TypeError, ValueError):
+            pwm_min = None
+        try:
+            if getattr(tel, "pwm_max_pct", None) is not None:
+                v = float(tel.pwm_max_pct)
+                pwm = 100 if v >= 99.5 else int(round(v))
+        except (TypeError, ValueError):
+            pwm = None
+    if not online:
+        return {"pwm": 0, "pwm_min": pwm_min if pwm_min is not None else 0, "pwm_enabled": False}
+    return {
+        "pwm": pwm,
+        "pwm_min": pwm_min if pwm_min is not None else 0,
+        "pwm_enabled": pwm_min is not None,
+    }
+
+
 def web_tick_dwell(mw: Any, rotor_deg: float | None, moving: bool, ant_idx: int) -> None:
     ui = mw.cfg.get("ui", {}) or {}
     try:
@@ -307,6 +338,7 @@ def get_web_compass_payload(mw: Any) -> dict:
 
     bins_cw = list(getattr(mw.ctrl.az, "acc_bins_cw", None) or []) or None
     bins_ccw = list(getattr(mw.ctrl.az, "acc_bins_ccw", None) or []) or None
+    az_scale = parse_heatmap_scale(ui, "az")
     om_counts = web_om_radar_counts(mw, opening, range_km) if "om_radar" in modes else []
     dwell = list(mw._web_dwell_az_seconds_per_ant[ant_idx]) if "dwell" in modes else []
 
@@ -343,6 +375,7 @@ def get_web_compass_payload(mw: Any) -> dict:
     el_bins_ccw = (
         list(getattr(mw.ctrl.el, "acc_bins_ccw", None) or []) or None if enable_el else None
     )
+    el_scale = parse_heatmap_scale(ui, "el") if enable_el else None
 
     dgcal_az = None
     try:
@@ -387,6 +420,7 @@ def get_web_compass_payload(mw: Any) -> dict:
             "heatmap_strom": t("compass.heatmap_strom"),
             "heatmap_om": t("compass.heatmap_om_radar"),
             "heatmap_dwell": t("compass.heatmap_dwell"),
+            "motorspeed": t("axis.motorspeed_label"),
             "dwell_reset": t("compass.btn_reset_dwell"),
             "scan": t("compass.scan_header"),
             "scan_start": t("compass.scan_btn_start"),
@@ -433,6 +467,7 @@ def get_web_compass_payload(mw: Any) -> dict:
             "heatmap_modes": modes,
             "bins_cw": bins_cw,
             "bins_ccw": bins_ccw,
+            "heatmap_scale": list(az_scale) if az_scale is not None else None,
             "om_counts": om_counts,
             "dwell_seconds": dwell,
             "dwell_full": dwell_full,
@@ -441,6 +476,7 @@ def get_web_compass_payload(mw: Any) -> dict:
             "wind_kmh": wkmh,
             "wind_mode": mode,
             "dgcal": dgcal_az,
+            **_web_pwm_fields(getattr(mw.ctrl, "az", None), enabled_axis=True),
         },
         "el": {
             "ist": el_ist,
@@ -453,6 +489,8 @@ def get_web_compass_payload(mw: Any) -> dict:
             "heatmap_mode": el_heat if el_heat in ("strom", "off") else "off",
             "bins_cw": el_bins_cw,
             "bins_ccw": el_bins_ccw,
+            "heatmap_scale": list(el_scale) if el_scale is not None else None,
+            **_web_pwm_fields(getattr(mw.ctrl, "el", None), enabled_axis=enable_el),
         },
     }
 
@@ -475,7 +513,7 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
     if act == "compass_open":
         mw._web_compass_open = True
         if hasattr(mw.ctrl, "set_compass_window_open"):
-            mw.ctrl.set_compass_window_open(True)
+            mw.ctrl.set_compass_window_open(True, source="web")
         modes = web_heatmap_az_modes(mw)
         el_mode = str((mw.cfg.get("ui", {}) or {}).get("compass_heatmap_el", "off")).lower()
         if hasattr(mw.ctrl, "set_compass_strom_heatmap_active"):
@@ -487,12 +525,30 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
                 mw.ctrl.request_immediate_pos()
             except Exception:
                 pass
+        # Stromring-Bins (GETACCBINS) auch ohne Desktop-Kompassfenster anfordern.
+        if "strom" in modes or el_mode == "strom":
+            if hasattr(mw.ctrl, "request_immediate_stats"):
+                try:
+                    mw.ctrl.request_immediate_stats()
+                except Exception:
+                    pass
         return True
     if act == "compass_close":
         mw._web_compass_open = False
         mw._web_scan_active = False
         if hasattr(mw.ctrl, "set_compass_window_open"):
-            mw.ctrl.set_compass_window_open(False)
+            mw.ctrl.set_compass_window_open(False, source="web")
+        # Desktop-Kompass kann noch offen sein → Flags aus dessen UI/cfg.
+        if bool(getattr(mw.ctrl, "_compass_window_open", False)):
+            modes = web_heatmap_az_modes(mw)
+            el_mode = str((mw.cfg.get("ui", {}) or {}).get("compass_heatmap_el", "off")).lower()
+            if hasattr(mw.ctrl, "set_compass_strom_heatmap_active"):
+                try:
+                    mw.ctrl.set_compass_strom_heatmap_active(
+                        "strom" in modes, el_mode == "strom"
+                    )
+                except Exception:
+                    pass
         return True
     if act == "set_az":
         mw._web_scan_active = False
@@ -508,6 +564,33 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
         except Exception:
             max_deg = 90.0
         mw.ctrl.set_el_deg(clamp_el(deg, max_deg), force=True)
+        return True
+    if act == "set_pwm":
+        axis = str(data.get("axis") or "az").strip().lower()
+        if axis not in ("az", "el"):
+            return True
+        if axis == "el" and not bool(getattr(mw.ctrl, "enable_el", False)):
+            return True
+        try:
+            pct = float(data.get("pct"))
+        except (TypeError, ValueError):
+            return True
+        pct = max(0.0, min(100.0, pct))
+        axis_state = getattr(mw.ctrl, axis, None)
+        tel = getattr(axis_state, "telemetry", None) if axis_state is not None else None
+        try:
+            mn = getattr(tel, "pwm_min_pct", None) if tel is not None else None
+            if mn is not None:
+                pct = max(float(mn), pct)
+        except (TypeError, ValueError):
+            pass
+        try:
+            if axis == "az":
+                mw.ctrl.set_pwm_az(pct)
+            else:
+                mw.ctrl.set_pwm_el(pct)
+        except Exception:
+            pass
         return True
     if act == "stop_az":
         mw._web_scan_active = False
@@ -548,6 +631,11 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
         el_mode = str(ui.get("compass_heatmap_el", "off")).lower()
         if hasattr(mw.ctrl, "set_compass_strom_heatmap_active"):
             mw.ctrl.set_compass_strom_heatmap_active("strom" in modes, el_mode == "strom")
+        if "strom" in modes and hasattr(mw.ctrl, "request_immediate_stats"):
+            try:
+                mw.ctrl.request_immediate_stats()
+            except Exception:
+                pass
         if mw.save_cfg_cb:
             try:
                 mw.save_cfg_cb(mw.cfg)
@@ -563,6 +651,11 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
         modes = web_heatmap_az_modes(mw)
         if hasattr(mw.ctrl, "set_compass_strom_heatmap_active"):
             mw.ctrl.set_compass_strom_heatmap_active("strom" in modes, mode == "strom")
+        if mode == "strom" and hasattr(mw.ctrl, "request_immediate_stats"):
+            try:
+                mw.ctrl.request_immediate_stats()
+            except Exception:
+                pass
         if mw.save_cfg_cb:
             try:
                 mw.save_cfg_cb(mw.cfg)

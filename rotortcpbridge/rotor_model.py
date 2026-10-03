@@ -304,7 +304,7 @@ class AxisState:
     pos_settle_poll_due_ts: float = 0.0
 
     # Kalibrier-Bins (GETCALBINS): 72 Stromwerte in mV pro Richtung, je STAGE 1–3
-    # (ca. 40/60/100 % PWM). GETCALSTATE: state;progress;stage —
+    # (SETCALPWM1/2/3, Default 40/70/100 % PWM). GETCALSTATE: state;progress;stage —
     # state 0=IDLE, 1=RUNNING, 2=DONE, 3=ABORT; stage 0=inaktiv, 1–3=Stufe.
     # Nach erfolgreicher Kalibrierung geht die Firmware oft wieder auf IDLE;
     # gespeicherte CAL bleibt über GETCALVALID=1 gültig — Bins nicht löschen.

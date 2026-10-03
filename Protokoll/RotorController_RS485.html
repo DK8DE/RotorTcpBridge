@@ -122,7 +122,7 @@
 <body>
 <div class="section" id="intro">
   <h1>Rotor‑Controller – RS485‑Anleitung &amp; Firmware‑Dokumentation (DE)</h1>
-  <p class="muted">Stand: 2026-08-02 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler &amp; Warnungen. Die <b>Befehlstabelle</b> ist mit dem RotorTcpBridge‑Katalog abgeglichen (<code>command_catalog.py</code> / Befehlsfenster). Diese Datei ist mit <code>RotorTcpBridge/Protokoll/RotorController_RS485.md</code> abgestimmt.</p>
+  <p class="muted">Stand: 2026-10-03 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler &amp; Warnungen. Die <b>Befehlstabelle</b> ist mit dem RotorTcpBridge‑Katalog abgeglichen (<code>command_catalog.py</code> / Befehlsfenster). Diese Datei ist mit <code>RotorTcpBridge/Protokoll/RotorController_RS485.md</code> abgestimmt.</p>
 </div>
 <main>
 <section class="toc" id="toc">
@@ -582,7 +582,7 @@
 <tr>
 <td><code>#0:20:SETCAL:...:CS$</code></td>
 <td><code>#20:0:ACK_SETCAL:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETCAL:REASON:CS$</code></span></td>
-<td><b><a href="#cmd-SETCAL">SETCAL</a></b><br>Kalibrierfahrt starten (0→360→0) und Stromprofil lernen.</td>
+<td><b><a href="#cmd-SETCAL">SETCAL</a></b><br>Kalibrierfahrt starten (3 PWM-Stufen) und Stromprofil lernen.</td>
 </tr>
 <tr>
 <td><code>#0:20:ABORTCAL:...:CS$</code></td>
@@ -602,7 +602,37 @@
 <tr>
 <td><code>#0:20:GETCALSTATE:...:CS$</code></td>
 <td><code>#20:0:ACK_GETCALSTATE:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETCALSTATE:REASON:CS$</code></span></td>
-<td><b><a href="#cmd-GETCALSTATE">GETCALSTATE</a></b><br>Status der Kalibrierfahrt abfragen.</td>
+<td><b><a href="#cmd-GETCALSTATE">GETCALSTATE</a></b><br>Status der Kalibrierfahrt abfragen (<code>state;progress;stage</code>).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETCALPWM1:...:CS$</code></td>
+<td><code>#20:0:ACK_GETCALPWM1:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETCALPWM1:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETCALPWM1">GETCALPWM1</a></b><br>Kalibrier-Stufe 1: PWM (%) lesen (Default 40).</td>
+</tr>
+<tr>
+<td><code>#0:20:SETCALPWM1:...:CS$</code></td>
+<td><code>#20:0:ACK_SETCALPWM1:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETCALPWM1:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETCALPWM1">SETCALPWM1</a></b><br>Kalibrier-Stufe 1: PWM (%) setzen (Default 40).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETCALPWM2:...:CS$</code></td>
+<td><code>#20:0:ACK_GETCALPWM2:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETCALPWM2:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETCALPWM2">GETCALPWM2</a></b><br>Kalibrier-Stufe 2: PWM (%) lesen (Default 70).</td>
+</tr>
+<tr>
+<td><code>#0:20:SETCALPWM2:...:CS$</code></td>
+<td><code>#20:0:ACK_SETCALPWM2:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETCALPWM2:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETCALPWM2">SETCALPWM2</a></b><br>Kalibrier-Stufe 2: PWM (%) setzen (Default 70).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETCALPWM3:...:CS$</code></td>
+<td><code>#20:0:ACK_GETCALPWM3:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETCALPWM3:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETCALPWM3">GETCALPWM3</a></b><br>Kalibrier-Stufe 3: PWM (%) lesen (Default 100).</td>
+</tr>
+<tr>
+<td><code>#0:20:SETCALPWM3:...:CS$</code></td>
+<td><code>#20:0:ACK_SETCALPWM3:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETCALPWM3:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETCALPWM3">SETCALPWM3</a></b><br>Kalibrier-Stufe 3: PWM (%) setzen (Default 100).</td>
 </tr>
 <tr>
 <td><code>#0:20:GETLOADSTAT:...:CS$</code></td>
@@ -615,9 +645,9 @@
 <td><b><a href="#cmd-GETWIND">GETWIND</a></b><br>Wind-Schätzung aus Motorlastprofil.</td>
 </tr>
 <tr>
-<td><code>#0:20:GETCALBINS:...:CS$</code></td>
-<td><code>#20:0:ACK_GETCALBINS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETCALBINS:REASON:CS$</code></span></td>
-<td><b><a href="#cmd-GETCALBINS">GETCALBINS</a></b><br>Kalibrier-Bins lesen (72 Bins).</td>
+<td><code>#0:20:GETCALBINS:1;1;0;12:CS$</code></td>
+<td><code>#20:0:ACK_GETCALBINS:STAGE;DIR;START;COUNT;V1;…:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETCALBINS:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETCALBINS">GETCALBINS</a></b><br>Kalibrier-Bins lesen (72 Bins je STAGE 1–3).</td>
 </tr>
 <tr>
 <td><code>#0:20:GETLIVEBINS:...:CS$</code></td>
@@ -637,7 +667,7 @@
 <tr>
 <td><code>#0:20:GETDELTABINS:...:CS$</code></td>
 <td><code>#20:0:ACK_GETDELTABINS:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETDELTABINS:REASON:CS$</code></span></td>
-<td><b><a href="#cmd-GETDELTABINS">GETDELTABINS</a></b><br>Delta-Bins (Live minus Cal) in % lesen.</td>
+<td><b><a href="#cmd-GETDELTABINS">GETDELTABINS</a></b><br>Delta-Bins in % lesen (PWM-interpoliert gegen die 3 CAL-Stufen).</td>
 </tr>
 <tr>
 <td><code>#0:20:GETWARN:...:CS$</code></td>
@@ -1458,13 +1488,42 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <p><b>Details:</b> Wie <code>SETANTNAME1</code>.</p>
 <hr>
 <h4 id="cmd-SETCAL"><code>SETCAL</code></h4>
-<p><b>Was es macht:</b> Kalibrierfahrt starten (0→360→0) und Stromprofil lernen.</p>
-<p><b>Details:</b> Nur wenn REFF gemacht wurde.</p>
+<p><b>Was es macht:</b> Kalibrierfahrt starten und Stromprofil lernen.</p>
+<p><b>Details:</b> Nur wenn REFF gemacht wurde. Die Fahrt läuft in <b>drei PWM-Stufen</b> (je Richtung CW/CCW). Die PWM-Werte der Stufen sind zur Laufzeit einstellbar über <a href="#cmd-SETCALPWM1"><code>SETCALPWM1</code></a> / <a href="#cmd-SETCALPWM2"><code>SETCALPWM2</code></a> / <a href="#cmd-SETCALPWM3"><code>SETCALPWM3</code></a> (Defaults: <b>40 / 70 / 100 %</b>). Pro Stufe entsteht ein eigener Rohdatensatz (72 Bins je Richtung), abrufbar über <a href="#cmd-GETCALBINS"><code>GETCALBINS</code></a> mit <code>STAGE</code>.</p>
 <hr>
 <h4 id="cmd-GETCALSTATE"><code>GETCALSTATE</code></h4>
 <p><b>Was es macht:</b> Status der Kalibrierfahrt abfragen.</p>
-<p><b>Details:</b> Antwort: &lt;state&gt;;&lt;progress&gt; (progress 0..100).</p>
-<p><b>Interpretation:</b> <code>state</code> ist der Zustand der Kalibrierfahrt (0=IDLE, 1=RUNNING, 2=DONE, 3=ABORT/ERROR). <code>progress</code> läuft von 0 bis 100.</p>
+<p><b>Details:</b> Antwort: <code>&lt;state&gt;;&lt;progress&gt;;&lt;stage&gt;</code>.</p>
+<p><b>Interpretation:</b></p>
+<ul>
+<li><code>state</code>: Zustand der Kalibrierfahrt — <code>0</code>=IDLE, <code>1</code>=RUNNING, <code>2</code>=DONE, <code>3</code>=ABORT/ERROR.</li>
+<li><code>progress</code>: Fortschritt <b>0..100</b> über <b>alle drei Stufen</b> hinweg (je Stufe etwa ⅓; CW/CCW je zur Hälfte innerhalb der Stufe).</li>
+<li><code>stage</code>: aktuelle PWM-Stufe — <code>0</code>=inaktiv, <code>1</code>–<code>3</code>=laufende Stufe (bei <code>SETCALPWM1/2/3</code>).</li>
+</ul>
+<hr>
+<h4 id="cmd-GETCALPWM1"><code>GETCALPWM1</code></h4>
+<p><b>Was es macht:</b> Kalibrier-Stufe 1: PWM (%) lesen.</p>
+<p><b>Details:</b> Default <b>40</b>. Parameter üblich <code>0</code>.</p>
+<hr>
+<h4 id="cmd-SETCALPWM1"><code>SETCALPWM1</code></h4>
+<p><b>Was es macht:</b> Kalibrier-Stufe 1: PWM (%) setzen.</p>
+<p><b>Details:</b> 0..100. Default <b>40</b>. Muss unter Stufe 2 liegen. Wird bei der nächsten <a href="#cmd-SETCAL"><code>SETCAL</code></a>-Fahrt verwendet; Wert wird in NVS gespeichert.</p>
+<hr>
+<h4 id="cmd-GETCALPWM2"><code>GETCALPWM2</code></h4>
+<p><b>Was es macht:</b> Kalibrier-Stufe 2: PWM (%) lesen.</p>
+<p><b>Details:</b> Default <b>70</b>.</p>
+<hr>
+<h4 id="cmd-SETCALPWM2"><code>SETCALPWM2</code></h4>
+<p><b>Was es macht:</b> Kalibrier-Stufe 2: PWM (%) setzen.</p>
+<p><b>Details:</b> 0..100. Default <b>70</b>. Zwischen Stufe 1 und 3.</p>
+<hr>
+<h4 id="cmd-GETCALPWM3"><code>GETCALPWM3</code></h4>
+<p><b>Was es macht:</b> Kalibrier-Stufe 3: PWM (%) lesen.</p>
+<p><b>Details:</b> Default <b>100</b>.</p>
+<hr>
+<h4 id="cmd-SETCALPWM3"><code>SETCALPWM3</code></h4>
+<p><b>Was es macht:</b> Kalibrier-Stufe 3: PWM (%) setzen.</p>
+<p><b>Details:</b> 0..100. Default <b>100</b>. Oberste Stufe der Kalibrierfahrt.</p>
 <hr>
 <h4 id="cmd-ABORTCAL"><code>ABORTCAL</code></h4>
 <p><b>Was es macht:</b> Kalibrierfahrt abbrechen.</p>
@@ -1490,12 +1549,19 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <p><b>Interpretation:</b> <code>dirDeg</code> ist die geschätzte Windrichtung (wo es schwer geht). <code>peakDeg</code> ist der Winkel mit der stärksten Spitze. Bei Windstille sind peak/coh oft nahe 0.</p>
 <hr>
 <h4 id="cmd-GETCALBINS"><code>GETCALBINS</code></h4>
-<p><b>Was es macht:</b> Kalibrier-Bins lesen (72 Bins).</p>
-<p><b>Details:</b> Params: dir;start;count. Rückgabe: dir;start;count;v1;v2;...</p>
+<p><b>Was es macht:</b> Kalibrier-Bins einer PWM-Stufe lesen (72 Bins je Richtung).</p>
+<p><b>Telegramm (Beispiel):</b> <code>#0:20:GETCALBINS:1;1;0;12:CS$</code></p>
+<p><b>Details:</b> Params: <code>STAGE;DIR;START;COUNT</code>. Antwort: <code>STAGE;DIR;START;COUNT;V1;V2;…</code>.</p>
+<ul>
+<li><code>STAGE</code> = <code>1</code>…<code>3</code> (PWM-Stufe, siehe <a href="#cmd-SETCALPWM1"><code>SETCALPWM1</code></a>…<a href="#cmd-SETCALPWM3"><code>SETCALPWM3</code></a>)</li>
+<li><code>DIR</code> = <code>1</code> (CW) / <code>2</code> (CCW)</li>
+<li><code>START</code> = 0, 12, 24, 36, 48, 60; <code>COUNT</code> = 1…12</li>
+</ul>
+<p>Pro Stufe gibt es 72 Bins × 2 Richtungen → typisch 12 Blöcke à 12 Werte; für alle drei Stufen also 36 Abfragen. <code>GETLIVEBINS</code> / <code>GETACCBINS</code> bleiben ohne <code>STAGE</code> (nur <code>DIR;START;COUNT</code>).</p>
 <hr>
 <h4 id="cmd-GETLIVEBINS"><code>GETLIVEBINS</code></h4>
 <p><b>Was es macht:</b> Live-Bins lesen (72 Bins).</p>
-<p><b>Details:</b> Wie GETCALBINS, aber aktuelle Betriebsdaten.</p>
+<p><b>Details:</b> Params weiterhin <code>DIR;START;COUNT</code> (kein <code>STAGE</code>). Aktuelle Betriebsdaten, nicht die Kalibrier-Rohstufen.</p>
 <p><b>Verhalten:</b> Diese Statistik ist träge und geglättet. Sie ist für eine robuste Langzeitbetrachtung gedacht und wird nur während geeigneter Fahrfenster aufgebaut. Bereiche am Anfang und Ende einer Fahrt werden ignoriert. Die Werte bauen sich über mehrere größere Fahrten auf.</p>
 <p><b>Verwendung:</b> Gut geeignet, wenn der Master eine ruhige Langzeit-Heatmap oder den Vergleich zur Kalibrierung zeigen soll. Wenn eine Veränderung schnell sichtbar werden soll, ist <a href="#cmd-GETACCBINS"><code>GETACCBINS</code></a> besser geeignet.</p>
 <hr>
@@ -1518,8 +1584,8 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <p><b>Abgrenzung zu CLRSTAT:</b> <code>CLRSTAT</code> betrifft die normale Live-Statistik. <code>SETACCBINSRST</code> ist nur für die schnelle ACC-Statistik gedacht.</p>
 <hr>
 <h4 id="cmd-GETDELTABINS"><code>GETDELTABINS</code></h4>
-<p><b>Was es macht:</b> Delta-Bins (Live minus Cal) in % lesen.</p>
-<p><b>Details:</b> Wie GETCALBINS, Werte können negativ sein.</p>
+<p><b>Was es macht:</b> Delta-Bins in % lesen (Abweichung zur Kalibrierung).</p>
+<p><b>Details:</b> Params wie bisher <code>DIR;START;COUNT</code> (kein <code>STAGE</code>). Die Firmware interpoliert gegen die <b>drei CAL-Stufen</b> anhand der aktuellen PWM — dasselbe, was die Warnlogik verwendet. Werte können negativ sein.</p>
 <hr>
 <h3>Bewegungsgrenzen &amp; Offset</h3>
 <h4 id="cmd-GETBEGINDG"><code>GETBEGINDG</code></h4>
@@ -2103,6 +2169,27 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <td>Kalibrierung: Rampenbereich ignorieren (°)</td>
 </tr>
 <tr>
+<td><code>g_calPwm1</code></td>
+<td><code>cp1</code></td>
+<td>ja</td>
+<td>SETCALPWM1/GETCALPWM1</td>
+<td>Kalibrierung: PWM Stufe 1 (%) Default 40</td>
+</tr>
+<tr>
+<td><code>g_calPwm2</code></td>
+<td><code>cp2</code></td>
+<td>ja</td>
+<td>SETCALPWM2/GETCALPWM2</td>
+<td>Kalibrierung: PWM Stufe 2 (%) Default 70</td>
+</tr>
+<tr>
+<td><code>g_calPwm3</code></td>
+<td><code>cp3</code></td>
+<td>ja</td>
+<td>SETCALPWM3/GETCALPWM3</td>
+<td>Kalibrierung: PWM Stufe 3 (%) Default 100</td>
+</tr>
+<tr>
 <td><code>g_statMinMoveDeg</code></td>
 <td><code>smm</code></td>
 <td>ja</td>
@@ -2367,6 +2454,11 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <p class="muted"><b>Default:</b> <code>static float g_calIgnoreRampDeg = 10.0f;</code></p>
 <p><b>Speicherung:</b> Ja (Key <code>cig</code>). Ändern über RS485: <b>SETCALIGNDG/GETCALIGNDG</b>.</p>
 <p><b>Praxis:</b> Diese Werte gehören zur „Lastprofil‑Auswertung“ (Wind/Getriebe/Kälte). Details dazu sind im Tuning‑Kapitel beschrieben.</p>
+<h3 id="var-g_calPwm"><code>g_calPwm1</code> / <code>g_calPwm2</code> / <code>g_calPwm3</code></h3>
+<p><b>Kurz:</b> Kalibrierung: PWM der drei Stufen (%)</p>
+<p><b>Default:</b> 40 / 70 / 100</p>
+<p><b>Speicherung:</b> Ja (Keys <code>cp1</code> / <code>cp2</code> / <code>cp3</code>). Ändern über RS485: <b>SETCALPWM1/GETCALPWM1</b>, <b>SETCALPWM2/GETCALPWM2</b>, <b>SETCALPWM3/GETCALPWM3</b>.</p>
+<p><b>Praxis:</b> Bei <a href="#cmd-SETCAL"><code>SETCAL</code></a> fährt der Rotor die Kalibrierung nacheinander mit diesen drei PWM-Werten. Reihenfolge muss stimmen: Stufe 1 &lt; Stufe 2 ≤ Stufe 3. Details im Tuning‑Kapitel.</p>
 <hr>
 <h3 id="var-g_statMinMoveDeg"><code>g_statMinMoveDeg</code></h3>
 <p><b>Kurz:</b> Statistik: Mindestbewegung (°)</p>
@@ -2428,10 +2520,12 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <h2>7. Kalibrierung/Lastprofil/Temperatur – Tuning‑Anleitung</h2>
 <h3>6.1 Ziel der Kalibrierung</h3>
 <p>Bei der Kalibrierfahrt (<code>SETCAL</code>) wird ein „Normalprofil“ gelernt: Wie hoch ist die Stromaufnahme in jedem Winkelbereich, wenn <b>kein Wind</b> da ist und die Mechanik ok ist. Später werden Bewegungen damit verglichen.</p>
+<p>Die Kalibrierung läuft in <b>drei PWM-Stufen</b> (Default <b>40 / 70 / 100 %</b>, einstellbar über <code>SETCALPWM1</code>…<code>SETCALPWM3</code>). Pro Stufe werden CW und CCW gefahren und jeweils 72 Winkel-Bins gespeichert. <code>GETCALSTATE</code> liefert Fortschritt über alle Stufen (<code>state;progress;stage</code>). Warnungen und <code>GETDELTABINS</code> nutzen eine <b>PWM-Interpolation</b> zwischen diesen drei Rohprofilen.</p>
 <h3>6.2 Wie viele Datenpunkte?</h3>
-<p>Das Profil ist in <b>72 Winkel‑Bins</b> aufgeteilt. Ein Bin entspricht also <b>5°</b>. Das reicht gut, um Richtung und typische Lastbereiche zu erkennen, ohne zu viel Speicher zu brauchen.</p>
+<p>Das Profil ist je Stufe in <b>72 Winkel‑Bins</b> aufgeteilt. Ein Bin entspricht also <b>5°</b>. Mit drei Stufen × zwei Richtungen entstehen drei vollständige Rohdatensätze; der Master liest sie mit <code>GETCALBINS</code> und Parameter <code>STAGE;DIR;START;COUNT</code>.</p>
 <h3>6.3 Wichtige Einstellwerte</h3>
 <ul>
+<li><code>g_calPwm1</code> / <code>g_calPwm2</code> / <code>g_calPwm3</code> (<code>SETCALPWM1</code>…<code>3</code>): PWM der drei Kalibrierstufen. Default 40 / 70 / 100. Reihenfolge: Stufe 1 &lt; Stufe 2 ≤ Stufe 3.</li>
 <li><code>g_calIgnoreRampDeg</code>: Bereich am Anfang/Ende der Fahrt, der ignoriert wird. Empfehlung: 10° (Test), 30° (sehr robust).</li>
 <li><code>g_statMinMoveDeg</code>: Nur große Fahrten zählen. Empfehlung: 30–90°.</li>
 <li><code>g_dragWarnPct</code>: Ab wann „gleichmäßig schwerer“ (Getriebe/Kälte). Empfehlung: 20–30%.</li>
@@ -2444,11 +2538,12 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <h3>6.4 Einfache Schritt‑für‑Schritt‑Methode</h3>
 <ol>
 <li><b>Homing</b>: <code>SETREF:1</code> und warten bis referenziert.</li>
-<li><b>Kalibrieren</b> bei Windstille: <code>SETCAL</code>, dann <code>GETCALVALID</code> muss <code>1</code> sein.</li>
+<li>Optional <b>Stufen-PWM prüfen/setzen</b>: <code>GETCALPWM1</code>…<code>3</code> bzw. <code>SETCALPWM1</code>…<code>3</code> (Defaults 40/70/100).</li>
+<li><b>Kalibrieren</b> bei Windstille: <code>SETCAL</code>, Fortschritt mit <code>GETCALSTATE</code> (<code>state;progress;stage</code>) verfolgen, danach <code>GETCALVALID</code> muss <code>1</code> sein. Rohdaten je Stufe mit <code>GETCALBINS</code> (inkl. <code>STAGE</code>) abholen.</li>
 <li><b>Statistik leeren</b>: <code>CLRSTAT</code> für die normale Live-Statistik, <code>SETACCBINSRST</code> für die schnelle ACC-Statistik.</li>
-<li><b>2–3 große Fahrten</b> fahren (z.B. 0→160→0→300). Danach <code>GETLOADSTAT</code> und <code>GETWIND</code ansehen.</li>
-<li><b>Windtag</b>: Das gleiche bei Wind wiederholen. Jetzt sollten <code>peak</code> und <code>coh</code steigen und <code>dirDeg</code stabiler werden.</li>
-<li><b>Kaltes Wetter</b>: Unterhalb <code>g_coldTempDegC</code> testen. Wenn ohne Wind schon Warnungen kommen: <code>g_coldExtraDragPct</code> etwas hoch oder <code>g_dragWarnPct</code etwas hoch.</li>
+<li><b>2–3 große Fahrten</b> fahren (z.B. 0→160→0→300). Danach <code>GETLOADSTAT</code> und <code>GETWIND</code> ansehen.</li>
+<li><b>Windtag</b>: Das gleiche bei Wind wiederholen. Jetzt sollten <code>peak</code> und <code>coh</code> steigen und <code>dirDeg</code> stabiler werden.</li>
+<li><b>Kaltes Wetter</b>: Unterhalb <code>g_coldTempDegC</code> testen. Wenn ohne Wind schon Warnungen kommen: <code>g_coldExtraDragPct</code> etwas hoch oder <code>g_dragWarnPct</code> etwas hoch.</li>
 </ol>
 <h3>6.5 Fehlerbild → typische Anpassung</h3>
 <table>

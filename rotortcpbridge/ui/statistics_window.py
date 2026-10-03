@@ -45,7 +45,7 @@ def _make_stat_row(
 
 
 def _cal_stage_rings(axis) -> list[tuple] | None:
-    """Drei CAL-Stufen (40/60/100 % PWM) als Ringliste, oder None wenn nichts da."""
+    """Drei CAL-Stufen (SETCALPWM1/2/3, Default 40/70/100 % PWM) als Ringliste, oder None wenn nichts da."""
     cw_s = getattr(axis, "cal_bins_stage_cw", None) or []
     ccw_s = getattr(axis, "cal_bins_stage_ccw", None) or []
     rings = []
@@ -153,7 +153,7 @@ class StatisticsWindow(QDialog):
                 pass
 
     def _apply_cal_widget(self, widget: StatisticCompassWidget, axis, live_cw, live_ccw) -> None:
-        """CAL: 3 Stufen-Ringe (innen 40 %, außen 100 %); Fallback LIVE / alte Alias-Bins."""
+        """CAL: 3 Stufen-Ringe (innen Stufe 1, außen Stufe 3); Fallback LIVE / alte Alias-Bins."""
         rings = _cal_stage_rings(axis)
         if rings is not None:
             widget.set_multi_bins(rings)

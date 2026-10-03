@@ -72,6 +72,8 @@ _BLOCK1_DEFS = [
     ("cmd.label_ramp", "SETRAMP", "GETRAMP"),
     ("cmd.label_pos_timeout", "SETPOSTIMEOUT", "GETPOSTIMEOUT"),
     ("cmd.label_homing_timeout", "SETHOMETIMEOUT", "GETHOMETIMEOUT"),
+    ("cmd.label_home_pos", "SETHOMEPOS", "GETHOMEPOS"),
+    ("cmd.label_max_angle", "SETMAXDG", "GETMAXDG"),
 ]
 
 # Block 2
@@ -81,12 +83,13 @@ _BLOCK2_DEFS = [
     ("cmd.label_homing_seek_pwm", "SETHOMESEEKPPWM", "GETHOMESEEKPPWM"),
     ("cmd.label_homing_backoff_angle", "SETHOMEBACKOFF", "GETHOMEBACKOFF"),
     ("cmd.label_home_bl_scale", "SETHOMEBLSCALE", "GETHOMEBLSCALE"),
-    ("cmd.label_home_pos", "SETHOMEPOS", "GETHOMEPOS"),
     ("cmd.label_min_pwm", "SETMINPWM", "GETMINPWM"),
-    ("cmd.label_max_angle", "SETMAXDG", "GETMAXDG"),
     ("cmd.label_dgcal", "SETDGCAL", "GETDGCAL"),
     ("cmd.label_current_warn", "SETIWARN", "GETIWARN"),
     ("cmd.label_current_max", "SETIMAX", "GETIMAX"),
+    ("cmd.label_cal_pwm1", "SETCALPWM1", "GETCALPWM1"),
+    ("cmd.label_cal_pwm2", "SETCALPWM2", "GETCALPWM2"),
+    ("cmd.label_cal_pwm3", "SETCALPWM3", "GETCALPWM3"),
 ]
 
 
@@ -126,6 +129,9 @@ _PARAM_SPEC = {
     "SETDGCAL": (-360, 360, "°", False, False),
     "SETIWARN": (100, 10000, "mA", True, False),
     "SETIMAX": (100, 10000, "mA", True, False),
+    "SETCALPWM1": (0, 100, "%", False, False),
+    "SETCALPWM2": (0, 100, "%", False, False),
+    "SETCALPWM3": (0, 100, "%", False, False),
 }
 
 _MV_PER_A = 130.0  # 1300 mV = 10 A
@@ -136,6 +142,9 @@ _INTEGER_PERCENT_SET_CMDS = frozenset(
         "SETHOMEPWM",
         "SETHOMESEEKPPWM",
         "SETMINPWM",
+        "SETCALPWM1",
+        "SETCALPWM2",
+        "SETCALPWM3",
     }
 )
 
@@ -285,7 +294,7 @@ class CommandButtonsWindow(QDialog):
         self.setWindowTitle(t("cmd.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setFixedSize(730, 678)
+        self.setFixedSize(730, 778)
 
         self._backup_state: Optional[dict] = None
         self._restore_state: Optional[dict] = None

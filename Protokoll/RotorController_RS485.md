@@ -1,6 +1,6 @@
 # Rotor‑Controller – RS485‑Anleitung & Firmware‑Dokumentation (DE)
 
-Stand: 2026-08-02 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler & Warnungen. Die **Befehlstabelle** ist mit dem RotorTcpBridge‑Katalog abgeglichen (`command_catalog.py` / Befehlsfenster). Diese Datei ist mit `RotorTcpBridge/Protokoll/RotorController_RS485.html` abgestimmt.
+Stand: 2026-10-03 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler & Warnungen. Die **Befehlstabelle** ist mit dem RotorTcpBridge‑Katalog abgeglichen (`command_catalog.py` / Befehlsfenster). Diese Datei ist mit `RotorTcpBridge/Protokoll/RotorController_RS485.html` abgestimmt.
 
 ## Inhaltsverzeichnis {#toc}
 
@@ -192,18 +192,24 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 | `#0:20:GETWINDCOH:...:CS$` | `#20:0:ACK_GETWINDCOH:...:<CS>$` oder: `#20:0:NAK_GETWINDCOH:REASON:CS$` | **[GETWINDCOH](#cmd-GETWINDCOH)** Wind: Mindest-Kohärenz (%) lesen. |
 | `#0:20:SETWINDCOH:...:CS$` | `#20:0:ACK_SETWINDCOH:...:<CS>$` oder: `#20:0:NAK_SETWINDCOH:REASON:CS$` | **[SETWINDCOH](#cmd-SETWINDCOH)** Wind: Mindest-Kohärenz (%) setzen. |
 | `#0:20:GETCALVALID:...:CS$` | `#20:0:ACK_GETCALVALID:...:<CS>$` oder: `#20:0:NAK_GETCALVALID:REASON:CS$` | **[GETCALVALID](#cmd-GETCALVALID)** Abfragen, ob eine gültige Kalibrierung gespeichert ist. |
-| `#0:20:SETCAL:...:CS$` | `#20:0:ACK_SETCAL:...:<CS>$` oder: `#20:0:NAK_SETCAL:REASON:CS$` | **[SETCAL](#cmd-SETCAL)** Kalibrierfahrt starten (0→360→0) und Stromprofil lernen. |
+| `#0:20:SETCAL:...:CS$` | `#20:0:ACK_SETCAL:...:<CS>$` oder: `#20:0:NAK_SETCAL:REASON:CS$` | **[SETCAL](#cmd-SETCAL)** Kalibrierfahrt starten (3 PWM-Stufen) und Stromprofil lernen. |
 | `#0:20:ABORTCAL:...:CS$` | `#20:0:ACK_ABORTCAL:...:<CS>$` oder: `#20:0:NAK_ABORTCAL:REASON:CS$` | **[ABORTCAL](#cmd-ABORTCAL)** Kalibrierfahrt abbrechen. |
 | `#0:20:DELCAL:...:CS$` | `#20:0:ACK_DELCAL:...:<CS>$` oder: `#20:0:NAK_DELCAL:REASON:CS$` | **[DELCAL](#cmd-DELCAL)** Gespeicherte Kalibrierung löschen. |
 | `#0:20:CLRSTAT:...:CS$` | `#20:0:ACK_CLRSTAT:...:<CS>$` oder: `#20:0:NAK_CLRSTAT:REASON:CS$` | **[CLRSTAT](#cmd-CLRSTAT)** Live-Statistik (Betriebsdaten) löschen. |
-| `#0:20:GETCALSTATE:...:CS$` | `#20:0:ACK_GETCALSTATE:...:<CS>$` oder: `#20:0:NAK_GETCALSTATE:REASON:CS$` | **[GETCALSTATE](#cmd-GETCALSTATE)** Status der Kalibrierfahrt abfragen. |
+| `#0:20:GETCALSTATE:...:CS$` | `#20:0:ACK_GETCALSTATE:...:<CS>$` oder: `#20:0:NAK_GETCALSTATE:REASON:CS$` | **[GETCALSTATE](#cmd-GETCALSTATE)** Status der Kalibrierfahrt abfragen (`state;progress;stage`). |
+| `#0:20:GETCALPWM1:...:CS$` | `#20:0:ACK_GETCALPWM1:...:<CS>$` oder: `#20:0:NAK_GETCALPWM1:REASON:CS$` | **[GETCALPWM1](#cmd-GETCALPWM1)** Kalibrier-Stufe 1: PWM (%) lesen (Default 40). |
+| `#0:20:SETCALPWM1:...:CS$` | `#20:0:ACK_SETCALPWM1:...:<CS>$` oder: `#20:0:NAK_SETCALPWM1:REASON:CS$` | **[SETCALPWM1](#cmd-SETCALPWM1)** Kalibrier-Stufe 1: PWM (%) setzen (Default 40). |
+| `#0:20:GETCALPWM2:...:CS$` | `#20:0:ACK_GETCALPWM2:...:<CS>$` oder: `#20:0:NAK_GETCALPWM2:REASON:CS$` | **[GETCALPWM2](#cmd-GETCALPWM2)** Kalibrier-Stufe 2: PWM (%) lesen (Default 70). |
+| `#0:20:SETCALPWM2:...:CS$` | `#20:0:ACK_SETCALPWM2:...:<CS>$` oder: `#20:0:NAK_SETCALPWM2:REASON:CS$` | **[SETCALPWM2](#cmd-SETCALPWM2)** Kalibrier-Stufe 2: PWM (%) setzen (Default 70). |
+| `#0:20:GETCALPWM3:...:CS$` | `#20:0:ACK_GETCALPWM3:...:<CS>$` oder: `#20:0:NAK_GETCALPWM3:REASON:CS$` | **[GETCALPWM3](#cmd-GETCALPWM3)** Kalibrier-Stufe 3: PWM (%) lesen (Default 100). |
+| `#0:20:SETCALPWM3:...:CS$` | `#20:0:ACK_SETCALPWM3:...:<CS>$` oder: `#20:0:NAK_SETCALPWM3:REASON:CS$` | **[SETCALPWM3](#cmd-SETCALPWM3)** Kalibrier-Stufe 3: PWM (%) setzen (Default 100). |
 | `#0:20:GETLOADSTAT:...:CS$` | `#20:0:ACK_GETLOADSTAT:...:<CS>$` oder: `#20:0:NAK_GETLOADSTAT:REASON:CS$` | **[GETLOADSTAT](#cmd-GETLOADSTAT)** Zusammenfassung der Last-Statistik. |
 | `#0:20:GETWIND:...:CS$` | `#20:0:ACK_GETWIND:...:<CS>$` oder: `#20:0:NAK_GETWIND:REASON:CS$` | **[GETWIND](#cmd-GETWIND)** Wind-Schätzung aus Motorlastprofil. |
-| `#0:20:GETCALBINS:...:CS$` | `#20:0:ACK_GETCALBINS:...:<CS>$` oder: `#20:0:NAK_GETCALBINS:REASON:CS$` | **[GETCALBINS](#cmd-GETCALBINS)** Kalibrier-Bins lesen (72 Bins). |
+| `#0:20:GETCALBINS:1;1;0;12:CS$` | `#20:0:ACK_GETCALBINS:STAGE;DIR;START;COUNT;V1;…:<CS>$` oder: `#20:0:NAK_GETCALBINS:REASON:CS$` | **[GETCALBINS](#cmd-GETCALBINS)** Kalibrier-Bins lesen (72 Bins je STAGE 1–3). |
 | `#0:20:GETLIVEBINS:...:CS$` | `#20:0:ACK_GETLIVEBINS:...:<CS>$` oder: `#20:0:NAK_GETLIVEBINS:REASON:CS$` | **[GETLIVEBINS](#cmd-GETLIVEBINS)** Live-Bins lesen (72 Bins). |
 | `#0:20:GETACCBINS:1;0;12:20,12$` | `#20:0:ACK_GETACCBINS:DIR;START;COUNT;V1;V2;...:<CS>$` oder: `#20:0:NAK_GETACCBINS:REASON:CS$` | **[GETACCBINS](#cmd-GETACCBINS)** Schnelle aktuelle Last-Bins lesen (72 Bins, auch ohne Kalibrierung). |
 | `#0:20:SETACCBINSRST:1:20,01$` | `#20:0:ACK_SETACCBINSRST:1:<CS>$` oder: `#20:0:NAK_SETACCBINSRST:REASON:CS$` | **[SETACCBINSRST](#cmd-SETACCBINSRST)** Nur die schnelle ACC-Bin-Statistik löschen. |
-| `#0:20:GETDELTABINS:...:CS$` | `#20:0:ACK_GETDELTABINS:...:<CS>$` oder: `#20:0:NAK_GETDELTABINS:REASON:CS$` | **[GETDELTABINS](#cmd-GETDELTABINS)** Delta-Bins (Live minus Cal) in % lesen. |
+| `#0:20:GETDELTABINS:...:CS$` | `#20:0:ACK_GETDELTABINS:...:<CS>$` oder: `#20:0:NAK_GETDELTABINS:REASON:CS$` | **[GETDELTABINS](#cmd-GETDELTABINS)** Delta-Bins in % lesen (PWM-interpoliert gegen die 3 CAL-Stufen). |
 | `#0:20:GETWARN:...:CS$` | `#20:0:ACK_GETWARN:0:<CS>$` oder: `#20:0:NAK_GETWARN:REASON:CS$` | **[GETWARN](#cmd-GETWARN)** Warnungen abfragen (können mehrere sein). |
 | `#0:20:DELWARN:...:CS$` | `#20:0:ACK_DELWARN:...:<CS>$` oder: `#20:0:NAK_DELWARN:REASON:CS$` | **[DELWARN](#cmd-DELWARN)** Warnungen löschen. |
 | `#0:20:GETERR:...:CS$` optional, nicht mehr für zyklisches Polling empfohlen | `#20:0:ACK_ERR:0:<CS>$` oder: `#20:0:NAK_GETERR:REASON:CS$` | **[GETERR](#cmd-GETERR)** Aktuellen Fehlercode manuell abfragen (Fehlerfluss läuft primär über asynchrones `ERR`). |
@@ -1031,9 +1037,9 @@ Ungültige Werte → `NAK_SETROTORTYPE`. In der Bridge‑UI unter Parameter dire
 
 #### `SETCAL` {#cmd-SETCAL}
 
-**Was es macht:** Kalibrierfahrt starten (0→360→0) und Stromprofil lernen.
+**Was es macht:** Kalibrierfahrt starten und Stromprofil lernen.
 
-**Details:** Nur wenn REFF gemacht wurde.
+**Details:** Nur wenn REFF gemacht wurde. Die Fahrt läuft in **drei PWM-Stufen** (je Richtung CW/CCW). Die PWM-Werte der Stufen sind zur Laufzeit einstellbar über [`SETCALPWM1`](#cmd-SETCALPWM1) / [`SETCALPWM2`](#cmd-SETCALPWM2) / [`SETCALPWM3`](#cmd-SETCALPWM3) (Defaults: **40 / 70 / 100 %**). Pro Stufe entsteht ein eigener Rohdatensatz (72 Bins je Richtung), abrufbar über [`GETCALBINS`](#cmd-GETCALBINS) mit `STAGE`.
 
 ---
 
@@ -1041,9 +1047,60 @@ Ungültige Werte → `NAK_SETROTORTYPE`. In der Bridge‑UI unter Parameter dire
 
 **Was es macht:** Status der Kalibrierfahrt abfragen.
 
-**Details:** Antwort: <state>;<progress> (progress 0..100).
+**Details:** Antwort: `<state>;<progress>;<stage>`.
 
-**Interpretation:** `state` ist der Zustand der Kalibrierfahrt (0=IDLE, 1=RUNNING, 2=DONE, 3=ABORT/ERROR). `progress` läuft von 0 bis 100.
+**Interpretation:**
+- `state`: Zustand der Kalibrierfahrt — `0`=IDLE, `1`=RUNNING, `2`=DONE, `3`=ABORT/ERROR.
+- `progress`: Fortschritt **0..100** über **alle drei Stufen** hinweg (je Stufe etwa ⅓; CW/CCW je zur Hälfte innerhalb der Stufe).
+- `stage`: aktuelle PWM-Stufe — `0`=inaktiv, `1`–`3`=laufende Stufe (bei `SETCALPWM1/2/3`).
+
+---
+
+#### `GETCALPWM1` {#cmd-GETCALPWM1}
+
+**Was es macht:** Kalibrier-Stufe 1: PWM (%) lesen.
+
+**Details:** Default **40**. Parameter üblich `0`.
+
+---
+
+#### `SETCALPWM1` {#cmd-SETCALPWM1}
+
+**Was es macht:** Kalibrier-Stufe 1: PWM (%) setzen.
+
+**Details:** 0..100. Default **40**. Muss unter Stufe 2 liegen. Wird bei der nächsten [`SETCAL`](#cmd-SETCAL)-Fahrt verwendet; Wert wird in NVS gespeichert.
+
+---
+
+#### `GETCALPWM2` {#cmd-GETCALPWM2}
+
+**Was es macht:** Kalibrier-Stufe 2: PWM (%) lesen.
+
+**Details:** Default **70**.
+
+---
+
+#### `SETCALPWM2` {#cmd-SETCALPWM2}
+
+**Was es macht:** Kalibrier-Stufe 2: PWM (%) setzen.
+
+**Details:** 0..100. Default **70**. Zwischen Stufe 1 und 3.
+
+---
+
+#### `GETCALPWM3` {#cmd-GETCALPWM3}
+
+**Was es macht:** Kalibrier-Stufe 3: PWM (%) lesen.
+
+**Details:** Default **100**.
+
+---
+
+#### `SETCALPWM3` {#cmd-SETCALPWM3}
+
+**Was es macht:** Kalibrier-Stufe 3: PWM (%) setzen.
+
+**Details:** 0..100. Default **100**. Oberste Stufe der Kalibrierfahrt.
 
 ---
 
@@ -1095,9 +1152,16 @@ Ungültige Werte → `NAK_SETROTORTYPE`. In der Bridge‑UI unter Parameter dire
 
 #### `GETCALBINS` {#cmd-GETCALBINS}
 
-**Was es macht:** Kalibrier-Bins lesen (72 Bins).
+**Was es macht:** Kalibrier-Bins einer PWM-Stufe lesen (72 Bins je Richtung).
 
-**Details:** Params: dir;start;count. Rückgabe: dir;start;count;v1;v2;...
+**Telegramm (Beispiel):** `#0:20:GETCALBINS:1;1;0;12:CS$`
+
+**Details:** Params: `STAGE;DIR;START;COUNT`. Antwort: `STAGE;DIR;START;COUNT;V1;V2;…`.
+- `STAGE` = `1`…`3` (PWM-Stufe, siehe [`SETCALPWM1`](#cmd-SETCALPWM1)…[`SETCALPWM3`](#cmd-SETCALPWM3))
+- `DIR` = `1` (CW) / `2` (CCW)
+- `START` = 0, 12, 24, 36, 48, 60; `COUNT` = 1…12
+
+Pro Stufe gibt es 72 Bins × 2 Richtungen → typisch 12 Blöcke à 12 Werte; für alle drei Stufen also 36 Abfragen. `GETLIVEBINS` / `GETACCBINS` bleiben ohne `STAGE` (nur `DIR;START;COUNT`).
 
 ---
 
@@ -1105,7 +1169,7 @@ Ungültige Werte → `NAK_SETROTORTYPE`. In der Bridge‑UI unter Parameter dire
 
 **Was es macht:** Live-Bins lesen (72 Bins).
 
-**Details:** Wie GETCALBINS, aber aktuelle Betriebsdaten.
+**Details:** Params weiterhin `DIR;START;COUNT` (kein `STAGE`). Aktuelle Betriebsdaten, nicht die Kalibrier-Rohstufen.
 
 **Verhalten:** Diese Statistik ist träge und geglättet. Sie ist für eine robuste Langzeitbetrachtung gedacht und wird nur während geeigneter Fahrfenster aufgebaut. Bereiche am Anfang und Ende einer Fahrt werden ignoriert. Die Werte bauen sich über mehrere größere Fahrten auf.
 
@@ -1151,9 +1215,9 @@ Ungültige Werte → `NAK_SETROTORTYPE`. In der Bridge‑UI unter Parameter dire
 
 #### `GETDELTABINS` {#cmd-GETDELTABINS}
 
-**Was es macht:** Delta-Bins (Live minus Cal) in % lesen.
+**Was es macht:** Delta-Bins in % lesen (Abweichung zur Kalibrierung).
 
-**Details:** Wie GETCALBINS, Werte können negativ sein.
+**Details:** Params wie bisher `DIR;START;COUNT` (kein `STAGE`). Die Firmware interpoliert gegen die **drei CAL-Stufen** anhand der aktuellen PWM — dasselbe, was die Warnlogik verwendet. Werte können negativ sein.
 
 ---
 
@@ -1872,6 +1936,9 @@ Diese Tabelle listet die wichtigsten Einstellungen aus der `.ino`. „Kurzname�
 | `g_coldTempDegC` | `cth` | ja | SETCOLDT/GETCOLDT | Kälte-Schwelle (°C) |
 | `g_coldExtraDragPct` | `cpx` | ja | SETCOLDP/GETCOLDP | Extra-Reibung bei Kälte (%) |
 | `g_calIgnoreRampDeg` | `cig` | ja | SETCALIGNDG/GETCALIGNDG | Kalibrierung: Rampenbereich ignorieren (°) |
+| `g_calPwm1` | `cp1` | ja | SETCALPWM1/GETCALPWM1 | Kalibrierung: PWM Stufe 1 (%) Default 40 |
+| `g_calPwm2` | `cp2` | ja | SETCALPWM2/GETCALPWM2 | Kalibrierung: PWM Stufe 2 (%) Default 70 |
+| `g_calPwm3` | `cp3` | ja | SETCALPWM3/GETCALPWM3 | Kalibrierung: PWM Stufe 3 (%) Default 100 |
 | `g_statMinMoveDeg` | `smm` | ja | SETSTATMINDG/GETSTATMINDG | Statistik: Mindestbewegung (°) |
 | `g_dragWarnPct` | `drw` | ja | SETDRAG/GETDRAG | Warnung: Reibung grösser (Mittelwert %) |
 | `g_dragWarnBinsPct` | `drb` | ja | SETDRAGBINS/GETDRAGBINS | Warnung: Anteil Bins über Schwellwert (%) |
@@ -2257,6 +2324,18 @@ Hier sind die Variablen in einfachen Worten erklärt. Wenn „gut“ genannt wir
 
 ---
 
+### `g_calPwm1` / `g_calPwm2` / `g_calPwm3`
+
+**Kurz:** Kalibrierung: PWM der drei Stufen (%)
+
+**Default:** 40 / 70 / 100
+
+**Speicherung:** Ja (Keys `cp1` / `cp2` / `cp3`). Ändern über RS485: **SETCALPWM1/GETCALPWM1**, **SETCALPWM2/GETCALPWM2**, **SETCALPWM3/GETCALPWM3**.
+
+**Praxis:** Bei [`SETCAL`](#cmd-SETCAL) fährt der Rotor die Kalibrierung nacheinander mit diesen drei PWM-Werten. Reihenfolge muss stimmen: Stufe 1 &lt; Stufe 2 ≤ Stufe 3. Details im Tuning‑Kapitel.
+
+---
+
 ### `g_statMinMoveDeg`
 
 **Kurz:** Statistik: Mindestbewegung (°)
@@ -2373,12 +2452,15 @@ Hier sind die Variablen in einfachen Worten erklärt. Wenn „gut“ genannt wir
 
 Bei der Kalibrierfahrt (`SETCAL`) wird ein „Normalprofil“ gelernt: Wie hoch ist die Stromaufnahme in jedem Winkelbereich, wenn **kein Wind** da ist und die Mechanik ok ist. Später werden Bewegungen damit verglichen.
 
+Die Kalibrierung läuft in **drei PWM-Stufen** (Default **40 / 70 / 100 %**, einstellbar über `SETCALPWM1`…`SETCALPWM3`). Pro Stufe werden CW und CCW gefahren und jeweils 72 Winkel-Bins gespeichert. `GETCALSTATE` liefert Fortschritt über alle Stufen (`state;progress;stage`). Warnungen und `GETDELTABINS` nutzen eine **PWM-Interpolation** zwischen diesen drei Rohprofilen.
+
 ### 6.2 Wie viele Datenpunkte?
 
-Das Profil ist in **72 Winkel‑Bins** aufgeteilt. Ein Bin entspricht also **5°**. Das reicht gut, um Richtung und typische Lastbereiche zu erkennen, ohne zu viel Speicher zu brauchen.
+Das Profil ist je Stufe in **72 Winkel‑Bins** aufgeteilt. Ein Bin entspricht also **5°**. Mit drei Stufen × zwei Richtungen entstehen drei vollständige Rohdatensätze; der Master liest sie mit `GETCALBINS` und Parameter `STAGE;DIR;START;COUNT`.
 
 ### 6.3 Wichtige Einstellwerte
 
+- `g_calPwm1` / `g_calPwm2` / `g_calPwm3` (`SETCALPWM1`…`3`): PWM der drei Kalibrierstufen. Default 40 / 70 / 100. Reihenfolge: Stufe 1 &lt; Stufe 2 ≤ Stufe 3.
 - `g_calIgnoreRampDeg`: Bereich am Anfang/Ende der Fahrt, der ignoriert wird. Empfehlung: 10° (Test), 30° (sehr robust).
 - `g_statMinMoveDeg`: Nur große Fahrten zählen. Empfehlung: 30–90°.
 - `g_dragWarnPct`: Ab wann „gleichmäßig schwerer“ (Getriebe/Kälte). Empfehlung: 20–30%.
@@ -2391,19 +2473,22 @@ Das Profil ist in **72 Winkel‑Bins** aufgeteilt. Ein Bin entspricht also **5°
 ### 6.4 Einfache Schritt‑für‑Schritt‑Methode
 
 1. **Homing**: `SETREF:1` und warten bis referenziert.
-2. **Kalibrieren** bei Windstille: `SETCAL`, dann `GETCALVALID` muss `1` sein.
-3. **Statistik leeren**: `CLRSTAT` für die normale Live-Statistik, `SETACCBINSRST` für die schnelle ACC-Statistik.
-4. **2–3 große Fahrten** fahren (z.B. 0→160→0→300). Danach `GETLOADSTAT` und `GETWIND`- **Windtag**: Das gleiche bei Wind wiederholen. Jetzt sollten `peak` und `coh`dirDeg- **Kaltes Wetter**: Unterhalb `g_coldTempDegC` testen. Wenn ohne Wind schon Warnungen kommen: `g_coldExtraDragPct` etwas hoch oder `g_dragWarnPct`
+2. Optional **Stufen-PWM prüfen/setzen**: `GETCALPWM1`…`3` bzw. `SETCALPWM1`…`3` (Defaults 40/70/100).
+3. **Kalibrieren** bei Windstille: `SETCAL`, Fortschritt mit `GETCALSTATE` (`state;progress;stage`) verfolgen, danach `GETCALVALID` muss `1` sein. Rohdaten je Stufe mit `GETCALBINS` (inkl. `STAGE`) abholen.
+4. **Statistik leeren**: `CLRSTAT` für die normale Live-Statistik, `SETACCBINSRST` für die schnelle ACC-Statistik.
+5. **2–3 große Fahrten** fahren (z.B. 0→160→0→300). Danach `GETLOADSTAT` und `GETWIND` ansehen.
+6. **Windtag**: Das gleiche bei Wind wiederholen. Jetzt sollten `peak` und `coh` steigen und `dirDeg` stabiler werden.
+7. **Kaltes Wetter**: Unterhalb `g_coldTempDegC` testen. Wenn ohne Wind schon Warnungen kommen: `g_coldExtraDragPct` etwas hoch oder `g_dragWarnPct` etwas hoch.
 
 ### 6.5 Fehlerbild → typische Anpassung
 
 | Beobachtung | Typische Ursache | Was anpassen? |
 | --- | --- | --- |
-| Viele kurze Peaks, aber `coh` niedrig | Böe/zufällige Störung | `g_windPeakPct` höher oder `g_dragPersistMoves` |
-| `mean` steigt langsam über Tage, viele Bins betroffen | Getriebe wird zäher / Schmierung / Temperatur | `g_dragWarnPct`g\_coldExtraDragPct |
-| Warnung „leichter“ (DRAG\_DECREASE) | Last fehlt oder Profil passt nicht mehr | Mechanik prüfen, ggf. neu kalibrieren (`SETCAL`) |
-| Bei **Windstille** trotzdem Wind‑Warnung | Schwellwerte zu niedrig oder Profil verrauscht | `g_windPeakPct`g\_windCoherenceMin |
-| Bei Kälte dauernd Drag‑Warnung | Kälte sorgt für normale Mehrreibung | `g_coldExtraDragPct`g\_coldTempDegC |
+| Viele kurze Peaks, aber `coh` niedrig | Böe/zufällige Störung | `g_windPeakPct` höher oder `g_dragPersistMoves` höher |
+| `mean` steigt langsam über Tage, viele Bins betroffen | Getriebe wird zäher / Schmierung / Temperatur | `g_dragWarnPct` höher, ggf. `g_coldExtraDragPct` höher |
+| Warnung „leichter“ (DRAG_DECREASE) | Last fehlt oder Profil passt nicht mehr | Mechanik prüfen, ggf. neu kalibrieren (`SETCAL`) |
+| Bei **Windstille** trotzdem Wind‑Warnung | Schwellwerte zu niedrig oder Profil verrauscht | `g_windPeakPct` höher, `g_windCoherenceMin` höher |
+| Bei Kälte dauernd Drag‑Warnung | Kälte sorgt für normale Mehrreibung | `g_coldExtraDragPct` höher oder `g_coldTempDegC` anpassen |
 
 [↑ Inhaltsverzeichnis](#toc)
 

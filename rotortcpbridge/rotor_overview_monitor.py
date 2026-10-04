@@ -8,7 +8,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
-from .angle_utils import wrap_deg
+from .angle_utils import az_pos_deg_from_d10, shortest_delta_deg, wrap_deg
+from .rotor_parse_utils import parse_getposdg_ist_d10
 from .rs485_protocol import build, parse
 
 
@@ -19,6 +20,8 @@ class SiteLiveState:
     referenced: Optional[bool] = None
     az_deg: Optional[float] = None
     az_smooth_deg: Optional[float] = None
+    # Aktive Antenne am Rotor (GETASELECT / SETASELECT), 1..3
+    aselect: Optional[int] = None
     last_rx_ts: float = 0.0
     last_error: str = ""
 
@@ -39,6 +42,7 @@ class _SiteWorker:
         self._rxbuf = b""
         self._last_pos_poll = 0.0
         self._last_ref_poll = 0.0
+        self._last_aselect_poll = 0.0
 
     def _emit(self) -> None:
         try:
@@ -141,8 +145,13 @@ class _SiteWorker:
         if now - self._last_ref_poll >= ref_ms / 1000.0:
             self._last_ref_poll = now
             self._send_tcp(build(mid, dst, "GETREF", "0"))
+        # Antennenwahl seltener als Position — gleiches Intervall wie GETREF
+        if now - self._last_aselect_poll >= ref_ms / 1000.0:
+            self._last_aselect_poll = now
+            self._send_tcp(build(mid, dst, "GETASELECT", "0"))
 
     def _apply_az(self, deg: float) -> None:
+        # Kreiswinkel: kürzester Weg glätten (linear würde bei 0/360° springen).
         deg = float(wrap_deg(deg))
         self.state.az_deg = deg
         alpha = float(self.site.get("smooth_alpha") or 0.35)
@@ -150,10 +159,8 @@ class _SiteWorker:
         if self.state.az_smooth_deg is None:
             self.state.az_smooth_deg = deg
         else:
-            # kürzester Weg glätten
             cur = float(self.state.az_smooth_deg)
-            d = ((deg - cur + 540.0) % 360.0) - 180.0
-            self.state.az_smooth_deg = wrap_deg(cur + alpha * d)
+            self.state.az_smooth_deg = wrap_deg(cur + alpha * shortest_delta_deg(cur, deg))
         self.state.last_rx_ts = time.time()
         self.state.online = True
         self._emit()
@@ -168,23 +175,13 @@ class _SiteWorker:
             return
         cmd = str(tel.cmd or "").upper()
         params = str(tel.params or "")
-        if cmd.startswith("ACK_GETPOSDG") or cmd == "SETPOSDG" or cmd.startswith("ACK_SETPOSDG"):
-            # erster Winkelteil
-            part = params.split(";")[0].strip().replace(",", ".")
-            try:
-                # d10 oder Grad mit Komma — Firmware oft "123,4"
-                if "." in part or "," in params.split(";")[0]:
-                    # Grad
-                    deg = float(part)
-                    if deg > 720:  # eher d10 ohne Dezimal
-                        deg = deg / 10.0
-                else:
-                    # könnte d10 ganzzahlig sein
-                    v = float(part)
-                    deg = v / 10.0 if v > 720 else v
-            except (TypeError, ValueError):
+        # Nur Ist-Position (GETPOSDG). SETPOSDG/ACK_SETPOSDG sind Sollwerte —
+        # die würden die Keule voraus springen lassen und danach zurück.
+        if cmd.startswith("ACK_GETPOSDG") or cmd.startswith("ACK_POSDG"):
+            d10 = parse_getposdg_ist_d10(params)
+            if d10 is None:
                 return
-            self._apply_az(deg)
+            self._apply_az(az_pos_deg_from_d10(int(d10)))
         elif cmd.startswith("ACK_GETREF"):
             try:
                 v = int(float(str(params).split(";")[0].replace(",", ".")))
@@ -194,6 +191,30 @@ class _SiteWorker:
                 self._emit()
             except (TypeError, ValueError):
                 pass
+        elif (
+            cmd.startswith("ACK_GETASELECT")
+            or cmd.startswith("ACK_SETASELECT")
+            or cmd == "SETASELECT"
+        ):
+            slot = self._parse_aselect_slot(params)
+            if slot is not None:
+                self.state.aselect = int(slot)
+                self.state.last_rx_ts = time.time()
+                self.state.online = True
+                self._emit()
+
+    @staticmethod
+    def _parse_aselect_slot(params: str) -> Optional[int]:
+        raw = str(params or "").strip().split(";")[0].strip()
+        if not raw:
+            return None
+        try:
+            n = int(float(raw.replace(",", ".")))
+        except (TypeError, ValueError):
+            return None
+        if 1 <= n <= 3:
+            return n
+        return None
 
     def _feed_rx(self, data: bytes) -> None:
         if not data:

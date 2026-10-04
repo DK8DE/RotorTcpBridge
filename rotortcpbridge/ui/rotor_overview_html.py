@@ -33,6 +33,9 @@ def build_overview_html(params: dict) -> str:
     profiles_json = json.dumps(params.get("profiles") or [], ensure_ascii=False)
     config_json = json.dumps(params.get("config") or {}, ensure_ascii=False)
     status_text = json.dumps(str(params.get("status_text") or ""), ensure_ascii=False)
+    show_active = bool(params.get("show_active_antenna_only", False))
+    if not show_active and isinstance(params.get("config"), dict):
+        show_active = bool(params["config"].get("show_active_antenna_only", False))
     leaflet_css = _read_static("leaflet.css")
     leaflet_js = _read_static("leaflet.min.js")
     tile_url = ONLINE_TILE_URL_LIGHT
@@ -56,21 +59,6 @@ body {{ background: {body_bg}; font-family: system-ui, Segoe UI, sans-serif; }}
 body.map-dark .leaflet-tile-pane {{
   filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9) saturate(0.65);
 }}
-.ov-label {{
-  background: rgba(255,255,255,0.85);
-  border: 1px solid #888;
-  border-radius: 3px;
-  padding: 2px 6px;
-  font: 12px/1.2 sans-serif;
-  white-space: nowrap;
-  color: #222;
-}}
-body.map-dark .ov-label {{
-  background: rgba(45,45,45,0.9);
-  border-color: #666;
-  color: #eaeaea;
-}}
-.ov-offline {{ opacity: 0.55; }}
 body.map-dark .leaflet-control-attribution {{
   background: rgba(45,45,45,0.85) !important;
   color: #c8c8c8;
@@ -80,6 +68,21 @@ body.map-dark .leaflet-control-zoom a {{
   background: #2d2d2d !important;
   color: #eaeaea !important;
   border-color: #555 !important;
+}}
+.ov-beam-tip {{
+  background: rgba(255,255,255,0.94);
+  border: 1px solid #888;
+  border-radius: 4px;
+  color: #222;
+  font: 12px/1.25 system-ui, Segoe UI, sans-serif;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.18);
+  padding: 4px 8px;
+}}
+.ov-beam-tip::before {{ display: none; }}
+body.map-dark .ov-beam-tip {{
+  background: rgba(40,40,40,0.94);
+  border-color: #666;
+  color: #eaeaea;
 }}
 {web_css}
 </style>
@@ -94,6 +97,7 @@ const WEB_MODE = {str(web_mode).lower()};
 const LABELS = {labels_json};
 const PROFILES = {profiles_json};
 let OV_CONFIG = {config_json};
+const SHOW_ACTIVE_ANTENNA_ONLY = {str(show_active).lower()};
 let _mapDark = {str(dark).lower()};
 const map = L.map('map', {{ zoomControl: true }}).setView([{center_lat}, {center_lon}], {zoom});
 L.tileLayer(TILE_URL, {{ maxZoom: 19, minZoom: 2, attribution: ATTRIB }}).addTo(map);
@@ -104,6 +108,13 @@ function clearSite(id) {{
   if (!g) return;
   g.forEach(l => map.removeLayer(l));
   delete siteLayers[id];
+}}
+
+function beamTooltipHtml(s, b) {{
+  let html = '<b>' + (s.name || '') + '</b>';
+  if (b && b.name) html += '<br/>' + b.name;
+  if (s.az_text) html += '<br/>AZ: ' + s.az_text;
+  return html;
 }}
 
 function drawSite(s) {{
@@ -124,16 +135,6 @@ function drawSite(s) {{
   if (s.ref_text) popup += s.ref_text + '<br/>';
   popup += s.online ? 'Online' : 'Offline';
   marker.bindPopup(popup);
-  const label = L.marker([s.lat, s.lon], {{
-    icon: L.divIcon({{
-      className: offline ? 'ov-label ov-offline' : 'ov-label',
-      html: (s.name || '') + (s.az_text ? (' · ' + s.az_text) : ''),
-      iconSize: null,
-      iconAnchor: [-8, 20]
-    }}),
-    interactive: false
-  }}).addTo(map);
-  layers.push(label);
   (s.beams || []).forEach(b => {{
     if (!b.polygon || b.polygon.length < 3) return;
     const poly = L.polygon(b.polygon, {{
@@ -143,6 +144,12 @@ function drawSite(s) {{
       fillOpacity: offline ? 0.15 : 0.28,
       opacity: offline ? 0.45 : 0.85
     }}).addTo(map);
+    poly.bindTooltip(beamTooltipHtml(s, b), {{
+      sticky: true,
+      direction: 'top',
+      opacity: 1,
+      className: 'ov-beam-tip'
+    }});
     layers.push(poly);
   }});
   siteLayers[s.id] = layers;
@@ -188,6 +195,11 @@ body.web-ov #map { flex:1 1 auto; min-height:0; }
 body.map-dark #ovTop { background: rgba(36,36,36,0.94); color:#eaeaea; border-color:#555; }
 #ovTop h1 { font-size:15px; margin:0; font-weight:600; }
 #ovStatus { margin-left:auto; font-size:12px; opacity:0.9; }
+#ovChkActiveWrap {
+  display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;
+  user-select:none; white-space:nowrap;
+}
+#ovChkActiveWrap input { margin:0; }
 #ovTop button {
   border:1px solid #8888; border-radius:6px; padding:5px 10px; cursor:pointer;
   background:#fff; color:inherit; font-size:12px;
@@ -221,7 +233,8 @@ body.map-dark #ovPanel input, body.map-dark #ovPanel select, body.map-dark #ovPa
 #ovPanel .row > input, #ovPanel .row > select { flex:1; min-width:120px; }
 #ovEditor { display:none; margin-top:10px; padding-top:8px; border-top:1px solid #8884; }
 #ovEditor.open { display:block; }
-#ovEditor .ant-row { display:grid; grid-template-columns:auto 1fr 70px 70px 70px 42px; gap:4px; align-items:center; margin:4px 0; }
+#ovEditor .ant-row { display:grid; grid-template-columns:auto 1fr auto 70px 70px 70px 42px; gap:4px; align-items:center; margin:4px 0; }
+#ovEditor .ant-row label.dip { font-size:12px; white-space:nowrap; }
 #ovMsg { font-size:12px; margin:8px 0; min-height:1.2em; opacity:0.9; }
 #ovBackdrop {
   display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:1500;
@@ -236,6 +249,10 @@ def _web_chrome_html() -> str:
   <h1 id="ovTitle"></h1>
   <button type="button" id="ovBtnSettings"></button>
   <button type="button" id="ovBtnReload"></button>
+  <label id="ovChkActiveWrap" title="">
+    <input type="checkbox" id="ovChkActiveAnt"/>
+    <span id="ovChkActiveLabel"></span>
+  </label>
   <div id="ovStatus"></div>
 </div>
 <div id="ovBackdrop"></div>
@@ -311,6 +328,17 @@ const statusEl = document.getElementById('ovStatus');
   document.getElementById('ovAntennasTitle').textContent = L('antennas_group', 'Antennas');
   document.getElementById('ovBtnSaveSite').textContent = L('btn_save', 'Save');
   document.getElementById('ovBtnCancelEdit').textContent = L('btn_cancel', 'Cancel');
+  const chkActive = document.getElementById('ovChkActiveAnt');
+  const chkActiveLabel = document.getElementById('ovChkActiveLabel');
+  const chkActiveWrap = document.getElementById('ovChkActiveWrap');
+  if (chkActiveLabel) chkActiveLabel.textContent = L('chk_active_antenna', 'Active antenna only');
+  if (chkActiveWrap) chkActiveWrap.title = L('chk_active_antenna_tooltip', '');
+  if (chkActive) {
+    const initial = (typeof SHOW_ACTIVE_ANTENNA_ONLY === 'boolean')
+      ? SHOW_ACTIVE_ANTENNA_ONLY
+      : !!(OV_CONFIG && OV_CONFIG.show_active_antenna_only);
+    chkActive.checked = !!initial;
+  }
   if (statusEl) statusEl.textContent = __STATUS_TEXT__;
 
   let editIndex = -1;
@@ -396,6 +424,7 @@ const statusEl = document.getElementById('ovStatus');
       offset_deg: 0,
       opening_deg: 30,
       range_km: 100,
+      dipole: false,
       color: ['#5BA3D0','#E67E22','#E74C3C'][i]
     }));
   }
@@ -427,6 +456,7 @@ const statusEl = document.getElementById('ovStatus');
       row.innerHTML =
         '<label><input type="checkbox" data-k="enabled"' + (a.enabled ? ' checked' : '') + '/> ' + L('antenna_' + (i+1), 'A'+(i+1)) + '</label>' +
         '<input type="text" data-k="name" value="' + String(a.name||'').replace(/"/g,'&quot;') + '"/>' +
+        '<label class="dip" title="' + String(L('ant_dipole_tooltip','')).replace(/"/g,'&quot;') + '"><input type="checkbox" data-k="dipole"' + (a.dipole ? ' checked' : '') + '/> ' + L('ant_dipole','Dipol') + '</label>' +
         '<input type="number" data-k="offset_deg" step="0.1" title="' + L('ant_offset','') + '" value="' + (a.offset_deg||0) + '"/>' +
         '<input type="number" data-k="opening_deg" step="0.1" title="' + L('ant_opening','') + '" value="' + (a.opening_deg||30) + '"/>' +
         '<input type="number" data-k="range_km" step="0.1" title="' + L('ant_range','') + '" value="' + (a.range_km||100) + '"/>' +
@@ -443,6 +473,7 @@ const statusEl = document.getElementById('ovStatus');
       ants.push({
         enabled: !!get('enabled').checked,
         name: get('name').value.trim() || 'Antenne',
+        dipole: !!(get('dipole') && get('dipole').checked),
         offset_deg: parseFloat(get('offset_deg').value) || 0,
         opening_deg: parseFloat(get('opening_deg').value) || 30,
         range_km: parseFloat(get('range_km').value) || 100,
@@ -534,6 +565,14 @@ const statusEl = document.getElementById('ovStatus');
   document.getElementById('ovBtnReload').onclick = async () => {
     await postAction('reload', {});
   };
+  if (chkActive) {
+    chkActive.onchange = async () => {
+      const on = !!chkActive.checked;
+      const res = await postAction('set_active_antenna_only', { value: on });
+      if (res && res.ok && res.data) applyLive(res.data);
+      else if (res && !res.ok) chkActive.checked = !on;
+    };
+  }
 
   let lastConfigRev = -1;
   function applyLive(data) {
@@ -541,6 +580,15 @@ const statusEl = document.getElementById('ovStatus');
     if (typeof data.dark_mode === 'boolean') window.setOverviewDarkMode(data.dark_mode);
     if (data.sites) window.updateOverviewSites(data.sites);
     if (statusEl && data.status_text) statusEl.textContent = data.status_text;
+    let activeOnly = null;
+    if (typeof data.show_active_antenna_only === 'boolean') {
+      activeOnly = data.show_active_antenna_only;
+    } else if (data.config && typeof data.config.show_active_antenna_only === 'boolean') {
+      activeOnly = data.config.show_active_antenna_only;
+    }
+    if (chkActive && activeOnly !== null && chkActive.checked !== activeOnly) {
+      chkActive.checked = activeOnly;
+    }
     if (data.config && typeof data.revision === 'number' && data.revision !== lastConfigRev) {
       lastConfigRev = data.revision;
       OV_CONFIG = data.config;

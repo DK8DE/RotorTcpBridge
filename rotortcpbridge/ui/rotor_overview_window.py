@@ -162,6 +162,9 @@ class RotorOverviewSiteDialog(QDialog):
             chk = QCheckBox(t("overview.antenna_n", n=i + 1))
             chk.setChecked(bool(ant.get("enabled")))
             ed_n = QLineEdit(str(ant.get("name") or ""))
+            chk_dip = QCheckBox(t("overview.ant_dipole"))
+            chk_dip.setChecked(bool(ant.get("dipole")))
+            chk_dip.setToolTip(t("overview.ant_dipole_tooltip"))
             sp_off = QDoubleSpinBox()
             sp_off.setRange(-3600, 3600)
             sp_off.setDecimals(1)
@@ -181,6 +184,7 @@ class RotorOverviewSiteDialog(QDialog):
             btn_col.clicked.connect(lambda _=False, b=btn_col: self._pick_color(b))
             row.addWidget(chk)
             row.addWidget(ed_n, 1)
+            row.addWidget(chk_dip)
             row.addWidget(QLabel(t("overview.ant_offset")))
             row.addWidget(sp_off)
             row.addWidget(QLabel(t("overview.ant_opening")))
@@ -189,7 +193,7 @@ class RotorOverviewSiteDialog(QDialog):
             row.addWidget(sp_rg)
             row.addWidget(btn_col)
             vl_a.addLayout(row)
-            self._ant_widgets.append((chk, ed_n, sp_off, sp_op, sp_rg, btn_col))
+            self._ant_widgets.append((chk, ed_n, chk_dip, sp_off, sp_op, sp_rg, btn_col))
         root.addWidget(gb)
 
         buttons = QDialogButtonBox(
@@ -251,10 +255,13 @@ class RotorOverviewSiteDialog(QDialog):
         self.sp_udp_bind.setValue(int(site.get("udp_bind_port") or 0))
         self.sp_master.setValue(int(site.get("master_id") or 0))
         self.sp_slave.setValue(int(site.get("slave_az") or 20))
-        for i, (chk, ed_n, sp_off, sp_op, sp_rg, btn_col) in enumerate(self._ant_widgets):
+        for i, (chk, ed_n, chk_dip, sp_off, sp_op, sp_rg, btn_col) in enumerate(
+            self._ant_widgets
+        ):
             ant = site["antennas"][i]
             chk.setChecked(bool(ant.get("enabled")))
             ed_n.setText(str(ant.get("name") or ""))
+            chk_dip.setChecked(bool(ant.get("dipole")))
             sp_off.setValue(float(ant.get("offset_deg") or 0))
             sp_op.setValue(float(ant.get("opening_deg") or 30))
             sp_rg.setValue(float(ant.get("range_km") or 100))
@@ -264,11 +271,12 @@ class RotorOverviewSiteDialog(QDialog):
 
     def result_site(self) -> dict:
         ants = []
-        for chk, ed_n, sp_off, sp_op, sp_rg, btn_col in self._ant_widgets:
+        for chk, ed_n, chk_dip, sp_off, sp_op, sp_rg, btn_col in self._ant_widgets:
             ants.append(
                 {
                     "enabled": bool(chk.isChecked()),
                     "name": ed_n.text().strip() or "Antenne",
+                    "dipole": bool(chk_dip.isChecked()),
                     "offset_deg": float(sp_off.value()),
                     "opening_deg": float(sp_op.value()),
                     "range_km": float(sp_rg.value()),
@@ -426,6 +434,13 @@ class RotorOverviewWindow(QDialog):
         self._act_reload = self._menu_settings.addAction(t("overview.menu_reload"))
         self._act_reload.triggered.connect(self._reload_monitor)
 
+        self._chk_active_ant = QCheckBox(t("overview.chk_active_antenna"))
+        self._chk_active_ant.setToolTip(t("overview.chk_active_antenna_tooltip"))
+        self._chk_active_ant.setChecked(
+            bool(self._cfg.get("show_active_antenna_only", False))
+        )
+        self._chk_active_ant.toggled.connect(self._on_active_antenna_toggled)
+
         self._status = QLabel("")
         self._status.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -437,7 +452,7 @@ class RotorOverviewWindow(QDialog):
         # Kompakter Header: Menü links, Status rechts in einer Zeile
         hdr_h = max(22, px_to_dip(self, 24))
         header.setFixedHeight(hdr_h)
-        for w in (mb, self._status):
+        for w in (mb, self._chk_active_ant, self._status):
             f = w.font()
             f.setPointSize(max(8, f.pointSize() - 1))
             w.setFont(f)
@@ -446,8 +461,12 @@ class RotorOverviewWindow(QDialog):
             "QMenuBar::item { padding: 2px 6px; margin: 0px; }"
         )
         self._status.setStyleSheet("QLabel { padding: 0px; margin: 0px; }")
+        self._chk_active_ant.setStyleSheet(
+            "QCheckBox { padding: 0px 4px; margin: 0px; }"
+        )
 
         header_l.addWidget(mb, 0)
+        header_l.addWidget(self._chk_active_ant, 0)
         header_l.addStretch(1)
         header_l.addWidget(self._status, 0)
         root.addWidget(header)
@@ -482,6 +501,25 @@ class RotorOverviewWindow(QDialog):
             return
         self._cfg = self._service.get_config()
         self._cfg_rev_seen = self._service.revision
+        self._sync_active_antenna_chk()
+        self._push_sites_js()
+
+    def _sync_active_antenna_chk(self) -> None:
+        wanted = bool(self._cfg.get("show_active_antenna_only", False))
+        if self._chk_active_ant.isChecked() == wanted:
+            return
+        self._chk_active_ant.blockSignals(True)
+        self._chk_active_ant.setChecked(wanted)
+        self._chk_active_ant.blockSignals(False)
+
+    def _on_active_antenna_toggled(self, on: bool) -> None:
+        if self._service is not None:
+            self._service.set_show_active_antenna_only(bool(on))
+            self._cfg = self._service.get_config()
+            self._cfg_rev_seen = self._service.revision
+        else:
+            self._cfg["show_active_antenna_only"] = bool(on)
+            save_overview_config(self._cfg)
         self._push_sites_js()
 
     def retranslate(self) -> None:
@@ -489,6 +527,8 @@ class RotorOverviewWindow(QDialog):
         self._menu_settings.setTitle(t("overview.menu_settings"))
         self._act_sites.setText(t("overview.menu_sites"))
         self._act_reload.setText(t("overview.menu_reload"))
+        self._chk_active_ant.setText(t("overview.chk_active_antenna"))
+        self._chk_active_ant.setToolTip(t("overview.chk_active_antenna_tooltip"))
         self._update_status()
 
     def _open_settings(self) -> None:
@@ -523,8 +563,22 @@ class RotorOverviewWindow(QDialog):
         if self._service is not None:
             return self._service.render_sites()
         # Fallback ohne Service (Tests / Standalone)
-        from ..angle_utils import antenna_bearing_from_rotor_and_offset, fmt_deg
+        from ..angle_utils import antenna_bearing_from_rotor_and_offset, fmt_deg, wrap_deg
         from ..geo_utils import beam_polygon_points
+
+        show_active = bool(self._cfg.get("show_active_antenna_only", False))
+
+        def _selected_ants(site: dict, aselect: Optional[int]) -> List[dict]:
+            ants = list(site.get("antennas") or [])
+            if not show_active:
+                return [a for a in ants if a.get("enabled")]
+            slot = int(aselect) if aselect in (1, 2, 3) else None
+            if slot is not None and 1 <= slot <= len(ants):
+                return [ants[slot - 1]]
+            for a in ants:
+                if a.get("enabled"):
+                    return [a]
+            return [ants[0]] if ants else []
 
         out: List[dict] = []
         for site in self._cfg.get("sites") or []:
@@ -533,8 +587,10 @@ class RotorOverviewWindow(QDialog):
             sid = str(site.get("id") or "")
             st = self._live.get(sid)
             az = None
+            aselect = None
             if st is not None:
                 az = st.az_smooth_deg if st.az_smooth_deg is not None else st.az_deg
+                aselect = st.aselect
             online = bool(st.online) if st else False
             ref = st.referenced if st else None
             az_text = fmt_deg(float(az)).rstrip("°") + "°" if az is not None else "—"
@@ -544,37 +600,35 @@ class RotorOverviewWindow(QDialog):
                 ref_text = t("overview.ref_no")
             else:
                 ref_text = t("overview.ref_unknown")
+            selected = _selected_ants(site, aselect)
             color = "#2e7d32"
-            for ant in site.get("antennas") or []:
-                if ant.get("enabled"):
-                    color = str(ant.get("color") or color)
-                    break
+            if selected:
+                color = str(selected[0].get("color") or color)
             beams = []
             if az is not None:
                 lat = float(site["lat"])
                 lon = float(site["lon"])
-                for ant in site.get("antennas") or []:
-                    if not ant.get("enabled"):
-                        continue
+                for ant in selected:
                     bearing = antenna_bearing_from_rotor_and_offset(
                         float(az), float(ant.get("offset_deg") or 0.0)
                     )
                     stroke = str(ant.get("color") or "#5BA3D0")
-                    poly = beam_polygon_points(
-                        lat,
-                        lon,
-                        bearing,
-                        float(ant.get("opening_deg") or 30.0),
-                        float(ant.get("range_km") or 100.0),
-                    )
-                    beams.append(
-                        {
-                            "polygon": [[p[0], p[1]] for p in poly],
-                            "stroke": stroke,
-                            "fill": _fill_from_stroke(stroke),
-                            "name": ant.get("name") or "",
-                        }
-                    )
+                    opening = float(ant.get("opening_deg") or 30.0)
+                    range_km = float(ant.get("range_km") or 100.0)
+                    name = ant.get("name") or ""
+                    bearings = [bearing]
+                    if ant.get("dipole"):
+                        bearings.append(wrap_deg(bearing + 180.0))
+                    for brg in bearings:
+                        poly = beam_polygon_points(lat, lon, brg, opening, range_km)
+                        beams.append(
+                            {
+                                "polygon": [[p[0], p[1]] for p in poly],
+                                "stroke": stroke,
+                                "fill": _fill_from_stroke(stroke),
+                                "name": name,
+                            }
+                        )
             out.append(
                 {
                     "id": sid,
@@ -585,6 +639,7 @@ class RotorOverviewWindow(QDialog):
                     "az_text": az_text,
                     "ref_text": ref_text,
                     "marker_color": color,
+                    "aselect": aselect,
                     "beams": beams,
                 }
             )
@@ -642,6 +697,7 @@ class RotorOverviewWindow(QDialog):
             if self._service.revision != self._cfg_rev_seen:
                 self._cfg = self._service.get_config()
                 self._cfg_rev_seen = self._service.revision
+                self._sync_active_antenna_chk()
         self._update_status()
         if not self._page_ready:
             return
@@ -662,6 +718,7 @@ class RotorOverviewWindow(QDialog):
         if self._service is not None:
             self._service.acquire("window")
             self._cfg = self._service.get_config()
+            self._sync_active_antenna_chk()
         else:
             self._reload_monitor()
         self._apply_dark_mode_js()

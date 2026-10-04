@@ -15,7 +15,6 @@ from .rotor_parse_utils import (
     parse_getposdg_ist_d10,
     parse_int,
     parse_setposcc_params,
-    parse_setposdg_params,
 )
 
 # GETPOSDG wird ohne Inflight oft hintereinander gesendet; veraltete ACKs würden sonst die Ist-Position
@@ -159,27 +158,20 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 dst = int(tel.dst)
                 saz = int(self.slave_az)
                 sel = int(self.slave_el)
-                axis_dst = dst
-                if dst not in (saz, sel):
-                    try:
-                        resolved = self.resolve_panel_axis_dst(
-                            dst=dst,
-                            params=str(tel.params or ""),
-                            cmd="SETPOSDG",
-                        )
-                    except Exception:
-                        resolved = None
-                    if resolved is None:
-                        return
-                    axis_dst = int(resolved)
-                if axis_dst == saz or axis_dst == sel:
+                if dst == saz or dst == sel:
                     should_restrict = False
                     try:
-                        v, _rid = parse_setposdg_params(str(tel.params or ""))
-                        d10 = int(round(float(v) * 10.0)) if v is not None else None
-                        if d10 is None:
-                            raise ValueError("no angle")
-                        axs = self.az if axis_dst == saz else self.el
+                        p = str(tel.params or "").strip()
+                        if ";" in p:
+                            p = p.split(";")[-1]
+                        # Serial-Mitschnitt kann zusätzliche Felder nach ":" enthalten.
+                        # Für SETPOSDG nur den ersten Winkelteil verwenden.
+                        if ":" in p:
+                            p = p.split(":", 1)[0]
+                        p = p.replace(" ", "")
+                        v = float(p.replace(",", "."))
+                        d10 = int(round(v * 10.0))
+                        axs = self.az if dst == saz else self.el
                         cur_tgt = int(getattr(axs, "target_d10", 0))
                         cur_pos = int(getattr(axs, "pos_d10", 0))
                         should_restrict = True
@@ -197,7 +189,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         try:
                             if int(tel.src) != int(self.master_id):
                                 self.note_foreign_master_activity(
-                                    self.az if axis_dst == saz else self.el,
+                                    self.az if dst == saz else self.el,
                                     set_target=True,
                                     foreign_master_id=int(tel.src),
                                 )
@@ -211,20 +203,16 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     elif int(tel.src) != int(self.master_id):
                         try:
                             self.note_foreign_master_activity(
-                                self.az if axis_dst == saz else self.el,
+                                self.az if dst == saz else self.el,
                                 set_target=True,
                                 foreign_master_id=int(tel.src),
                             )
                         except Exception:
                             pass
                     self._apply_local_state_for_ui_command(
-                        axis_dst,
-                        "SETPOSDG",
-                        tel.params,
-                        from_bus_sniff=True,
-                        bus_src=int(tel.src),
+                        dst, "SETPOSDG", tel.params, from_bus_sniff=True, bus_src=int(tel.src)
                     )
-                    ax = self.az if axis_dst == saz else self.el
+                    ax = self.az if dst == saz else self.el
                     ax.online = True
                     ax.last_rx_ts = time.time()
             except Exception:
@@ -1119,56 +1107,38 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         axis_state.telemetry.pwm_min_pct = v
                     return
 
-                # Kalibrier-Status (GETCALSTATE): state;progress;stage
+                # Kalibrier-Status (GETCALSTATE)
                 if tel.cmd.startswith("ACK_GETCALSTATE") or tel.cmd.startswith("ACK_CALSTATE"):
-                    from .rotor_controller_polling import (
-                        cal_bins_all_stages_present,
-                        clear_cal_bins,
-                    )
-
                     parts = (tel.params or "").strip().split(";")
                     state = parse_int(parts[0]) if parts else None
                     if state is not None:
                         axis_state.cal_state = int(state)
-                        if len(parts) > 2:
-                            stg = parse_int(parts[2].strip())
-                            if stg is not None:
-                                axis_state.cal_stage = max(0, min(3, int(stg)))
                         if state == 2:
                             axis_state.cal_progress = 100
-                            axis_state.cal_stage = 0
                         elif state in (0, 3):
                             axis_state.cal_progress = 0
-                            if state == 0:
-                                axis_state.cal_stage = 0
                         elif len(parts) > 1:
                             pg = parse_int(parts[1].strip())
                             if pg is not None:
                                 axis_state.cal_progress = max(0, min(100, int(pg)))
-                        # Bins nur bei ABORT verwerfen. IDLE nach DONE = normal
-                        # (gespeicherte CAL bleibt gültig, GETCALVALID=1).
-                        if state == 3:
-                            clear_cal_bins(axis_state)
-                            if axis_name == "AZ":
-                                self._cal_bins_fetched_az = False
-                            else:
-                                self._cal_bins_fetched_el = False
-                        want_cal_bins = (
+                        if state != 2 and axis_name == "AZ":
+                            axis_state.cal_bins_cw = None
+                            axis_state.cal_bins_ccw = None
+                            self._cal_bins_fetched_az = False
+                        elif state != 2 and axis_name == "EL":
+                            axis_state.cal_bins_cw = None
+                            axis_state.cal_bins_ccw = None
+                            self._cal_bins_fetched_el = False
+                        elif (
                             state == 2
-                            or (
-                                state == 0
-                                and bool(getattr(axis_state, "cal_valid", False))
-                            )
-                        )
-                        if (
-                            want_cal_bins
                             and axis_name == "AZ"
                             and bool(getattr(self, "enable_az", True))
                             and self._cal_data_ui_active()
                             and not self._acc_bins_chain_in_progress()
                         ):
                             if not self._cal_bins_inflight_az and (
-                                not cal_bins_all_stages_present(axis_state)
+                                axis_state.cal_bins_cw is None
+                                or axis_state.cal_bins_ccw is None
                                 or not self._cal_bins_fetched_az
                             ):
                                 self._fetch_cal_bins(int(self.slave_az), axis_state, "AZ")
@@ -1180,7 +1150,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                 self._fetch_live_bins(int(self.slave_az), axis_state, "AZ")
                                 self._last_live_bins_az = time.time()
                         elif (
-                            want_cal_bins
+                            state == 2
                             and axis_name == "EL"
                             and bool(getattr(self, "enable_el", True))
                             and self._cal_data_ui_active()
@@ -1188,7 +1158,8 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         ):
                             dst_el = int(self.slave_el)
                             if not self._cal_bins_inflight_el and (
-                                not cal_bins_all_stages_present(axis_state)
+                                axis_state.cal_bins_cw is None
+                                or axis_state.cal_bins_ccw is None
                                 or not self._cal_bins_fetched_el
                             ):
                                 self._fetch_cal_bins_el(dst_el, axis_state, "EL")
@@ -1225,41 +1196,22 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             except Exception:
                                 pass
                         return
-                    from .rotor_controller_polling import parse_cal_bins_ack
-
                     parts = (tel.params or "").strip().split(";")
-                    parsed = parse_cal_bins_ack(parts)
-                    if parsed is not None:
-                        stage, dir_val, start_val, count_val, values_off = parsed
-                        si = stage - 1
-                        stages = (
-                            axis_state.cal_bins_stage_cw
-                            if dir_val == 1
-                            else axis_state.cal_bins_stage_ccw
-                        )
-                        if (
-                            isinstance(stages, list)
-                            and 0 <= si < len(stages)
-                            and stages[si] is not None
-                            and 0 <= start_val < 72
-                            and 1 <= count_val <= 12
-                        ):
-                            bins = stages[si]
-                            for i in range(count_val):
-                                v = (
-                                    parse_int(parts[values_off + i])
-                                    if (values_off + i) < len(parts)
-                                    else None
-                                )
-                                if v is not None:
-                                    idx = start_val + i
-                                    if idx < 72:
-                                        bins[idx] = int(v)
-                            if stage == 3:
-                                if dir_val == 1:
-                                    axis_state.cal_bins_cw = list(bins)
-                                else:
-                                    axis_state.cal_bins_ccw = list(bins)
+                    if len(parts) >= 4:
+                        dir_val = parse_int(parts[0])
+                        start_val = parse_int(parts[1])
+                        count_val = parse_int(parts[2])
+                        if dir_val is not None and start_val is not None and count_val is not None:
+                            bins = (
+                                axis_state.cal_bins_cw if dir_val == 1 else axis_state.cal_bins_ccw
+                            )
+                            if bins is not None and 0 <= start_val < 72 and 1 <= count_val <= 12:
+                                for i in range(count_val):
+                                    v = parse_int(parts[3 + i]) if (3 + i) < len(parts) else None
+                                    if v is not None:
+                                        idx = start_val + i
+                                        if idx < 72:
+                                            bins[idx] = int(v)
                     return
 
                 # Live-Bins (ACK_GETLIVEBINS: dir;start;count;v0;v1;...;vn)

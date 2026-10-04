@@ -19,11 +19,7 @@ from .angle_utils import (
     shortest_delta_deg,
     wrap_deg,
 )
-from .rotor_parse_utils import (
-    format_deg_param,
-    parse_setposcc_params,
-    parse_setposdg_params,
-)
+from .rotor_parse_utils import parse_setposcc_params
 from .rs485_protocol import BROADCAST_DST, build, Telegram
 from .hardware_client import HardwareClient, HwRequest
 from .rotor_model import AxisState
@@ -134,7 +130,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._last_cal_state_az: float = 0.0
         self._cal_bins_inflight_az: bool = False
         self._cal_bins_fetched_az: bool = False
-        self._cal_bins_received_az: int = 0  # Zähler für 36 Blöcke (3 Stufen × 12)
+        self._cal_bins_received_az: int = 0  # Zähler für 12 Blöcke
         # Live-Bins: GETLIVEBINS alle 30s im Idle (seltener = stabilere Anzeige)
         self._last_live_bins_az: float = 0.0
         self._live_bins_inflight_az: bool = False
@@ -177,9 +173,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._settings_window_open: bool = False
         # Einstellungen → Tab Stromwerte: CAL-Status + GETCALBINS (kein ACC)
         self._settings_strom_tab_open: bool = False
-        # Kompass offen (Desktop-Fenster und/oder Web-Kompass); Strom-Bins nur bei Heatmap „strom“
-        self._compass_ui_desktop_open: bool = False
-        self._compass_ui_web_open: bool = False
+        # Kompass-Fenster offen (Anzeige); Strom-Bins nur wenn Heatmap „strom“ aktiv (siehe set_compass_strom_heatmap_active)
         self._compass_window_open: bool = False
         self._compass_strom_heatmap_az: bool = False
         self._compass_strom_heatmap_el: bool = False
@@ -334,58 +328,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return self.ctrl_hw
         return self.hw
 
-    def resolve_panel_axis_dst(
-        self,
-        *,
-        dst: int,
-        params: str,
-        cmd: str = "SETPOSCC",
-        prefer_last_az: bool = True,
-    ) -> Optional[int]:
-        """Achsen-Slave-ID für Panel/USB-Telegramme (DST oft Bridge-Master, Achse in ``;rotor_id``)."""
-        try:
-            saz = int(self.slave_az)
-            sel = int(self.slave_el)
-            mid = int(self.master_id)
-            d = int(dst)
-        except Exception:
-            return None
-        cmd_u = str(cmd or "").strip().upper()
-        if d == saz:
-            return saz
-        if d == sel:
-            return sel
-        rid = None
-        try:
-            if cmd_u == "SETPOSDG":
-                _, rid = parse_setposdg_params(str(params or ""))
-            else:
-                _, rid = parse_setposcc_params(str(params or ""))
-        except Exception:
-            rid = None
-        if rid is not None:
-            if rid == saz and self.enable_az:
-                return saz
-            if rid == sel and self.enable_el:
-                return sel
-            return None
-        if d == mid or d == int(getattr(self, "_controller_cont_id", 0) or 0):
-            if prefer_last_az and self.enable_az:
-                return saz
-            if self.enable_el:
-                return sel
-            if self.enable_az:
-                return saz
-        return None
-
     def on_controller_link_telegram(self, tel: Telegram) -> None:
         """Telegramm vom Display-USB (Proxy): lokale UI-State für Fahrbefehle übernehmen.
 
         Remote-USB: der Controller ist *nicht* Bus-Master — die Bridge muss selbst pollen.
         Deshalb kein ``note_foreign_master_activity`` (das würde GETPOSDG stoppen).
-
-        Wichtig: Panel-Telegramme gehen oft an die Bridge-Master-ID (``#2:1:SETPOSCC:…;20``).
-        Achse dann aus ``;rotor_id`` / Fallback auflösen — sonst greift weder UI noch Deadman-Poll.
         """
         if tel is None:
             return
@@ -403,39 +350,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         ):
             return
         try:
-            raw_dst = int(tel.dst)
-        except Exception:
-            return
-        axis_dst = raw_dst
-        if cmd_u in ("SETPOSDG", "SETPOSCC", "STOP", "NSTOP", "SETREF"):
-            resolved = self.resolve_panel_axis_dst(
-                dst=raw_dst,
-                params=str(tel.params or ""),
-                cmd=cmd_u,
-            )
-            if resolved is not None:
-                axis_dst = int(resolved)
-            elif cmd_u in ("SETPOSDG", "SETPOSCC"):
-                # Unbekannte Achse — nicht mit Bridge-DST auf AZ/EL mappen.
-                if cmd_u == "SETPOSCC":
-                    try:
-                        self.note_setposcc_bus_activity()
-                    except Exception:
-                        pass
-                return
-        apply_params = str(tel.params or "")
-        if cmd_u == "SETPOSDG":
-            try:
-                ang, _rid = parse_setposdg_params(apply_params)
-                if ang is not None:
-                    apply_params = format_deg_param(ang)
-            except Exception:
-                pass
-        try:
             self._apply_local_state_for_ui_command(
-                int(axis_dst),
+                int(tel.dst),
                 cmd_u,
-                apply_params,
+                str(tel.params or ""),
                 from_bus_sniff=True,
                 bus_src=int(tel.src) if tel.src is not None else None,
             )
@@ -451,11 +369,13 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 self.note_setposdg_poll_restrict()
             except Exception:
                 pass
+            # Falls DST nicht zu slave_az/el passte: trotzdem Moving + Ziel setzen.
             try:
+                dst = int(tel.dst)
                 ax = None
-                if int(axis_dst) == int(self.slave_az):
+                if dst == int(self.slave_az):
                     ax = self.az
-                elif int(axis_dst) == int(self.slave_el):
+                elif dst == int(self.slave_el):
                     ax = self.el
                 if ax is not None:
                     ax.moving = True
@@ -468,7 +388,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             # Sofort GETPOSDG — sonst Rotor-Deadman (ERR:10) weil nach SETPOSDG niemand pollt.
             try:
                 now = time.time()
-                if int(axis_dst) == int(self.slave_az) and self.enable_az:
+                dst = int(tel.dst)
+                if dst == int(self.slave_az) and self.enable_az:
                     self._poll_pos(
                         self.slave_az,
                         self.az,
@@ -477,7 +398,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         expected_period_s=0.05,
                         high_priority=True,
                     )
-                elif int(axis_dst) == int(self.slave_el) and self.enable_el:
+                elif dst == int(self.slave_el) and self.enable_el:
                     self._poll_pos(
                         self.slave_el,
                         self.el,
@@ -783,29 +704,14 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         if bool(el) and not pe:
             self._acc_bins_compass_initial_el = False
 
-    def set_compass_window_open(self, open: bool, *, source: str = "desktop") -> None:
-        """Kompass-UI offen/geschlossen.
-
-        ``source``: ``\"desktop\"`` (Qt-Fenster) oder ``\"web\"`` (Karten-Webserver).
-        Desktop und Web zählen getrennt — Polling bleibt aktiv, solange mindestens
-        eine Quelle offen ist. Strom-Flags werden nur geleert, wenn beide zu sind
-        (sonst würde Web-Stromring sterben, sobald das Desktop-Fenster schließt).
-        """
-        src = str(source or "desktop").strip().lower()
-        if src == "web":
-            self._compass_ui_web_open = bool(open)
-        else:
-            self._compass_ui_desktop_open = bool(open)
-        was_open = bool(self._compass_window_open)
-        self._compass_window_open = bool(
-            self._compass_ui_desktop_open or self._compass_ui_web_open
-        )
-        if not self._compass_window_open:
-            self._compass_strom_heatmap_az = False
-            self._compass_strom_heatmap_el = False
-            return
-        if not was_open:
-            # Frisch geöffnet → nächster GETACCBINS-Lauf einmalig komplett.
+    def set_compass_window_open(self, open: bool) -> None:
+        """Kompass-Fenster offen/geschlossen."""
+        self._compass_window_open = bool(open)
+        # Strom-Flags immer leeren: beim Öffnen kamen sonst stale Werte aus CompassWindow-Init
+        # (cfg) bis zur nächsten Heatmap-Änderung — dann lief GETACCBINS trotz abgewählter Strom-Heatmap.
+        self._compass_strom_heatmap_az = False
+        self._compass_strom_heatmap_el = False
+        if bool(open):
             self._acc_bins_compass_initial_az = False
             self._acc_bins_compass_initial_el = False
 
@@ -1903,10 +1809,18 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
             # -------------------- Fahrziel setzen --------------------
             if cmd == "SETPOSDG":
-                # params: Grad, optional ``;rotor_id`` (Remote-USB), optional ``:…``-Zusatz.
+                # params ist i.d.R. Grad als Float mit "," oder ".".
                 try:
-                    v, _rid = parse_setposdg_params(str(params or ""))
-                    d10 = int(round(float(v) * 10.0)) if v is not None else None
+                    p = str(params).strip()
+                    if ";" in p:
+                        p = p.split(";")[-1]
+                    # Manche Serial-Mitschnitte enthalten zusätzliche Felder mit ":".
+                    # Für SETPOSDG nur den ersten Winkelteil verwenden.
+                    if ":" in p:
+                        p = p.split(":", 1)[0]
+                    p = p.replace(" ", "")
+                    v = float(p.replace(",", "."))
+                    d10 = int(round(v * 10.0))
                 except Exception:
                     d10 = None
 

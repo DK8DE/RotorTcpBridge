@@ -1552,6 +1552,8 @@
   "overview.ant_offset": "Offset°",
   "overview.ant_opening": "Opening°",
   "overview.ant_range": "km",
+  "overview.ant_dipole": "Dipole",
+  "overview.ant_dipole_tooltip": "Dual lobe: second beam opposite at 180°.",
   "overview.pick_color": "Overlay color",
   "overview.btn_add": "Add",
   "overview.btn_edit": "Edit",
@@ -1569,5 +1571,7 @@
   "overview.saved_ok": "Saved.",
   "overview.save_fail": "Save failed.",
   "overview.delete_confirm": "Really delete this site?",
-  "overview.web_hint": "Changes apply to desktop and web (rotor_overview.json)."
+  "overview.web_hint": "Changes apply to desktop and web (rotor_overview.json).",
+  "overview.chk_active_antenna": "Active antenna only",
+  "overview.chk_active_antenna_tooltip": "Off: antennas checked in site settings. On: only the antenna currently selected on each rotor (GETASELECT)."
 }

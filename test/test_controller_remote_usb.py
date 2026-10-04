@@ -48,22 +48,9 @@ class _FakeHw:
                 self.on_tx_line(str(req.line).strip(), len(self.sent_requests))
             except Exception:
                 pass
-        # Sync-Probe (GETCONTID / SETCONREMOTE): sofort ACK, sonst hängen activate()-Tests.
-        cb = getattr(req, "on_done", None)
-        if callable(cb):
-            exp = str(getattr(req, "expect_prefix", "") or "").strip().upper()
-            if exp:
-                tel = parse(build(2, 1, exp if exp.startswith("ACK_") else f"ACK_{exp}", "1"))
-                try:
-                    cb(tel, None)
-                except Exception:
-                    pass
 
     def send_line_fire_and_forget(self, line: str) -> None:
         self.ff_lines.append(str(line).strip())
-
-    def clear_pending(self, *_a: Any, **_k: Any) -> None:
-        return None
 
 
 class _FakeCtrl:
@@ -71,11 +58,6 @@ class _FakeCtrl:
         self.ctrl_hw = None
         self.usb_remote = False
         self._controller_cont_id = 2
-        self.master_id = 0
-        self.slave_az = 20
-        self.slave_el = 21
-        self.enable_az = True
-        self.enable_el = True
         self.link_telegrams: List[Any] = []
         self.sync_calls: List[tuple] = []
 
@@ -85,25 +67,6 @@ class _FakeCtrl:
 
     def set_controller_cont_id(self, cont_id: int) -> None:
         self._controller_cont_id = int(cont_id)
-
-    def resolve_panel_axis_dst(
-        self, *, dst: int, params: str, cmd: str = "SETPOSCC", prefer_last_az: bool = True
-    ) -> int | None:
-        d = int(dst)
-        if d in (self.slave_az, self.slave_el):
-            return d
-        from rotortcpbridge.rotor_parse_utils import parse_setposcc_params, parse_setposdg_params
-
-        rid = None
-        if str(cmd).upper() == "SETPOSDG":
-            _, rid = parse_setposdg_params(params)
-        else:
-            _, rid = parse_setposcc_params(params)
-        if rid in (self.slave_az, self.slave_el):
-            return int(rid)
-        if d == self.master_id or d == self._controller_cont_id:
-            return self.slave_az if self.enable_az else self.slave_el
-        return None
 
     def on_controller_link_telegram(self, tel: Any) -> None:
         self.link_telegrams.append(tel)
@@ -122,21 +85,14 @@ def _active_cfg() -> dict:
     }
 
 
-def _ready_proxy() -> tuple[ControllerRemoteUsbProxy, _FakeHw, _FakeHw, _FakeCtrl]:
-    """Config + Proxy-Start (update_cfg allein schaltet den Mode nicht mehr)."""
+def test_proxy_forwards_display_to_rotor_and_mirrors_rotor() -> None:
     rotor = _FakeHw()
     ctrl_hw = _FakeHw()
     ctrl = _FakeCtrl()
     proxy = ControllerRemoteUsbProxy(rotor, ctrl_hw, ctrl, _FakeLog())  # type: ignore[arg-type]
     proxy.update_cfg(_active_cfg())
-    proxy.start()
     assert proxy.is_active()
     assert ctrl.usb_remote is True
-    return proxy, rotor, ctrl_hw, ctrl
-
-
-def test_proxy_forwards_display_to_rotor_and_mirrors_rotor() -> None:
-    proxy, rotor, ctrl_hw, ctrl = _ready_proxy()
 
     line = build(2, 20, "SETPOSDG", "90,00")
     proxy.on_ctrl_rx_line(line)
@@ -170,8 +126,12 @@ def test_proxy_forwards_display_to_rotor_and_mirrors_rotor() -> None:
 
 
 def test_proxy_blocks_controller_poll_during_foreign_yield() -> None:
-    proxy, rotor, _ctrl_hw, ctrl = _ready_proxy()
+    rotor = _FakeHw()
+    ctrl_hw = _FakeHw()
+    ctrl = _FakeCtrl()
     ctrl.foreign_master_yield_active = lambda *_a, **_k: True  # type: ignore[method-assign]
+    proxy = ControllerRemoteUsbProxy(rotor, ctrl_hw, ctrl, _FakeLog())  # type: ignore[arg-type]
+    proxy.update_cfg(_active_cfg())
     proxy.on_ctrl_rx_line(build(2, 20, "SETPWM", "100"))
     assert rotor.sent_requests == []
     assert rotor.ff_lines == []
@@ -180,7 +140,11 @@ def test_proxy_blocks_controller_poll_during_foreign_yield() -> None:
 
 
 def test_proxy_setposcc_fire_and_forget() -> None:
-    proxy, rotor, _ctrl_hw, ctrl = _ready_proxy()
+    rotor = _FakeHw()
+    ctrl_hw = _FakeHw()
+    ctrl = _FakeCtrl()
+    proxy = ControllerRemoteUsbProxy(rotor, ctrl_hw, ctrl, _FakeLog())  # type: ignore[arg-type]
+    proxy.update_cfg(_active_cfg())
     line = build(2, 20, "SETPOSCC", "166,70;20")
     proxy.on_ctrl_rx_line(line)
     assert line in rotor.ff_lines
@@ -188,34 +152,12 @@ def test_proxy_setposcc_fire_and_forget() -> None:
     assert len(ctrl.link_telegrams) == 1
 
 
-def test_proxy_rewrites_bridge_dst_setposdg_to_slave() -> None:
-    """#2:0:SETPOSDG…;20 → Rotor-Slave 20 (sonst keine Fahrt im USB-Remote)."""
-    proxy, rotor, _ctrl_hw, ctrl = _ready_proxy()
-    proxy.on_ctrl_rx_line(build(2, 0, "SETPOSDG", "151,30;20"))
-    assert len(rotor.sent_requests) == 1
-    out = parse(rotor.sent_requests[0].line)
-    assert out is not None
-    assert int(out.dst) == 20
-    assert int(out.src) == 2
-    assert str(out.cmd).upper() == "SETPOSDG"
-    assert "151" in str(out.params)
-    assert ";" not in str(out.params)
-    assert len(ctrl.link_telegrams) == 1
-    assert int(ctrl.link_telegrams[0].dst) == 20
-
-
-def test_proxy_rewrites_bridge_dst_setposcc_to_slave() -> None:
-    proxy, rotor, _ctrl_hw, ctrl = _ready_proxy()
-    proxy.on_ctrl_rx_line(build(2, 0, "SETPOSCC", "90,00;20"))
-    assert len(rotor.ff_lines) == 1
-    out = parse(rotor.ff_lines[0])
-    assert out is not None
-    assert int(out.dst) == 20
-    assert str(out.cmd).upper() == "SETPOSCC"
-
-
 def test_proxy_dedup_no_echo_of_controller_tx() -> None:
-    proxy, _rotor, ctrl_hw, _ctrl = _ready_proxy()
+    rotor = _FakeHw()
+    ctrl_hw = _FakeHw()
+    ctrl = _FakeCtrl()
+    proxy = ControllerRemoteUsbProxy(rotor, ctrl_hw, ctrl, _FakeLog())  # type: ignore[arg-type]
+    proxy.update_cfg(_active_cfg())
     line = build(2, 20, "GETREF", "0")
     proxy.on_ctrl_rx_line(line)
     before = list(ctrl_hw.ff_lines)
@@ -225,7 +167,11 @@ def test_proxy_dedup_no_echo_of_controller_tx() -> None:
 
 def test_proxy_ignores_usb_echo_of_mirrored_rotor_tx() -> None:
     """USB-Echo einer gespiegelten Software-TX darf nicht zurück auf den Rotor."""
-    proxy, rotor, ctrl_hw, _ctrl = _ready_proxy()
+    rotor = _FakeHw()
+    ctrl_hw = _FakeHw()
+    ctrl = _FakeCtrl()
+    proxy = ControllerRemoteUsbProxy(rotor, ctrl_hw, ctrl, _FakeLog())  # type: ignore[arg-type]
+    proxy.update_cfg(_active_cfg())
 
     soft_tx = build(0, 20, "SETPOSDG", "10,00")
     proxy.on_rotor_tx_line(soft_tx, 1)
@@ -236,7 +182,11 @@ def test_proxy_ignores_usb_echo_of_mirrored_rotor_tx() -> None:
 
 
 def test_proxy_drops_ack_and_garbage_from_controller() -> None:
-    proxy, rotor, _ctrl_hw, _ctrl = _ready_proxy()
+    rotor = _FakeHw()
+    ctrl_hw = _FakeHw()
+    ctrl = _FakeCtrl()
+    proxy = ControllerRemoteUsbProxy(rotor, ctrl_hw, ctrl, _FakeLog())  # type: ignore[arg-type]
+    proxy.update_cfg(_active_cfg())
 
     proxy.on_ctrl_rx_line(build(20, 0, "ACK_GETPOSDG", "1,00"))
     proxy.on_ctrl_rx_line("#0zWo#garbage$")
@@ -282,26 +232,29 @@ def test_activate_sends_bus_setconremote_before_usb() -> None:
     ctrl = _FakeCtrl()
     proxy = ControllerRemoteUsbProxy(rotor, ctrl_hw, ctrl, _FakeLog())  # type: ignore[arg-type]
     proxy._cfg = _active_cfg()
-    rotor.sent_requests.clear()
-    ctrl_hw.sent_requests.clear()
+    ctrl.sync_calls.clear()
     assert proxy.activate() is True
     assert proxy.is_active()
     assert ctrl.usb_remote is True
-    bus_remote = [
-        r.line for r in rotor.sent_requests if "SETCONREMOTE:1" in str(r.line)
-    ]
-    usb_remote = [
-        r.line for r in ctrl_hw.sent_requests if "SETCONREMOTE:1" in str(r.line)
-    ]
-    assert bus_remote, rotor.sent_requests
-    assert usb_remote, ctrl_hw.sent_requests
+    remote_ons = [c for c in ctrl.sync_calls if c[1] == "SETCONREMOTE" and c[2] == "1"]
+    assert remote_ons, ctrl.sync_calls
+    assert remote_ons[0][0] == 2
 
 
 def test_proxy_sends_setconremote_0_before_stop() -> None:
     """USB-Remote aus: SETCONREMOTE:0 noch über USB."""
-    proxy, _rotor, _ctrl_hw, ctrl = _ready_proxy()
+    rotor = _FakeHw()
+    ctrl_hw = _FakeHw()
+    ctrl = _FakeCtrl()
+    proxy = ControllerRemoteUsbProxy(rotor, ctrl_hw, ctrl, _FakeLog())  # type: ignore[arg-type]
+    proxy.update_cfg(_active_cfg())
     assert proxy.is_active()
     ctrl.sync_calls.clear()
-    assert proxy.apply_mode(False, timeout_s=2.0) is True
+    off = {
+        "controller_hw": {"enabled": True, "usb_remote": False, "cont_id": 2},
+        "controller_link": {"mode": "com", "com_port": "COM9", "baudrate": 115200},
+    }
+    proxy.update_cfg(off)
     assert not proxy.is_active()
     assert ctrl.usb_remote is False
+    assert any(c[1] == "SETCONREMOTE" and c[2] == "0" for c in ctrl.sync_calls)

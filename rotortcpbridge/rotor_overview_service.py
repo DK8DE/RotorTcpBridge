@@ -6,7 +6,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from .angle_utils import antenna_bearing_from_rotor_and_offset, fmt_deg
+from .angle_utils import antenna_bearing_from_rotor_and_offset, fmt_deg, wrap_deg
 from .geo_utils import beam_polygon_points, maidenhead_to_lat_lon
 from .i18n import t
 from .rotor_overview_config import (
@@ -155,6 +155,18 @@ class RotorOverviewService:
             self._revision += 1
         save_overview_config(data)
 
+    def set_show_active_antenna_only(self, on: bool) -> Dict[str, Any]:
+        """Overlay: aktive Rotor-Antenne statt Menü-Häkchen."""
+        with self._lock:
+            self._cfg["show_active_antenna_only"] = bool(on)
+            data = deep_copy_config(self._cfg)
+            self._revision += 1
+            self._live_cache = {}
+            self._html_cache = ""
+        save_overview_config(data)
+        self._notify_cfg()
+        return data
+
     def restart_monitor(self) -> None:
         with self._lock:
             sites = list(self._cfg.get("sites") or [])
@@ -162,15 +174,36 @@ class RotorOverviewService:
         if active:
             self._monitor.start(sites)
 
-    def site_beams(self, site: dict, az_deg: Optional[float]) -> List[dict]:
+    def _selected_antennas(
+        self, site: dict, *, aselect: Optional[int] = None
+    ) -> List[dict]:
+        """Antennen für Overlay: Menü-Häkchen oder aktive Rotor-Antenne."""
+        ants = list(site.get("antennas") or [])
+        with self._lock:
+            show_active = bool(self._cfg.get("show_active_antenna_only", False))
+        if not show_active:
+            return [a for a in ants if a.get("enabled")]
+        slot = int(aselect) if aselect in (1, 2, 3) else None
+        if slot is not None and 1 <= slot <= len(ants):
+            return [ants[slot - 1]]
+        for a in ants:
+            if a.get("enabled"):
+                return [a]
+        return [ants[0]] if ants else []
+
+    def site_beams(
+        self,
+        site: dict,
+        az_deg: Optional[float],
+        *,
+        aselect: Optional[int] = None,
+    ) -> List[dict]:
         if az_deg is None:
             return []
         lat = float(site["lat"])
         lon = float(site["lon"])
         beams: List[dict] = []
-        for ant in site.get("antennas") or []:
-            if not ant.get("enabled"):
-                continue
+        for ant in self._selected_antennas(site, aselect=aselect):
             bearing = antenna_bearing_from_rotor_and_offset(
                 float(az_deg), float(ant.get("offset_deg") or 0.0)
             )
@@ -178,15 +211,20 @@ class RotorOverviewService:
             range_km = float(ant.get("range_km") or 100.0)
             stroke = str(ant.get("color") or "#5BA3D0")
             fill = fill_from_stroke(stroke)
-            poly = beam_polygon_points(lat, lon, bearing, opening, range_km)
-            beams.append(
-                {
-                    "polygon": [[p[0], p[1]] for p in poly],
-                    "stroke": stroke,
-                    "fill": fill,
-                    "name": ant.get("name") or "",
-                }
-            )
+            name = ant.get("name") or ""
+            bearings = [bearing]
+            if ant.get("dipole"):
+                bearings.append(wrap_deg(bearing + 180.0))
+            for brg in bearings:
+                poly = beam_polygon_points(lat, lon, brg, opening, range_km)
+                beams.append(
+                    {
+                        "polygon": [[p[0], p[1]] for p in poly],
+                        "stroke": stroke,
+                        "fill": fill,
+                        "name": name,
+                    }
+                )
         return beams
 
     def render_sites(self) -> List[dict]:
@@ -200,8 +238,10 @@ class RotorOverviewService:
             sid = str(site.get("id") or "")
             st = live.get(sid)
             az = None
+            aselect = None
             if st is not None:
                 az = st.az_smooth_deg if st.az_smooth_deg is not None else st.az_deg
+                aselect = st.aselect
             online = bool(st.online) if st else False
             ref = st.referenced if st else None
             az_text = fmt_deg(float(az)).rstrip("°") + "°" if az is not None else "—"
@@ -212,10 +252,9 @@ class RotorOverviewService:
             else:
                 ref_text = t("overview.ref_unknown")
             color = "#2e7d32"
-            for ant in site.get("antennas") or []:
-                if ant.get("enabled"):
-                    color = str(ant.get("color") or color)
-                    break
+            selected = self._selected_antennas(site, aselect=aselect)
+            if selected:
+                color = str(selected[0].get("color") or color)
             out.append(
                 {
                     "id": sid,
@@ -226,7 +265,10 @@ class RotorOverviewService:
                     "az_text": az_text,
                     "ref_text": ref_text,
                     "marker_color": color,
-                    "beams": self.site_beams(site, float(az) if az is not None else None),
+                    "aselect": aselect,
+                    "beams": self.site_beams(
+                        site, float(az) if az is not None else None, aselect=aselect
+                    ),
                 }
             )
         return out
@@ -252,6 +294,7 @@ class RotorOverviewService:
             "center_lat": float(cfg.get("map_center_lat", 50.0)),
             "center_lon": float(cfg.get("map_center_lon", 10.0)),
             "zoom": int(cfg.get("map_zoom", 5)),
+            "show_active_antenna_only": bool(cfg.get("show_active_antenna_only", False)),
             "sites": sites,
             "status_sites": n,
             "status_online": online,
@@ -317,6 +360,8 @@ class RotorOverviewService:
             "overview.ant_offset",
             "overview.ant_opening",
             "overview.ant_range",
+            "overview.ant_dipole",
+            "overview.ant_dipole_tooltip",
             "overview.pick_color",
             "overview.btn_add",
             "overview.btn_edit",
@@ -331,6 +376,8 @@ class RotorOverviewService:
             "overview.save_fail",
             "overview.delete_confirm",
             "overview.web_hint",
+            "overview.chk_active_antenna",
+            "overview.chk_active_antenna_tooltip",
         )
         labels = {k.split(".", 1)[1]: t(k) for k in keys}
         labels["antenna_1"] = t("overview.antenna_n", n=1)
@@ -365,6 +412,9 @@ class RotorOverviewService:
                 "profiles": self.profiles_meta(),
                 "config": cfg,
                 "status_text": payload["status_text"],
+                "show_active_antenna_only": bool(
+                    payload.get("show_active_antenna_only", False)
+                ),
             }
         )
         with self._lock:
@@ -389,6 +439,17 @@ class RotorOverviewService:
             except Exception as exc:
                 return {"ok": False, "error": str(exc)}
             return {"ok": True}
+        if act == "set_active_antenna_only":
+            try:
+                on = bool(data.get("value"))
+                self.set_show_active_antenna_only(on)
+                return {
+                    "ok": True,
+                    "show_active_antenna_only": on,
+                    "data": self.live_payload(min_interval_s=0.0),
+                }
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)}
         if act == "locator":
             loc = str(data.get("locator") or "").strip()
             try:

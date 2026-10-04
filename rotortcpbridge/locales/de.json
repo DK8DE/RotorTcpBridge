@@ -1542,6 +1542,8 @@
   "overview.ant_offset": "Versatz°",
   "overview.ant_opening": "Öffnung°",
   "overview.ant_range": "km",
+  "overview.ant_dipole": "Dipol",
+  "overview.ant_dipole_tooltip": "Doppelkeule: zweite Keule 180° gegenüberliegend.",
   "overview.pick_color": "Overlay-Farbe",
   "overview.btn_add": "Hinzufügen",
   "overview.btn_edit": "Bearbeiten",
@@ -1559,5 +1561,7 @@
   "overview.saved_ok": "Gespeichert.",
   "overview.save_fail": "Speichern fehlgeschlagen.",
   "overview.delete_confirm": "Standort wirklich löschen?",
-  "overview.web_hint": "Änderungen gelten für Desktop und Web (rotor_overview.json)."
+  "overview.web_hint": "Änderungen gelten für Desktop und Web (rotor_overview.json).",
+  "overview.chk_active_antenna": "Nur aktive Antenne",
+  "overview.chk_active_antenna_tooltip": "Aus: Antennen mit Häkchen in den Standorteinstellungen. An: nur die am jeweiligen Rotor aktuell gewählte Antenne (GETASELECT)."
 }

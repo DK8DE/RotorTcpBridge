@@ -37,6 +37,7 @@ def _default_antenna(slot: int, *, enabled: bool = False) -> Dict[str, Any]:
         "opening_deg": 30.0,
         "range_km": 100.0,
         "color": stroke,
+        "dipole": False,
     }
 
 
@@ -71,6 +72,8 @@ def default_overview_config() -> Dict[str, Any]:
         "map_center_lat": 50.0,
         "map_center_lon": 10.0,
         "map_zoom": 5,
+        # False = in Standort-Einstellungen markierte Antennen; True = aktive Antenne (GETASELECT)
+        "show_active_antenna_only": False,
         "sites": [],
     }
 
@@ -102,6 +105,7 @@ def normalize_antenna(raw: Any, slot: int) -> Dict[str, Any]:
     out["offset_deg"] = _clamp_float(raw.get("offset_deg"), -3600.0, 3600.0, 0.0)
     out["opening_deg"] = _clamp_float(raw.get("opening_deg"), 1.0, 360.0, 30.0)
     out["range_km"] = _clamp_float(raw.get("range_km"), 1.0, 4000.0, 100.0)
+    out["dipole"] = bool(raw.get("dipole", False))
     color = str(raw.get("color") or "").strip()
     if color.startswith("#") and len(color) in (4, 7):
         out["color"] = color
@@ -156,6 +160,7 @@ def normalize_overview_config(raw: Any) -> Dict[str, Any]:
     out["map_center_lat"] = _clamp_float(raw.get("map_center_lat"), -90.0, 90.0, 50.0)
     out["map_center_lon"] = _clamp_float(raw.get("map_center_lon"), -180.0, 180.0, 10.0)
     out["map_zoom"] = _clamp_int(raw.get("map_zoom"), 2, 18, 5)
+    out["show_active_antenna_only"] = bool(raw.get("show_active_antenna_only", False))
     sites_in = raw.get("sites")
     sites: List[Dict[str, Any]] = []
     if isinstance(sites_in, list):
@@ -228,6 +233,7 @@ def site_from_profile(profile_id: str, profile_name: str, cfg: Dict[str, Any]) -
     offs = ui.get("antenna_offsets_az") or []
     angles = ui.get("antenna_angles_az") or []
     ranges = ui.get("antenna_ranges_az") or []
+    dips = ui.get("antenna_dipoles_az") or []
     az_on = bool(rb.get("enable_az", True))
     ants: List[Dict[str, Any]] = []
     for i in range(3):
@@ -249,6 +255,8 @@ def site_from_profile(profile_id: str, profile_name: str, cfg: Dict[str, Any]) -
                 ant["range_km"] = max(1.0, float(ranges[i]) or 100.0)
         except (TypeError, ValueError):
             pass
+        if isinstance(dips, list) and i < len(dips):
+            ant["dipole"] = bool(dips[i])
         # Weitere Antennen aktiv, wenn Öffnung/Name gesetzt und AZ an
         if az_on and i > 0:
             has_meta = ant["opening_deg"] > 0 and (

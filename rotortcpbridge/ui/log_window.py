@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -21,13 +23,27 @@ from ..app_icon import get_app_icon
 from ..i18n import t, tt
 from .ui_utils import px_to_dip
 
+# Paketzähler in TX-/RX-Zeilen: "[TX] #155706 #0:20:..." bzw. "[RX] pkt=155464 #20:0:..."
+_PKT_COUNTER_RE = re.compile(r"(\[[^\]]+\]) (?:#\d+|pkt=\d+) ")
+
+
+def strip_packet_counter(line: str) -> str:
+    """Paketzähler (``#123`` bei TX, ``pkt=123`` bei RX) aus einer Log-Zeile entfernen."""
+    return _PKT_COUNTER_RE.sub(r"\1 ", str(line), count=1)
+
 
 class LogWindow(QDialog):
     """Dialog-Fenster zur Anzeige des Logs (mit Filter, Pause, Auto-Scroll)."""
 
-    def __init__(self, logbuf, parent=None):
+    def __init__(self, logbuf, parent=None, cfg=None, save_cfg_cb=None):
         super().__init__(parent)
         self.logbuf = logbuf
+        self._cfg = cfg
+        self._save_cfg_cb = save_cfg_cb
+        try:
+            self._show_pkt = bool(((cfg or {}).get("ui") or {}).get("log_show_packet_counter", True))
+        except Exception:
+            self._show_pkt = True
         self.setWindowTitle(t("log.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
@@ -55,6 +71,12 @@ class LogWindow(QDialog):
         self.ed_filter.textChanged.connect(self._on_filter_changed)
         filter_row.addWidget(self.ed_filter, 1)
         root.addLayout(filter_row)
+
+        self.chk_show_pkt = QCheckBox(t("log.chk_packet_counter"))
+        self.chk_show_pkt.setToolTip(tt("log.chk_packet_counter_tooltip"))
+        self.chk_show_pkt.setChecked(self._show_pkt)
+        self.chk_show_pkt.toggled.connect(self._on_show_pkt_toggled)
+        root.addWidget(self.chk_show_pkt)
 
         btn_row = QHBoxLayout()
         self.btn_toggle = QPushButton(t("log.btn_pause"))
@@ -106,6 +128,8 @@ class LogWindow(QDialog):
             old_val = 0
 
         try:
+            if not self._show_pkt:
+                lines = [strip_packet_counter(ln) for ln in lines]
             needle = str(self._filter_text or "").strip().lower()
             if needle:
                 lines = [ln for ln in lines if needle in str(ln).lower()]
@@ -161,6 +185,19 @@ class LogWindow(QDialog):
                 subprocess.Popen(["xdg-open", str(log_p.parent)])
         except Exception:
             pass
+
+    def _on_show_pkt_toggled(self, checked: bool) -> None:
+        self._show_pkt = bool(checked)
+        if isinstance(self._cfg, dict):
+            try:
+                self._cfg.setdefault("ui", {})["log_show_packet_counter"] = bool(checked)
+                if callable(self._save_cfg_cb):
+                    self._save_cfg_cb(self._cfg)
+            except Exception:
+                pass
+        self._last_rendered_last_line = None
+        self._last_refresh_ts = 0.0
+        self.refresh()
 
     def _on_filter_changed(self, text: str) -> None:
         self._filter_text = str(text or "")

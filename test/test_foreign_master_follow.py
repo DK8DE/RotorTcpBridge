@@ -181,3 +181,35 @@ def test_foreign_ack_getaccbins_ignored_without_stromring() -> None:
     )
     c._on_async_tel(tel)
     assert c.az.acc_bins_cw is None
+
+
+def test_own_ack_getaccbins_applied_when_chain_aborted() -> None:
+    """Nach Ketten-Abbruch: eigenes ACK_GETACCBINS trotzdem in den Stromring."""
+    c = RotorController(_hw_stub(), master_id=0, slave_az=20, slave_el=21, log=_Log())
+    c.set_compass_window_open(True, source="desktop")
+    c.set_compass_strom_heatmap_active(True, False)
+    c._acc_bins_inflight_az = False
+    tel = Telegram(
+        src=20,
+        dst=0,
+        cmd="ACK_GETACCBINS",
+        params=_acc_ack_params(1, 0, 80),
+        cs=0.0,
+        ok=True,
+    )
+    c._on_async_tel(tel)
+    assert c.az.acc_bins_cw is not None
+    assert c.az.acc_bins_cw[0] == 80
+
+
+def test_compass_open_source_desktop_and_web_independent() -> None:
+    c = RotorController(_hw_stub(), master_id=0, slave_az=20, slave_el=21, log=_Log())
+    c.set_compass_window_open(True, source="desktop")
+    c.set_compass_strom_heatmap_active(True, False)
+    c.set_compass_window_open(True, source="web")
+    c.set_compass_window_open(False, source="desktop")
+    assert c._compass_window_open is True
+    assert c._compass_strom_heatmap_az is True
+    c.set_compass_window_open(False, source="web")
+    assert c._compass_window_open is False
+    assert c._compass_strom_heatmap_az is False

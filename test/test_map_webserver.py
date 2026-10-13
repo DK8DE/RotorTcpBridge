@@ -122,6 +122,7 @@ def test_map_webserver_serves_rotoren_overview() -> None:
         overview_html_provider=lambda: "<html><body>rotoren-ok</body></html>",
         overview_provider=lambda: dict(overview),
         overview_action_handler=_action,
+        node_provider=lambda: {"profile_name": "Here", "az_deg": 12.5, "online": True},
     )
     ok, err = srv.start()
     assert ok, err
@@ -133,6 +134,11 @@ def test_map_webserver_serves_rotoren_overview() -> None:
             data = json.loads(resp.read().decode("utf-8"))
             assert data["ok"] is True
             assert data["data"]["status_text"] == "ok"
+        with _urlopen(f"http://127.0.0.1:{port}/api/overview/node") as resp:
+            node = json.loads(resp.read().decode("utf-8"))
+            assert node["ok"] is True
+            assert node["data"]["profile_name"] == "Here"
+            assert node["data"]["az_deg"] == 12.5
         with _urlopen(
             f"http://127.0.0.1:{port}/api/overview/action",
             data=json.dumps({"action": "reload"}).encode("utf-8"),
@@ -262,9 +268,17 @@ def test_map_webserver_requires_password() -> None:
         assert ei2.value.code == 401
         with _urlopen(f"http://127.0.0.1:{port}/", password="rotor") as resp:
             assert "map-ok" in resp.read().decode("utf-8")
+        with pytest.raises(urllib.error.HTTPError) as ei3:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/rotoren", timeout=2)
+        assert ei3.value.code == 401
+        with pytest.raises(urllib.error.HTTPError) as ei4:
+            _urlopen(f"http://127.0.0.1:{port}/api/overview", password="wrong")
+        assert ei4.value.code == 401
         srv.set_password("neu")
         with _urlopen(f"http://127.0.0.1:{port}/", password="neu") as resp:
             assert "map-ok" in resp.read().decode("utf-8")
+        with _urlopen(f"http://127.0.0.1:{port}/rotoren", password="neu") as resp:
+            assert resp.status == 200
     finally:
         srv.stop()
 
@@ -282,6 +296,57 @@ def test_build_compass_html_contains_canvas() -> None:
     assert "azCanvas" in html
     assert "elCanvas" in html
     assert "compass_open" in html
+    assert 'id="selProfile"' in html
+    assert "/api/profiles" in html
+    assert 'id="driveSyncOverlay"' in html
+
+
+def test_map_webserver_profiles_list_and_switch() -> None:
+    port = _free_port()
+    switched: list[str] = []
+
+    def _list():
+        return {
+            "ok": True,
+            "active_id": "p1",
+            "profiles": [
+                {"id": "p1", "name": "Alpha", "active": True},
+                {"id": "p2", "name": "Beta", "active": False},
+            ],
+        }
+
+    def _switch(pid: str):
+        switched.append(str(pid))
+        return {"ok": True, "active_id": pid}
+
+    srv = MapWebServer(
+        "127.0.0.1",
+        port,
+        _Log(),
+        password="rotor",
+        html_provider=lambda: "<html><body>map</body></html>",
+        profiles_provider=_list,
+        profile_switch_handler=_switch,
+    )
+    ok, err = srv.start()
+    assert ok, err
+    try:
+        with _urlopen(f"http://127.0.0.1:{port}/api/profiles") as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            assert data["ok"] is True
+            assert data["active_id"] == "p1"
+            assert len(data["profiles"]) == 2
+        with _urlopen(
+            f"http://127.0.0.1:{port}/api/profile",
+            data=json.dumps({"id": "p2"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        ) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            assert result["ok"] is True
+        assert switched == ["p2"]
+    finally:
+        srv.stop()
 
 
 def test_map_webserver_port_busy() -> None:

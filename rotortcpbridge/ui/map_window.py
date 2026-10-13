@@ -121,6 +121,7 @@ class MapWindow(QDialog):
         on_asnearest_select_cb=None,
         on_map_page_ready_cb=None,
         rig_bridge_manager=None,
+        switch_profile_cb=None,
     ):
         super().__init__(parent)
         self.cfg = cfg
@@ -130,6 +131,7 @@ class MapWindow(QDialog):
         self._rig_bridge_manager = rig_bridge_manager
         self._on_asnearest_select_cb = on_asnearest_select_cb
         self._on_map_page_ready_cb = on_map_page_ready_cb
+        self._switch_profile_cb = switch_profile_cb
         self.setWindowTitle(t("map.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
@@ -139,8 +141,14 @@ class MapWindow(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        # Toolbar: Antenne, Favoriten, Name, Speichern, Löschen (wie Kompassfenster)
+        # Toolbar: Profil, Antenne, Favoriten, Name, Speichern, Löschen (wie Kompassfenster)
         toolbar = QHBoxLayout()
+        self._cb_profile = QComboBox()
+        self._cb_profile.setMinimumWidth(140)
+        self._cb_profile.setToolTip(tt("main.menu_profile"))
+        self._refresh_profile_dropdown()
+        self._cb_profile.currentIndexChanged.connect(self._on_profile_changed)
+
         antenna_idx = max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
         self._cb_antenna = QComboBox()
         sw = max(12, px_to_dip(self, 14))
@@ -190,6 +198,7 @@ class MapWindow(QDialog):
         self._btn_elevation.setAutoDefault(False)
         self._btn_elevation.setDefault(False)
 
+        toolbar.addWidget(self._cb_profile)
         toolbar.addWidget(self._cb_antenna)
         toolbar.addWidget(self._cb_fav)
         toolbar.addWidget(self._ed_fav_name)
@@ -546,27 +555,7 @@ class MapWindow(QDialog):
         }
 
     def _antenna_dipole_enabled(self, ant_idx: int) -> bool:
-        """Dipol-Flag für Antenne ant_idx (0–2): Controller-Zustand bevorzugt, sonst Config."""
-        ant_idx = max(0, min(2, int(ant_idx)))
-        slot = ant_idx + 1
-        az_axis = getattr(self.ctrl, "az", None)
-        hw_v = getattr(az_axis, f"antdp{slot}", None) if az_axis is not None else None
-        if hw_v is not None:
-            try:
-                ui = self.cfg.setdefault("ui", {})
-                dips = list(ui.get("antenna_dipoles_az", [False, False, False]))
-                while len(dips) < 3:
-                    dips.append(False)
-                dips[ant_idx] = bool(hw_v)
-                ui["antenna_dipoles_az"] = dips[:3]
-            except Exception:
-                pass
-            return bool(hw_v)
-        dips_cfg = self.cfg.get("ui", {}).get("antenna_dipoles_az", [False, False, False])
-        try:
-            return bool(dips_cfg[ant_idx])
-        except (IndexError, TypeError):
-            return False
+        return antenna_dipole_enabled(getattr(self.ctrl, "az", None), self.cfg, ant_idx)
 
     def _compute_beams(self, rotor_az_deg: float, antenna_idx: int) -> list[dict]:
         """Nur der Beam der im Dropdown gewählten Antenne; Farbe je nach Slot 1–3; Richtung = Rotor + Offset."""
@@ -763,6 +752,63 @@ class MapWindow(QDialog):
             self._cb_antenna.setEnabled(az_on)
         except Exception:
             pass
+
+    def _refresh_profile_dropdown(self) -> None:
+        """Profil-Dropdown aus profile_store füllen."""
+        cb = getattr(self, "_cb_profile", None)
+        if cb is None:
+            return
+        try:
+            from ..profile_store import get_active_profile_id, list_profiles
+
+            active = str(get_active_profile_id() or "")
+            profiles = list_profiles() or []
+        except Exception:
+            active = ""
+            profiles = []
+        cb.blockSignals(True)
+        cb.clear()
+        active_row = 0
+        for i, p in enumerate(profiles):
+            if not isinstance(p, dict):
+                continue
+            pid = str(p.get("id") or "").strip()
+            if not pid:
+                continue
+            name = str(p.get("name") or pid).strip() or pid
+            cb.addItem(name, pid)
+            if pid == active:
+                active_row = cb.count() - 1
+        if cb.count() > 0:
+            cb.setCurrentIndex(active_row)
+        hold = False
+        try:
+            hold = bool(self.ctrl.drive_sync_hold_active()) or bool(self.ctrl.is_any_axis_moving())
+        except Exception:
+            hold = False
+        cb.setEnabled(bool(cb.count()) and (not hold) and callable(self._switch_profile_cb))
+        cb.setVisible(bool(cb.count()) and callable(self._switch_profile_cb))
+        cb.blockSignals(False)
+
+    def _on_profile_changed(self, _idx: int = 0) -> None:
+        cb = getattr(self, "_cb_profile", None)
+        if cb is None or not callable(self._switch_profile_cb):
+            return
+        pid = str(cb.currentData() or "").strip()
+        if not pid:
+            return
+        try:
+            from ..profile_store import get_active_profile_id
+
+            if pid == get_active_profile_id():
+                return
+        except Exception:
+            pass
+        try:
+            self._switch_profile_cb(pid)
+        except Exception:
+            pass
+        self._refresh_profile_dropdown()
 
     def sync_antenna_from_external(self, idx: int) -> None:
         """Kompass/Bridge/RS485: Index 0–2 in cfg schreiben, Dropdown und Karte aktualisieren."""
@@ -1475,7 +1521,27 @@ class MapWindow(QDialog):
         self._elevation_win.show()
 
     def _advance_smooth_rotor_az(self, rotor_target: float) -> float:
-        """Geglätteten Rotor-Azimut einen Tick weiterführen (Desktop + Webserver)."""
+        """Rotor-Azimut für den Beam (Desktop + Webserver).
+
+        Wie der Kompass: Anzeige-Ist der Achse (``get_smoothed_pos_d10f``: zeitbasiertes Lerp
+        zwischen GETPOSDG-Samples bzw. SmoothDamp). Ein eigener Tiefpass pro Tick läuft nach
+        jedem Sample aus und stoppt vor dem nächsten → die Bewegung ruckelt.
+        """
+        az_axis = getattr(self.ctrl, "az", None)
+        try:
+            if az_axis is not None and getattr(az_axis, "pos_d10", None) is not None:
+                val = float(
+                    az_pos_deg_from_d10(
+                        int(az_axis.pos_d10),
+                        float(az_axis.get_smoothed_pos_d10f(time.time())),
+                        max_d10=az_max_d10_from_axis(az_axis),
+                    )
+                )
+                self._smooth_rotor_az = val
+                return val
+        except Exception:
+            pass
+        # Fallback (Achse ohne Smooth-Anzeige): eigener Tiefpass
         if self._smooth_rotor_az is None:
             self._smooth_rotor_az = float(rotor_target)
         else:
@@ -1525,6 +1591,13 @@ class MapWindow(QDialog):
         if hide_homing != getattr(self, "_homing_ui_hidden_for_abs_enc", False):
             self._homing_ui_hidden_for_abs_enc = hide_homing
             self.update_homing_buttons_visibility()
+        try:
+            hold = bool(self.ctrl.drive_sync_hold_active()) or bool(self.ctrl.is_any_axis_moving())
+        except Exception:
+            hold = False
+        if hold != getattr(self, "_profile_ui_hold_last", None):
+            self._profile_ui_hold_last = hold
+            self._refresh_profile_dropdown()
         self._maybe_clear_map_target_on_external_az()
 
         params = self._get_params()
@@ -1539,8 +1612,17 @@ class MapWindow(QDialog):
         params["target_bearing_color"] = live["target_bearing_color"]
         params["azimuth"] = live["azimuth"]
         if self._map_loaded:
-            js = f"if (typeof window.updateBeam === 'function') window.updateBeam({json.dumps(live)});"
-            self._view.page().runJavaScript(js)
+            live_json = json.dumps(live)
+            now_ts = time.time()
+            # Unveränderte Daten (Rotor steht) nicht ständig an WebEngine schicken;
+            # alle 2 s trotzdem einmal (Seite könnte einen Reload/Zustandsverlust hatten).
+            if live_json != getattr(self, "_last_beam_live_json", None) or (
+                now_ts - float(getattr(self, "_last_beam_live_ts", 0.0) or 0.0)
+            ) >= 2.0:
+                self._last_beam_live_json = live_json
+                self._last_beam_live_ts = now_ts
+                js = f"if (typeof window.updateBeam === 'function') window.updateBeam({live_json});"
+                self._view.page().runJavaScript(js)
         else:
             html = build_map_html(params, dark=dark)
         offline = params.get("offline", False)
@@ -1591,6 +1673,7 @@ class MapWindow(QDialog):
         if not ok or not self._map_loaded:
             return
         self._map_page_ready = True
+        self._last_beam_live_json = None  # nach (Neu-)Laden Beam erneut senden
         if self._map_satellite:
             self._apply_satellite_mode_js()
         if self._target_lat is not None and self._target_lon is not None:
@@ -1649,22 +1732,20 @@ class MapWindow(QDialog):
                 f["name"].lower(),
             ),
         )
-        wind_on = (
-            bool(getattr(self.ctrl, "wind_enabled", False))
-            if getattr(self.ctrl, "wind_enabled_known", False)
-            else False
+        # Nur bei bekanntem GETWINDENABLE=1 — sonst ausblenden (auch ohne Sensor).
+        wind_on = bool(getattr(self.ctrl, "wind_enabled_known", False)) and bool(
+            getattr(self.ctrl, "wind_enabled", False)
         )
         wdir = None
         wkmh = None
-        try:
-            tel = getattr(getattr(self.ctrl, "az", None), "telemetry", None)
-            if tel is not None:
-                wdir = getattr(tel, "wind_dir_deg", None)
-                wkmh = getattr(tel, "wind_kmh", None)
-                if not wind_on and (wdir is not None or wkmh is not None):
-                    wind_on = True
-        except Exception:
-            pass
+        if wind_on:
+            try:
+                tel = getattr(getattr(self.ctrl, "az", None), "telemetry", None)
+                if tel is not None:
+                    wdir = getattr(tel, "wind_dir_deg", None)
+                    wkmh = getattr(tel, "wind_kmh", None)
+            except Exception:
+                pass
         mode = str(ui.get("wind_dir_display", "to") or "to").strip().lower()
         if mode not in ("from", "to"):
             mode = "to"
@@ -1771,6 +1852,9 @@ class MapWindow(QDialog):
                 "toggle_controls_hide": t("map.web_toggle_controls_hide"),
                 "open_compass": t("map.web_open_compass"),
                 "back_to_map": t("map.web_back_to_map"),
+                "profile": t("main.menu_profile"),
+                "profile_sync_title": t("map.web_profile_sync_title"),
+                "profile_sync_body": t("map.web_profile_sync_body"),
                 "search_pick_title": t("map.search_pick_title"),
                 "search_pick_body": t("map.search_pick_body"),
                 "search_not_found": t("map.search_not_found_body"),
@@ -1778,6 +1862,9 @@ class MapWindow(QDialog):
                 "search_cancel": t("map.search_cancel"),
                 "search_searching": t("map.search_searching"),
             },
+            "drive_sync": bool(
+                getattr(self.ctrl, "drive_sync_hold_active", lambda: False)()
+            ),
             "antennas": {
                 "index": antenna_idx,
                 "items": labels,
@@ -1826,11 +1913,9 @@ class MapWindow(QDialog):
         dark = bool(self.cfg.get("ui", {}).get("force_dark_mode", True))
         params["dark_mode"] = dark
         rotor_target = float(params.get("rotor_az_deg", 0.0))
-        smooth = (
-            float(self._smooth_rotor_az)
-            if self._smooth_rotor_az is not None
-            else rotor_target
-        )
+        # Immer glätten — sonst bleibt der Browser-Beam stehen, wenn das
+        # Desktop-Kartenfenster den Refresh-Timer hält oder noch nie geöffnet war.
+        smooth = self._advance_smooth_rotor_az(rotor_target)
         payload = self._build_live_beam_payload(params, smooth)
         try:
             payload["chrome"] = self.get_web_chrome_state()
@@ -2118,6 +2203,7 @@ class MapWindow(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._refresh_profile_dropdown()
         self._refresh_antenna_dropdown()
         self._refresh_favorites_dropdown()
         self._map_loaded = False
@@ -2152,6 +2238,7 @@ class MapWindow(QDialog):
         Erzwingt neues HTML mit aktuellem cfg – setMapDarkMode per JS reicht in Offline nicht zuverlässig."""
         if not self._view or not self._view.page():
             return
+        self._refresh_profile_dropdown()
         self._map_loaded = False
         self._map_page_ready = False
         self._map_dark_mode = None

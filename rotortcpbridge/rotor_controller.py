@@ -19,7 +19,7 @@ from .angle_utils import (
     shortest_delta_deg,
     wrap_deg,
 )
-from .rotor_parse_utils import parse_setposcc_params
+from .rotor_parse_utils import parse_setposcc_params, parse_setposdg_params
 from .rs485_protocol import BROADCAST_DST, build, Telegram
 from .hardware_client import HardwareClient, HwRequest
 from .rotor_model import AxisState
@@ -45,12 +45,17 @@ _CC_POLL_HOLD_MAX_S = 2.0
 # Nach SETPOSDG (Bridge oder Mitschnitt fremder Master): kurz nur Positions-/Fehler-Polling,
 # damit kein GETANEMO/GETWARN/… den Bus mit dem Rotor kreuzt. Deckt auch schnelle Hotkey-Bursts
 # (mehrere SETPOSDG hintereinander) ab; Idle-Zusatzabfragen werden solange wie bei Fahrt pausiert.
-_SETPOSDG_POLL_GRACE_S = 1.5
+# Nach SETPOSDG: Idle/ACC/Display-Last vom Bus fernhalten, bis Ziel erkennbar oder Timeout.
+_SETPOSDG_POLL_GRACE_S = 8.0
 
 # Anderer Master pollt denselben Rotor: eigenes GETPOSDG/Idle pausieren (Anti-Ruckeln).
 _FOREIGN_POLL_HOLD_S = 1.5
 # Fremde Fahrt übernommen: ohne frische ACKs wieder selbst pollen (Fallback).
 _FOREIGN_FOLLOW_STALE_S = 8.0
+
+# Nach Profilwechsel: keine SETPOSDG, bis die wichtigen Rotor-Daten einmal gelesen sind
+# (sonst Deadman, weil GETPOSDG hinter dem Bootstrap-Burst hängt).
+_DRIVE_SYNC_TIMEOUT_S = 20.0
 
 
 class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
@@ -175,6 +180,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._settings_strom_tab_open: bool = False
         # Kompass-Fenster offen (Anzeige); Strom-Bins nur wenn Heatmap „strom“ aktiv (siehe set_compass_strom_heatmap_active)
         self._compass_window_open: bool = False
+        self._compass_open_sources: set[str] = set()
         self._compass_strom_heatmap_az: bool = False
         self._compass_strom_heatmap_el: bool = False
         # Kurzer Cooldown nach SETPOSDG: laufende GETACCBINS-Kette abbrechen, Bus kurz frei.
@@ -220,6 +226,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._antenna_bootstrap_requested: bool = False
         # GETASELECT am AZ-Rotor einmal pro Verbindung → UI an NVS-Auswahl
         self._antenna_selection_bootstrap_requested: bool = False
+        self._aselect_known: bool = False
+        self._max_deg_known: bool = False
+        self._drive_sync_hold: bool = False
+        self._drive_sync_since_ts: float = 0.0
+        self._drive_sync_block_logged: bool = False
         # SETASELECT (AZ-Slave oder Bus-Mitschnitt): arg = Antenne 1–3
         self.on_setaselect_from_bus: Optional[Callable[[int], None]] = None
         # ACK_GETASELECT (Connect-Sync vom AZ): nur UI/Config, kein Nachdrehen
@@ -279,6 +290,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         enable_az: bool = True,
         enable_el: bool = True,
     ):
+        ids_changed = (
+            int(self.master_id) != int(master_id)
+            or int(self.slave_az) != int(slave_az)
+            or int(self.slave_el) != int(slave_el)
+        )
         self.master_id = master_id
         self.slave_az = slave_az
         self.slave_el = slave_el
@@ -293,6 +309,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 self.ctrl_hw.set_expected_response_dst(int(self.master_id))
         except Exception:
             pass
+        if ids_changed:
+            try:
+                self.reset_statistics_bins_for_rotor_change()
+            except Exception:
+                pass
 
     def set_controller_cont_id(self, cont_id: int) -> None:
         try:
@@ -350,10 +371,16 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         ):
             return
         try:
+            dst = int(tel.dst)
+            cmd_u = str(tel.cmd or "").strip().upper()
+            params = str(tel.params or "")
+            axis_dst = self._axis_dst_for_ui_command(dst, cmd_u, params)
+            if axis_dst is None:
+                return
             self._apply_local_state_for_ui_command(
-                int(tel.dst),
+                int(axis_dst),
                 cmd_u,
-                str(tel.params or ""),
+                params,
                 from_bus_sniff=True,
                 bus_src=int(tel.src) if tel.src is not None else None,
             )
@@ -371,11 +398,13 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 pass
             # Falls DST nicht zu slave_az/el passte: trotzdem Moving + Ziel setzen.
             try:
-                dst = int(tel.dst)
+                axis_dst = self._axis_dst_for_ui_command(
+                    int(tel.dst), "SETPOSDG", str(tel.params or "")
+                )
                 ax = None
-                if dst == int(self.slave_az):
+                if axis_dst == int(self.slave_az):
                     ax = self.az
-                elif dst == int(self.slave_el):
+                elif axis_dst == int(self.slave_el):
                     ax = self.el
                 if ax is not None:
                     ax.moving = True
@@ -388,8 +417,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             # Sofort GETPOSDG — sonst Rotor-Deadman (ERR:10) weil nach SETPOSDG niemand pollt.
             try:
                 now = time.time()
-                dst = int(tel.dst)
-                if dst == int(self.slave_az) and self.enable_az:
+                axis_dst = self._axis_dst_for_ui_command(
+                    int(tel.dst), "SETPOSDG", str(tel.params or "")
+                )
+                if axis_dst == int(self.slave_az) and self.enable_az:
                     self._poll_pos(
                         self.slave_az,
                         self.az,
@@ -398,7 +429,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         expected_period_s=0.05,
                         high_priority=True,
                     )
-                elif dst == int(self.slave_el) and self.enable_el:
+                elif axis_dst == int(self.slave_el) and self.enable_el:
                     self._poll_pos(
                         self.slave_el,
                         self.el,
@@ -426,6 +457,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.encoder_type_known = False
         self._encoder_type_requested = False
         self._max_deg_requested = False
+        self._max_deg_known = False
         self._home_pos_requested = False
         self._park_pending_az = False
         self._park_pending_el = False
@@ -434,8 +466,30 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._el_rotor_type_requested = False
         self._antenna_bootstrap_requested = False
         self._antenna_selection_bootstrap_requested = False
+        self._aselect_known = False
         self.wind_enabled = False
         self.wind_enabled_known = False
+        try:
+            self.az.dgcal_d10 = None
+            self.el.dgcal_d10 = None
+            self._dgcal_last_req = {}
+        except Exception:
+            pass
+        try:
+            self.az.antoff1 = None
+            self.az.antoff2 = None
+            self.az.antoff3 = None
+            self.az.angle1 = None
+            self.az.angle2 = None
+            self.az.angle3 = None
+            self.az.antdp1 = None
+            self.az.antdp2 = None
+            self.az.antdp3 = None
+            self.az.antname1 = None
+            self.az.antname2 = None
+            self.az.antname3 = None
+        except Exception:
+            pass
         try:
             self.az.pos_max_d10 = 3600
             self.az.position_wrap_360 = True
@@ -445,6 +499,24 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         try:
             self.el.pos_max_d10 = 3600
             self.el.home_pos_d10 = None
+        except Exception:
+            pass
+        for ax in (self.az, self.el):
+            try:
+                ax.referenced = False
+                ax.ref_status_known = False
+                ax.moving = False
+                ax.online = False
+                ax.last_rx_ts = 0.0
+                ax._last_sample_ts = 0.0
+                ax.pos_poll_last_ack_ts = 0.0
+                ax.last_set_sent_target_d10 = None
+                ax.last_set_sent_ts = 0.0
+                ax.external_panel_move_active = False
+            except Exception:
+                pass
+        try:
+            self.begin_drive_sync_hold()
         except Exception:
             pass
         cb = getattr(self, "on_encoder_type_changed", None)
@@ -459,6 +531,218 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 cb_rt()
             except Exception:
                 pass
+        try:
+            self.reset_statistics_bins_for_rotor_change()
+        except Exception:
+            pass
+
+    def begin_drive_sync_hold(self) -> None:
+        """Steuerung sperren, bis die wichtigen Daten des neuen Rotors gelesen sind."""
+        self._drive_sync_hold = True
+        self._drive_sync_since_ts = time.time()
+        self._drive_sync_block_logged = False
+        try:
+            self.log.write("INFO", "Steuerung gesperrt: Profildaten werden gelesen")
+        except Exception:
+            pass
+
+    def _release_drive_sync_hold(self, reason: str) -> None:
+        if not bool(getattr(self, "_drive_sync_hold", False)):
+            return
+        self._drive_sync_hold = False
+        self._drive_sync_block_logged = False
+        try:
+            if reason == "timeout":
+                self.log.write(
+                    "WARN",
+                    "Steuerung wieder frei (Timeout): nicht alle Profildaten gelesen",
+                )
+            else:
+                self.log.write("INFO", "Steuerung frei: Rotor-Daten übernommen")
+        except Exception:
+            pass
+
+    def _axis_pos_known_since_sync(self, axis_state: AxisState) -> bool:
+        try:
+            since = float(getattr(self, "_drive_sync_since_ts", 0.0) or 0.0)
+            sample_ts = float(getattr(axis_state, "_last_sample_ts", 0.0) or 0.0)
+            ack_ts = float(getattr(axis_state, "pos_poll_last_ack_ts", 0.0) or 0.0)
+            return (sample_ts >= since > 0.0) or (ack_ts >= since > 0.0)
+        except Exception:
+            return False
+
+    def _drive_sync_requirements_met(self) -> bool:
+        try:
+            if not bool(self.hw.is_connected()):
+                return False
+        except Exception:
+            return False
+        if self.enable_az:
+            if not bool(getattr(self, "encoder_type_known", False)):
+                return False
+            if not bool(getattr(self, "_max_deg_known", False)):
+                return False
+            if not bool(getattr(self, "_aselect_known", False)):
+                return False
+            if any(getattr(self.az, f"antoff{i}", None) is None for i in (1, 2, 3)):
+                return False
+            if not self._axis_pos_known_since_sync(self.az):
+                return False
+            if not (
+                bool(getattr(self.az, "ref_status_known", False))
+                or self.abs_encoder_no_homing()
+            ):
+                return False
+        if self.enable_el:
+            if not bool(getattr(self, "el_rotor_type_known", False)):
+                return False
+            if not self._axis_pos_known_since_sync(self.el):
+                return False
+            if not (
+                bool(getattr(self.el, "ref_status_known", False))
+                or self.abs_encoder_no_homing()
+            ):
+                return False
+        return True
+
+    def drive_ready(self) -> bool:
+        """True wenn Fahren erlaubt ist (kein Profil-Sync oder Daten vollständig / Timeout)."""
+        if not bool(getattr(self, "_drive_sync_hold", False)):
+            return True
+        now = time.time()
+        try:
+            since = float(getattr(self, "_drive_sync_since_ts", 0.0) or 0.0)
+        except Exception:
+            since = 0.0
+        if since > 0.0 and (now - since) >= float(_DRIVE_SYNC_TIMEOUT_S):
+            self._release_drive_sync_hold("timeout")
+            return True
+        if self._drive_sync_requirements_met():
+            self._release_drive_sync_hold("ready")
+            return True
+        return False
+
+    def drive_sync_hold_active(self) -> bool:
+        return not self.drive_ready()
+
+    # --- Korrekturwinkel (GETDGCAL / SETDGCAL) --------------------------------
+
+    _DGCAL_REQ_MIN_S = 3.0
+
+    def _dgcal_axis(self, axis: str):
+        is_el = str(axis).strip().lower() == "el"
+        ax = self.el if is_el else self.az
+        enabled = bool(self.enable_el if is_el else self.enable_az)
+        dst = int(self.slave_el if is_el else self.slave_az)
+        return ax, enabled, dst
+
+    def request_dgcal(self, axis: str = "az", *, force: bool = False) -> None:
+        """GETDGCAL asynchron lesen → ``axis.dgcal_d10`` (gedrosselt, ohne GUI-Abhängigkeit)."""
+        ax, enabled, dst = self._dgcal_axis(axis)
+        if not enabled:
+            return
+        now = time.time()
+        last = getattr(self, "_dgcal_last_req", None)
+        if last is None:
+            last = self._dgcal_last_req = {}
+        key = "el" if ax is self.el else "az"
+        if (not force) and (now - float(last.get(key, 0.0))) < self._DGCAL_REQ_MIN_S:
+            return
+        last[key] = now
+
+        def done(tel, err):
+            if err or tel is None:
+                return
+            if not str(getattr(tel, "cmd", "") or "").upper().startswith("ACK_GETDGCAL"):
+                return
+            try:
+                raw = str(getattr(tel, "params", "") or "").strip().split(";")[0].replace(",", ".")
+                ax.dgcal_d10 = int(round(float(raw) * 10.0))
+            except Exception:
+                pass
+
+        try:
+            self.send_ui_command(
+                dst,
+                "GETDGCAL",
+                "0",
+                expect_prefix="ACK_GETDGCAL",
+                timeout_s=1.2,
+                priority=1,
+                on_done=done,
+                apply_local_state=False,
+            )
+        except Exception:
+            pass
+
+    def set_dgcal(self, axis: str, deg: float) -> None:
+        """SETDGCAL asynchron senden; bei ACK Wert übernehmen und neu lesen."""
+        ax, enabled, dst = self._dgcal_axis(axis)
+        if not enabled:
+            return
+        txt = f"{float(deg):.1f}".rstrip("0").rstrip(".")
+        if not txt or txt == "-0":
+            txt = "0"
+        wire = txt.replace(".", ",")
+
+        def done(tel, err):
+            ok = (
+                err is None
+                and tel is not None
+                and str(getattr(tel, "cmd", "") or "").upper().startswith("ACK_SETDGCAL")
+            )
+            if not ok:
+                return
+            try:
+                ax.dgcal_d10 = int(round(float(deg) * 10.0))
+            except Exception:
+                pass
+            self.request_dgcal(axis, force=True)
+            try:
+                self.request_immediate_pos()
+            except Exception:
+                pass
+
+        try:
+            self.send_ui_command(
+                dst,
+                "SETDGCAL",
+                wire,
+                expect_prefix="ACK_SETDGCAL",
+                timeout_s=1.2,
+                priority=0,
+                on_done=done,
+                apply_local_state=False,
+            )
+        except Exception:
+            pass
+
+    def is_any_axis_moving(self) -> bool:
+        """True, solange eine aktive Achse fährt oder referenziert (Profilwechsel sperren)."""
+        for ax, en in (
+            (getattr(self, "az", None), bool(getattr(self, "enable_az", True))),
+            (getattr(self, "el", None), bool(getattr(self, "enable_el", False))),
+        ):
+            if ax is None or not en:
+                continue
+            if bool(getattr(ax, "moving", False)) or bool(getattr(ax, "ref_poll_active", False)):
+                return True
+        return False
+
+    def _block_drive_until_ready(self, axis: str) -> bool:
+        """True = SETPOSDG unterdrücken. Loggt einmal pro Hold."""
+        if self.drive_ready():
+            return False
+        if not bool(getattr(self, "_drive_sync_block_logged", False)):
+            self._drive_sync_block_logged = True
+            try:
+                self.log.write(
+                    "WARN",
+                    f"{axis} SETPOSDG ignoriert: Profildaten werden noch gelesen",
+                )
+            except Exception:
+                pass
+        return True
 
     def abs_encoder_no_homing(self) -> bool:
         """Absolutwert-Encoder R&S (GETENCTYPE=3): kein manuelles Homing nötig."""
@@ -473,7 +757,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """True solange Motor-Soll und Ist noch außerhalb des Ankunft-Toleranzbands liegen."""
         try:
             ext_move = bool(getattr(axis_state, "external_panel_move_active", False))
-            has_goal = getattr(axis_state, "last_set_sent_target_d10", None) is not None
+            lst = getattr(axis_state, "last_set_sent_target_d10", None)
+            has_goal = lst is not None
             if (
                 not bool(getattr(axis_state, "referenced", False))
                 and not ext_move
@@ -481,7 +766,12 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             ):
                 return False
             pos_d10 = int(getattr(axis_state, "pos_d10", 0))
-            tgt_d10 = int(getattr(axis_state, "target_d10", 0))
+            # Immer das zuletzt gesendete Motorziel — target_d10 kann kurz auf Ist
+            # zurückspringen und die Fahrt-Sperre sonst vorzeitig aufheben.
+            if lst is not None:
+                tgt_d10 = int(lst)
+            else:
+                tgt_d10 = int(getattr(axis_state, "target_d10", 0))
             if bool(getattr(axis_state, "position_wrap_360", True)):
                 return abs(float(shortest_delta_deg(pos_d10 / 10.0, tgt_d10 / 10.0))) > 0.25
             return abs(tgt_d10 - pos_d10) > 2
@@ -502,6 +792,37 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return True
         except Exception:
             return False
+
+    def _axis_dst_for_ui_command(self, dst: int, cmd: str, params: str) -> Optional[int]:
+        """Ziel-Slave für UI-State: Telegramm-DST oder ``Winkel;Rotor-ID`` (USB an Bridge)."""
+        try:
+            d = int(dst)
+            saz = int(self.slave_az)
+            sel = int(self.slave_el)
+            if d == saz:
+                return saz
+            if d == sel:
+                return sel
+            cmd_u = str(cmd or "").strip().upper()
+            rid = None
+            if cmd_u == "SETPOSCC":
+                _, rid = parse_setposcc_params(str(params or ""))
+            elif cmd_u == "SETPOSDG":
+                _, rid = parse_setposdg_params(str(params or ""))
+            if rid is not None:
+                if rid == saz and self.enable_az:
+                    return saz
+                if rid == sel and self.enable_el:
+                    return sel
+                return None
+            if d == int(self.master_id):
+                if self.enable_az:
+                    return saz
+                if self.enable_el:
+                    return sel
+        except Exception:
+            return None
+        return None
 
     def request_encoder_type(self) -> None:
         """Encoder-Variante vom Rotor lesen (GETENCTYPE, nur AZ-Slave)."""
@@ -659,12 +980,57 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """Absolut-Encoder (Typ 3): als referenziert behandeln, kein GETREF-Polling."""
         if self.enable_az:
             self.az.referenced = True
+            self.az.ref_status_known = True
             self.az.ref_poll_active = False
             self.az.moving = False
         if self.enable_el:
             self.el.referenced = True
+            self.el.ref_status_known = True
             self.el.ref_poll_active = False
             self.el.moving = False
+
+    def reset_statistics_bins_for_rotor_change(self) -> None:
+        """Nach Profil-/Slave-ID-Wechsel: keine GETCAL/LIVE/ACC mehr an die alte ID."""
+        try:
+            self._abort_acc_bins_fetch_only()
+        except Exception:
+            pass
+        self._cal_bins_inflight_az = False
+        self._cal_bins_inflight_el = False
+        self._cal_bins_fetched_az = False
+        self._cal_bins_fetched_el = False
+        self._live_bins_inflight_az = False
+        self._live_bins_inflight_el = False
+        self._acc_bins_stats_initial_az = False
+        self._acc_bins_stats_initial_el = False
+        self._acc_bins_compass_initial_az = False
+        self._acc_bins_compass_initial_el = False
+        self._last_cal_state_az = 0.0
+        self._last_cal_state_el = 0.0
+        self._last_live_bins_az = 0.0
+        self._last_live_bins_el = 0.0
+        self._last_acc_bins_az = 0.0
+        self._last_acc_bins_el = 0.0
+        for ax in (self.az, self.el):
+            try:
+                ax.cal_bins_stage_cw = [None, None, None]
+                ax.cal_bins_stage_ccw = [None, None, None]
+                ax.cal_bins_cw = None
+                ax.cal_bins_ccw = None
+                ax.live_bins_cw = None
+                ax.live_bins_ccw = None
+                ax.acc_bins_cw = None
+                ax.acc_bins_ccw = None
+                ax.cal_state = 0
+                ax.cal_progress = 0
+                ax.cal_stage = 0
+                ax.cal_valid = None
+            except Exception:
+                pass
+        try:
+            self.hw.clear_pending("rotor_id_change")
+        except Exception:
+            pass
 
     def set_statistics_window_open(self, open: bool) -> None:
         """Statistik-Fenster offen/geschlossen. Nur wenn offen: CAL/LIVE/ACC pollen."""
@@ -704,14 +1070,32 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         if bool(el) and not pe:
             self._acc_bins_compass_initial_el = False
 
-    def set_compass_window_open(self, open: bool) -> None:
-        """Kompass-Fenster offen/geschlossen."""
-        self._compass_window_open = bool(open)
-        # Strom-Flags immer leeren: beim Öffnen kamen sonst stale Werte aus CompassWindow-Init
-        # (cfg) bis zur nächsten Heatmap-Änderung — dann lief GETACCBINS trotz abgewählter Strom-Heatmap.
-        self._compass_strom_heatmap_az = False
-        self._compass_strom_heatmap_el = False
-        if bool(open):
+    def set_compass_window_open(self, open: bool, source: str = "") -> None:
+        """Kompass-Fenster offen/geschlossen (Desktop und/oder Web).
+
+        ``source``: ``desktop`` / ``web`` — ein Client darf den anderen nicht schließen.
+        Ohne Source (Tests): einfaches An/Aus.
+        """
+        src = str(source or "").strip().lower()
+        if src not in ("desktop", "web"):
+            src = ""
+        sources = getattr(self, "_compass_open_sources", None)
+        if not isinstance(sources, set):
+            sources = set()
+            self._compass_open_sources = sources
+        if open:
+            sources.add(src or "any")
+        elif src:
+            sources.discard(src)
+        else:
+            sources.clear()
+        now_open = bool(sources)
+        was_open = bool(self._compass_window_open)
+        self._compass_window_open = now_open
+        if not now_open:
+            self._compass_strom_heatmap_az = False
+            self._compass_strom_heatmap_el = False
+        elif not was_open:
             self._acc_bins_compass_initial_az = False
             self._acc_bins_compass_initial_el = False
 
@@ -772,7 +1156,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         except Exception:
             pass
 
-    def request_antenna_offsets(self) -> None:
+    def request_antenna_offsets(self, *, priority: int = 4) -> None:
         """AZ-Antennenversätze vom Rotor lesen (GETANTOFF1–3). EL-Versatz entfällt."""
         if self.enable_az:
             for cmd in ("GETANTOFF1", "GETANTOFF2", "GETANTOFF3"):
@@ -782,7 +1166,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         expect_prefix=None,
                         timeout_s=0.5,
                         on_done=None,
-                        priority=4,
+                        priority=int(priority),
                     )
                 )
 
@@ -1294,6 +1678,14 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         except Exception:
             prev = 0.0
         self._idle_poll_defer_until = max(prev, now + _SETPOSDG_POLL_GRACE_S)
+        # Feststeckendes Reply-Gate (z. B. Display-GET an anderen Slave) sofort lösen,
+        # damit Positions-Polls während der Fahrt nicht hinter Timeouts warten.
+        try:
+            clearer = getattr(self.hw, "clear_reply_gate", None)
+            if callable(clearer):
+                clearer()
+        except Exception:
+            pass
 
     def note_foreign_master_activity(
         self,
@@ -1689,12 +2081,15 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
           (GETPOSDG) setzt moving wieder auf False, sobald das Ziel erreicht ist.
         """
         try:
-            # Achse anhand der konfigurierten IDs bestimmen
+            # Achse anhand der konfigurierten IDs oder ``;Rotor-ID`` (USB an Bridge)
             axis = None
-            if dst == int(self.slave_az):
+            axis_dst = self._axis_dst_for_ui_command(int(dst), str(cmd), str(params or ""))
+            if axis_dst == int(self.slave_az):
                 axis = self.az
-            elif dst == int(self.slave_el):
+                dst = int(axis_dst)
+            elif axis_dst == int(self.slave_el):
                 axis = self.el
+                dst = int(axis_dst)
             else:
                 return
 
@@ -1762,25 +2157,41 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 # Mitschnitt: veraltetes SETPOSCC (Encoder) nach Tastatur-SETPOSDG würde
                 # compass_target_d10 setzen und den Sollzeiger vorübergehend auf alte Werte ziehen
                 # (_effective_* bevorzugt compass_target). Gleiches 10s-Fenster wie bei PST vs. Manuell.
+                # Nicht anwenden auf den konfigurierten Hardware-Controller: nach einem
+                # Kompass-Klick muss dessen SETPOSCC den Sollzeiger sofort nachziehen.
                 if d10 is not None and from_bus_sniff:
                     try:
-                        if int(dst) == int(self.slave_az):
-                            man_ts = float(getattr(self, "_compass_manual_az_ts", 0.0) or 0.0)
-                        elif int(dst) == int(self.slave_el):
-                            man_ts = float(getattr(self, "_compass_manual_el_ts", 0.0) or 0.0)
-                        else:
-                            man_ts = 0.0
-                        if (time.time() - man_ts) < 10.0:
-                            td = int(getattr(axis, "target_d10", 0))
-                            di = int(d10)
-                            if bool(getattr(axis, "position_wrap_360", True)):
-                                if abs(shortest_delta_deg(di / 10.0, td / 10.0)) > 0.25:
-                                    return
-                            else:
-                                if abs(di - td) > 2:
-                                    return
+                        panel = self._is_external_panel_controller(bus_src)
                     except Exception:
-                        pass
+                        panel = False
+                    if not panel:
+                        try:
+                            if int(dst) == int(self.slave_az):
+                                man_ts = float(getattr(self, "_compass_manual_az_ts", 0.0) or 0.0)
+                            elif int(dst) == int(self.slave_el):
+                                man_ts = float(getattr(self, "_compass_manual_el_ts", 0.0) or 0.0)
+                            else:
+                                man_ts = 0.0
+                            if (time.time() - man_ts) < 10.0:
+                                td = int(getattr(axis, "target_d10", 0))
+                                di = int(d10)
+                                if bool(getattr(axis, "position_wrap_360", True)):
+                                    if abs(shortest_delta_deg(di / 10.0, td / 10.0)) > 0.25:
+                                        return
+                                else:
+                                    if abs(di - td) > 2:
+                                        return
+                        except Exception:
+                            pass
+                    else:
+                        # Controller übernimmt: Kompass-Manual-Sperre beenden
+                        try:
+                            if int(dst) == int(self.slave_az):
+                                self._compass_manual_az_ts = 0.0
+                            elif int(dst) == int(self.slave_el):
+                                self._compass_manual_el_ts = 0.0
+                        except Exception:
+                            pass
                 if d10 is not None:
                     axis.compass_target_d10 = d10
                 try:
@@ -1811,16 +2222,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             if cmd == "SETPOSDG":
                 # params ist i.d.R. Grad als Float mit "," oder ".".
                 try:
-                    p = str(params).strip()
-                    if ";" in p:
-                        p = p.split(";")[-1]
-                    # Manche Serial-Mitschnitte enthalten zusätzliche Felder mit ":".
-                    # Für SETPOSDG nur den ersten Winkelteil verwenden.
-                    if ":" in p:
-                        p = p.split(":", 1)[0]
-                    p = p.replace(" ", "")
-                    v = float(p.replace(",", "."))
-                    d10 = int(round(v * 10.0))
+                    v, _rid = parse_setposdg_params(str(params or ""))
+                    d10 = int(round(float(v) * 10.0)) if v is not None else None
                 except Exception:
                     d10 = None
 
@@ -1911,6 +2314,9 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         if force:
             if not self.enable_az:
                 return
+            if self._block_drive_until_ready("AZ"):
+                return
+            self._jog_hold_pending_map().pop("az", None)
             self.az.compass_target_d10 = None
             self.az.external_panel_move_active = False
             self.az.target_d10 = d10
@@ -1938,6 +2344,9 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         if force:
             if not self.enable_el:
                 return
+            if self._block_drive_until_ready("EL"):
+                return
+            self._jog_hold_pending_map().pop("el", None)
             self.el.compass_target_d10 = None
             self.el.external_panel_move_active = False
             self.el.target_d10 = d10
@@ -2038,6 +2447,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
         if not self.enable_az:
             return
+        if self._block_drive_until_ready("AZ"):
+            return
 
         # Bereits am Ziel (inkl. 0° ↔ Homing-Marke 360,0°) und nicht fahren → nichts senden.
         # Sonst: nach Homing mit SETHOMERETURN=0 (Ist=360) und PST/SPID-Echo 0° → SETPOSDG:0.
@@ -2090,6 +2501,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.el.target_d10 = el_d10
 
         if not self.enable_el:
+            return
+        if self._block_drive_until_ready("EL"):
             return
 
         if (not self.el.moving) and (abs(self.el.pos_d10 - el_d10) <= 1):
@@ -2180,6 +2593,227 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.el.moving = False
         self.el.compass_target_d10 = None
 
+    # -------------------- JOG (Taste halten = Rotor dreht) --------------------
+    JOG_REPEAT_S = 0.08  # empfohlenes Wiederholintervall der UI (50–100 ms)
+    _JOG_INFLIGHT_MAX_S = 0.35  # ohne Antwort spätestens dann erneut senden (Firmware-Timeout 0,5 s)
+
+    def jog_az(self, direction: int) -> None:
+        """AZ-JOG: ``1`` = Richtung 0° (links/CCW), ``2`` = Richtung Achsmaximum (rechts/CW), ``0`` = weich stoppen.
+
+        Die UI ruft bei gehaltener Taste alle ~80 ms ``jog_az(1|2)`` auf; beim Loslassen
+        einmal ``jog_az(0)``. Bleibt das Wiederholen aus, stoppt die Firmware selbst
+        (``SETJOGTOUT``, Standard 500 ms). Geschwindigkeit über SETPWM, Zielwinkel weiter SETPOSDG.
+        Beim Loslassen wird die zuletzt angezeigte Position per SETPOSDG gehalten.
+        """
+        self._jog_axis("AZ", direction)
+
+    def jog_el(self, direction: int) -> None:
+        """EL-JOG: ``1`` = Richtung 0° (nach unten), ``2`` = Richtung Achsmaximum (nach oben), ``0`` = weich stoppen.
+
+        Gleiches Verhalten wie :meth:`jog_az`.
+        """
+        self._jog_axis("EL", direction)
+
+    def _jog_axis(self, axis: str, direction: int) -> None:
+        axu = str(axis).upper()
+        is_az = axu == "AZ"
+        if not (self.enable_az if is_az else self.enable_el):
+            return
+        try:
+            d = int(direction)
+        except (TypeError, ValueError):
+            return
+        if d not in (0, 1, 2):
+            return
+        now = time.time()
+        ax = self.az if is_az else self.el
+        slave = self.slave_az if is_az else self.slave_el
+        key = "az" if is_az else "el"
+        a_active = f"_jog_{key}_active"
+        a_inflight = f"_jog_{key}_inflight_ts"
+        a_manual = f"_compass_manual_{key}_ts"
+        if d == 0:
+            was_active = bool(getattr(self, a_active, False))
+            setattr(self, a_active, False)
+            setattr(self, a_inflight, 0.0)
+            if not was_active:
+                return
+            self._send_jog(slave, 0, axu)
+            # Nach dem Loslassen noch kurz schnell pollen (Ausrollen sichtbar machen).
+            setattr(self, f"_jog_{key}_fast_until", now + self._JOG_FAST_POLL_TAIL_S)
+            # Der Rotor rollt nach JOG:0 noch aus und wird per SETPOSDG auf die zuletzt
+            # angezeigte Ist-Position gehalten. Ist der letzte GETPOSDG-Wert zu alt (kurzer
+            # Klick, noch keine Antwort seit dem Drücken), erst eine frische Position abwarten.
+            ack = float(getattr(ax, "pos_poll_last_ack_ts", 0.0) or 0.0)
+            if (now - ack) <= self._JOG_FRESH_POS_S:
+                self._jog_hold_here(axu, now)
+            else:
+                self._jog_hold_pending_map()[key] = now
+                self._jog_force_pos_poll(axu, now)
+            return
+
+        self._jog_hold_pending_map().pop(key, None)
+        if self._block_drive_until_ready(axu):
+            return
+        first_run = not bool(getattr(self, a_active, False))
+        if first_run:
+            self._abort_stats_fetch_and_cooldown()
+            try:
+                self.clear_foreign_master_follow(ax)
+            except Exception:
+                pass
+        setattr(self, a_active, True)
+        setattr(self, a_manual, now)  # manuelle Bedienung hat Vorrang (PST/rotctld 10 s)
+        try:
+            self.note_setposdg_poll_restrict()
+        except Exception:
+            pass
+        try:
+            # Kein festes Ziel: Soll folgt dem Ist, Fahrterkennung läuft über Positionsänderung.
+            ax.target_d10 = int(ax.pos_d10)
+            ax.last_set_sent_target_d10 = None
+            ax.compass_target_d10 = None
+            ax.external_panel_move_active = False
+            ax.moving = True
+            ax.last_motion_ts = now
+        except Exception:
+            pass
+        inflight = float(getattr(self, a_inflight, 0.0) or 0.0)
+        if inflight > 0.0 and (now - inflight) < self._JOG_INFLIGHT_MAX_S:
+            return  # vorheriges JOG noch unterwegs; nicht den Bus fluten
+        setattr(self, a_inflight, now)
+        self._send_jog(slave, d, axu)
+        if first_run:
+            # Sofort eine Position abfragen, damit auch kurze Klicks sichtbar werden.
+            self._jog_force_pos_poll(axu, now)
+
+    # Während/kurz nach JOG GETPOSDG deutlich schneller als im normalen Fahrt-Takt (0,25 s).
+    _JOG_FAST_POLL_S = 0.08
+    _JOG_FAST_POLL_TAIL_S = 1.0
+    _JOG_FRESH_POS_S = 0.15  # so jung muss das letzte ACK_GETPOSDG beim Loslassen sein
+    _JOG_HOLD_MAX_WAIT_S = 0.6  # frische Position abwarten, dann trotzdem halten
+
+    def _jog_hold_pending_map(self) -> dict:
+        m = getattr(self, "_jog_hold_pending", None)
+        if m is None:
+            m = {}
+            self._jog_hold_pending = m
+        return m
+
+    def _jog_fast_poll_axis(self, axis_state: AxisState, now: Optional[float] = None) -> bool:
+        """True, solange JOG auf dieser Achse läuft (oder gerade losgelassen wurde)."""
+        t = time.time() if now is None else float(now)
+        for key, ax in (("az", self.az), ("el", self.el)):
+            if ax is axis_state:
+                if bool(getattr(self, f"_jog_{key}_active", False)):
+                    return True
+                return t < float(getattr(self, f"_jog_{key}_fast_until", 0.0) or 0.0)
+        return False
+
+    def _jog_fast_poll_any(self, now: float) -> bool:
+        return self._jog_fast_poll_axis(self.az, now) or self._jog_fast_poll_axis(self.el, now)
+
+    def _jog_force_pos_poll(self, axu: str, now: float) -> None:
+        """GETPOSDG sofort einreihen (Next-Due-Gate überspringen)."""
+        is_az = axu == "AZ"
+        ax = self.az if is_az else self.el
+        try:
+            ax.pos_poll_next_due_ts = 0.0
+            self._poll_pos(
+                self.slave_az if is_az else self.slave_el,
+                ax,
+                axu,
+                now,
+                expected_period_s=self._JOG_FAST_POLL_S,
+                high_priority=True,
+            )
+        except Exception:
+            pass
+
+    def _jog_hold_here(self, axu: str, now: float) -> None:
+        """Aktuell angezeigte Ist-Position per SETPOSDG als Ziel halten."""
+        is_az = axu == "AZ"
+        ax = self.az if is_az else self.el
+        slave = self.slave_az if is_az else self.slave_el
+        try:
+            hold_d10 = int(ax.pos_d10)
+        except Exception:
+            return
+        try:
+            ax.compass_target_d10 = None
+            ax.external_panel_move_active = False
+            ax.target_d10 = hold_d10
+            setattr(self, "_compass_manual_az_ts" if is_az else "_compass_manual_el_ts", now)
+            self._send_setpos(slave, hold_d10, axis=axu)
+            ax.last_set_sent_target_d10 = hold_d10
+            ax.last_set_sent_ts = time.time()
+            ax.last_motion_ts = now
+            ax.moving = True  # Ausrollen/Rückfahrt; Polling setzt moving nach Stillstand zurück
+            ax.setposcc_ignore_until_ts = time.time() + _SETPOSCC_SUPPRESS_S
+        except Exception:
+            pass
+
+    def _tick_jog_hold(self, now: float) -> None:
+        """Ausstehendes Halten nach Loslassen: sobald ein GETPOSDG nach dem Loslassen kam."""
+        pend = getattr(self, "_jog_hold_pending", None)
+        if not pend:
+            return
+        for key in list(pend.keys()):
+            t0 = float(pend.get(key, 0.0) or 0.0)
+            ax = self.az if key == "az" else self.el
+            ack = float(getattr(ax, "pos_poll_last_ack_ts", 0.0) or 0.0)
+            if ack >= t0 or (now - t0) > self._JOG_HOLD_MAX_WAIT_S:
+                pend.pop(key, None)
+                self._jog_hold_here(key.upper(), now)
+            else:
+                # Falls noch kein GETPOSDG unterwegs ist, eines anstoßen.
+                self._jog_force_pos_poll(key.upper(), now)
+
+    def _send_jog(self, dst: int, direction: int, axis: str = "AZ") -> None:
+        line = build(self.master_id, int(dst), "JOG", str(int(direction)))
+        is_run = int(direction) in (1, 2)
+        is_az = str(axis).upper() == "AZ"
+        key = "az" if is_az else "el"
+        a_active = f"_jog_{key}_active"
+        a_inflight = f"_jog_{key}_inflight_ts"
+
+        def done(tel: Optional[Telegram], err: Optional[str]) -> None:
+            if is_run:
+                setattr(self, a_inflight, 0.0)
+            if err or tel is None:
+                return
+            cmd_u = str(tel.cmd or "").strip().upper()
+            if cmd_u.startswith("NAK_JOG"):
+                reason = str(tel.params or "").strip() or "?"
+                setattr(self, a_active, False)
+                self._jog_last_nak = (reason, time.time())
+                try:
+                    (self.az if is_az else self.el).moving = False
+                except Exception:
+                    pass
+                now = time.time()
+                if (now - float(getattr(self, "_jog_nak_log_ts", 0.0) or 0.0)) > 1.5:
+                    self._jog_nak_log_ts = now
+                    try:
+                        self.log.write("WARN", f"JOG {key.upper()} abgelehnt: {reason}")
+                    except Exception:
+                        pass
+
+        try:
+            self.hw.send_request(
+                HwRequest(
+                    line=line,
+                    expect_prefix="ACK_JOG",
+                    timeout_s=0.4,
+                    on_done=done,
+                    priority=0,
+                    dont_disconnect_on_timeout=True,
+                )
+            )
+        except Exception:
+            if is_run:
+                setattr(self, a_inflight, 0.0)
+
     def park_all(self) -> None:
         """Parken: Hom-Winkel per SETPOSDG anfahren (sichtbar für alle Bus-Teilnehmer)."""
         if self.enable_az:
@@ -2189,6 +2823,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
     def park_az(self) -> None:
         if not self.enable_az:
+            return
+        if self._block_drive_until_ready("AZ"):
             return
         self._abort_stats_fetch_and_cooldown()
         if self._drive_to_home_pos("AZ"):
@@ -2202,6 +2838,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
     def park_el(self) -> None:
         if not self.enable_el:
+            return
+        if self._block_drive_until_ready("EL"):
             return
         self._abort_stats_fetch_and_cooldown()
         if self._drive_to_home_pos("EL"):

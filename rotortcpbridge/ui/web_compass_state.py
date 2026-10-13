@@ -9,6 +9,7 @@ from typing import Any
 from PySide6.QtGui import QColor
 
 from ..angle_utils import (
+    antenna_bearing_from_rotor_and_offset,
     az_max_d10_from_axis,
     az_pos_deg_from_d10,
     clamp_el,
@@ -275,6 +276,7 @@ def get_web_compass_payload(mw: Any) -> dict:
     max_d10 = az_max_d10_from_axis(getattr(mw.ctrl, "az", None))
     now = time.time()
     ist = None
+    ist_needle = None
     rotor_raw = None
     try:
         pos_d10 = int(mw.ctrl.az.pos_d10)
@@ -284,14 +286,18 @@ def get_web_compass_payload(mw: Any) -> dict:
             float(mw.ctrl.az.get_smoothed_pos_d10f(now)),
             max_d10=max_d10,
         )
-        ist = wrap_deg(float(smooth) + float(off))
+        # Zahlen wie Desktop (ggf. >360°); Zeiger immer 0..360°.
+        ist = antenna_bearing_from_rotor_and_offset(smooth, off, max_d10=max_d10)
+        ist_needle = wrap_deg(float(smooth) + float(off))
     except Exception:
         pass
     soll = None
+    soll_needle = None
     try:
         td = web_effective_az_target_d10(mw)
         rotor_t = az_pos_deg_from_d10(td, max_d10=max_d10)
-        soll = wrap_deg(float(rotor_t) + float(off))
+        soll = antenna_bearing_from_rotor_and_offset(rotor_t, off, max_d10=max_d10)
+        soll_needle = wrap_deg(float(rotor_t) + float(off))
         if (
             not bool(getattr(mw.ctrl.az, "referenced", False))
             and getattr(mw.ctrl.az, "compass_target_d10", None) is None
@@ -301,6 +307,7 @@ def get_web_compass_payload(mw: Any) -> dict:
             and not bool(getattr(mw.ctrl.az, "moving", False))
         ):
             soll = ist
+            soll_needle = ist_needle
     except Exception:
         pass
 
@@ -308,25 +315,33 @@ def get_web_compass_payload(mw: Any) -> dict:
     web_tick_dwell(mw, rotor_raw, moving, ant_idx)
     web_tick_scan(mw)
 
-    wind_on = (
-        bool(getattr(mw.ctrl, "wind_enabled", False))
-        if getattr(mw.ctrl, "wind_enabled_known", False)
-        else False
+    # Nur anzeigen, wenn GETWINDENABLE=1 bekannt ist — kein Fallback auf Telemetrie.
+    wind_on = bool(getattr(mw.ctrl, "wind_enabled_known", False)) and bool(
+        getattr(mw.ctrl, "wind_enabled", False)
     )
     wdir = None
     wkmh = None
-    try:
-        tel = getattr(mw.ctrl.az, "telemetry", None)
-        if tel is not None:
-            wdir = getattr(tel, "wind_dir_deg", None)
-            wkmh = getattr(tel, "wind_kmh", None)
-            if not wind_on and (wdir is not None or wkmh is not None):
-                wind_on = True
-    except Exception:
-        pass
+    if wind_on:
+        try:
+            tel = getattr(mw.ctrl.az, "telemetry", None)
+            if tel is not None:
+                wdir = getattr(tel, "wind_dir_deg", None)
+                wkmh = getattr(tel, "wind_kmh", None)
+        except Exception:
+            pass
     mode = str(ui.get("wind_dir_display", "to") or "to").strip().lower()
     if mode not in ("from", "to"):
         mode = "to"
+    # Temperaturen (AZ-Telemetrie GETTEMPA/GETTEMPM) — unabhängig vom Windmesser
+    temp_amb = None
+    temp_mot = None
+    try:
+        _tel_t = getattr(mw.ctrl.az, "telemetry", None)
+        if _tel_t is not None:
+            temp_amb = getattr(_tel_t, "temp_ambient_c", None)
+            temp_mot = getattr(_tel_t, "temp_motor_c", None)
+    except Exception:
+        pass
 
     modes = web_heatmap_az_modes(mw)
     opening = float(params.get("opening", 30.0) or 30.0)
@@ -360,9 +375,14 @@ def get_web_compass_payload(mw: Any) -> dict:
     el_soll = None
     if enable_el:
         try:
-            el_ist = clamp_el(float(getattr(mw.ctrl.el, "pos_d10", 0)) / 10.0, el_max)
+            el_ist = clamp_el(
+                float(mw.ctrl.el.get_smoothed_pos_d10f(now)) / 10.0, el_max
+            )
         except Exception:
-            el_ist = None
+            try:
+                el_ist = clamp_el(float(getattr(mw.ctrl.el, "pos_d10", 0)) / 10.0, el_max)
+            except Exception:
+                el_ist = None
         try:
             el_soll = clamp_el(float(getattr(mw.ctrl.el, "target_d10", 0)) / 10.0, el_max)
         except Exception:
@@ -378,10 +398,22 @@ def get_web_compass_payload(mw: Any) -> dict:
     el_scale = parse_heatmap_scale(ui, "el") if enable_el else None
 
     dgcal_az = None
+    dgcal_el = None
     try:
         v = getattr(mw.ctrl.az, "dgcal_d10", None)
         if v is not None:
             dgcal_az = float(v) / 10.0
+        elif bool(getattr(mw.ctrl, "enable_az", True)):
+            mw.ctrl.request_dgcal("az")  # gedrosselt; Antwort füllt dgcal_d10
+    except Exception:
+        pass
+    try:
+        if enable_el:
+            v = getattr(mw.ctrl.el, "dgcal_d10", None)
+            if v is not None:
+                dgcal_el = float(v) / 10.0
+            else:
+                mw.ctrl.request_dgcal("el")
     except Exception:
         pass
 
@@ -409,11 +441,20 @@ def get_web_compass_payload(mw: Any) -> dict:
             "ist_reverse": t("compass.ist_reverse_label"),
             "soll": t("compass.soll_label"),
             "wind": t("compass.wind_label"),
+            "temp_title": t("compass.temp_label"),
+            "temp_ambient": t("compass.temp_ambient_short"),
+            "temp_motor": t("compass.temp_motor_short"),
             "connection": t("compass.status_verbindung"),
+            "rig": "RIG",
             "control": t("compass.steuerung_label"),
             "fav_header": t("compass.fav_header"),
             "antenna": t("compass.antenna_header"),
+            "profile": t("compass.profile_header"),
             "stop_az": t("compass.btn_stop_az"),
+            "jog_left": t("compass.btn_jog_left"),
+            "jog_right": t("compass.btn_jog_right"),
+            "jog_down": t("compass.btn_jog_down"),
+            "jog_up": t("compass.btn_jog_up"),
             "ref_az": t("compass.btn_ref_az"),
             "stop_el": t("compass.btn_stop_el"),
             "ref_el": t("compass.btn_ref_el"),
@@ -442,12 +483,78 @@ def get_web_compass_payload(mw: Any) -> dict:
             "search_searching": t("map.search_searching"),
             "search_not_found": t("map.search_not_found_body"),
             "search_error": t("map.search_error_title"),
+            "profile_sync_title": t("map.web_profile_sync_title"),
+            "profile_sync_body": t("map.web_profile_sync_body"),
+            "web_serial": t("map.web_serial_header"),
+            "web_serial_connect": t("map.web_serial_connect"),
+            "web_serial_disconnect": t("map.web_serial_disconnect"),
+            "web_serial_connected": t("map.web_serial_connected"),
+            "web_serial_idle": t("map.web_serial_idle"),
+            "web_serial_unsupported": t("map.web_serial_unsupported"),
+            "web_serial_need_https": t("map.web_serial_need_https"),
+            "web_serial_banner_https": t("map.web_serial_banner_https"),
+            "web_serial_open_https": t("map.web_serial_open_https"),
+            "web_serial_hint_https_steps": t("map.web_serial_hint_https_steps"),
+            "web_serial_hint": t("map.web_serial_hint"),
+            "web_serial_hint_local": t("map.web_serial_hint_local"),
+            "web_serial_error_title": t("map.web_serial_error_title"),
         }
     )
 
+    drive_sync = False
+    try:
+        drive_sync = bool(mw.ctrl.drive_sync_hold_active())
+    except Exception:
+        drive_sync = False
+    profile_moving = False
+    try:
+        profile_moving = bool(mw.ctrl.is_any_axis_moving())
+    except Exception:
+        profile_moving = False
+
+    # IDs für Web Serial (Browser ↔ Display USB)
+    try:
+        rb = mw.cfg.get("rotor_bus", {}) or {}
+        chw = mw.cfg.get("controller_hw", {}) or {}
+        mid = int(rb.get("master_id", 0) or 0)
+        cont_id = int(chw.get("cont_id", 2) or 2)
+        # Browser-Master ≠ Controller-Master (sonst ACK-Zuordnung/PcProxy kaputt)
+        pc_id = mid if mid > 0 else 1
+        if pc_id == cont_id:
+            pc_id = 1 if cont_id != 1 else 3
+        az_bus_id = int(chw.get("az_rotor_id", 0) or 0) or int(rb.get("slave_az", 20) or 20)
+        el_bus_id = int(chw.get("el_rotor_id", 0) or 0)
+        if el_bus_id <= 0 and enable_el:
+            el_bus_id = int(rb.get("slave_el", 0) or 0) or int(
+                getattr(mw.ctrl, "el_id", 0) or 0
+            ) or 21
+    except Exception:
+        pc_id, cont_id, az_bus_id, el_bus_id = 1, 2, 20, 21
+
+    rig = {"show": False, "text": "—", "oob": False}
+    try:
+        rf = mw._rig_frequency_map_fields()
+        rig = {
+            "show": bool(rf.get("rig_freq_show", False)),
+            "text": str(rf.get("rig_freq_text", "—")),
+            "oob": bool(rf.get("rig_freq_out_of_band", False)),
+        }
+    except Exception:
+        pass
+
     return {
         "enable_el": enable_el,
+        "rig": rig,
         "ref_visible": not hide_homing,
+        "drive_sync": bool(drive_sync),
+        "profile_locked": bool(drive_sync) or profile_moving,
+        "bus": {
+            "pc_id": pc_id,
+            "master_id": pc_id,
+            "cont_id": cont_id,
+            "az_id": az_bus_id,
+            "el_id": el_bus_id,
+        },
         "antenna_idx": ant_idx,
         "antennas": antennas,
         "favorites": [
@@ -457,7 +564,9 @@ def get_web_compass_payload(mw: Any) -> dict:
         "labels": labels,
         "az": {
             "ist": ist,
+            "ist_needle": ist_needle if ist_needle is not None else ist,
             "soll": soll,
+            "soll_needle": soll_needle if soll_needle is not None else soll,
             "moving": moving,
             "online": bool(getattr(mw.ctrl.az, "online", False)),
             "referenced": bool(getattr(mw.ctrl.az, "referenced", False)),
@@ -478,6 +587,8 @@ def get_web_compass_payload(mw: Any) -> dict:
             "wind_dir": wdir,
             "wind_kmh": wkmh,
             "wind_mode": mode,
+            "temp_ambient": temp_amb,
+            "temp_motor": temp_mot,
             "dgcal": dgcal_az,
             **_web_pwm_fields(getattr(mw.ctrl, "az", None), enabled_axis=True),
         },
@@ -490,6 +601,7 @@ def get_web_compass_payload(mw: Any) -> dict:
             "referenced": bool(getattr(mw.ctrl.el, "referenced", False)) if enable_el else False,
             "ref_blink": bool(getattr(mw.ctrl.el, "ref_poll_active", False)) if enable_el else False,
             "heatmap_mode": el_heat if el_heat in ("strom", "off") else "off",
+            "dgcal": dgcal_el,
             "bins_cw": el_bins_cw,
             "bins_ccw": el_bins_ccw,
             "heatmap_scale": list(el_scale) if el_scale is not None else None,
@@ -595,8 +707,37 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
         except Exception:
             pass
         return True
+    if act == "jog_az":
+        # Taste gehalten: Browser wiederholt dir=1|2 alle ~80 ms, beim Loslassen dir=0.
+        try:
+            direction = int(data.get("dir", 0))
+        except (TypeError, ValueError):
+            direction = 0
+        if direction in (1, 2):
+            mw._web_scan_active = False
+            mw._web_cc_latch_az_d10 = None
+            mw._web_cc_latch_az_ts = 0.0
+        try:
+            mw.ctrl.jog_az(direction)
+        except Exception:
+            pass
+        return True
+    if act == "jog_el":
+        try:
+            direction = int(data.get("dir", 0))
+        except (TypeError, ValueError):
+            direction = 0
+        try:
+            mw.ctrl.jog_el(direction)
+        except Exception:
+            pass
+        return True
     if act == "stop_az":
         mw._web_scan_active = False
+        try:
+            mw.ctrl.jog_az(0)
+        except Exception:
+            pass
         try:
             pos = float(az_pos_deg_from_d10(int(mw.ctrl.az.pos_d10)))
             mw.ctrl.set_az_deg(pos, force=True)
@@ -605,6 +746,10 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
         return True
     if act == "stop_el":
         if bool(getattr(mw.ctrl, "enable_el", False)):
+            try:
+                mw.ctrl.jog_el(0)
+            except Exception:
+                pass
             try:
                 pos = float(getattr(mw.ctrl.el, "pos_d10", 0)) / 10.0
                 mw.ctrl.set_el_deg(pos, force=True)
@@ -692,10 +837,7 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
         # Vereinfacht: Peilwinkel → SETDGCAL über Controller falls vorhanden
         if data.get("clear"):
             try:
-                if hasattr(mw.ctrl, "set_dgcal_az"):
-                    mw.ctrl.set_dgcal_az(0.0)
-                elif hasattr(mw.ctrl, "send_dgcal"):
-                    mw.ctrl.send_dgcal(0)
+                mw.ctrl.set_dgcal("az", 0.0)
             except Exception:
                 pass
             return True
@@ -718,19 +860,15 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
                     cur = float(v) / 10.0
             except Exception:
                 pass
-            new_v = cur + delta
-            if hasattr(mw.ctrl, "set_dgcal_az"):
-                mw.ctrl.set_dgcal_az(new_v)
-            elif hasattr(mw.ctrl, "send_setdgcal"):
-                mw.ctrl.send_setdgcal(int(round(new_v * 10)))
+            new_v = max(-360.0, min(360.0, cur + delta))
+            mw.ctrl.set_dgcal("az", new_v)
         except Exception:
             pass
         return True
     if act == "dgcal_el":
         if data.get("clear"):
             try:
-                if hasattr(mw.ctrl, "set_dgcal_el"):
-                    mw.ctrl.set_dgcal_el(0.0)
+                mw.ctrl.set_dgcal("el", 0.0)
             except Exception:
                 pass
             return True
@@ -741,9 +879,8 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
             v = getattr(mw.ctrl.el, "dgcal_d10", None)
             if v is not None:
                 cur = float(v) / 10.0
-            new_v = cur + (true_deg - ist)
-            if hasattr(mw.ctrl, "set_dgcal_el"):
-                mw.ctrl.set_dgcal_el(new_v)
+            new_v = max(-360.0, min(360.0, cur + (true_deg - ist)))
+            mw.ctrl.set_dgcal("el", new_v)
         except Exception:
             pass
         return True

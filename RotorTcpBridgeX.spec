@@ -58,6 +58,8 @@ a = Analysis(
         ('rotortcpbridge\\InstallerSmall.png',       'rotortcpbridge'),
         ('rotortcpbridge\\locales\\de.json',         'rotortcpbridge\\locales'),
         ('rotortcpbridge\\locales\\en.json',         'rotortcpbridge\\locales'),
+        ('rotortcpbridge\\certs\\map_webserver.crt', 'rotortcpbridge\\certs'),
+        ('rotortcpbridge\\certs\\map_webserver.key', 'rotortcpbridge\\certs'),
         ('rotortcpbridge\\rig_bridge\\Supported-Radios-0.md', 'rotortcpbridge\\rig_bridge'),
         ('rotortcpbridge\\static\\leaflet.min.js',   'rotortcpbridge\\static'),
         ('rotortcpbridge\\static\\leaflet.css',      'rotortcpbridge\\static'),

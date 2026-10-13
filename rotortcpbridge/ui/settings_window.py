@@ -1154,6 +1154,19 @@ class SettingsWindow(QDialog):
         self.chk_cont_usb_remote.setToolTip(tt("settings.controller_usb_remote_tooltip"))
         self.chk_cont_usb_remote.toggled.connect(self._on_cont_usb_remote_toggled)
         vl_ctrl.addWidget(self.chk_cont_usb_remote)
+        self.chk_cont_web = QCheckBox(t("settings.controller_web"))
+        try:
+            _web_on = int(_chw.get("link_mode", 0)) == 2
+        except (TypeError, ValueError):
+            _web_on = False
+        if _web_on:
+            self.chk_cont_usb_remote.blockSignals(True)
+            self.chk_cont_usb_remote.setChecked(False)
+            self.chk_cont_usb_remote.blockSignals(False)
+        self.chk_cont_web.setChecked(_web_on)
+        self.chk_cont_web.setToolTip(tt("settings.controller_web_tooltip"))
+        self.chk_cont_web.toggled.connect(self._on_cont_web_toggled)
+        vl_ctrl.addWidget(self.chk_cont_web)
         _clink = cfg.get("controller_link") if isinstance(cfg.get("controller_link"), dict) else {}
         self._row_cont_usb_port = QWidget()
         _lay_usb = QHBoxLayout(self._row_cont_usb_port)
@@ -1704,6 +1717,9 @@ class SettingsWindow(QDialog):
         )
         self.ed_map_webserver_password.setMinimumWidth(_conn_ip_w)
         self.ed_map_webserver_password.setToolTip(tt("settings.map_webserver_password_tooltip"))
+        self.chk_map_webserver_ssl = QCheckBox(t("settings.chk_map_webserver_ssl"))
+        self.chk_map_webserver_ssl.setChecked(bool(_mws_cfg.get("ssl_enabled", False)))
+        self.chk_map_webserver_ssl.setToolTip(tt("settings.chk_map_webserver_ssl_tooltip"))
         w_map_ws = QWidget()
         fl_map_ws = QFormLayout(w_map_ws)
         fl_map_ws.setContentsMargins(0, 0, 0, 0)
@@ -1714,6 +1730,7 @@ class SettingsWindow(QDialog):
         fl_map_ws.addRow(
             t("settings.map_webserver_password"), self.ed_map_webserver_password
         )
+        fl_map_ws.addRow(self.chk_map_webserver_ssl)
         row_map_ws_status = QWidget()
         hl_map_ws = QHBoxLayout(row_map_ws_status)
         hl_map_ws.setContentsMargins(0, 0, 0, 0)
@@ -1740,6 +1757,7 @@ class SettingsWindow(QDialog):
         vl_rotor_emu.insertWidget(_ins + 1, gb_external_programs)
         vl_rotor_emu.insertWidget(_ins + 2, gb_map_airscout)
         self.chk_map_webserver_enabled.stateChanged.connect(self._on_map_webserver_toggled)
+        self.chk_map_webserver_ssl.stateChanged.connect(self._on_map_webserver_toggled)
 
         # Navigation: vertikale Liste links (scrollbar bei vielen Einträgen), Inhalt rechts
         # Breite ca. 2/3 der vorherigen Sidebar (ein Drittel schmaler)
@@ -2947,20 +2965,22 @@ class SettingsWindow(QDialog):
 
     def refresh_profiles_list(self) -> None:
         """Profil-Liste und Aktiv-Label aus dem Index neu aufbauen."""
-        from ..profile_store import get_active_profile_id, list_profiles
+        from ..profile_store import load_index
 
         if not hasattr(self, "lst_profiles"):
             return
         self._profile_list_busy = True
         try:
-            active = get_active_profile_id()
+            idx = load_index()
+            active = str(idx.get("active_id") or "")
+            profiles = list(idx.get("profiles") or [])
             cur_id = None
             item = self.lst_profiles.currentItem()
             if item is not None:
                 cur_id = item.data(Qt.ItemDataRole.UserRole)
             self.lst_profiles.clear()
             select_row = 0
-            for i, p in enumerate(list_profiles()):
+            for i, p in enumerate(profiles):
                 pid = str(p.get("id") or "")
                 name = str(p.get("name") or pid)
                 mark = t("settings.profile_active_suffix") if pid == active else ""
@@ -2976,7 +2996,7 @@ class SettingsWindow(QDialog):
             if self.lst_profiles.count() > 0:
                 self.lst_profiles.setCurrentRow(select_row)
             active_meta = next(
-                (p for p in list_profiles() if p.get("id") == active), None
+                (p for p in profiles if p.get("id") == active), None
             )
             aname = str((active_meta or {}).get("name") or active)
             self.lbl_profile_active.setText(
@@ -4191,6 +4211,7 @@ class SettingsWindow(QDialog):
         mws["listen_host"] = self.ed_map_webserver_host.text().strip() or "0.0.0.0"
         mws["listen_port"] = int(self.sp_map_webserver_port.value())
         mws["password"] = self.ed_map_webserver_password.text()
+        mws["ssl_enabled"] = bool(self.chk_map_webserver_ssl.isChecked())
 
     def _apply_map_webserver_live(self, *, show_error: bool = True) -> None:
         """Karten-Webserver anhand der aktuellen Config starten/neu binden/stoppen."""
@@ -4208,6 +4229,7 @@ class SettingsWindow(QDialog):
                 ok, err = srv.restart(
                     str(mws.get("listen_host", "0.0.0.0")),
                     int(mws.get("listen_port", 80)),
+                    ssl_enabled=bool(mws.get("ssl_enabled", False)),
                 )
                 if not ok:
                     # Checkbox/Config zurücksetzen, damit UI und Realität übereinstimmen
@@ -4271,8 +4293,14 @@ class SettingsWindow(QDialog):
             t("settings.map_webserver_bind_detail", host=host, port=port)
         )
         url_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+        scheme = "https" if bool(self.chk_map_webserver_ssl.isChecked()) else "http"
         self._lbl_map_webserver_url.setText(
-            t("settings.map_webserver_url_hint", host=url_host, port=port)
+            t(
+                "settings.map_webserver_url_hint",
+                host=url_host,
+                port=port,
+                scheme=scheme,
+            )
         )
 
     def _sync_udp_pst_cfg_from_ui(self) -> None:
@@ -4503,7 +4531,15 @@ class SettingsWindow(QDialog):
                     if v is None:
                         all_loaded = False
                     else:
-                        bv = bool(v)
+                        ui_dips = list(
+                            (self.cfg.get("ui") or {}).get(
+                                "antenna_dipoles_az", [False, False, False]
+                            )
+                        )
+                        while len(ui_dips) < 3:
+                            ui_dips.append(False)
+                        # GETANTDP=1 übernimmt; GETANTDP=0 lässt Profil-Häkchen stehen
+                        bv = bool(v) or bool(ui_dips[i])
                         chk.blockSignals(True)
                         chk.setChecked(bv)
                         chk.blockSignals(False)
@@ -4695,6 +4731,10 @@ class SettingsWindow(QDialog):
         _set_chk(
             getattr(self, "chk_map_webserver_enabled", None),
             bool((cfg.get("map_webserver") or {}).get("enabled", False)),
+        )
+        _set_chk(
+            getattr(self, "chk_map_webserver_ssl", None),
+            bool((cfg.get("map_webserver") or {}).get("ssl_enabled", False)),
         )
         try:
             tab = getattr(self, "_com0com_tab", None)
@@ -5017,6 +5057,7 @@ class SettingsWindow(QDialog):
         chw = self.cfg.setdefault("controller_hw", {})
         chw["enabled"] = bool(self.chk_hw_controller_enabled.isChecked())
         chw["usb_remote"] = bool(self.chk_cont_usb_remote.isChecked())
+        chw["link_mode"] = self._controller_link_mode_from_ui()
         chw["cont_id"] = int(self.sp_controller_id.value())
         chw["cont_id_configured"] = True
         chw["ant_name_1"] = self._antenna_display_name(0)
@@ -5034,7 +5075,7 @@ class SettingsWindow(QDialog):
         chw["el_rotor_id"] = int(self.sp_cont_el_rotor_id.value())
         # Remote USB: Controller spricht denselben Rotor wie die Software — IDs angleichen,
         # sonst GETPOSDG an falsche Slave-ID → Initialisiere/Timeout ohne Position.
-        if bool(self.chk_cont_usb_remote.isChecked()):
+        if bool(self.chk_cont_usb_remote.isChecked()) or bool(self.chk_cont_web.isChecked()):
             try:
                 az = int(self.sp_slave_az.value()) if self.chk_enable_az.isChecked() else 0
             except Exception:
@@ -5196,6 +5237,11 @@ class SettingsWindow(QDialog):
             self.lbl_status.setText(t("settings.status_saved"))
             QApplication.processEvents()
 
+        _pre_cont = getattr(self, "_snapshot_controller", None)
+        try:
+            _remote_before = bool(_pre_cont[14]) if _pre_cont is not None and len(_pre_cont) > 14 else None
+        except Exception:
+            _remote_before = None
         if not self._save_controller_hw_if_changed():
             self.lbl_status.setText(t("settings.controller_status_write_fail"))
             QApplication.processEvents()
@@ -5204,6 +5250,22 @@ class SettingsWindow(QDialog):
                 t("settings.title"),
                 t("settings.controller_status_write_fail"),
             )
+        else:
+            # Verbindung zum Controller steht oft erst nach dem Speichern (Mode/USB): Werte
+            # und Lese-LED aktualisieren, ohne dass man den Tab wechseln muss.
+            try:
+                _remote_now = bool(self.chk_cont_usb_remote.isChecked())
+                if (
+                    self._controller_hw_enabled()
+                    and self._controller_tab_is_current()
+                    and (
+                        not bool(getattr(self, "_controller_led_ok", False))
+                        or (_remote_before is not None and _remote_before != _remote_now)
+                    )
+                ):
+                    self._schedule_controller_reload_when_connected(300)
+            except Exception:
+                pass
 
         if not self._save_park_home_if_changed():
             self.lbl_status.setText(t("settings.park_home_write_fail"))
@@ -5411,7 +5473,15 @@ class SettingsWindow(QDialog):
             return
         if getattr(self, "_controller_mode_switch_busy", False):
             return
-        self.cfg.setdefault("controller_hw", {})["usb_remote"] = bool(checked)
+        if checked and bool(self.chk_cont_web.isChecked()):
+            self.chk_cont_web.blockSignals(True)
+            try:
+                self.chk_cont_web.setChecked(False)
+            finally:
+                self.chk_cont_web.blockSignals(False)
+        _chw_cfg = self.cfg.setdefault("controller_hw", {})
+        _chw_cfg["usb_remote"] = bool(checked)
+        _chw_cfg["link_mode"] = self._controller_link_mode_from_ui()
         self._apply_controller_usb_remote_ui()
         proxy = getattr(self, "_controller_remote_proxy", None)
         if proxy is None:
@@ -5466,6 +5536,14 @@ class SettingsWindow(QDialog):
                             self._load_controller_from_bus()
                         except Exception:
                             pass
+                        try:
+                            if not bool(getattr(self, "_controller_led_ok", False)) and (
+                                not self._controller_link_connected()
+                            ):
+                                # Link kommt kurz nach apply_mode: nachladen, sobald verbunden.
+                                self._schedule_controller_reload_when_connected(400)
+                        except Exception:
+                            pass
                     else:
                         try:
                             self.lbl_status.setText(
@@ -5493,6 +5571,29 @@ class SettingsWindow(QDialog):
         except Exception:
             self._controller_mode_switch_busy = False
 
+    def _controller_link_mode_from_ui(self) -> int:
+        """0 = RS485, 1 = PC-USB (Remote USB), 2 = WEB (Browser / Web Serial)."""
+        if bool(getattr(self, "chk_cont_web", None) and self.chk_cont_web.isChecked()):
+            return 2
+        if bool(getattr(self, "chk_cont_usb_remote", None) and self.chk_cont_usb_remote.isChecked()):
+            return 1
+        return 0
+
+    def _on_cont_web_toggled(self, checked: bool) -> None:
+        if getattr(self, "_controller_suppress_dirty", False):
+            return
+        if getattr(self, "_controller_mode_switch_busy", False):
+            return
+        chw = self.cfg.setdefault("controller_hw", {})
+        if checked and bool(self.chk_cont_usb_remote.isChecked()):
+            # Remote USB beenden (löst den Mode-Wechsel des lokalen COM-Proxys aus);
+            # link_mode ist dabei schon WEB.
+            chw["link_mode"] = 2
+            self.chk_cont_usb_remote.setChecked(False)
+        chw["usb_remote"] = bool(self.chk_cont_usb_remote.isChecked())
+        chw["link_mode"] = self._controller_link_mode_from_ui()
+        self._apply_controller_usb_remote_ui()
+
     def _apply_controller_usb_remote_ui(self) -> None:
         on = self._controller_hw_enabled() and bool(
             getattr(self, "chk_cont_usb_remote", None)
@@ -5500,6 +5601,8 @@ class SettingsWindow(QDialog):
         )
         if hasattr(self, "chk_cont_usb_remote"):
             self.chk_cont_usb_remote.setEnabled(self._controller_hw_enabled())
+        if hasattr(self, "chk_cont_web"):
+            self.chk_cont_web.setEnabled(self._controller_hw_enabled())
         if hasattr(self, "_row_cont_usb_port"):
             self._row_cont_usb_port.setEnabled(on)
 
@@ -5514,6 +5617,17 @@ class SettingsWindow(QDialog):
 
     def _controller_link_connected(self) -> bool:
         """True wenn der Link für Controller-GET/SET steht (USB oder Rotor-Bus)."""
+        if bool(getattr(self, "chk_cont_web", None) and self.chk_cont_web.isChecked()):
+            # WEB: Display hängt am Browser — Link steht, wenn der Browser-Relay aktiv ist.
+            hw = getattr(self.ctrl, "ctrl_hw", None)
+            try:
+                return bool(
+                    getattr(self.ctrl, "usb_remote", False)
+                    and hw is not None
+                    and hw.is_connected()
+                )
+            except Exception:
+                return False
         if bool(getattr(self, "chk_cont_usb_remote", None) and self.chk_cont_usb_remote.isChecked()):
             hw = getattr(self, "ctrl_hw", None) or getattr(self.ctrl, "ctrl_hw", None)
             try:
@@ -5605,6 +5719,7 @@ class SettingsWindow(QDialog):
             int(self.sp_cont_az_rotor_id.value()),
             int(self.sp_cont_el_rotor_id.value()),
             1 if self.chk_cont_usb_remote.isChecked() else 0,
+            1 if self.chk_cont_web.isChecked() else 0,
         )
 
     def _apply_controller_from_cfg_only(self) -> None:
@@ -5661,11 +5776,20 @@ class SettingsWindow(QDialog):
                 )
             except (TypeError, ValueError):
                 self.sp_cont_el_rotor_id.setValue(0)
-            self.chk_cont_usb_remote.blockSignals(True)
             try:
-                self.chk_cont_usb_remote.setChecked(bool(ch.get("usb_remote", False)))
+                _web_cfg = int(ch.get("link_mode", 0)) == 2
+            except (TypeError, ValueError):
+                _web_cfg = False
+            self.chk_cont_usb_remote.blockSignals(True)
+            self.chk_cont_web.blockSignals(True)
+            try:
+                self.chk_cont_usb_remote.setChecked(
+                    bool(ch.get("usb_remote", False)) and not _web_cfg
+                )
+                self.chk_cont_web.setChecked(_web_cfg)
             finally:
                 self.chk_cont_usb_remote.blockSignals(False)
+                self.chk_cont_web.blockSignals(False)
             cl = self.cfg.get("controller_link") if isinstance(self.cfg.get("controller_link"), dict) else {}
             try:
                 self._refresh_com_ports_into(
@@ -5679,6 +5803,7 @@ class SettingsWindow(QDialog):
                 self.cfg.setdefault("controller_hw", {})["usb_remote"] = bool(
                     self.chk_cont_usb_remote.isChecked()
                 )
+                self.cfg["controller_hw"]["link_mode"] = self._controller_link_mode_from_ui()
                 proxy = getattr(self, "_controller_remote_proxy", None)
                 if proxy is not None:
                     proxy.update_cfg(self.cfg)
@@ -5696,6 +5821,56 @@ class SettingsWindow(QDialog):
         finally:
             self._controller_suppress_dirty = False
 
+    def _controller_tab_is_current(self) -> bool:
+        try:
+            return int(self._settings_stack.currentIndex()) == int(
+                getattr(self, "_tab_controller_index", -1)
+            )
+        except Exception:
+            return False
+
+    def _schedule_controller_reload_when_connected(self, delay_ms: int = 300, tries: int = 0) -> None:
+        """Controller-Werte lesen, sobald der Link steht (Verbindung nach Speichern/Umschalten dauert).
+
+        Ohne das bleibt die Lese-LED rot, bis man den Tab wechselt. Es wird genau einmal geladen,
+        sobald der Link verbunden ist; solange er fehlt, wird (begrenzt) erneut geprüft.
+        """
+        if tries == 0 and getattr(self, "_controller_reload_pending", False):
+            return
+        self._controller_reload_pending = True
+
+        def _tick() -> None:
+            try:
+                if (
+                    not self.isVisible()
+                    or not self._controller_hw_enabled()
+                    or not self._controller_tab_is_current()
+                ):
+                    self._controller_reload_pending = False
+                    return
+                if getattr(self, "_controller_mode_switch_busy", False) or getattr(
+                    self, "_controller_load_busy", False
+                ):
+                    if tries < 25:
+                        self._controller_reload_pending = False
+                        self._schedule_controller_reload_when_connected(400, tries + 1)
+                    else:
+                        self._controller_reload_pending = False
+                    return
+                if self._controller_link_connected():
+                    self._controller_reload_pending = False
+                    self._load_controller_from_bus()
+                    return
+                if tries < 25:
+                    self._controller_reload_pending = False
+                    self._schedule_controller_reload_when_connected(400, tries + 1)
+                else:
+                    self._controller_reload_pending = False
+            except Exception:
+                self._controller_reload_pending = False
+
+        QTimer.singleShot(int(delay_ms), self, _tick)
+
     def _set_controller_wait_visible(self, visible: bool) -> None:
         """„Warten“ neben der LED nur während laufender Bus-Abfrage."""
         if not hasattr(self, "_lbl_controller_wait"):
@@ -5706,6 +5881,7 @@ class SettingsWindow(QDialog):
         """LED neben „ID setzen“: grün = alle Controller-Werte vom Bus gelesen, sonst rot."""
         if not hasattr(self, "_lbl_controller_led"):
             return
+        self._controller_led_ok = bool(ok)
         d = px_to_dip(self, 6)
         s = px_to_dip(self, 12)
         if ok:
@@ -5886,10 +6062,13 @@ class SettingsWindow(QDialog):
             # Mode-Switch läuft — danach kommt ohnehin ein Load.
             return
         want_remote = bool(self.chk_cont_usb_remote.isChecked())
+        want_web = bool(self.chk_cont_web.isChecked())
         proxy = getattr(self, "_controller_remote_proxy", None)
         # Routing setzen — Mode-Switch macht apply_mode, Load darf nicht nochmal umschalten.
         try:
-            if want_remote:
+            if want_web:
+                pass  # Link gehört dem Browser-Relay (setzt set_controller_link selbst)
+            elif want_remote:
                 if proxy is not None and not bool(proxy.is_active()):
                     # Noch nicht im Remote-Mode (z. B. Start): einmalig anstoßen.
                     proxy.update_cfg(self.cfg)
@@ -5908,7 +6087,7 @@ class SettingsWindow(QDialog):
             pass
         if not self._controller_link_connected():
             self._apply_controller_from_cfg_only()
-            if want_remote:
+            if want_remote or want_web:
                 try:
                     self.lbl_status.setText(t("settings.controller_status_usb_offline"))
                 except Exception:
@@ -5936,12 +6115,24 @@ class SettingsWindow(QDialog):
                     v = self._parse_hw_int(str(p).split(";")[0].strip())
                 if v is not None:
                     self.sp_controller_id.setValue(max(0, min(245, v)))
-            for sp, cmd, exp, lo, hi in (
-                (self.sp_cont_pwm_slow, "GETCONSPWM", "ACK_GETCONSPWM", 0, 100),
-                (self.sp_cont_pwm_fast, "GETCONFPWM", "ACK_GETCONFPWM", 0, 100),
-                (self.sp_cont_beep_freq, "GETCONFRQ", "ACK_GETCONFRQ", 200, 4000),
-                (self.sp_cont_beep_vol, "GETLSL", "ACK_GETLSL", 0, 50),
-                (self.sl_cont_display_brightness, "GETCONLEDP", "ACK_GETCONLEDP", 0, 100),
+            # Profil ist die Quelle: weicht der Controller ab (Flash/uploadfs, anderes
+            # Profil zuletzt), Profilwert zurückschreiben statt Controllerwert ins Profil
+            # zu übernehmen — sonst landet er beim nächsten Speichern im Profil.
+            prof_chw = self.cfg.get("controller_hw") if isinstance(self.cfg.get("controller_hw"), dict) else {}
+            for sp, cmd, exp, lo, hi, cfg_key, set_cmd in (
+                (self.sp_cont_pwm_slow, "GETCONSPWM", "ACK_GETCONSPWM", 0, 100, "slow_pwm", "SETCONSPWM"),
+                (self.sp_cont_pwm_fast, "GETCONFPWM", "ACK_GETCONFPWM", 0, 100, "fast_pwm", "SETCONFPWM"),
+                (self.sp_cont_beep_freq, "GETCONFRQ", "ACK_GETCONFRQ", 200, 4000, "speaker_freq_hz", "SETCONFRQ"),
+                (self.sp_cont_beep_vol, "GETLSL", "ACK_GETLSL", 0, 50, "speaker_volume", "SETLSL"),
+                (
+                    self.sl_cont_display_brightness,
+                    "GETCONLEDP",
+                    "ACK_GETCONLEDP",
+                    0,
+                    100,
+                    "display_brightness_pct",
+                    "SETCONLEDP",
+                ),
             ):
                 rp = c.sync_ui_command_response(dst, cmd, "0", exp, timeout_s=_to)
                 if cmd in ("GETCONFRQ", "GETLSL", "GETCONLEDP"):
@@ -5957,7 +6148,20 @@ class SettingsWindow(QDialog):
                 w = self._parse_hw_int(rp)
                 if w is None:
                     w = self._parse_hw_int(str(rp).split(";")[0].strip())
-                if w is not None:
+                if w is None:
+                    continue
+                prof_v = None
+                if cfg_key in prof_chw:
+                    try:
+                        prof_v = max(lo, min(hi, int(prof_chw.get(cfg_key))))
+                    except (TypeError, ValueError):
+                        prof_v = None
+                if prof_v is not None and prof_v != int(w):
+                    c.sync_ui_command_response(
+                        dst, set_cmd, str(prof_v), "ACK_" + set_cmd, timeout_s=_to
+                    )
+                    sp.setValue(prof_v)
+                else:
                     sp.setValue(max(lo, min(hi, w)))
             if self._rotor_has_abs_encoder_type3():
                 acks.append(True)
@@ -6088,7 +6292,15 @@ class SettingsWindow(QDialog):
 
         # 1) Mode einmalig sicherstellen (Toggle hat das meist schon erledigt).
         proxy_active = bool(proxy.is_active()) if proxy is not None else False
-        if want_remote != proxy_active:
+        want_web = bool(cur[15]) if len(cur) > 15 else False
+        if want_web:
+            # WEB: Link gehört dem Browser-Relay; lokaler COM-Proxy muss aus sein.
+            if proxy_active and proxy is not None:
+                try:
+                    proxy.apply_mode(False, timeout_s=8.0)
+                except Exception:
+                    pass
+        elif want_remote != proxy_active:
             if proxy is None:
                 all_ok = False
             else:

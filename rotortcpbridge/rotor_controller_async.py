@@ -121,6 +121,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     return
                 n = _aselect_slot_from_params(tel.params)
                 if n is not None:
+                    self._aselect_known = True
                     fn = getattr(self, "on_aselect_query_result", None)
                     if callable(fn):
                         fn(int(n))
@@ -285,7 +286,11 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         pass
                     if not skip:
                         self._apply_local_state_for_ui_command(
-                            int(axis_dst), "SETPOSCC", tel.params, from_bus_sniff=True
+                            int(axis_dst),
+                            "SETPOSCC",
+                            tel.params,
+                            from_bus_sniff=True,
+                            bus_src=int(tel.src) if tel.src is not None else None,
                         )
                     ax = self.az if int(axis_dst) == saz else self.el
                     ax.online = True
@@ -600,6 +605,10 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                 # Ankunft: nach kurzer Pause noch einmal GETPOSDG (Settle).
                                 if prev_moving:
                                     self._schedule_pos_settle_poll(axis_state)
+                                    try:
+                                        self._arm_acc_bins_after_arrival(axis_name)
+                                    except Exception:
+                                        pass
                                 axis_state.moving = False
                                 axis_state.stop_confirm_samples = 0
                                 return
@@ -632,6 +641,10 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         if axis_state.stop_confirm_samples >= 4:
                             if prev_moving:
                                 self._schedule_pos_settle_poll(axis_state)
+                                try:
+                                    self._arm_acc_bins_after_arrival(axis_name)
+                                except Exception:
+                                    pass
                             axis_state.moving = False
                         else:
                             # Wenn wir eine nennenswerte Positionsänderung sehen, sind wir sicher in Bewegung.
@@ -739,6 +752,10 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                 # Referenz-Status (GETREF Polling ohne pending)
                 if tel.cmd.startswith("ACK_GETREF") or tel.cmd.startswith("ACK_REF"):
                     axis_state.last_rx_ts = time.time()
+                    try:
+                        axis_state.ref_status_known = True
+                    except Exception:
+                        pass
                     # Absolut-Encoder (Typ 3): GETREF ist irrelevant — nicht auf 0 zurückfallen.
                     try:
                         if self.abs_encoder_no_homing():
@@ -848,6 +865,10 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         )
                         self.encoder_type = new_type
                         self.encoder_type_known = True
+                        try:
+                            self.drive_ready()
+                        except Exception:
+                            pass
                         if new_type == 3:
                             try:
                                 self._apply_abs_encoder_referenced()
@@ -918,6 +939,11 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         axis_state.pos_max_d10 = max_d10
                         # Erweiterter Bereich (>360°): lineare Positionsrechnung, kein Kreis-Wrap
                         axis_state.position_wrap_360 = max_d10 <= 3600
+                        self._max_deg_known = True
+                        try:
+                            self.drive_ready()
+                        except Exception:
+                            pass
                     return
                 # Hom-/Parkwinkel (GETHOMEPOS) — Wire: Grad; intern 0,1°
                 if tel.cmd.startswith("ACK_GETHOMEPOS"):
@@ -1020,16 +1046,25 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     v = parse_int(tel.params.strip())
                     if v is not None:
                         axis_state.antdp1 = bool(int(v) != 0)
+                        fn = getattr(self, "on_antenna_dipoles_changed", None)
+                        if callable(fn):
+                            fn()
                     return
                 if tel.cmd.startswith("ACK_GETANTDP2"):
                     v = parse_int(tel.params.strip())
                     if v is not None:
                         axis_state.antdp2 = bool(int(v) != 0)
+                        fn = getattr(self, "on_antenna_dipoles_changed", None)
+                        if callable(fn):
+                            fn()
                     return
                 if tel.cmd.startswith("ACK_GETANTDP3"):
                     v = parse_int(tel.params.strip())
                     if v is not None:
                         axis_state.antdp3 = bool(int(v) != 0)
+                        fn = getattr(self, "on_antenna_dipoles_changed", None)
+                        if callable(fn):
+                            fn()
                     return
                 # Antennen-Reichweite (GETANTDIS1–3)
                 if tel.cmd.startswith("ACK_GETANTDIS1"):
@@ -1274,13 +1309,6 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         foreign_ack = int(tel.dst) != int(self.master_id)
                     except Exception:
                         foreign_ack = False
-                    in_follow = False
-                    try:
-                        in_follow = bool(
-                            getattr(axis_state, "foreign_follow_active", False)
-                        ) or bool(self.foreign_master_yield_active())
-                    except Exception:
-                        in_follow = False
                     want_sniff = False
                     try:
                         want_sniff = bool(
@@ -1288,7 +1316,8 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         )
                     except Exception:
                         want_sniff = False
-                    if want_sniff and (foreign_ack or in_follow):
+                    if want_sniff:
+                        # Eigene ACK nach Ketten-Abbruch und fremde ACK im Mitlauf in den Stromring.
                         if foreign_ack:
                             try:
                                 self.note_foreign_master_activity(

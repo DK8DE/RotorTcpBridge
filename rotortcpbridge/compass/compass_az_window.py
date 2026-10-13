@@ -708,12 +708,12 @@ class CompassWidget(QWidget):
             # Öffnungswinkel-Overlay (wie Karte, innerhalb des Kreises, schwach)
             self._draw_antenna_beam_overlay(painter, cx, cy, r)
 
-            # Heatmap-Ringe: Strom/Standzeit 3.5px, OM 7px; dazwischen 1px schwarz
+            # Heatmap-Ringe (nur Desktop): Strom/Standzeit 6.5px, OM 7px; dazwischen 1px schwarz
             gap_w = 1.0
             modes = self._heatmap_modes if self._heatmap_visible else []
             inner_r = float(r)
             for i, mode in enumerate(modes):
-                ring_w = 3.5 if mode in ("strom", "dwell") else 7.0
+                ring_w = 6.5 if mode in ("strom", "dwell") else 7.0
                 if mode == "strom" and (self._bins_cw or self._bins_ccw):
                     paint_bins_heatmap_ring(
                         painter,

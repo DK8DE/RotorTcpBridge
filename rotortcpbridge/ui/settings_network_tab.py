@@ -2313,7 +2313,19 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self.ed_remote_ip.setEnabled(bool(getattr(self, "_form_enabled", False)) and is_client)
 
     # ----------------------------------------------------------- actions
+    def _abort_module_io(self) -> None:
+        """Lese-/Schreib-Jobs ungültig machen (sonst landet ein altes Gerät im neuen Eintrag)."""
+        self._probe_gen = int(getattr(self, "_probe_gen", 0) or 0) + 1
+        self._save_after_read = False
+        self._read_pending = False
+        self._reading_module_id = 0
+        self._write_awaiting_reread = False
+        self._write_reread_retries = 0
+        # Kein Signal-disconnect: PySide warnt, wenn der Slot schon weg ist.
+        # Fertige/laufende Worker werden über _reading_module_id ignoriert.
+
     def _on_add(self) -> None:
+        self._abort_module_io()
         self._apply_form_to_current()
         m = NetworkModule(
             name=t("settings.network_new_name"),
@@ -2328,12 +2340,15 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self._offline_streak.append(0)
         self._rebuild_list()
         self._list.setCurrentRow(len(self._modules) - 1)
+        self._load_form(m)
+        self._set_detail_enabled(True)
         self.save_requested.emit()
 
     def _on_remove(self) -> None:
         row = self._list.currentRow()
         if row < 0 or row >= len(self._modules):
             return
+        self._abort_module_io()
         del self._modules[row]
         if row < len(self._online):
             del self._online[row]
@@ -2397,12 +2412,14 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self._btn_read.setEnabled(self._form_enabled)
         if self._read_pending:
             self._read_pending = False
-            QTimer.singleShot(0, lambda: self._start_read(interactive=False))
+            if self._current() is not None and self._reading_module_id:
+                QTimer.singleShot(0, lambda: self._start_read(interactive=False))
 
     def _on_read_ok(self, st: object) -> None:
         status = st if isinstance(st, dict) else {}
         m = self._current()
         if m is None or id(m) != self._reading_module_id:
+            self._save_after_read = False
             return
         m.last_status = status
         mac = str(status.get("mac") or "").strip()
@@ -2459,6 +2476,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
     def _on_read_err(self, msg: str) -> None:
         m = self._current()
         if m is None or id(m) != self._reading_module_id:
+            self._save_after_read = False
             return
         if self._in_reboot_pause() and not self._read_interactive:
             self._lbl_status.setText(t("settings.network_status_reboot_wait"))
@@ -2721,17 +2739,20 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
             )
             return
         vendor = device.vendor if device.vendor in (VENDOR_NE2, VENDOR_NA11X) else VENDOR_NE2
-        existing = {(m.host.strip(), int(m.at_port)) for m in self._modules}
         discovered_port = ebyte_device_data_port(device)
         at_port = discovered_port if discovered_port else DEFAULT_AT_PORTS.get(vendor, 8886)
-        if (host, at_port) in existing:
-            self._lbl_status.setText(
-                t("settings.network_discover_already", host=host)
-            )
-            return
+        mac = str(getattr(device, "mac_str", "") or "").strip().upper()
+        for m in self._modules:
+            if (m.host.strip() == host and int(m.at_port) == int(at_port)) or (
+                mac and str(m.mac or "").strip().upper() == mac
+            ):
+                self._lbl_status.setText(
+                    t("settings.network_discover_already", host=host)
+                )
+                return
         name = (device.model or vendor.upper()).strip() or t("settings.network_new_name")
         m = NetworkModule(
-            name=f"{name} {host}",
+            name=name,
             vendor=vendor,
             host=host,
             at_port=at_port,
@@ -2781,7 +2802,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
             return
         label = (device.name or f"DK8DE {uid}").strip()
         m = NetworkModule(
-            name=f"{label} {host}",
+            name=label,
             vendor=VENDOR_DK8DE,
             host=host,
             contact_host=host,

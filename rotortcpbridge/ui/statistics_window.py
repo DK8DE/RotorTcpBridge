@@ -81,14 +81,14 @@ class StatisticsWindow(QDialog):
         slave_el = cfg.get("rotor_bus", {}).get("slave_el", "?")
 
         # AZ-Zeile (Vollkreis)
-        gb_az = QGroupBox(f"AZ ID:{slave_az}")
-        gb_az.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.gb_az = QGroupBox(f"AZ ID:{slave_az}")
+        self.gb_az.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.stat_cal = StatisticCompassWidget(elevation=False)
         self.stat_live = StatisticCompassWidget(elevation=False)
         self.stat_placeholder = StatisticCompassWidget(elevation=False)
         az_row = _make_stat_row(self.stat_cal, self.stat_live, self.stat_placeholder)
-        gb_az.setLayout(az_row)
-        root.addWidget(gb_az, 1)  # stretch=1, skaliert mit Fenster
+        self.gb_az.setLayout(az_row)
+        root.addWidget(self.gb_az, 1)  # stretch=1, skaliert mit Fenster
 
         # EL-Zeile (Viertelkreis), sichtbar wenn EL aktiv
         self.gb_el = QGroupBox(f"EL ID:{slave_el}")
@@ -101,6 +101,7 @@ class StatisticsWindow(QDialog):
         root.addWidget(self.gb_el, 1)  # stretch=1, skaliert mit Fenster
 
         self._update_el_visibility()
+        self.refresh_rotor_ids()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -112,6 +113,7 @@ class StatisticsWindow(QDialog):
         self.resize(1000, 1080 if el_on else 540)
         if hasattr(self.ctrl, "set_statistics_window_open"):
             self.ctrl.set_statistics_window_open(True)
+        self.refresh_rotor_ids()
         if hasattr(self.ctrl, "request_immediate_stats"):
             self.ctrl.request_immediate_stats()  # Priorität 0, unmittelbar vor GETPOSDG
         self._timer.start(200)
@@ -143,6 +145,26 @@ class StatisticsWindow(QDialog):
         el_on = bool(getattr(self.ctrl, "enable_el", False))
         self.gb_el.setVisible(el_on)
 
+    def refresh_rotor_ids(self) -> None:
+        """Slave-IDs aus dem laufenden Controller (nach Profilwechsel)."""
+        try:
+            saz = int(getattr(self.ctrl, "slave_az"))
+        except Exception:
+            saz = (self.cfg.get("rotor_bus") or {}).get("slave_az", "?")
+        try:
+            sel = int(getattr(self.ctrl, "slave_el"))
+        except Exception:
+            sel = (self.cfg.get("rotor_bus") or {}).get("slave_el", "?")
+        try:
+            self.gb_az.setTitle(f"AZ ID:{saz}")
+        except Exception:
+            pass
+        try:
+            self.gb_el.setTitle(f"EL ID:{sel}")
+        except Exception:
+            pass
+        self._update_el_visibility()
+
     def update_el_rotor_type_display(self) -> None:
         """EL-Statistik-Bögen auf 90°/180° laut GETROTORTYPE."""
         mx = el_max_deg_from_rotor_type(getattr(self.ctrl, "el_rotor_type", None))
@@ -169,7 +191,7 @@ class StatisticsWindow(QDialog):
     @Slot()
     def _tick(self) -> None:
         try:
-            self._update_el_visibility()
+            self.refresh_rotor_ids()
             self.update_el_rotor_type_display()
             ui0 = self.cfg.get("ui", {})
             az_sc = parse_heatmap_scale(ui0, "az")

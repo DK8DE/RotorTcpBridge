@@ -55,6 +55,17 @@ def test_axis_motion_by_target_gap_not_after_arrival() -> None:
     assert c._axis_motion_by_target_gap(c.az, 100.0) is False
 
 
+def test_axis_target_pending_prefers_last_set_sent() -> None:
+    """target_d10 kann auf Ist springen — last_set hält die Fahrt-Sperre."""
+    c = _ctrl()
+    c.az.referenced = True
+    c.az.pos_d10 = 3100
+    c.az.target_d10 = 3100
+    c.az.last_set_sent_target_d10 = 2485
+    assert c._axis_target_pending(c.az) is True
+    assert c._axis_motion_by_target_gap(c.az, 100.0) is True
+
+
 def test_motion_poll_restrict_long_after_setpos() -> None:
     """Kein 3s-Limit mehr: auch nach langer Fahrt nur GETPOSDG."""
     c = _ctrl()
@@ -100,3 +111,40 @@ def test_setposcc_hold_expires_without_setposdg() -> None:
     assert c.cc_poll_hold_active(now) is True
     assert c.cc_poll_hold_active(now + 5.0) is False
     assert c._setposcc_poll_hold is False
+
+
+def test_drive_sync_hold_blocks_setpos_until_data() -> None:
+    c = _ctrl()
+    c.hw.is_connected = lambda: True  # type: ignore[attr-defined]
+    c.enable_el = False
+    c.reset_bus_discovery_state()
+    assert c.drive_ready() is False
+    sent: list[str] = []
+    c.hw.send_request = lambda req: sent.append(getattr(req, "line", "") or "")  # type: ignore[method-assign]
+    c.set_az_deg(123.0, force=True)
+    assert sent == []
+    now = 1000.0
+    c.encoder_type = 1
+    c.encoder_type_known = True
+    c._max_deg_known = True
+    c._aselect_known = True
+    c.az.antoff1 = 0.0
+    c.az.antoff2 = 60.0
+    c.az.antoff3 = 120.0
+    c.az.ref_status_known = True
+    c.az.referenced = True
+    c.az._last_sample_ts = now
+    c._drive_sync_since_ts = now - 1.0
+    assert c.drive_ready() is True
+    c.set_az_deg(123.0, force=True)
+    assert any("SETPOSDG" in line for line in sent)
+
+
+def test_drive_sync_hold_timeout_releases() -> None:
+    import time as _t
+
+    c = _ctrl()
+    c.reset_bus_discovery_state()
+    c._drive_sync_since_ts = _t.time() - 21.0
+    assert c.drive_ready() is True
+    assert c._drive_sync_hold is False

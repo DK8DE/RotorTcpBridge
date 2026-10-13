@@ -167,6 +167,25 @@ class TestModuleSerde(unittest.TestCase):
         self.assertEqual(back[0].web_user, "admin")
         self.assertEqual(back[0].web_password, "secret")
 
+    def test_dedupe_same_host_port(self):
+        from rotortcpbridge.network_modules import dedupe_network_modules
+
+        mods = [
+            NetworkModule(name="A", vendor="ne2", host="192.168.0.88", at_port=8886),
+            NetworkModule(
+                name="ROTOR-WIFI-C5E632AC 192.168.0.88",
+                vendor="ne2",
+                host="192.168.0.88",
+                at_port=8886,
+            ),
+        ]
+        out = dedupe_network_modules(mods)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].name, "A")
+        cfg = {"network_modules": [m.to_dict() for m in mods]}
+        back = modules_from_cfg(cfg)
+        self.assertEqual(len(back), 1)
+
 
 class TestEbyteWebMap(unittest.TestCase):
     def test_ip_octets(self):

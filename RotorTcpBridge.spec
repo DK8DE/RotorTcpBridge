@@ -60,6 +60,9 @@ a = Analysis(
         # Sprachdateien
         ('rotortcpbridge\\locales\\de.json',         'rotortcpbridge\\locales'),
         ('rotortcpbridge\\locales\\en.json',         'rotortcpbridge\\locales'),
+        # Self-Signed TLS für Map-Webserver / Web Serial
+        ('rotortcpbridge\\certs\\map_webserver.crt', 'rotortcpbridge\\certs'),
+        ('rotortcpbridge\\certs\\map_webserver.key', 'rotortcpbridge\\certs'),
         # Rig Bridge: Modellliste wenn rigctl nicht im PATH (PyInstaller-Bundle)
         ('rotortcpbridge\\rig_bridge\\Supported-Radios-0.md', 'rotortcpbridge\\rig_bridge'),
         # Leaflet + Maidenhead + MarkerCluster (Offline-Karte, inline eingebettet;

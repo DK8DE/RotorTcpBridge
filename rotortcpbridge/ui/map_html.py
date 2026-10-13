@@ -304,6 +304,15 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     #webAzBtns {
       display:flex; flex-direction:column; align-items:stretch; gap:4px; margin-top:2px;
     }
+    #webProfile {
+      width:100%; max-width:100%; box-sizing:border-box;
+      font:12px/1.2 sans-serif; padding:4px 6px; border-radius:4px;
+      border:1px solid rgba(128,128,128,0.45); background:rgba(255,255,255,0.75); color:#111;
+      pointer-events:auto; touch-action:manipulation;
+    }
+    body.map-dark #webProfile {
+      background:rgba(42,42,46,0.85); color:#eee; border-color:rgba(180,180,190,0.35);
+    }
     #webAzBtns button, #webTogglePanels, #webOpenCompass {
       width:100%; max-width:100%; font-weight:600;
       display:block; box-sizing:border-box; text-align:center;
@@ -362,6 +371,27 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     body.map-dark #webUiMsgOk {
       background:rgba(42,42,46,0.95); border-color:rgba(180,180,190,0.3);
     }
+    #webDriveSyncOverlay {
+      display:none; position:fixed; inset:0; z-index:1450;
+      align-items:center; justify-content:center;
+      background:rgba(0,0,0,0.5); padding:16px;
+      pointer-events:auto; touch-action:none;
+    }
+    #webDriveSyncOverlay.show { display:flex; }
+    #webDriveSyncBox {
+      width:min(440px, calc(100vw - 32px)); max-width:100%;
+      display:flex; flex-direction:column; gap:10px; padding:20px 22px;
+      border-radius:12px; border:1px solid rgba(128,128,128,0.4);
+      background:rgba(255,255,255,0.97); color:#1a1a1a;
+      box-shadow:0 10px 32px rgba(0,0,0,0.4); font:13px/1.4 sans-serif;
+      text-align:center;
+    }
+    body.map-dark #webDriveSyncBox {
+      background:rgba(28,28,30,0.97); border-color:rgba(180,180,190,0.3); color:#eaeaea;
+      box-shadow:0 10px 32px rgba(0,0,0,0.6);
+    }
+    #webDriveSyncTitle { font-weight:700; font-size:16px; }
+    #webDriveSyncBody { font-size:13px; opacity:0.95; white-space:pre-wrap; }
 """
         if wind_arrow_data_url:
             web_wind_html = (
@@ -382,6 +412,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
           <div><strong id="webIstLbl">Ist</strong>: <span id="webIst">–</span></div>
           <div><strong id="webSollLbl">Soll</strong>: <span id="webSoll">–</span></div>
         </div>
+        <select id="webProfile" title="Profil"></select>
         <div id="webAzBtns">
           <button type="button" id="webTogglePanels">Bedienung</button>
           <button type="button" id="webOpenCompass">Kompass</button>
@@ -432,6 +463,12 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       <div id="webUiMsgTitle"></div>
       <div id="webUiMsgBody"></div>
       <div id="webUiMsgActions"><button type="button" id="webUiMsgOk">OK</button></div>
+    </div>
+  </div>
+  <div id="webDriveSyncOverlay" role="status" aria-live="polite">
+    <div id="webDriveSyncBox">
+      <div id="webDriveSyncTitle">Profildaten werden gelesen …</div>
+      <div id="webDriveSyncBody"></div>
     </div>
   </div>"""
 
@@ -517,9 +554,11 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     {aswatch_userimg_css}
     {_cluster_extra_css}
     {web_chrome_css}
+    body.embed #webOpenCompass {{ display:none !important; }}
   </style>
 </head>
 <body class="{body_map_dark_class}">
+  <script>if (window.parent !== window) document.body.classList.add('embed');</script>
   <div id="info">
     <div id="infoMain">
       <div id="infoMainCore">
@@ -781,6 +820,11 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       const setTxt = function(id, v) {{ const e = document.getElementById(id); if (e) e.textContent = v; }};
       setTxt('webOrtLbl', Lbl.ort || 'Ort');
       setTxt('webLocLbl', Lbl.locator || 'Loc');
+      const profSel = document.getElementById('webProfile');
+      if (profSel) {{
+        const pt = Lbl.profile || 'Profil';
+        if (document.activeElement !== profSel) profSel.title = pt;
+      }}
       setTxt('webIstLbl', String(Lbl.ist_prefix || 'Ist').trim() || 'Ist');
       setTxt('webSollLbl', Lbl.soll || 'Soll');
       setTxt('webMovingLbl', Lbl.moving || '');
@@ -886,9 +930,106 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
           wEl.style.display = 'none';
         }}
       }}
+      const syncOv = document.getElementById('webDriveSyncOverlay');
+      if (syncOv) {{
+        const on = !!ch.drive_sync;
+        syncOv.classList.toggle('show', on);
+        if (on) {{
+          const tEl = document.getElementById('webDriveSyncTitle');
+          const bEl = document.getElementById('webDriveSyncBody');
+          if (tEl) tEl.textContent = Lbl.profile_sync_title || 'Profildaten werden gelesen …';
+          if (bEl) bEl.textContent = Lbl.profile_sync_body || '';
+        }}
+        const profSel = document.getElementById('webProfile');
+        if (profSel && document.activeElement !== profSel) profSel.disabled = on;
+      }}
+    }}
+    function _webFillProfiles(sel, data) {{
+      if (!sel || !data) return;
+      const items = data.profiles || [];
+      const active = String(data.active_id || '');
+      let html = '';
+      for (let i = 0; i < items.length; i++) {{
+        const p = items[i] || {{}};
+        const id = String(p.id || '');
+        if (!id) continue;
+        const name = String(p.name || id);
+        html += '<option value="' + id.replace(/"/g, '&quot;') + '">' + name + '</option>';
+      }}
+      const prev = sel.value;
+      sel.innerHTML = html;
+      if (active && sel.querySelector('option[value="' + active + '"]')) sel.value = active;
+      else if (prev && sel.querySelector('option[value="' + prev + '"]')) sel.value = prev;
+      sel.style.display = items.length ? '' : 'none';
+    }}
+    function _webLoadProfiles() {{
+      const sel = document.getElementById('webProfile');
+      if (!sel) return;
+      fetch('/api/profiles', {{ method: 'GET' }})
+        .then(function(r) {{ return r.json(); }})
+        .then(function(data) {{
+          if (data && data.ok) _webFillProfiles(sel, data);
+        }})
+        .catch(function() {{}});
+    }}
+    function _webReloadWhenReady(wantId, attempt) {{
+      const n = (attempt == null) ? 0 : attempt;
+      if (n > 40) {{ location.reload(); return; }}
+      fetch('/api/profiles', {{ method: 'GET', cache: 'no-store' }})
+        .then(function(r) {{
+          if (!r.ok) throw new Error('http');
+          return r.json();
+        }})
+        .then(function(data) {{
+          const applied = String(data.applied_id || data.active_id || '');
+          if (data && data.ok && applied === String(wantId || '')) {{
+            location.reload();
+            return;
+          }}
+          setTimeout(function() {{ _webReloadWhenReady(wantId, n + 1); }}, 150);
+        }})
+        .catch(function() {{
+          setTimeout(function() {{ _webReloadWhenReady(wantId, n + 1); }}, 200);
+        }});
+    }}
+    function _webSwitchProfile(pid) {{
+      const id = String(pid || '').trim();
+      if (!id) return;
+      const sel = document.getElementById('webProfile');
+      if (sel) sel.disabled = true;
+      fetch('/api/profile', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ id: id }})
+      }})
+        .then(function(r) {{ return r.json(); }})
+        .then(function(data) {{
+          if (!data || !data.ok) {{
+            if (sel) sel.disabled = false;
+            _webShowUiError(data || {{ ok: false, error: 'profile' }});
+            _webLoadProfiles();
+            return;
+          }}
+          if (data.unchanged) {{
+            if (sel) sel.disabled = false;
+            return;
+          }}
+          _webReloadWhenReady(id, 0);
+        }})
+        .catch(function() {{
+          if (sel) sel.disabled = false;
+          _webLoadProfiles();
+        }});
     }}
     function _webBindChrome() {{
       if (!WEB_MODE) return;
+      const profSel = document.getElementById('webProfile');
+      if (profSel) {{
+        _webLoadProfiles();
+        profSel.addEventListener('change', function() {{
+          _webSwitchProfile(profSel.value);
+        }});
+      }}
       const antSel = document.getElementById('webAnt');
       if (antSel) antSel.addEventListener('change', function() {{
         _webApi('antenna', {{ index: parseInt(antSel.value, 10) || 0 }});
@@ -1010,6 +1151,13 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
           L.DomEvent.disableScrollPropagation(infoEl);
         }} catch (e) {{}}
       }}
+      const profTop = document.getElementById('webProfile');
+      if (profTop && typeof L !== 'undefined' && L.DomEvent) {{
+        try {{
+          L.DomEvent.disableClickPropagation(profTop);
+          L.DomEvent.disableScrollPropagation(profTop);
+        }} catch (e) {{}}
+      }}
       const tog = document.getElementById('webTogglePanels');
       if (tog) {{
         try {{
@@ -1031,7 +1179,13 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       const openComp = document.getElementById('webOpenCompass');
       if (openComp) {{
         openComp.addEventListener('click', function() {{
-          try {{ window.location.href = '/compass'; }} catch (e) {{}}
+          try {{
+            if (window.parent !== window) {{
+              window.parent.postMessage({{ rotorView: 'compass' }}, window.location.origin);
+            }} else {{
+              window.location.href = '/compass';
+            }}
+          }} catch (e) {{}}
         }});
       }}
       window.addEventListener('orientationchange', function() {{
@@ -1664,6 +1818,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     let marker = L.marker([lat, lon], antennaIcon ? {{ icon: antennaIcon }} : {{}}).addTo(map);
 
     let horizonCircle = null;
+    let _horizonKey = '';
     if (horizonDistKm > 0.5) {{
       horizonCircle = L.circle([lat, lon], {{
         radius: horizonDistKm * 1000,
@@ -1685,8 +1840,30 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       beamDashLines = [];
     }}
     function drawBeamLayers(beamList) {{
+      if (!beamList || !beamList.length) {{ clearBeamLayers(); return; }}
+      /* Gleiche Anzahl Beams: vorhandene Layer nur umpositionieren (kein Neuaufbau pro Update). */
+      if (beamPolys.length === beamList.length && beamDashLines.length === beamList.length) {{
+        let reusable = true;
+        for (let i = 0; i < beamList.length; i++) {{
+          if (!map.hasLayer(beamPolys[i]) || !map.hasLayer(beamDashLines[i])) {{ reusable = false; break; }}
+        }}
+        if (reusable) {{
+          beamList.forEach(function(b, i) {{
+            const poly = beamPolys[i];
+            const dash = beamDashLines[i];
+            if (poly._beamStroke !== b.stroke || poly._beamFill !== b.fill) {{
+              poly.setStyle({{ color: b.stroke, fillColor: b.fill }});
+              dash.setStyle({{ color: b.stroke }});
+              poly._beamStroke = b.stroke;
+              poly._beamFill = b.fill;
+            }}
+            poly.setLatLngs(b.polygon);
+            dash.setLatLngs(b.centerLine);
+          }});
+          return;
+        }}
+      }}
       clearBeamLayers();
-      if (!beamList || !beamList.length) return;
       beamList.forEach(function(b) {{
         const poly = L.polygon(b.polygon, {{
           color: b.stroke, fillColor: b.fill, fillOpacity: 0.35, weight: 2, interactive: false
@@ -1694,6 +1871,8 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         const dash = L.polyline(b.centerLine, {{
           color: b.stroke, weight: 2, dashArray: '8, 8', interactive: false
         }}).addTo(map);
+        poly._beamStroke = b.stroke;
+        poly._beamFill = b.fill;
         beamPolys.push(poly);
         beamDashLines.push(dash);
       }});
@@ -1706,10 +1885,14 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       }}
     }}
     function drawTargetBearingLine(coords, color) {{
+      if (!coords || coords.length < 2 || !color) {{ clearTargetBearingLine(); return; }}
+      if (targetBearingLineLayer && map.hasLayer(targetBearingLineLayer)) {{
+        targetBearingLineLayer.setLatLngs(coords);
+        return;
+      }}
       clearTargetBearingLine();
-      if (!coords || coords.length < 2 || !color) return;
       targetBearingLineLayer = L.polyline(coords, {{
-        color: color, weight: 2, dashArray: '8, 8', interactive: false
+        color: '#e11d1d', weight: 3, dashArray: '8, 8', opacity: 0.95, interactive: false
       }}).addTo(map);
     }}
     let previewBearingLineLayer = null;
@@ -1848,13 +2031,17 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         if (marker) map.removeLayer(marker);
         marker = L.marker([data.lat, data.lon], antennaIcon ? {{ icon: antennaIcon }} : {{}}).addTo(map);
       }}
-      clearBeamLayers();
-      if (horizonCircle) {{ map.removeLayer(horizonCircle); horizonCircle = null; }}
       drawBeamLayers(data.beams || []);
       drawTargetBearingLine(data.target_bearing_line, data.target_bearing_color);
       const hKm = data.horizon_dist_km || 0;
-      if (hKm > 0.5) {{
-        horizonCircle = L.circle([data.lat, data.lon], {{ radius: hKm * 1000, color: horizonColor, weight: 2, dashArray: '8, 8', fill: false, fillOpacity: 0, interactive: false }}).addTo(map);
+      /* Horizontkreis nur neu bauen, wenn sich Mittelpunkt/Radius/Farbe ändern. */
+      const horizonKey = (hKm > 0.5) ? (data.lat + '|' + data.lon + '|' + hKm + '|' + horizonColor) : '';
+      if (horizonKey !== _horizonKey || (horizonKey && (!horizonCircle || !map.hasLayer(horizonCircle)))) {{
+        if (horizonCircle) {{ map.removeLayer(horizonCircle); horizonCircle = null; }}
+        if (horizonKey) {{
+          horizonCircle = L.circle([data.lat, data.lon], {{ radius: hKm * 1000, color: horizonColor, weight: 2, dashArray: '8, 8', fill: false, fillOpacity: 0, interactive: false }}).addTo(map);
+        }}
+        _horizonKey = horizonKey;
       }}
       const infoMain = document.getElementById('infoMainCore') || document.getElementById('infoMain');
       if (infoMain) {{
@@ -1867,7 +2054,10 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
           html += '<div><strong>' + (data.info_frequenz || 'Frequenz') + ':</strong> '
             + '<span style=\"' + rfAlert + '\">' + _escapeHtmlAswatch(rf) + '</span></div>';
         }}
-        infoMain.innerHTML = html;
+        if (infoMain._lastHtml !== html) {{
+          infoMain._lastHtml = html;
+          infoMain.innerHTML = html;
+        }}
       }}
     }};
 

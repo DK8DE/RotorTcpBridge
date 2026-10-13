@@ -4,9 +4,27 @@ import math
 import time
 from typing import Callable, Optional
 
-from PySide6.QtCore import QEvent, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QAction, QCloseEvent, QFont, QFontMetrics, QHideEvent, QKeySequence, QPalette, QShortcut, QShowEvent
+from PySide6.QtCore import QEvent, QPointF, QSize, QTimer, Qt, Signal, Slot
+from PySide6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QColor,
+    QFont,
+    QFontMetrics,
+    QHideEvent,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPalette,
+    QPixmap,
+    QPolygonF,
+    QShortcut,
+    QShowEvent,
+)
 from PySide6.QtWidgets import (
+    QStyle,
+    QStyleOptionButton,
+    QStylePainter,
     QApplication,
     QComboBox,
     QDialog,
@@ -42,6 +60,7 @@ from ..angle_utils import (
     wrap_deg,
     shortest_delta_az_rotor_deg,
     shortest_delta_deg,
+    antenna_dipole_enabled,
 )
 from ..geo_utils import bearing_deg, effective_station_lat_lon, haversine_km, maidenhead_to_lat_lon
 from ..i18n import format_tooltip, t, tt
@@ -61,6 +80,55 @@ from ..ui.ui_utils import px_to_dip
 from .compass_az_window import CompassWidget
 from .compass_el_window import ElevationCompassWidget
 from .statistic_compass_widget import parse_heatmap_scale
+
+
+class _JogArrowButton(QPushButton):
+    """Button mit gezeichnetem, kantenglattem Pfeil (statt Schrift-Glyphe, die verpixelt wirkt).
+
+    ``direction``: ``left`` | ``right`` | ``up`` | ``down``. Links/unten steht der Pfeil vor
+    dem Text, rechts/oben dahinter. Farbe folgt der aktuellen Button-Palette (Hell/Dunkel).
+    """
+
+    _ARROW_DIP = 12
+
+    def __init__(self, text: str, direction: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(text, parent)
+        self._direction = direction
+        if direction in ("right", "up"):
+            # Icon hinter den Text setzen
+            self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+
+    def _arrow_icon(self, color: QColor) -> QIcon:
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        s = float(self._ARROW_DIP)
+        px = max(1, int(round(s * dpr)))
+        pix = QPixmap(px, px)
+        pix.setDevicePixelRatio(dpr)
+        pix.fill(Qt.GlobalColor.transparent)
+        pts = {
+            "left": [(0.85, 0.12), (0.85, 0.88), (0.12, 0.5)],
+            "right": [(0.15, 0.12), (0.15, 0.88), (0.88, 0.5)],
+            "up": [(0.12, 0.85), (0.88, 0.85), (0.5, 0.12)],
+            "down": [(0.12, 0.15), (0.88, 0.15), (0.5, 0.88)],
+        }.get(self._direction, [(0.15, 0.12), (0.15, 0.88), (0.88, 0.5)])
+        poly = QPolygonF([QPointF(x * s, y * s) for x, y in pts])
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        p.drawPolygon(poly)
+        p.end()
+        return QIcon(pix)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        sp = QStylePainter(self)
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+        group = QPalette.ColorGroup.Active if self.isEnabled() else QPalette.ColorGroup.Disabled
+        color = self.palette().color(group, QPalette.ColorRole.ButtonText)
+        opt.icon = self._arrow_icon(color)
+        opt.iconSize = QSize(self._ARROW_DIP, self._ARROW_DIP)
+        sp.drawControl(QStyle.ControlElement.CE_PushButton, opt)
 
 
 class CompassWindow(QDialog):
@@ -225,9 +293,11 @@ class CompassWindow(QDialog):
         antenna_bridge=None,
         open_map_cb: Optional[Callable[[], None]] = None,
         rig_bridge_manager=None,
+        switch_profile_cb: Optional[Callable[[str], None]] = None,
     ):
         super().__init__(parent)
         self.cfg = cfg
+        self._switch_profile_cb = switch_profile_cb
         self.ctrl = controller
         self.save_cfg_cb = save_cfg_cb
         self._antenna_bridge = antenna_bridge
@@ -439,6 +509,37 @@ class CompassWindow(QDialog):
         _rh_wind.addStretch(1)
         _vl_wind.addWidget(self._lbl_wind_h)
         _vl_wind.addWidget(_wind_val_row)
+        self._wind_val_row = _wind_val_row
+
+        # Temperaturen (Außen / Motor) unter der Windgeschwindigkeit
+        self._temp_box = QFrame()
+        self._temp_box.setStyleSheet(_VAL_ROW_STYLE)
+        _vl_temp = QVBoxLayout(self._temp_box)
+        _vl_temp.setContentsMargins(8, 4, 8, 4)
+        _vl_temp.setSpacing(2)
+
+        def _temp_row(caption: QLabel, value: QLabel) -> QWidget:
+            w = QWidget()
+            w.setStyleSheet("background: transparent;")
+            h = QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(4)
+            caption.setStyleSheet("font-size: 12px; color: #aaa; background: transparent;")
+            value.setStyleSheet(
+                "font-size: 15px; font-weight: bold; color: #ffb454; background: transparent;"
+            )
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            h.addWidget(caption, 0)
+            h.addWidget(value, 1)
+            return w
+
+        self._lbl_temp_amb_cap = QLabel(t("compass.temp_ambient_short"))
+        self._lbl_temp_amb_val = QLabel("–")
+        self._lbl_temp_mot_cap = QLabel(t("compass.temp_motor_short"))
+        self._lbl_temp_mot_val = QLabel("–")
+        _vl_temp.addWidget(_temp_row(self._lbl_temp_amb_cap, self._lbl_temp_amb_val))
+        _vl_temp.addWidget(_temp_row(self._lbl_temp_mot_cap, self._lbl_temp_mot_val))
+        _vl_wind.addWidget(self._temp_box)
 
         # ── Locator-Eingabe-Karte ──────────────────────────────────────────
         _c_loc = QFrame()
@@ -476,6 +577,24 @@ class CompassWindow(QDialog):
         self._shortcut_locator.activated.connect(
             lambda: self._focus_search_field(self.ed_az_locator)
         )
+
+        # ── Profile-Karte ─────────────────────────────────────────────────
+        self._c_profile = QFrame()
+        self._apply_compass_card_style(self._c_profile)
+        _vl_prof = QVBoxLayout(self._c_profile)
+        _vl_prof.setContentsMargins(8, 8, 8, 10)
+        _vl_prof.setSpacing(4)
+        self._lbl_profile_h = QLabel(t("compass.profile_header").upper())
+        self._lbl_profile_h.setStyleSheet(_HDR_STYLE)
+        self._lbl_profile_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cb_profile = QComboBox()
+        self.cb_profile.setToolTip(tt("main.menu_profile"))
+        self.cb_profile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        _vl_prof.addWidget(self._lbl_profile_h)
+        _vl_prof.addWidget(self.cb_profile)
+        self._profile_ui_hold_last: Optional[bool] = None
+        self._refresh_profile_dropdown()
+        self.cb_profile.currentIndexChanged.connect(self._on_profile_changed)
 
         # ── Antennen-Karte ────────────────────────────────────────────────
         _c_ant = QFrame()
@@ -526,6 +645,7 @@ class CompassWindow(QDialog):
         left_vbox.addWidget(_c_ist)
         left_vbox.addWidget(self._c_wind)
         left_vbox.addWidget(_c_loc)
+        left_vbox.addWidget(self._c_profile)
         left_vbox.addWidget(_c_ant)
         left_vbox.addWidget(_c_dgcal_az)
         left_vbox.addStretch(1)
@@ -724,6 +844,28 @@ class CompassWindow(QDialog):
         self.btn_reset_dwell_az.setDefault(False)
         self.btn_reset_dwell_az.setMinimumHeight(px_to_dip(self, 28))
 
+        # JOG: Taste halten = Rotor dreht (JOG:1/2 alle ~80 ms), Loslassen = JOG:0
+        self._jog_dir = 0
+        self._jog_timer = QTimer(self)
+        self._jog_timer.setInterval(int(getattr(self.ctrl, "JOG_REPEAT_S", 0.08) * 1000))
+        self._jog_timer.timeout.connect(self._on_jog_tick)
+        self.btn_jog_left = _JogArrowButton(t("compass.btn_jog_left"), "left")
+        self.btn_jog_right = _JogArrowButton(t("compass.btn_jog_right"), "right")
+        for _jb, _jd in ((self.btn_jog_left, 1), (self.btn_jog_right, 2)):
+            _jb.setAutoDefault(False)
+            _jb.setDefault(False)
+            _jb.setAutoRepeat(False)
+            _jb.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            _jb.setMinimumHeight(px_to_dip(self, 32))
+            _jb.setToolTip(tt("compass.btn_jog_tooltip"))
+            _jb.pressed.connect(lambda d=_jd: self._on_jog_pressed(d))
+            _jb.released.connect(self._on_jog_released)
+        _jog_row = QHBoxLayout()
+        _jog_row.setContentsMargins(0, 0, 0, 0)
+        _jog_row.setSpacing(px_to_dip(self, 4))
+        _jog_row.addWidget(self.btn_jog_left)
+        _jog_row.addWidget(self.btn_jog_right)
+        _ctrl_vbox.addLayout(_jog_row)
         _ctrl_vbox.addWidget(self.btn_stop_az)
         _ctrl_vbox.addWidget(self.btn_ref_az)
         _ctrl_vbox.addWidget(self.btn_heatmap_az)
@@ -912,6 +1054,29 @@ class CompassWindow(QDialog):
             self._make_pwm_row("el")
         )
         _ctrl_el_vbox.addWidget(self._pwm_el_wrap)
+
+        # JOG EL: Taste halten = Rotor dreht (JOG:1/2 alle ~80 ms), Loslassen = JOG:0
+        self._jog_el_dir = 0
+        self._jog_el_timer = QTimer(self)
+        self._jog_el_timer.setInterval(int(getattr(self.ctrl, "JOG_REPEAT_S", 0.08) * 1000))
+        self._jog_el_timer.timeout.connect(self._on_jog_el_tick)
+        self.btn_jog_down = _JogArrowButton(t("compass.btn_jog_down"), "down")
+        self.btn_jog_up = _JogArrowButton(t("compass.btn_jog_up"), "up")
+        for _jb, _jd in ((self.btn_jog_down, 1), (self.btn_jog_up, 2)):
+            _jb.setAutoDefault(False)
+            _jb.setDefault(False)
+            _jb.setAutoRepeat(False)
+            _jb.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            _jb.setMinimumHeight(px_to_dip(self, 32))
+            _jb.setToolTip(tt("compass.btn_jog_tooltip"))
+            _jb.pressed.connect(lambda d=_jd: self._on_jog_el_pressed(d))
+            _jb.released.connect(self._on_jog_el_released)
+        _jog_el_row = QHBoxLayout()
+        _jog_el_row.setContentsMargins(0, 0, 0, 0)
+        _jog_el_row.setSpacing(px_to_dip(self, 4))
+        _jog_el_row.addWidget(self.btn_jog_down)
+        _jog_el_row.addWidget(self.btn_jog_up)
+        _ctrl_el_vbox.addLayout(_jog_el_row)
         _ctrl_el_vbox.addWidget(self.btn_stop_el)
         _ctrl_el_vbox.addWidget(self.btn_ref_el)
         _ctrl_el_vbox.addWidget(self.cb_heatmap_el)
@@ -1081,6 +1246,8 @@ class CompassWindow(QDialog):
 
     def hideEvent(self, event: QHideEvent) -> None:
         """Minimieren: wie schließen für Bus-Polling (closeEvent fehlt bei Minimize)."""
+        self._stop_jog()
+        self._stop_jog_el()
         self._stop_scan()
         self._antenna_request_timer.stop()
         try:
@@ -1095,6 +1262,8 @@ class CompassWindow(QDialog):
         super().hideEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._stop_jog()
+        self._stop_jog_el()
         self._stop_scan()
         self._antenna_request_timer.stop()
         try:
@@ -1191,6 +1360,73 @@ class CompassWindow(QDialog):
             self._compass_last_bus_target_d10_az = self._effective_az_bus_target_d10()
         except Exception:
             pass
+
+    def _profile_switch_locked(self) -> bool:
+        """Profil-Dropdown sperren: Profildaten werden gelesen oder der Rotor fährt."""
+        try:
+            return bool(self.ctrl.drive_sync_hold_active()) or bool(self.ctrl.is_any_axis_moving())
+        except Exception:
+            return False
+
+    def _refresh_profile_dropdown(self) -> None:
+        """Profil-Dropdown aus profile_store füllen."""
+        cb = getattr(self, "cb_profile", None)
+        if cb is None:
+            return
+        try:
+            from ..profile_store import get_active_profile_id, list_profiles
+
+            active = str(get_active_profile_id() or "")
+            profiles = list_profiles() or []
+        except Exception:
+            active = ""
+            profiles = []
+        cb.blockSignals(True)
+        try:
+            cb.clear()
+            active_row = 0
+            for p in profiles:
+                if not isinstance(p, dict):
+                    continue
+                pid = str(p.get("id") or "").strip()
+                if not pid:
+                    continue
+                name = str(p.get("name") or pid).strip() or pid
+                cb.addItem(name, pid)
+                if pid == active:
+                    active_row = cb.count() - 1
+            if cb.count() > 0:
+                cb.setCurrentIndex(active_row)
+            locked = self._profile_switch_locked()
+            self._profile_ui_hold_last = locked
+            cb.setEnabled(bool(cb.count()) and (not locked) and callable(self._switch_profile_cb))
+            visible = bool(cb.count()) and callable(self._switch_profile_cb)
+            self._c_profile.setVisible(visible)
+        finally:
+            cb.blockSignals(False)
+
+    def _on_profile_changed(self, _idx: int = 0) -> None:
+        cb = getattr(self, "cb_profile", None)
+        if cb is None or not callable(self._switch_profile_cb):
+            return
+        pid = str(cb.currentData() or "").strip()
+        if not pid:
+            return
+        try:
+            from ..profile_store import get_active_profile_id
+
+            if pid == get_active_profile_id():
+                return
+        except Exception:
+            pass
+        if self._profile_switch_locked():
+            self._refresh_profile_dropdown()
+            return
+        try:
+            self._switch_profile_cb(pid)
+        except Exception:
+            pass
+        self._refresh_profile_dropdown()
 
     @Slot()
     def _on_antenna_changed(self) -> None:
@@ -1527,26 +1763,7 @@ class CompassWindow(QDialog):
         return max(0, min(2, int(self.cfg.get("ui", {}).get("compass_antenna", 0))))
 
     def _antenna_dipole_enabled(self, ant_idx: int) -> bool:
-        """Dipol-Flag für Antenne ant_idx (0–2): Controller-Zustand bevorzugt, sonst Config."""
-        ant_idx = max(0, min(2, int(ant_idx)))
-        slot = ant_idx + 1
-        hw_v = getattr(self.ctrl.az, f"antdp{slot}", None)
-        if hw_v is not None:
-            try:
-                ui = self.cfg.setdefault("ui", {})
-                dips = list(ui.get("antenna_dipoles_az", [False, False, False]))
-                while len(dips) < 3:
-                    dips.append(False)
-                dips[ant_idx] = bool(hw_v)
-                ui["antenna_dipoles_az"] = dips[:3]
-            except Exception:
-                pass
-            return bool(hw_v)
-        dips_cfg = self.cfg.get("ui", {}).get("antenna_dipoles_az", [False, False, False])
-        try:
-            return bool(dips_cfg[ant_idx])
-        except (IndexError, TypeError):
-            return False
+        return antenna_dipole_enabled(getattr(self.ctrl, "az", None), self.cfg, ant_idx)
 
     def _selected_antenna_dipole_enabled(self) -> bool:
         return self._antenna_dipole_enabled(self._selected_antenna_idx())
@@ -2002,6 +2219,7 @@ class CompassWindow(QDialog):
             self._lbl_wind_h,
             self.lbl_az_locator,
             self._lbl_antenna_h,
+            self._lbl_profile_h,
             self._lbl_dgcal_az_h,
             self._lbl_conn_h,
             self._lbl_ctrl,
@@ -2075,6 +2293,10 @@ class CompassWindow(QDialog):
             self._btn_open_map.setToolTip(tt("compass.open_map_tooltip"))
         self.lbl_az_locator.setText(t("compass.locator_label").upper())
         self._lbl_antenna_h.setText(t("compass.antenna_header").upper())
+        self._lbl_profile_h.setText(t("compass.profile_header").upper())
+        self._lbl_temp_amb_cap.setText(t("compass.temp_ambient_short"))
+        self._lbl_temp_mot_cap.setText(t("compass.temp_motor_short"))
+        self.cb_profile.setToolTip(tt("main.menu_profile"))
         self._lbl_dgcal_az_h.setText(t("compass.dgcal_header").upper())
         self._lbl_dgcal_el_h.setText(t("compass.dgcal_header").upper())
         self.ed_dgcal_az_true.setPlaceholderText(t("compass.dgcal_true_placeholder"))
@@ -2412,6 +2634,8 @@ class CompassWindow(QDialog):
             self._homing_ui_hidden_for_abs_enc = hide_homing
             self.update_homing_buttons_visibility()
         self.refresh_visibility()
+        if self._profile_switch_locked() != getattr(self, "_profile_ui_hold_last", None):
+            self._refresh_profile_dropdown()
         # Bei Windows-Theme-Wechsel Palette prüfen (PaletteChange kann ausbleiben)
         if self.isVisible():
             try:
@@ -2778,7 +3002,21 @@ class CompassWindow(QDialog):
         self.az_compass.set_wind_dir_deg(wind_dir)
         self.az_compass.set_wind_dir_mode(wd_mode)
         self.az_compass.set_wind_visible(wind_on)
-        self._c_wind.setVisible(wind_on)
+        try:
+            _tel_t = self.ctrl.az.telemetry
+            _t_amb = getattr(_tel_t, "temp_ambient_c", None)
+            _t_mot = getattr(_tel_t, "temp_motor_c", None)
+        except Exception:
+            _t_amb = _t_mot = None
+        _has_temp = (_t_amb is not None) or (_t_mot is not None)
+        self._c_wind.setVisible(wind_on or _has_temp)
+        self._wind_val_row.setVisible(wind_on)
+        self._lbl_wind_h.setText(
+            (t("compass.wind_label") if wind_on else t("compass.temp_label")).upper()
+        )
+        self._temp_box.setVisible(_has_temp)
+        self._lbl_temp_amb_val.setText("–" if _t_amb is None else f"{float(_t_amb):.1f} °C")
+        self._lbl_temp_mot_val.setText("–" if _t_mot is None else f"{float(_t_mot):.1f} °C")
         try:
             az_ref_homing = bool(getattr(self.ctrl.az, "ref_poll_active", False)) and bool(
                 getattr(self.ctrl.az, "moving", False)
@@ -3152,6 +3390,12 @@ class CompassWindow(QDialog):
                     self._dgcal_el = v
                 else:
                     self._dgcal_az = v
+                try:  # auch für die Web-Ansicht bereitstellen
+                    (self.ctrl.el if axis == "el" else self.ctrl.az).dgcal_d10 = int(
+                        round(v * 10.0)
+                    )
+                except Exception:
+                    pass
                 self._refresh_dgcal_labels()
 
     def _fmt_dgcal_wire(self, deg: float) -> str:
@@ -3239,6 +3483,12 @@ class CompassWindow(QDialog):
             self._dgcal_el = float(value_deg)
         else:
             self._dgcal_az = float(value_deg)
+        try:
+            (self.ctrl.el if axis == "el" else self.ctrl.az).dgcal_d10 = int(
+                round(float(value_deg) * 10.0)
+            )
+        except Exception:
+            pass
         self._refresh_dgcal_labels()
         busy_attr = "_dgcal_req_busy_el" if axis == "el" else "_dgcal_req_busy_az"
         setattr(self, busy_attr, False)
@@ -3476,8 +3726,75 @@ class CompassWindow(QDialog):
         except Exception:
             pass
 
+    # -------------------- JOG --------------------
+    def _on_jog_pressed(self, direction: int) -> None:
+        self._stop_scan()
+        self._jog_dir = int(direction)
+        # Kein altes Soll-Latch: Soll folgt während JOG dem Ist
+        self._target_az = None
+        self._stop_az_ts = None
+        self._cc_display_latch_az_d10 = None
+        try:
+            self._clear_az_dipole_soll_display()
+        except Exception:
+            pass
+        self._on_jog_tick()
+        self._jog_timer.start()
+
+    def _on_jog_tick(self) -> None:
+        if self._jog_dir in (1, 2):
+            try:
+                self.ctrl.jog_az(self._jog_dir)
+            except Exception:
+                pass
+
+    def _on_jog_released(self) -> None:
+        self._stop_jog()
+
+    def _stop_jog(self) -> None:
+        """Wiederholen beenden und einmal JOG:0 (weich stoppen) senden."""
+        was_active = self._jog_dir != 0 or self._jog_timer.isActive()
+        self._jog_dir = 0
+        self._jog_timer.stop()
+        if was_active:
+            try:
+                self.ctrl.jog_az(0)
+            except Exception:
+                pass
+
+    def _on_jog_el_pressed(self, direction: int) -> None:
+        self._jog_el_dir = int(direction)
+        # Kein altes Soll-Latch: Soll folgt während JOG dem Ist
+        self._target_el = None
+        self._stop_el_ts = None
+        self._cc_display_latch_el_d10 = None
+        self._on_jog_el_tick()
+        self._jog_el_timer.start()
+
+    def _on_jog_el_tick(self) -> None:
+        if self._jog_el_dir in (1, 2):
+            try:
+                self.ctrl.jog_el(self._jog_el_dir)
+            except Exception:
+                pass
+
+    def _on_jog_el_released(self) -> None:
+        self._stop_jog_el()
+
+    def _stop_jog_el(self) -> None:
+        """EL: Wiederholen beenden und einmal JOG:0 (weich stoppen) senden."""
+        was_active = self._jog_el_dir != 0 or self._jog_el_timer.isActive()
+        self._jog_el_dir = 0
+        self._jog_el_timer.stop()
+        if was_active:
+            try:
+                self.ctrl.jog_el(0)
+            except Exception:
+                pass
+
     @Slot()
     def _on_stop_az(self) -> None:
+        self._stop_jog()
         self._stop_scan()
         now = time.time()
         self._cc_display_latch_az_d10 = None
@@ -3506,6 +3823,7 @@ class CompassWindow(QDialog):
 
     @Slot()
     def _on_stop_el(self) -> None:
+        self._stop_jog_el()
         now = time.time()
         self._cc_display_latch_el_d10 = None
         self._stop_el_ts = now

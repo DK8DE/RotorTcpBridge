@@ -161,6 +161,7 @@ from .axis_widget import (
 class MainWindow(QMainWindow):
     _encoder_type_changed_ui = Signal()
     _rotor_type_changed_ui = Signal()
+    web_profile_switch_requested = Signal(str)
 
     @staticmethod
     def _hamlib_listener_ports_sorted(ham_cfg: dict) -> list[int]:
@@ -881,7 +882,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(300, self._on_internet_check_timer)
         QTimer.singleShot(500, self._check_pst_udp_startup_error)
 
-        self._log_win = LogWindow(self.logbuf, parent=None)
+        self._log_win = LogWindow(
+            self.logbuf, parent=None, cfg=self.cfg, save_cfg_cb=self.save_cfg_cb
+        )
         self._compass_win = CompassWindow(
             self.cfg,
             self.ctrl,
@@ -890,6 +893,7 @@ class MainWindow(QMainWindow):
             antenna_bridge=self._antenna_bridge,
             open_map_cb=self._open_map,
             rig_bridge_manager=self._rig_bridge_manager,
+            switch_profile_cb=self._switch_rotor_profile,
         )
         self._attach_compass_aswatch_provider()
         self._map_win = MapWindow(
@@ -901,9 +905,12 @@ class MainWindow(QMainWindow):
             on_asnearest_select_cb=self._on_map_asnearest_select,
             on_map_page_ready_cb=self._on_map_page_ready,
             rig_bridge_manager=self._rig_bridge_manager,
+            switch_profile_cb=self._switch_rotor_profile,
         )
         self._rotor_overview_win: RotorOverviewWindow | None = None
         self._overview_service = RotorOverviewService()
+        self._map_web_node_cache: dict = {}
+        self._overview_service.set_local_node_provider(self._overview_local_node)
         # Broadcast zuerst: Sync-Slots dürfen den TX nicht verhindern; Fire-and-Forget ist separat
         self._antenna_bridge.selection_changed.connect(self._on_antenna_broadcast_aselect)
         self._antenna_bridge.selection_changed.connect(self._sync_main_antenna_combo_from_bridge)
@@ -969,6 +976,10 @@ class MainWindow(QMainWindow):
         self.btn_open_compass.clicked.connect(self._open_compass)
         self.btn_open_map.clicked.connect(self._open_map)
 
+        self.web_profile_switch_requested.connect(
+            self._on_web_profile_switch_requested,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._wire_map_webserver()
         QTimer.singleShot(400, self._start_map_webserver_if_enabled)
 
@@ -1329,6 +1340,11 @@ class MainWindow(QMainWindow):
         mode = str(hl.get("mode", "tcp")).strip().lower()
         link = "COM" if mode == "com" else ("UDP" if mode == "udp" else "TCP")
         title = f"{t('app.title')} v{APP_VERSION} {link}"
+        try:
+            if bool(self.ctrl.drive_sync_hold_active()):
+                title = f"{title} — {t('main.profile_sync_title_suffix')}"
+        except Exception:
+            pass
         if title != self._last_title:
             self._last_title = title
             self.setWindowTitle(title)
@@ -1837,13 +1853,98 @@ class MainWindow(QMainWindow):
             act = menu.menuAction()
             if act is not None:
                 act.setVisible(len(profiles) >= 2)
+        try:
+            mw = getattr(self, "_map_win", None)
+            if mw is not None and hasattr(mw, "_refresh_profile_dropdown"):
+                mw._refresh_profile_dropdown()
+        except Exception:
+            pass
+        try:
+            cw = getattr(self, "_compass_win", None)
+            if cw is not None and hasattr(cw, "_refresh_profile_dropdown"):
+                cw._refresh_profile_dropdown()
+        except Exception:
+            pass
 
     def _on_profile_menu_toggled(self, profile_id: str, checked: bool) -> None:
         if getattr(self, "_profile_menu_suppress", False):
             return
         if not checked:
             return
+        if self._profile_switch_blocked_by_motion(profile_id):
+            QMessageBox.information(
+                self, t("app.title"), t("main.profile_switch_blocked_moving")
+            )
+            self._refresh_profile_menu()
+            return
         self._switch_rotor_profile(profile_id)
+
+    def _profile_switch_blocked_by_motion(self, profile_id: str = "") -> bool:
+        """Profilwechsel sperren, solange der Rotor fährt (sonst fehlt das Polling der Bewegung)."""
+        try:
+            from ..profile_store import get_active_profile_id
+
+            if profile_id and str(profile_id) == str(get_active_profile_id()):
+                return False
+        except Exception:
+            pass
+        try:
+            return bool(self.ctrl.is_any_axis_moving())
+        except Exception:
+            return False
+
+    def _active_browser_relay(self):
+        """Browser-Bus-Relay (Display via Web Serial), falls gerade aktiv — sonst None."""
+        relay = getattr(self, "_browser_bus_relay", None)
+        try:
+            if relay is not None and bool(relay.is_active()):
+                return relay
+        except Exception:
+            pass
+        return None
+
+    def _keep_browser_relay_link(self, relay) -> None:
+        """Config des Relays nachziehen und Controller-Link auf den Browser belassen."""
+        if relay is None:
+            return
+        try:
+            relay.update_cfg(self.cfg)
+        except Exception as e:
+            self._log_exception("browser relay update_cfg", e)
+        try:
+            if bool(relay.is_active()):
+                self.ctrl.set_controller_link(relay.ctrl_hw, True)
+        except Exception as e:
+            self._log_exception("browser relay set_controller_link", e)
+
+    def _push_web_display_rotor_ids(self) -> None:
+        """Display (Web Serial) auf die Rotor-Slave-IDs des aktiven Profils stellen.
+
+        Der Display im Modus WEB spricht den Rotor direkt an. Hat das Profil eine andere
+        Slave-ID als zuvor (z. B. 22 → 20), antwortet sonst niemand — unabhängig davon,
+        ob „Hardware-Controller verwenden“ im Profil gesetzt ist.
+        """
+        relay = self._active_browser_relay()
+        if relay is None:
+            return
+        try:
+            from ..rotor_backup import push_controller_rotor_ids
+
+            self._keep_browser_relay_link(relay)
+            ok = push_controller_rotor_ids(self.ctrl, self.cfg)
+            if not ok:
+                self.logbuf.write("WARN", t("main.web_display_ids_push_warn"))
+            else:
+                self.logbuf.write("INFO", t("main.web_display_ids_pushed"))
+        except Exception as e:
+            self._log_exception("_push_web_display_rotor_ids", e)
+
+    def _on_browser_relay_attached(self) -> None:
+        """Browser hat sich verbunden (evtl. nach Profilwechsel): IDs am Display angleichen."""
+        try:
+            QTimer.singleShot(700, self, self._push_web_display_rotor_ids)
+        except Exception as e:
+            self._log_exception("_on_browser_relay_attached", e)
 
     def _wait_hw_connected_for_profile_push(self, timeout_s: float = 4.0) -> bool:
         """Kurz warten bis Hardware-Link steht (nach update_cfg / Safe-Reconnect).
@@ -1855,6 +1956,8 @@ class MainWindow(QMainWindow):
 
         chw = self.cfg.get("controller_hw") if isinstance(self.cfg.get("controller_hw"), dict) else {}
         use_ctrl = bool(chw.get("enabled", True)) and bool(chw.get("usb_remote", False))
+        if self._active_browser_relay() is not None:
+            use_ctrl = False  # Display über Browser: Rotor-Link reicht (kein lokaler COM)
         hw = self.ctrl_hw if use_ctrl else getattr(self, "hw", None)
         if hw is None:
             return False
@@ -1898,6 +2001,12 @@ class MainWindow(QMainWindow):
                     pass
             return
 
+        if self._profile_switch_blocked_by_motion(pid):
+            # Sicherheitsnetz für alle Aufrufer (Menü, Karte, Web): Rotor fährt.
+            self.logbuf.write("WARN", t("main.profile_switch_blocked_moving"))
+            self._refresh_profile_menu()
+            return
+
         old_lang = str((self.cfg.get("ui") or {}).get("language") or "")
         old_chw = dict(self.cfg.get("controller_hw") or {}) if isinstance(self.cfg.get("controller_hw"), dict) else {}
         try:
@@ -1930,7 +2039,9 @@ class MainWindow(QMainWindow):
 
                 proxy.update_cfg(self.cfg)
                 want = ControllerRemoteUsbProxy.want_remote(self.cfg)
-                if bool(proxy.is_active()) != want:
+                # Display hängt am Browser (Web Serial): lokalen COM-Proxy nicht starten.
+                web_relay_on = self._active_browser_relay() is not None
+                if bool(proxy.is_active()) != want and not (want and web_relay_on):
                     import threading
 
                     threading.Thread(
@@ -1959,46 +2070,41 @@ class MainWindow(QMainWindow):
             except Exception as e2:
                 self._log_exception("_switch_rotor_profile update_ids", e2)
 
+        # Display per Web Serial: Relay-Config (cont_id …) und Link auf das neue Profil mitnehmen.
+        self._keep_browser_relay_link(self._active_browser_relay())
+
         try:
             if hasattr(self.ctrl, "reset_bus_discovery_state"):
                 self.ctrl.reset_bus_discovery_state()
         except Exception as e:
             self._log_exception("_switch_rotor_profile reset_bus_discovery_state", e)
 
+        settings_was_visible = False
+        sw = getattr(self, "_settings_win", None)
         try:
-            from ..rotor_backup import push_controller_hw_diff
+            settings_was_visible = bool(sw is not None and sw.isVisible())
+        except Exception:
+            settings_was_visible = False
 
-            # Nach Transportwechsel kurz auf Link warten, sonst werden SETCON* verworfen.
-            connected = self._wait_hw_connected_for_profile_push(timeout_s=4.0)
-            enc3 = False
-            try:
-                fn = getattr(self.ctrl, "abs_encoder_no_homing", None)
-                enc3 = bool(fn()) if callable(fn) else False
-            except Exception:
-                enc3 = False
-            new_chw = self.cfg.get("controller_hw") if isinstance(self.cfg.get("controller_hw"), dict) else {}
-            # force=True: alle Controller-Einstellungen des neuen Profils schreiben
-            # (nicht nur Diff zwischen Profil-JSONs — physischer Controller kann abweichen).
-            ok_push = push_controller_hw_diff(
-                self.ctrl,
-                old_chw=old_chw,
-                new_chw=new_chw,
-                connected=connected,
-                encoder_type3=enc3,
-                force=True,
-            )
-            if not connected:
-                self.logbuf.write(
-                    "WARN",
-                    t("main.profile_controller_push_offline"),
-                )
-            elif not ok_push:
-                self.logbuf.write(
-                    "WARN",
-                    t("main.profile_controller_push_warn"),
-                )
+        # Einstellungen sofort neu aufbauen — nicht hinter Bus-Timeouts (SETCON*/Wait).
+        self._refresh_profile_menu()
+        try:
+            self._rebuild_settings_win()
+            if settings_was_visible:
+                self._open_settings()
         except Exception as e:
-            self._log_exception("_switch_rotor_profile push_controller_hw", e)
+            self._log_exception("_switch_rotor_profile rebuild settings", e)
+
+        try:
+            self._last_main_antenna_labels = None
+            self._refresh_main_antenna_dropdown_labels_if_needed()
+        except Exception as e:
+            self._log_exception("_switch_rotor_profile antenna_combo", e)
+
+        old_chw_copy = dict(old_chw)
+        QTimer.singleShot(
+            0, lambda: self._finish_profile_switch_hardware(old_chw_copy)
+        )
 
         pst = self.cfg.get("pst_server") or {}
         try:
@@ -2052,13 +2158,6 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        settings_was_visible = False
-        sw = getattr(self, "_settings_win", None)
-        try:
-            settings_was_visible = bool(sw is not None and sw.isVisible())
-        except Exception:
-            settings_was_visible = False
-
         self._after_settings_applied()
         self._update_groupbox_titles()
         self._update_axis_visibility()
@@ -2075,25 +2174,28 @@ class MainWindow(QMainWindow):
 
         self._refresh_profile_menu()
 
+        # HTML-Cache als veraltet markieren, aber alten Inhalt behalten bis Rebuild —
+        # sonst liefert der Webserver kurz „Map unavailable“ beim Reload.
         try:
-            # Antennen-Combo sofort neu befüllen (nicht erst beim Timer)
-            self._last_main_antenna_labels = None
-            self._refresh_main_antenna_dropdown_labels_if_needed()
-        except Exception as e:
-            self._log_exception("_switch_rotor_profile antenna_combo", e)
-
-        try:
-            self._rebuild_settings_win()
-            if settings_was_visible:
-                QTimer.singleShot(50, self._open_settings)
-        except Exception as e:
-            self._log_exception("_switch_rotor_profile rebuild settings", e)
+            self._map_web_html_cache_ts = 0.0
+        except Exception:
+            pass
 
         if lang_changed:
             try:
                 self._rebuild_all_windows()
             except Exception as e:
                 self._log_exception("_switch_rotor_profile rebuild_all_windows", e)
+            try:
+                self._tick_map_webserver_cache()
+            except Exception:
+                pass
+            try:
+                from ..profile_store import get_active_profile_id
+
+                self._web_profile_applied_id = str(get_active_profile_id() or "")
+            except Exception:
+                pass
             return
 
         try:
@@ -2111,6 +2213,63 @@ class MainWindow(QMainWindow):
             pass
 
         self._retranslate_ui()
+        try:
+            self._tick_map_webserver_cache()
+        except Exception:
+            pass
+        try:
+            from ..profile_store import get_active_profile_id
+
+            self._web_profile_applied_id = str(get_active_profile_id() or "")
+        except Exception:
+            pass
+
+    def _finish_profile_switch_hardware(self, old_chw: dict) -> None:
+        """SETCON*/Antennen nach Profilwechsel — nach dem UI-Rebuild, damit Einstellungen nicht einfrieren."""
+        try:
+            from ..rotor_backup import push_controller_hw_diff
+
+            relay = self._active_browser_relay()
+            self._keep_browser_relay_link(relay)
+            connected = self._wait_hw_connected_for_profile_push(timeout_s=4.0)
+            relay = self._active_browser_relay()
+            self._keep_browser_relay_link(relay)
+            enc3 = False
+            try:
+                fn = getattr(self.ctrl, "abs_encoder_no_homing", None)
+                enc3 = bool(fn()) if callable(fn) else False
+            except Exception:
+                enc3 = False
+            new_chw = self.cfg.get("controller_hw") if isinstance(self.cfg.get("controller_hw"), dict) else {}
+            ok_push = push_controller_hw_diff(
+                self.ctrl,
+                old_chw=old_chw,
+                new_chw=new_chw,
+                connected=connected,
+                encoder_type3=enc3,
+                force=True,
+                skip_remote=(relay is not None) or int(new_chw.get("link_mode", 0) or 0) == 2,
+            )
+            self._keep_browser_relay_link(self._active_browser_relay())
+            self._push_web_display_rotor_ids()
+            if not connected:
+                self.logbuf.write("WARN", t("main.profile_controller_push_offline"))
+            elif not ok_push:
+                self.logbuf.write("WARN", t("main.profile_controller_push_warn"))
+            try:
+                from ..rotor_backup import push_profile_antenna_offsets
+
+                ok_ant = push_profile_antenna_offsets(
+                    self.ctrl, self.cfg, connected=connected
+                )
+                if connected and not ok_ant:
+                    self.logbuf.write("WARN", t("main.profile_antenna_offset_push_warn"))
+                    if hasattr(self.ctrl, "request_antenna_offsets"):
+                        self.ctrl.request_antenna_offsets(priority=1)
+            except Exception as e:
+                self._log_exception("_finish_profile_switch_hardware antenna", e)
+        except Exception as e:
+            self._log_exception("_finish_profile_switch_hardware", e)
 
     def _retranslate_ui(self):
         """Alle Texte des Hauptfensters auf die aktuelle Sprache aktualisieren."""
@@ -2305,7 +2464,9 @@ class MainWindow(QMainWindow):
             from .log_window import LogWindow
             from .warnings_errors_window import WarningsErrorsWindow
 
-            self._log_win = LogWindow(self.logbuf, parent=None)
+            self._log_win = LogWindow(
+                self.logbuf, parent=None, cfg=self.cfg, save_cfg_cb=self.save_cfg_cb
+            )
             self._compass_win = CompassWindow(
                 self.cfg,
                 self.ctrl,
@@ -2314,6 +2475,7 @@ class MainWindow(QMainWindow):
                 antenna_bridge=self._antenna_bridge,
                 open_map_cb=self._open_map,
                 rig_bridge_manager=self._rig_bridge_manager,
+                switch_profile_cb=self._switch_rotor_profile,
             )
             self._attach_compass_aswatch_provider()
             self._map_win = MapWindow(
@@ -2325,6 +2487,7 @@ class MainWindow(QMainWindow):
                 on_asnearest_select_cb=self._on_map_asnearest_select,
                 on_map_page_ready_cb=self._on_map_page_ready,
                 rig_bridge_manager=self._rig_bridge_manager,
+                switch_profile_cb=self._switch_rotor_profile,
             )
             self._rotor_overview_win = None
             try:
@@ -2402,6 +2565,88 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _web_profiles_payload(self) -> dict:
+        """Profil-Liste für Browser-Karte/Kompass (GET /api/profiles)."""
+        try:
+            from ..profile_store import get_active_profile_id, list_profiles
+
+            active = str(get_active_profile_id() or "")
+            applied = str(getattr(self, "_web_profile_applied_id", "") or "")
+            if not applied:
+                applied = active
+            profiles = []
+            for p in list_profiles() or []:
+                if not isinstance(p, dict):
+                    continue
+                pid = str(p.get("id") or "").strip()
+                if not pid:
+                    continue
+                name = str(p.get("name") or pid).strip() or pid
+                profiles.append(
+                    {"id": pid, "name": name, "active": pid == active}
+                )
+            return {
+                "ok": True,
+                "active_id": active,
+                "applied_id": applied,
+                "profiles": profiles,
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "active_id": "",
+                "applied_id": "",
+                "profiles": [],
+            }
+
+    def apply_web_profile_switch(self, profile_id: str) -> dict:
+        """Profilwechsel aus dem Webserver in den UI-Thread legen."""
+        pid = str(profile_id or "").strip()
+        if not pid:
+            return {"ok": False, "error": "profile_id_required"}
+        try:
+            from ..profile_store import get_active_profile_id, get_profile_meta
+
+            if get_profile_meta(pid) is None:
+                return {"ok": False, "error": "unknown_profile"}
+            if pid == get_active_profile_id():
+                return {"ok": True, "active_id": pid, "unchanged": True}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        if self._profile_switch_blocked_by_motion(pid):
+            return {
+                "ok": False,
+                "error": "rotor_moving",
+                "title": t("app.title"),
+                "message": t("main.profile_switch_blocked_moving"),
+            }
+        try:
+            self.web_profile_switch_requested.emit(pid)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "active_id": pid}
+
+    def _on_web_profile_switch_requested(self, profile_id: str) -> None:
+        # applied_id bleibt auf dem alten Profil, bis Switch + HTML-Cache fertig sind.
+        try:
+            from ..profile_store import get_active_profile_id
+
+            self._web_profile_applied_id = str(get_active_profile_id() or "")
+        except Exception:
+            pass
+        try:
+            self._switch_rotor_profile(str(profile_id or ""))
+        except Exception as e:
+            self._log_exception("_on_web_profile_switch_requested", e)
+
+    def _build_web_shell_html(self) -> str:
+        """Gemeinsame Web-Seite (Karte + Kompass, Controller bleibt beim Umschalten verbunden)."""
+        from .web_shell_html import build_web_shell_html
+
+        dark = bool((self.cfg.get("ui") or {}).get("force_dark_mode", True))
+        return build_web_shell_html(dark=dark)
+
     def _wire_map_webserver(self) -> None:
         """MapWindow-Provider an den HTTP-Karten-Webserver hängen."""
         srv = getattr(self, "_map_webserver", None)
@@ -2414,18 +2659,39 @@ class MainWindow(QMainWindow):
         self._map_web_live_cache: dict = {}
         self._map_web_compass_cache: dict = {}
         self._map_web_overview_cache: dict = {}
+        self._map_web_node_cache: dict = {}
         self._map_web_aswatch_cache: tuple = ([], 0)
         self._map_web_aircraft_cache: list = []
         self._map_web_asnearest_cache: list = []
+        relay = getattr(self, "_browser_bus_relay", None)
+        if relay is None:
+            try:
+                from ..browser_bus_relay import BrowserBusRelay
+
+                relay = BrowserBusRelay(
+                    self.hw,
+                    self.ctrl,
+                    getattr(srv, "log", None),
+                    cfg_getter=lambda: self.cfg,
+                    desktop_proxy_getter=lambda: getattr(self, "_controller_remote_proxy", None),
+                )
+                self._browser_bus_relay = relay
+                relay.on_attached = self._on_browser_relay_attached
+            except Exception as e:
+                self._log_exception("_wire_map_webserver browser relay", e)
+                relay = None
         try:
             ov = getattr(self, "_overview_service", None)
             srv.configure(
+                bus_handler=(relay.handle if relay is not None else None),
+                shell_html_provider=self._build_web_shell_html,
                 html_provider=lambda: getattr(self, "_map_web_html_cache", "") or "",
                 compass_html_provider=lambda: getattr(self, "_map_web_compass_html_cache", "") or "",
                 overview_html_provider=lambda: getattr(self, "_map_web_overview_html_cache", "") or "",
                 live_provider=lambda: dict(getattr(self, "_map_web_live_cache", {}) or {}),
                 compass_provider=lambda: dict(getattr(self, "_map_web_compass_cache", {}) or {}),
                 overview_provider=lambda: dict(getattr(self, "_map_web_overview_cache", {}) or {}),
+                node_provider=lambda: dict(getattr(self, "_map_web_node_cache", {}) or {}),
                 overview_action_handler=(
                     (lambda action, payload: ov.handle_action(action, payload))
                     if ov is not None
@@ -2433,6 +2699,8 @@ class MainWindow(QMainWindow):
                 ),
                 setaz_handler=mw.apply_web_setaz,
                 ui_action_handler=mw.apply_web_ui_action,
+                profiles_provider=self._web_profiles_payload,
+                profile_switch_handler=self.apply_web_profile_switch,
                 aswatch_provider=lambda: tuple(
                     getattr(self, "_map_web_aswatch_cache", ([], 0))
                 ),
@@ -2453,11 +2721,29 @@ class MainWindow(QMainWindow):
         if not self._map_web_cache_timer.isActive():
             self._map_web_cache_timer.start()
 
+    def _overview_local_node(self) -> dict:
+        cached = getattr(self, "_map_web_node_cache", None)
+        if isinstance(cached, dict) and cached:
+            return dict(cached)
+        return self._build_overview_node_snapshot()
+
+    def _build_overview_node_snapshot(self) -> dict:
+        try:
+            from ..rotor_overview_node import build_overview_node_snapshot
+
+            return build_overview_node_snapshot(self.ctrl, self.cfg)
+        except Exception:
+            return {}
+
     def _tick_map_webserver_cache(self) -> None:
         """Live-/HTML-Caches für den Webserver im UI-Thread aktualisieren."""
         srv = getattr(self, "_map_webserver", None)
         mw = getattr(self, "_map_win", None)
         ov = getattr(self, "_overview_service", None)
+        try:
+            self._map_web_node_cache = self._build_overview_node_snapshot()
+        except Exception:
+            pass
         running = bool(srv is not None and getattr(srv, "running", False))
         if not running:
             if ov is not None:
@@ -2472,10 +2758,7 @@ class MainWindow(QMainWindow):
             if ov is not None:
                 ov.acquire("web")
             # HTML nur selten neu bauen (schwer); Live-State jedes Tick
-            params = mw._get_params()
-            rotor_target = float(params.get("rotor_az_deg", 0.0))
-            if not mw._refresh_timer.isActive():
-                mw._advance_smooth_rotor_az(rotor_target)
+            # Glättung läuft in get_web_live_payload (immer), damit der Browser-Beam mitgeht.
             self._map_web_live_cache = mw.get_web_live_payload()
             self._map_web_compass_cache = mw.get_web_compass_payload()
             self._map_web_aswatch_cache = mw.get_web_aswatch()
@@ -2509,16 +2792,36 @@ class MainWindow(QMainWindow):
             port = int(mws.get("listen_port", 80))
         except Exception:
             port = 80
+        ssl_on = bool(mws.get("ssl_enabled", False))
         try:
             if hasattr(srv, "set_password"):
                 srv.set_password(str(mws.get("password", "") or ""))
+        except Exception:
+            pass
+        try:
+            if hasattr(srv, "set_ssl_enabled"):
+                srv.set_ssl_enabled(ssl_on)
         except Exception:
             pass
         timer = getattr(self, "_map_web_cache_timer", None)
         try:
             ov = getattr(self, "_overview_service", None)
             if enabled:
-                ok, err = srv.restart(host, port)
+                # Gleicher Host/Port/TLS: kein Restart — sonst bricht die Browserseite
+                # beim Profilwechsel kurz mit „nicht erreichbar“ ab.
+                same_bind = False
+                try:
+                    same_bind = bool(getattr(srv, "running", False)) and (
+                        str(getattr(srv, "host", "") or "") == host
+                        and int(getattr(srv, "port", 0) or 0) == int(port)
+                        and bool(getattr(srv, "ssl_enabled", False)) == ssl_on
+                    )
+                except Exception:
+                    same_bind = False
+                if same_bind:
+                    ok, err = True, ""
+                else:
+                    ok, err = srv.restart(host, port, ssl_enabled=ssl_on)
                 if timer is not None and not timer.isActive():
                     timer.start()
                 if ok:
@@ -2945,6 +3248,13 @@ class MainWindow(QMainWindow):
             self.ctrl.broadcast_set_aselect(int(idx) + 1)
         except Exception:
             pass
+        # Dipol-Flag mit auf den Bus/Display — sonst kennt der Controller nur Versatz.
+        try:
+            from ..rotor_backup import push_antenna_dipoles_async
+
+            push_antenna_dipoles_async(self.ctrl, self.cfg)
+        except Exception as e:
+            self._log_exception("_on_antenna_broadcast_aselect dipoles", e)
 
     def _apply_aselect_from_query_ui(self, antenna_id_1_to_3: int) -> None:
         """GETASELECT vom AZ-Rotor beim Connect: nur Anzeige/Config, Rotor nicht bewegen."""
@@ -2972,6 +3282,12 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
             ui["compass_antenna"] = idx
+            try:
+                from ..rotor_backup import push_antenna_dipoles_async
+
+                push_antenna_dipoles_async(self.ctrl, self.cfg)
+            except Exception as e:
+                self._log_exception("_apply_setaselect_from_bus_ui dipoles", e)
             try:
                 if self.save_cfg_cb:
                     self.save_cfg_cb(self.cfg)
@@ -3179,7 +3495,8 @@ class MainWindow(QMainWindow):
             port = int(getattr(srv, "port", None) or mws.get("listen_port") or 80)
         except Exception:
             port = 80
-        return f"http://{host}:{port}", ""
+        scheme = "https" if bool(mws.get("ssl_enabled", False)) else "http"
+        return f"{scheme}://{host}:{port}", ""
 
     def _open_rotor_overview_web(self) -> None:
         """Rotorübersicht im Standardbrowser unter ``/rotoren`` öffnen."""
@@ -3381,6 +3698,22 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _update_drive_sync_ui(self) -> None:
+        """Parken und Hinweis, solange nach Profilwechsel noch Daten gelesen werden."""
+        hold = False
+        try:
+            hold = bool(self.ctrl.drive_sync_hold_active())
+        except Exception:
+            hold = False
+        try:
+            self.btn_park.setEnabled(not hold)
+            if hold:
+                self.btn_park.setToolTip(tt("main.profile_sync_park_blocked"))
+            else:
+                self.btn_park.setToolTip(tt("main.btn_park_tooltip"))
+        except Exception:
+            pass
+
     def _on_rotor_slave_ids_changed_from_commands(self) -> None:
         """Nach SETID / SETROTORID (Broadcast): Haupt- und Kompass-Titel an Config anpassen."""
         self._update_groupbox_titles()
@@ -3402,6 +3735,12 @@ class MainWindow(QMainWindow):
         slave_el = self.cfg.get("rotor_bus", {}).get("slave_el", "?")
         self.gb_az.setTitle(f"AZ ID:{slave_az}")
         self.gb_el.setTitle(f"EL ID:{slave_el}")
+        stw = getattr(self, "_statistics_win", None)
+        if stw is not None and hasattr(stw, "refresh_rotor_ids"):
+            try:
+                stw.refresh_rotor_ids()
+            except Exception:
+                pass
 
     def _update_axis_visibility(self):
         az_on = bool(getattr(self.ctrl, "enable_az", True))
@@ -4682,6 +5021,7 @@ class MainWindow(QMainWindow):
         self._notify_pst_position()
         self._notify_pst_target()
         self._update_actions_locked_by_moving()
+        self._update_drive_sync_ui()
         self._update_title_bar()
 
         if self._log_win.isVisible():

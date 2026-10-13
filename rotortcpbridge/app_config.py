@@ -99,6 +99,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "listen_port": 80,
         # Leer → Laufzeit-Default „rotor“ (siehe MapWebServer).
         "password": "rotor",
+        # HTTPS (nötig für Web Serial im LAN; Self-Signed-Zertifikat).
+        "ssl_enabled": False,
     },
     # SPID BIG-RAS / CAT über serielle Schnittstelle (z. B. com0com). Jeder
     # Listener bedient entweder den Rotor (ROT2PROG-13-Byte-Frames, AZ+EL in
@@ -164,6 +166,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "antenna_realign_on_switch": False,
         # Controller Remote USB: alles über USB-Serial statt RS485 am Controller
         "usb_remote": False,
+        # Anbindung des Controllers: 0 = RS485, 1 = PC-USB (Remote USB), 2 = WEB (Browser/Web Serial)
+        "link_mode": 0,
     },
     "spid": {"ph": 10, "pv": 10},
     "polling_ms": {
@@ -494,6 +498,7 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
         mws.setdefault("listen_host", "0.0.0.0")
         mws.setdefault("listen_port", 80)
         mws.setdefault("password", "rotor")
+        mws.setdefault("ssl_enabled", False)
     else:
         cfg.setdefault(
             "map_webserver",
@@ -502,6 +507,7 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
                 "listen_host": "0.0.0.0",
                 "listen_port": 80,
                 "password": "rotor",
+                "ssl_enabled": False,
             },
         )
 
@@ -541,7 +547,17 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
             chw_m["el_rotor_id"] = max(0, min(254, sel))
         chw_m.setdefault("antenna_realign_on_switch", False)
         chw_m.setdefault("usb_remote", False)
-
+        try:
+            _lm = int(chw_m.get("link_mode", -1))
+        except (TypeError, ValueError):
+            _lm = -1
+        if _lm == 2:
+            chw_m["usb_remote"] = False  # WEB: kein lokaler COM-Proxy
+        elif bool(chw_m.get("usb_remote", False)):
+            _lm = 1
+        else:
+            _lm = 0
+        chw_m["link_mode"] = _lm
     # Migration: USB-Link zum Display-Controller (Controller Remote USB)
     if "controller_link" not in cfg or not isinstance(cfg.get("controller_link"), dict):
         cfg["controller_link"] = {
@@ -693,4 +709,10 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
     _apply_compass_strom_analysis_defaults(ui)
     # Entfernt: Schnell-Buttons (GUI gibt es nicht mehr); alte Keys aus früheren Versionen verwerfen.
     ui.pop("quick_buttons", None)
+    try:
+        from .network_modules import modules_from_cfg, modules_to_cfg
+
+        merged["network_modules"] = modules_to_cfg(modules_from_cfg(merged))
+    except Exception:
+        pass
     return merged

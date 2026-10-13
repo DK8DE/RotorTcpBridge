@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import os
 import re
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,6 +15,9 @@ DEFAULT_PROFILE_ID = "default"
 DEFAULT_PROFILE_NAME = "Default"
 _INDEX_NAME = "profiles.json"
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_INDEX_LOCK = threading.RLock()
+_INDEX_CACHE: Optional[Dict[str, Any]] = None
+_INDEX_CACHE_PATH: Optional[str] = None
 
 
 def profiles_dir() -> Path:
@@ -52,6 +58,7 @@ def _normalize_index(raw: Any) -> Dict[str, Any]:
     profiles_in = raw.get("profiles")
     out: List[Dict[str, Any]] = []
     if isinstance(profiles_in, list):
+        seen: Dict[str, int] = {}
         for item in profiles_in:
             if not isinstance(item, dict):
                 continue
@@ -64,14 +71,22 @@ def _normalize_index(raw: Any) -> Dict[str, Any]:
             if "/" in fname or "\\" in fname or fname.startswith("."):
                 fname = f"{pid}.json"
             is_def = bool(item.get("is_default", False)) or pid == DEFAULT_PROFILE_ID
-            out.append(
-                {
-                    "id": pid,
-                    "name": name,
-                    "file": fname,
-                    "is_default": is_def,
-                }
-            )
+            entry = {
+                "id": pid,
+                "name": name,
+                "file": fname,
+                "is_default": is_def,
+            }
+            if pid in seen:
+                prev = out[seen[pid]]
+                # Doppelter Index-Eintrag (Anlegen + Orphan-Recover): Anzeigename behalten
+                if name not in (pid, ""):
+                    prev["name"] = name
+                if fname and prev.get("file") in (f"{pid}.json", ""):
+                    prev["file"] = fname
+                continue
+            seen[pid] = len(out)
+            out.append(entry)
     if not out:
         out = list(idx["profiles"])
     # Genau ein Default-Flag am Default-ID
@@ -99,28 +114,127 @@ def _normalize_index(raw: Any) -> Dict[str, Any]:
     return {"active_id": active, "profiles": out}
 
 
+def _atomic_write_json(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    os.replace(tmp, path)
+
+
+def _index_signature(idx: Dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "active_id": idx.get("active_id"),
+            "profiles": [
+                {
+                    "id": p.get("id"),
+                    "name": p.get("name"),
+                    "file": p.get("file"),
+                    "is_default": bool(p.get("is_default")),
+                }
+                for p in (idx.get("profiles") or [])
+            ],
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+
+
+def _recover_orphan_profile_files(idx: Dict[str, Any]) -> Dict[str, Any]:
+    """Profildateien, die nicht mehr im Index stehen, wieder einhängen (nach Index-Verlust)."""
+    profiles = list(idx.get("profiles") or [])
+    known_ids = {str(p.get("id") or "") for p in profiles}
+    known_files = {str(p.get("file") or "") for p in profiles}
+    try:
+        paths = sorted(profiles_dir().glob("*.json"))
+    except Exception:
+        return idx
+    for path in paths:
+        name = path.name
+        if name == _INDEX_NAME or name.endswith(".tmp"):
+            continue
+        pid = path.stem
+        if not _SAFE_ID_RE.match(pid):
+            continue
+        if pid in known_ids or name in known_files:
+            continue
+        if pid == DEFAULT_PROFILE_ID:
+            continue
+        display = pid
+        profiles.append(
+            {
+                "id": pid,
+                "name": display,
+                "file": name,
+                "is_default": False,
+            }
+        )
+        known_ids.add(pid)
+        known_files.add(name)
+    idx = dict(idx)
+    idx["profiles"] = profiles
+    return _normalize_index(idx)
+
+
 def load_index() -> Dict[str, Any]:
+    with _INDEX_LOCK:
+        return _load_index_unlocked()
+
+
+def _load_index_unlocked() -> Dict[str, Any]:
+    global _INDEX_CACHE, _INDEX_CACHE_PATH
+    path = str(profiles_index_path())
+    if _INDEX_CACHE is not None and _INDEX_CACHE_PATH == path:
+        return copy.deepcopy(_INDEX_CACHE)
     p = profiles_index_path()
+    persist = False
+    do_recover = False
     if not p.exists():
         idx = _empty_index()
-        save_index(idx)
-        return idx
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except Exception:
-        raw = None
-    idx = _normalize_index(raw)
-    save_index(idx)
-    return idx
+        persist = True
+        do_recover = True
+    else:
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception:
+            raw = None
+            persist = True
+            do_recover = True
+        idx = _normalize_index(raw)
+        # Einmal pro Prozess vom Datenträger: verwaiste Dateien nach Index-Verlust.
+        do_recover = True
+    if do_recover:
+        before = _index_signature(idx)
+        idx = _recover_orphan_profile_files(idx)
+        if _index_signature(idx) != before:
+            persist = True
+    if persist:
+        _save_index_unlocked(idx)
+    else:
+        _INDEX_CACHE = copy.deepcopy(idx)
+        _INDEX_CACHE_PATH = path
+    return copy.deepcopy(idx)
 
 
 def save_index(index: Dict[str, Any]) -> None:
+    with _INDEX_LOCK:
+        _save_index_unlocked(index)
+
+
+def _save_index_unlocked(index: Dict[str, Any]) -> None:
+    global _INDEX_CACHE, _INDEX_CACHE_PATH
     idx = _normalize_index(index)
-    p = profiles_index_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(idx, f, indent=2, ensure_ascii=False)
+    _atomic_write_json(profiles_index_path(), idx)
+    _INDEX_CACHE = copy.deepcopy(idx)
+    _INDEX_CACHE_PATH = str(profiles_index_path())
 
 
 def list_profiles() -> List[Dict[str, Any]]:
@@ -131,9 +245,19 @@ def get_active_profile_id() -> str:
     return str(load_index().get("active_id") or DEFAULT_PROFILE_ID)
 
 
+def get_active_profile_meta() -> Dict[str, Any]:
+    """Aktives Profil in einem Index-Lesevorgang (ohne Extra-Schreibzugriff)."""
+    idx = load_index()
+    pid = str(idx.get("active_id") or DEFAULT_PROFILE_ID)
+    for p in idx.get("profiles") or []:
+        if p.get("id") == pid:
+            return dict(p)
+    return {"id": pid, "name": pid, "file": f"{pid}.json", "is_default": pid == DEFAULT_PROFILE_ID}
+
+
 def get_profile_meta(profile_id: str) -> Optional[Dict[str, Any]]:
     pid = str(profile_id or "").strip()
-    for p in list_profiles():
+    for p in load_index().get("profiles") or []:
         if p.get("id") == pid:
             return dict(p)
     return None
@@ -151,9 +275,7 @@ def _read_json_file(path: Path) -> Optional[Dict[str, Any]]:
 
 
 def _write_json_file(path: Path, data: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    _atomic_write_json(path, data)
 
 
 def ensure_profiles_migrated() -> None:
@@ -277,7 +399,6 @@ def copy_profile(source_id: str, name: str) -> str:
 def _append_profile(display: str, data: Dict[str, Any]) -> str:
     new_id = f"p_{uuid.uuid4().hex[:10]}"
     fname = f"{new_id}.json"
-    _write_json_file(profile_file_path(new_id, filename=fname), data)
     idx = load_index()
     idx["profiles"].append(
         {
@@ -288,6 +409,7 @@ def _append_profile(display: str, data: Dict[str, Any]) -> str:
         }
     )
     save_index(idx)
+    _write_json_file(profile_file_path(new_id, filename=fname), data)
     return new_id
 
 

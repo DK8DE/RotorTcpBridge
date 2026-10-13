@@ -1,284 +1,263 @@
-"""Eigene Config für das Fenster „Rotorübersicht“ (getrennt von Rotor-Profilen)."""
+"""Persistierte Konfiguration der Rotorübersicht (lokale Instanz + fremde Apps per HTTP)."""
 
 from __future__ import annotations
 
+import copy
 import json
+import os
 import uuid
-from copy import deepcopy
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .app_config import appdata_dir
 from .geo_utils import ANTENNA_BEAM_COLORS
 
-_FILE_NAME = "rotor_overview.json"
+OVERVIEW_CONFIG_FILENAME = "rotor_overview.json"
+LOCAL_SITE_ID = "local"
+DEFAULT_APP_PORT = 80
 
-_DEFAULT_COLORS = [c[0] for c in ANTENNA_BEAM_COLORS] + [
-    "#E67E22",
-    "#E74C3C",
-    "#1ABC9C",
-    "#9B59B6",
-    "#3498DB",
-]
+_DEFAULT_ANT_RANGE_KM = 100.0
+_DEFAULT_OPENING_DEG = 30.0
 
 
-def overview_config_path() -> Path:
-    from .app_config import appdata_dir
-
-    return appdata_dir() / _FILE_NAME
+def overview_config_path() -> str:
+    return os.path.join(str(appdata_dir()), OVERVIEW_CONFIG_FILENAME)
 
 
-def _default_antenna(slot: int, *, enabled: bool = False) -> Dict[str, Any]:
+def default_antenna(slot: int) -> Dict[str, Any]:
     i = max(0, min(2, int(slot) - 1))
-    stroke = _DEFAULT_COLORS[i % len(_DEFAULT_COLORS)]
+    color = ANTENNA_BEAM_COLORS[i][0]
     return {
-        "enabled": bool(enabled),
+        "enabled": True,
         "name": f"Antenne {slot}",
         "offset_deg": 0.0,
-        "opening_deg": 30.0,
-        "range_km": 100.0,
-        "color": stroke,
+        "opening_deg": _DEFAULT_OPENING_DEG,
+        "range_km": _DEFAULT_ANT_RANGE_KM,
+        "color": color,
         "dipole": False,
     }
 
 
-def default_site(*, name: str = "Standort") -> Dict[str, Any]:
+def normalize_antenna(raw: Any, slot: int) -> Dict[str, Any]:
+    d = default_antenna(slot)
+    if not isinstance(raw, dict):
+        return d
+    d["enabled"] = bool(raw.get("enabled", d["enabled"]))
+    d["name"] = str(raw.get("name") or d["name"]).strip() or d["name"]
+    try:
+        d["offset_deg"] = float(raw.get("offset_deg", d["offset_deg"]))
+    except (TypeError, ValueError):
+        pass
+    try:
+        d["opening_deg"] = max(1.0, min(180.0, float(raw.get("opening_deg", d["opening_deg"]))))
+    except (TypeError, ValueError):
+        pass
+    try:
+        d["range_km"] = max(1.0, min(20000.0, float(raw.get("range_km", d["range_km"]))))
+    except (TypeError, ValueError):
+        pass
+    c = str(raw.get("color") or "").strip()
+    if c.startswith("#") and len(c) in (4, 7):
+        d["color"] = c
+    d["dipole"] = bool(raw.get("dipole", False))
+    return d
+
+
+def merge_site_antennas(cfg_ants: Any, live_ants: Any) -> List[Dict[str, Any]]:
+    """Live-Geometrie/Namen übernehmen, Anzeige-Häkchen (enabled) aus der Standort-Config behalten."""
+    cfg_list = cfg_ants if isinstance(cfg_ants, list) else []
+    live_list = live_ants if isinstance(live_ants, list) else []
+    out: List[Dict[str, Any]] = []
+    for i in range(3):
+        slot = i + 1
+        base = normalize_antenna(cfg_list[i] if i < len(cfg_list) else None, slot)
+        if i < len(live_list) and isinstance(live_list[i], dict):
+            merged = normalize_antenna(live_list[i], slot)
+            merged["enabled"] = bool(base.get("enabled", True))
+            out.append(merged)
+        else:
+            out.append(base)
+    return out
+
+
+def default_local_site() -> Dict[str, Any]:
+    return {
+        "id": LOCAL_SITE_ID,
+        "kind": "local",
+        "enabled": True,
+        "name": "",
+        "host": "",
+        "port": DEFAULT_APP_PORT,
+        "password": "",
+        "lat": 50.0,
+        "lon": 10.0,
+        "antennas": [default_antenna(i) for i in range(1, 4)],
+    }
+
+
+def default_site(*, name: str = "", port: Optional[int] = None) -> Dict[str, Any]:
+    """Neue Remote-Instanz: nur Host/Port/Passwort; Labels kommen von der Node-API."""
+    p = int(port) if port else DEFAULT_APP_PORT
+    if p < 1 or p > 65535:
+        p = DEFAULT_APP_PORT
     return {
         "id": str(uuid.uuid4()),
-        "name": str(name or "Standort"),
+        "kind": "app",
         "enabled": True,
-        "lat": 49.5,
-        "lon": 8.4,
-        "locator": "",
-        "mode": "tcp",
-        "host": "192.168.0.1",
-        "port": 8886,
-        "udp_bind_port": 0,
-        "master_id": 0,
-        "slave_az": 20,
-        "poll_pos_ms": 1000,
-        "poll_ref_ms": 5000,
-        "smooth_alpha": 0.35,
-        "antennas": [
-            _default_antenna(1, enabled=True),
-            _default_antenna(2, enabled=False),
-            _default_antenna(3, enabled=False),
-        ],
+        "name": str(name or "").strip(),
+        "host": "",
+        "port": p,
+        "password": "",
+        "lat": 50.0,
+        "lon": 10.0,
+        "antennas": [default_antenna(i) for i in range(1, 4)],
+    }
+
+
+def deep_copy_config(cfg: Any) -> Dict[str, Any]:
+    return copy.deepcopy(normalize_overview_config(cfg))
+
+
+def _as_int(v: Any, default: int) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _as_float(v: Any, default: float) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def normalize_site(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    kind = str(raw.get("kind") or "").strip().lower()
+    if kind not in ("local", "app"):
+        return None
+    sid = str(raw.get("id") or "").strip()
+    if kind == "local":
+        sid = LOCAL_SITE_ID
+    elif not sid:
+        sid = str(uuid.uuid4())
+    port = _as_int(raw.get("port"), DEFAULT_APP_PORT)
+    if port < 1 or port > 65535:
+        port = DEFAULT_APP_PORT
+    ants = raw.get("antennas")
+    if not isinstance(ants, list):
+        ants = []
+    antennas = [normalize_antenna(ants[i] if i < len(ants) else None, i + 1) for i in range(3)]
+    return {
+        "id": sid,
+        "kind": kind,
+        "enabled": bool(raw.get("enabled", True)),
+        "name": str(raw.get("name") or "").strip(),
+        "host": str(raw.get("host") or "").strip(),
+        "port": port,
+        "password": str(raw.get("password") or ""),
+        "lat": _as_float(raw.get("lat"), 50.0),
+        "lon": _as_float(raw.get("lon"), 10.0),
+        "antennas": antennas,
     }
 
 
 def default_overview_config() -> Dict[str, Any]:
     return {
-        "version": 1,
+        "sites": [default_local_site()],
         "map_center_lat": 50.0,
         "map_center_lon": 10.0,
         "map_zoom": 5,
-        # False = in Standort-Einstellungen markierte Antennen; True = aktive Antenne (GETASELECT)
         "show_active_antenna_only": False,
-        "sites": [],
+        "antenna_select_v1": True,
     }
 
 
-def _clamp_float(v: Any, lo: float, hi: float, default: float) -> float:
-    try:
-        x = float(v)
-    except (TypeError, ValueError):
-        return float(default)
-    return max(lo, min(hi, x))
-
-
-def _clamp_int(v: Any, lo: int, hi: int, default: int) -> int:
-    try:
-        x = int(v)
-    except (TypeError, ValueError):
-        return int(default)
-    return max(lo, min(hi, x))
-
-
-def normalize_antenna(raw: Any, slot: int) -> Dict[str, Any]:
-    base = _default_antenna(slot, enabled=False)
-    if not isinstance(raw, dict):
-        return base
-    out = dict(base)
-    out["enabled"] = bool(raw.get("enabled", False))
-    name = str(raw.get("name") or "").strip()
-    out["name"] = name or base["name"]
-    out["offset_deg"] = _clamp_float(raw.get("offset_deg"), -3600.0, 3600.0, 0.0)
-    out["opening_deg"] = _clamp_float(raw.get("opening_deg"), 1.0, 360.0, 30.0)
-    out["range_km"] = _clamp_float(raw.get("range_km"), 1.0, 4000.0, 100.0)
-    out["dipole"] = bool(raw.get("dipole", False))
-    color = str(raw.get("color") or "").strip()
-    if color.startswith("#") and len(color) in (4, 7):
-        out["color"] = color
-    return out
-
-
-def normalize_site(raw: Any) -> Dict[str, Any]:
-    base = default_site()
-    if not isinstance(raw, dict):
-        return base
-    out = dict(base)
-    sid = str(raw.get("id") or "").strip()
-    out["id"] = sid or str(uuid.uuid4())
-    name = str(raw.get("name") or "").strip()
-    out["name"] = name or "Standort"
-    out["enabled"] = bool(raw.get("enabled", True))
-    out["lat"] = _clamp_float(raw.get("lat"), -90.0, 90.0, 49.5)
-    out["lon"] = _clamp_float(raw.get("lon"), -180.0, 180.0, 8.4)
-    out["locator"] = str(raw.get("locator") or "").strip()
-    mode = str(raw.get("mode") or "tcp").strip().lower()
-    out["mode"] = mode if mode in ("tcp", "udp") else "tcp"
-    out["host"] = str(raw.get("host") or "192.168.0.1").strip() or "192.168.0.1"
-    out["port"] = _clamp_int(raw.get("port"), 1, 65535, 8886)
-    out["udp_bind_port"] = _clamp_int(raw.get("udp_bind_port"), 0, 65535, 0)
-    out["master_id"] = _clamp_int(raw.get("master_id"), 0, 254, 0)
-    out["slave_az"] = _clamp_int(raw.get("slave_az"), 1, 254, 20)
-    out["poll_pos_ms"] = _clamp_int(raw.get("poll_pos_ms"), 200, 60000, 1000)
-    out["poll_ref_ms"] = _clamp_int(raw.get("poll_ref_ms"), 1000, 120000, 5000)
-    out["smooth_alpha"] = _clamp_float(raw.get("smooth_alpha"), 0.05, 1.0, 0.35)
-    ants_in = raw.get("antennas")
-    ants: List[Dict[str, Any]] = []
-    if isinstance(ants_in, list):
-        for i in range(3):
-            src = ants_in[i] if i < len(ants_in) else None
-            ants.append(normalize_antenna(src, i + 1))
-    else:
-        ants = [
-            _default_antenna(1, enabled=True),
-            _default_antenna(2, enabled=False),
-            _default_antenna(3, enabled=False),
-        ]
-    out["antennas"] = ants
-    return out
+def _ensure_local_site(sites: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    local: Optional[Dict[str, Any]] = None
+    others: List[Dict[str, Any]] = []
+    for s in sites:
+        if s.get("kind") == "local" or str(s.get("id") or "") == LOCAL_SITE_ID:
+            if local is None:
+                s["id"] = LOCAL_SITE_ID
+                s["kind"] = "local"
+                local = s
+            continue
+        others.append(s)
+    if local is None:
+        local = default_local_site()
+    return [local] + others
 
 
 def normalize_overview_config(raw: Any) -> Dict[str, Any]:
-    base = default_overview_config()
+    cfg = default_overview_config()
     if not isinstance(raw, dict):
-        return base
-    out = dict(base)
-    out["version"] = 1
-    out["map_center_lat"] = _clamp_float(raw.get("map_center_lat"), -90.0, 90.0, 50.0)
-    out["map_center_lon"] = _clamp_float(raw.get("map_center_lon"), -180.0, 180.0, 10.0)
-    out["map_zoom"] = _clamp_int(raw.get("map_zoom"), 2, 18, 5)
-    out["show_active_antenna_only"] = bool(raw.get("show_active_antenna_only", False))
-    sites_in = raw.get("sites")
+        return cfg
     sites: List[Dict[str, Any]] = []
-    if isinstance(sites_in, list):
-        for item in sites_in:
-            sites.append(normalize_site(item))
-    out["sites"] = sites
-    return out
+    for item in raw.get("sites") or []:
+        s = normalize_site(item)
+        if s is not None:
+            sites.append(s)
+    cfg["sites"] = _ensure_local_site(sites)
+    cfg["map_center_lat"] = _as_float(raw.get("map_center_lat"), 50.0)
+    cfg["map_center_lon"] = _as_float(raw.get("map_center_lon"), 10.0)
+    try:
+        cfg["map_zoom"] = max(2, min(18, int(raw.get("map_zoom", 5))))
+    except (TypeError, ValueError):
+        cfg["map_zoom"] = 5
+    cfg["show_active_antenna_only"] = bool(raw.get("show_active_antenna_only", False))
+    # Einmalig: alte Configs hatten oft nur Ant.1 enabled (ohne UI); Live-Flags
+    # bestimmten die Anzeige. Ab v1 gelten die Standort-Häkchen — Standard: alle an.
+    if not bool(raw.get("antenna_select_v1", False)):
+        for site in cfg["sites"]:
+            for ant in site.get("antennas") or []:
+                if isinstance(ant, dict):
+                    ant["enabled"] = True
+        cfg["antenna_select_v1"] = True
+    else:
+        cfg["antenna_select_v1"] = True
+    return cfg
 
 
 def load_overview_config() -> Dict[str, Any]:
     path = overview_config_path()
-    if not path.is_file():
-        return default_overview_config()
+    if not os.path.isfile(path):
+        cfg = default_overview_config()
+        try:
+            save_overview_config(cfg)
+        except Exception:
+            pass
+        return cfg
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
     except Exception:
         return default_overview_config()
-    return normalize_overview_config(raw)
+    had_local = False
+    if isinstance(raw, dict):
+        for item in raw.get("sites") or []:
+            if isinstance(item, dict) and (
+                str(item.get("kind") or "").lower() == "local"
+                or str(item.get("id") or "") == LOCAL_SITE_ID
+            ):
+                had_local = True
+                break
+    cfg = normalize_overview_config(raw)
+    if not had_local:
+        try:
+            save_overview_config(cfg)
+        except Exception:
+            pass
+    return cfg
 
 
 def save_overview_config(cfg: Dict[str, Any]) -> None:
     path = overview_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     data = normalize_overview_config(cfg)
-    tmp = path.with_suffix(".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    tmp.replace(path)
-
-
-def site_from_profile(profile_id: str, profile_name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Rotor-Profil → Overview-Standort (Kopie, danach unabhängig)."""
-    site = default_site(name=str(profile_name or "Standort"))
-    hl = cfg.get("hardware_link") if isinstance(cfg.get("hardware_link"), dict) else {}
-    rb = cfg.get("rotor_bus") if isinstance(cfg.get("rotor_bus"), dict) else {}
-    ui = cfg.get("ui") if isinstance(cfg.get("ui"), dict) else {}
-
-    mode = str(hl.get("mode") or "tcp").strip().lower()
-    site["mode"] = mode if mode in ("tcp", "udp") else "tcp"
-    site["host"] = str(hl.get("tcp_ip") or site["host"]).strip() or site["host"]
-    try:
-        site["port"] = int(hl.get("tcp_port", site["port"]))
-    except (TypeError, ValueError):
-        pass
-    try:
-        site["udp_bind_port"] = int(hl.get("udp_bind_port", 0) or 0)
-    except (TypeError, ValueError):
-        site["udp_bind_port"] = 0
-    try:
-        site["master_id"] = int(rb.get("master_id", 0) or 0)
-    except (TypeError, ValueError):
-        site["master_id"] = 0
-    try:
-        site["slave_az"] = int(rb.get("slave_az", 20) or 20)
-    except (TypeError, ValueError):
-        site["slave_az"] = 20
-
-    try:
-        site["lat"] = float(ui.get("location_lat", site["lat"]))
-    except (TypeError, ValueError):
-        pass
-    try:
-        site["lon"] = float(ui.get("location_lon", site["lon"]))
-    except (TypeError, ValueError):
-        pass
-    site["locator"] = str(ui.get("location_locator") or "").strip()
-
-    names = ui.get("antenna_names") or []
-    offs = ui.get("antenna_offsets_az") or []
-    angles = ui.get("antenna_angles_az") or []
-    ranges = ui.get("antenna_ranges_az") or []
-    dips = ui.get("antenna_dipoles_az") or []
-    az_on = bool(rb.get("enable_az", True))
-    ants: List[Dict[str, Any]] = []
-    for i in range(3):
-        ant = _default_antenna(i + 1, enabled=(az_on and i == 0))
-        if isinstance(names, list) and i < len(names) and str(names[i] or "").strip():
-            ant["name"] = str(names[i]).strip()
-        try:
-            if isinstance(offs, list) and i < len(offs):
-                ant["offset_deg"] = float(offs[i])
-        except (TypeError, ValueError):
-            pass
-        try:
-            if isinstance(angles, list) and i < len(angles):
-                ant["opening_deg"] = max(1.0, float(angles[i]) or 30.0)
-        except (TypeError, ValueError):
-            pass
-        try:
-            if isinstance(ranges, list) and i < len(ranges):
-                ant["range_km"] = max(1.0, float(ranges[i]) or 100.0)
-        except (TypeError, ValueError):
-            pass
-        if isinstance(dips, list) and i < len(dips):
-            ant["dipole"] = bool(dips[i])
-        # Weitere Antennen aktiv, wenn Öffnung/Name gesetzt und AZ an
-        if az_on and i > 0:
-            has_meta = ant["opening_deg"] > 0 and (
-                (isinstance(names, list) and i < len(names) and str(names[i] or "").strip())
-                or (isinstance(offs, list) and i < len(offs) and float(offs[i] or 0) != 0)
-            )
-            ant["enabled"] = bool(has_meta)
-        ants.append(ant)
-    site["antennas"] = ants
-    site["id"] = str(uuid.uuid4())
-    # Merker nur informativ (kein Sync)
-    site["_imported_profile_id"] = str(profile_id or "")
-    return normalize_site(site)
-
-
-def next_distinct_color(used: List[str]) -> str:
-    used_l = {str(c).lower() for c in used}
-    for c in _DEFAULT_COLORS:
-        if c.lower() not in used_l:
-            return c
-    return _DEFAULT_COLORS[len(used) % len(_DEFAULT_COLORS)]
-
-
-def deep_copy_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    return deepcopy(normalize_overview_config(cfg))
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, path)

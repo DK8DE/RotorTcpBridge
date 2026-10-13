@@ -426,8 +426,63 @@ def test_external_setposdg_sets_panel_move_flag() -> None:
     assert c.az.moving is True
 
 
-def test_bridge_setposdg_clears_panel_move_flag() -> None:
+def test_controller_setposcc_overrides_compass_manual_window() -> None:
+    """Nach Kompass-Klick (10s-Sperre) muss Controller-SETPOSCC den Sollzeiger setzen."""
+    c = RotorController(
+        _hw_stub(),
+        master_id=0,
+        slave_az=20,
+        slave_el=21,
+        log=_Log(),
+        setposcc_controller_src_id=2,
+    )
+    c.az.referenced = True
+    c.az.moving = False
+    c.az.target_d10 = 400
+    c.az.compass_target_d10 = None
+    c._compass_manual_az_ts = time.time()
+    c._apply_local_state_for_ui_command(
+        20, "SETPOSCC", "180,0", from_bus_sniff=True, bus_src=2
+    )
+    assert c.az.compass_target_d10 == 1800
+    assert float(c._compass_manual_az_ts or 0.0) == 0.0
+
+
+def test_stale_setposcc_still_ignored_during_compass_manual_window() -> None:
+    """Unbekannte Bus-SRC: 10s nach Kompass-Klick abweichendes SETPOSCC weiter ignorieren."""
+    c = RotorController(
+        _hw_stub(),
+        master_id=0,
+        slave_az=20,
+        slave_el=21,
+        log=_Log(),
+        setposcc_controller_src_id=2,
+    )
+    c.az.moving = False
+    c.az.target_d10 = 400
+    c.az.compass_target_d10 = None
+    c._compass_manual_az_ts = time.time()
+    c._apply_local_state_for_ui_command(
+        20, "SETPOSCC", "180,0", from_bus_sniff=True, bus_src=7
+    )
+    assert c.az.compass_target_d10 is None
+
+
+def test_update_ids_aborts_stats_fetch_for_old_slave() -> None:
+    """Profilwechsel: GETCAL/LIVE/ACC-Ketten der alten Rotor-ID stoppen."""
     c = RotorController(_hw_stub(), master_id=0, slave_az=20, slave_el=21, log=_Log())
-    c.az.external_panel_move_active = True
-    c._apply_local_state_for_ui_command(20, "SETPOSDG", "45,0")
-    assert c.az.external_panel_move_active is False
+    c._cal_bins_inflight_az = True
+    c._cal_bins_fetched_az = True
+    c._live_bins_inflight_az = True
+    c.az.live_bins_cw = [1] * 72
+    c.az.acc_bins_cw = [2] * 72
+    c.update_ids(0, 40, 41, True, False)
+    assert c.slave_az == 40
+    assert c.slave_el == 41
+    assert c._cal_bins_inflight_az is False
+    assert c._cal_bins_fetched_az is False
+    assert c._live_bins_inflight_az is False
+    assert c.az.live_bins_cw is None
+    assert c.az.acc_bins_cw is None
+    c._send_next_cal_block(20, c.az, 0)
+    assert c._cal_bins_inflight_az is False

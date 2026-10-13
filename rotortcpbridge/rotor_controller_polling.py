@@ -275,6 +275,7 @@ class _RotorPollingHost:
     request_antenna_angles: Callable[[], None]
     request_antenna_ranges: Callable[[], None]
     request_antenna_names: Callable[[], None]
+    request_antenna_dipoles: Callable[[], None]
     request_antenna_selection: Callable[[], None]
     # Von ``RotorController`` / Polling-Mixin; für ``RotorControllerAsyncMixin`` (gleicher Host-Stub)
     _apply_local_state_for_ui_command: Callable[..., None]
@@ -399,6 +400,12 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         except Exception:
             hw_on = False
 
+        if hw_on:
+            try:
+                self._tick_jog_hold(now)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
         # Wenn die Hardware-Verbindung gerade (wieder) da ist: Timer zurücksetzen,
         # damit beim ersten Mal alle Werte sofort abgefragt werden (Startup/Recover).
         if hw_on and (not self._hw_prev_connected):
@@ -453,6 +460,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     self.request_antenna_angles()
                     self.request_antenna_ranges()
                     self.request_antenna_names()
+                    self.request_antenna_dipoles()
                     self._antenna_bootstrap_requested = True
                 if not bool(getattr(self, "_antenna_selection_bootstrap_requested", False)):
                     # Antennenauswahl liegt im AZ-Rotor-NVS (GETASELECT / SETASELECT).
@@ -513,6 +521,18 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     pass
         self._hw_prev_connected = hw_on
 
+        # Auch ohne Connect-Kante (Profilwechsel bei bestehendem Link): GETANTOFF nachholen.
+        if hw_on and self.enable_az and not bool(getattr(self, "_antenna_bootstrap_requested", False)):
+            try:
+                self.request_antenna_offsets()
+                self.request_antenna_angles()
+                self.request_antenna_ranges()
+                self.request_antenna_names()
+                self.request_antenna_dipoles()
+                self._antenna_bootstrap_requested = True
+            except Exception:
+                pass
+
         pos_slow_s = self._cfg_poll["pos_slow"] / 1000.0
         warn_s = self._cfg_poll["warn"] / 1000.0
         pwm_s = self._cfg_poll["pwm"] / 1000.0
@@ -532,6 +552,10 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         )
         # Wie „Fahrt“: nur GETPOSDG, solange Achse fährt/referenziert/nahe SET-Ziel in Bewegung
         # oder kurz nach SETPOSDG-Mitschnitt.
+        try:
+            self.drive_ready()
+        except Exception:
+            pass
         poll_restrict = self._motion_poll_restrict_active(now, pos_fast_s)
         cc_hold = self.cc_poll_hold_active(now)
         try:
@@ -567,6 +591,13 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             pos_period = pos_fast_s if poll_restrict else pos_slow_s
             if poll_restrict:
                 pos_period = max(float(pos_period), _POS_POLL_MOTION_MIN_CYCLE_S)
+                # JOG: Position deutlich schneller abfragen, sonst bleibt die Anzeige bei
+                # kurzen Klicks stehen, obwohl der Rotor sich bewegt.
+                try:
+                    if self._jog_fast_poll_any(now):
+                        pos_period = float(self._JOG_FAST_POLL_S)
+                except Exception:
+                    pass
             # In den ersten Sekunden nach Connect einmal schneller pollen, damit Werte "schnappen"
             if (not poll_restrict) and now < float(self._startup_burst_until or 0.0):
                 pos_period = min(pos_period, pos_fast_s)
@@ -579,15 +610,17 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             _defer_u = float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
             skip_pos_for_cc = (not poll_restrict) and (now < _defer_u)
             acc_chain = self._acc_bins_chain_in_progress()
+            # Während Fahrt: GETACCBINS darf GETPOSDG nie verdrängen (Zeiger-Ruckeln).
+            block_pos_for_acc = bool(acc_chain) and (not poll_restrict)
             # Nach Ankunft: Settle-GETPOSDG (~200 ms), auch wenn Idle-Intervall noch lange wäre.
-            if (not homing_active) and (not skip_pos_for_cc) and (not acc_chain):
+            if (not homing_active) and (not skip_pos_for_cc) and (not block_pos_for_acc):
                 self._tick_pos_settle_polls(now)
             if (
                 (not homing_active)
                 and
                 (not skip_pos_for_cc)
                 and (now - self._last_poll >= pos_period)
-                and (not acc_chain)
+                and (not block_pos_for_acc)
             ):
                 sent_any = False
                 if self.enable_az:
@@ -906,6 +939,24 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._acc_bins_finalize_pending_az = False
         self._acc_bins_finalize_pending_el = False
 
+    def _arm_acc_bins_after_arrival(self, axis_name: str) -> None:
+        """Nach Ankunft: GETACCBINS für Statistik/Kompass-Strom einmal freigeben."""
+        axu = str(axis_name or "").strip().upper()
+        if axu == "AZ":
+            if bool(getattr(self, "_statistics_window_open", False)):
+                self._acc_bins_stats_arm_after_setpos_az = True
+            if bool(getattr(self, "_compass_window_open", False)) and bool(
+                getattr(self, "_compass_strom_heatmap_az", False)
+            ):
+                self._acc_bins_compass_arm_after_move_az = True
+        elif axu == "EL":
+            if bool(getattr(self, "_statistics_window_open", False)):
+                self._acc_bins_stats_arm_after_setpos_el = True
+            if bool(getattr(self, "_compass_window_open", False)) and bool(
+                getattr(self, "_compass_strom_heatmap_el", False)
+            ):
+                self._acc_bins_compass_arm_after_move_el = True
+
     def _send_setpos(self, dst: int, d10: int, axis: str, retry_count: int = 0):
         """SETPOSDG senden. Bei fehlendem ACK nach ~250ms einmal erneut — **nur**, wenn das
         Achsen-Ziel seither nicht überschrieben wurde.
@@ -915,6 +966,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         Rotor fährt dann „zurück nach 0“ / zum veralteten Ziel. Retry wegen möglicher
         RS485-Kollisionen; Verbindung bleibt bei Timeout erhalten.
         """
+        if self._block_drive_until_ready(str(axis or "").upper() or "?"):
+            return
         try:
             self.note_setposdg_poll_restrict()
         except Exception:
@@ -929,13 +982,15 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         except Exception:
             pass
         self._abort_stats_fetch_and_cooldown()
+        # GETACCBINS erst nach Ankunft armieren (nicht hier): sonst startet die
+        # Strom-Kette mitten in der Fahrt und blockiert GETPOSDG → Zeiger ruckelt.
         axu = str(axis).upper()
         if axu == "AZ":
-            self._acc_bins_compass_arm_after_move_az = True
-            self._acc_bins_stats_arm_after_setpos_az = True
+            self._acc_bins_compass_arm_after_move_az = False
+            self._acc_bins_stats_arm_after_setpos_az = False
         elif axu == "EL":
-            self._acc_bins_compass_arm_after_move_el = True
-            self._acc_bins_stats_arm_after_setpos_el = True
+            self._acc_bins_compass_arm_after_move_el = False
+            self._acc_bins_stats_arm_after_setpos_el = False
         deg = d10 / 10.0
         params = f"{deg:.2f}".replace(".", ",")
         line = build(self.master_id, dst, "SETPOSDG", params)
@@ -991,6 +1046,23 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 dont_disconnect_on_timeout=True,
             )
         )
+        # Sofort GETPOSDG anstoßen — sonst fehlen Ist-Samples bis zum nächsten Tick
+        # (bei Buslast durch Display/Wind ruckelt der Zeiger).
+        try:
+            axs_target.moving = True
+            axs_target.last_motion_ts = time.time()
+            axs_target.pos_poll_inflight = False
+            axs_target.pos_poll_next_due_ts = 0.0
+            self._poll_pos(
+                int(dst),
+                axs_target,
+                str(axis),
+                time.time(),
+                expected_period_s=0.05,
+                high_priority=True,
+            )
+        except Exception:
+            pass
 
     # -------------------- Poll helpers --------------------
     def _schedule_pos_settle_poll(self, axis_state: AxisState) -> None:
@@ -1036,6 +1108,16 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         base = float(max(0.05, expected_period_s))
         if not motion_fast:
             return base
+        try:
+            if self._jog_fast_poll_axis(axis_state):
+                # JOG: nur gemessene Antwortzeit + kleine Lücke (nicht 0,25 s Mindestzyklus).
+                rtt_j = max(
+                    float(getattr(axis_state, "pos_poll_last_rtt_s", 0.0) or 0.0),
+                    float(getattr(axis_state, "pos_poll_rtt_ema_s", 0.0) or 0.0),
+                )
+                return max(float(self._JOG_FAST_POLL_S), min(rtt_j, 0.5) + 0.02)
+        except Exception:
+            pass
         try:
             rtt = float(getattr(axis_state, "pos_poll_last_rtt_s", 0.0) or 0.0)
             ema = float(getattr(axis_state, "pos_poll_rtt_ema_s", 0.0) or 0.0)
@@ -1203,6 +1285,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 timeout_s=0.8,
                 on_done=None,
                 priority=2,
+                wait_for_reply=False,
             )
         )
 
@@ -1221,6 +1304,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 timeout_s=0.8,
                 on_done=None,
                 priority=2,
+                wait_for_reply=False,
             )
         )
 
@@ -1239,6 +1323,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 timeout_s=0.8,
                 on_done=None,
                 priority=2,
+                wait_for_reply=False,
             )
         )
 
@@ -1759,6 +1844,12 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._send_next_cal_block(dst, axis_state, 0)
 
     def _send_next_cal_block(self, dst: int, axis_state: AxisState, idx: int) -> None:
+        if not bool(getattr(self, "_cal_bins_inflight_az", False)):
+            return
+        try:
+            dst = int(self.slave_az)
+        except Exception:
+            pass
         if idx >= len(self._CAL_STAGE_BLOCKS):
             if self._cal_bins_temp_cw and self._cal_bins_temp_ccw:
                 publish_cal_bins_stages(
@@ -1822,6 +1913,12 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._send_next_cal_block_el(dst, axis_state, 0)
 
     def _send_next_cal_block_el(self, dst: int, axis_state: AxisState, idx: int) -> None:
+        if not bool(getattr(self, "_cal_bins_inflight_el", False)):
+            return
+        try:
+            dst = int(self.slave_el)
+        except Exception:
+            pass
         if idx >= len(self._CAL_STAGE_BLOCKS):
             if self._cal_bins_temp_cw_el and self._cal_bins_temp_ccw_el:
                 publish_cal_bins_stages(
@@ -1886,6 +1983,12 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._send_next_live_block(dst, axis_state, 0)
 
     def _send_next_live_block(self, dst: int, axis_state: AxisState, idx: int) -> None:
+        if not bool(getattr(self, "_live_bins_inflight_az", False)):
+            return
+        try:
+            dst = int(self.slave_az)
+        except Exception:
+            pass
         if idx >= len(self._CAL_LIVE_BLOCKS):
             # Alle 12 Blöcke empfangen: Temp in axis_state übernehmen (Langzeit / GETLIVEBINS)
             if self._live_bins_temp_cw and self._live_bins_temp_ccw:
@@ -1952,6 +2055,12 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._send_next_live_block_el(dst, axis_state, 0)
 
     def _send_next_live_block_el(self, dst: int, axis_state: AxisState, idx: int) -> None:
+        if not bool(getattr(self, "_live_bins_inflight_el", False)):
+            return
+        try:
+            dst = int(self.slave_el)
+        except Exception:
+            pass
         if idx >= len(self._CAL_LIVE_BLOCKS):
             if self._live_bins_temp_cw_el and self._live_bins_temp_ccw_el:
                 axis_state.live_bins_cw = list(self._live_bins_temp_cw_el)
@@ -2020,6 +2129,12 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._send_next_acc_block(dst, axis_state, 0)
 
     def _send_next_acc_block(self, dst: int, axis_state: AxisState, idx: int) -> None:
+        if not bool(getattr(self, "_acc_bins_inflight_az", False)):
+            return
+        try:
+            dst = int(self.slave_az)
+        except Exception:
+            pass
         if time.time() < self._stats_cooldown_until:
             self._acc_bins_inflight_az = False
             self._acc_bins_temp_cw = None
@@ -2108,6 +2223,12 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._send_next_acc_block_el(dst, axis_state, 0)
 
     def _send_next_acc_block_el(self, dst: int, axis_state: AxisState, idx: int) -> None:
+        if not bool(getattr(self, "_acc_bins_inflight_el", False)):
+            return
+        try:
+            dst = int(self.slave_el)
+        except Exception:
+            pass
         if time.time() < self._stats_cooldown_until:
             self._acc_bins_inflight_el = False
             self._acc_bins_temp_cw_el = None

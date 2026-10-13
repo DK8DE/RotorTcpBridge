@@ -54,6 +54,7 @@ def build_overview_html(params: dict) -> str:
 <style>
 {leaflet_css}
 html, body {{ margin:0; padding:0; height:100%; width:100%; }}
+#mapWrap {{ margin:0; padding:0; height:100%; width:100%; position:relative; }}
 #map {{ margin:0; padding:0; height:100%; width:100%; }}
 body {{ background: {body_bg}; font-family: system-ui, Segoe UI, sans-serif; }}
 body.map-dark .leaflet-tile-pane {{
@@ -84,11 +85,38 @@ body.map-dark .ov-beam-tip {{
   border-color: #666;
   color: #eaeaea;
 }}
+#ovHud {{
+  position:absolute; top:10px; left:54px; right:10px; z-index:1100;
+  display:flex; flex-wrap:wrap; gap:8px; align-items:flex-start;
+  pointer-events:none;
+}}
+.ovHudCard {{
+  min-width:148px; max-width:220px; padding:8px 12px; border-radius:8px;
+  border:1px solid rgba(128,128,128,0.35);
+  background:rgba(255,255,255,0.22);
+  backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+  box-shadow:0 1px 3px rgba(0,0,0,0.08); color:#1a1a1a;
+  font:12px/1.25 system-ui, Segoe UI, sans-serif;
+}}
+body.map-dark .ovHudCard {{
+  background:rgba(28,28,30,0.45); border-color:rgba(180,180,190,0.25);
+  box-shadow:0 1px 4px rgba(0,0,0,0.35); color:#eaeaea;
+}}
+.ovHudCard.offline {{ opacity:0.62; }}
+.ovHudAz {{
+  font-size:28px; font-weight:700; line-height:1.05;
+  font-variant-numeric:tabular-nums; letter-spacing:-0.02em;
+}}
+.ovHudName {{ font-size:13px; font-weight:600; margin-top:4px; word-break:break-word; }}
+.ovHudMeta, .ovHudWind {{ font-size:12px; margin-top:3px; opacity:0.92; }}
 {web_css}
 </style>
 </head><body class="{body_cls}">
 {web_chrome}
+<div id="mapWrap">
 <div id="map"></div>
+<div id="ovHud"></div>
+</div>
 <script>
 {leaflet_js}
 const TILE_URL = {json.dumps(tile_url)};
@@ -101,6 +129,7 @@ const SHOW_ACTIVE_ANTENNA_ONLY = {str(show_active).lower()};
 let _mapDark = {str(dark).lower()};
 const map = L.map('map', {{ zoomControl: true }}).setView([{center_lat}, {center_lon}], {zoom});
 L.tileLayer(TILE_URL, {{ maxZoom: 19, minZoom: 2, attribution: ATTRIB }}).addTo(map);
+setTimeout(function() {{ try {{ map.invalidateSize(); }} catch (e) {{}} }}, 0);
 const siteLayers = {{}};
 
 function clearSite(id) {{
@@ -155,10 +184,60 @@ function drawSite(s) {{
   siteLayers[s.id] = layers;
 }}
 
+function escHud(s) {{
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({{
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }})[c]);
+}}
+function hudLbl(k, fb) {{
+  const LBL = (typeof LABELS === 'object' && LABELS) ? LABELS : {{}};
+  return LBL[k] || fb || k;
+}}
+function fmtHudTemp(v) {{
+  if (v == null || v === '') return '–';
+  const n = Number(v);
+  return isFinite(n) ? (n.toFixed(1) + ' °C') : '–';
+}}
+function fmtHudWind(s) {{
+  const parts = [];
+  if (s.wind_kmh != null && isFinite(Number(s.wind_kmh))) {{
+    parts.push(Number(s.wind_kmh).toFixed(1) + ' km/h');
+  }}
+  if (s.wind_dir_deg != null && isFinite(Number(s.wind_dir_deg))) {{
+    parts.push(Math.round(Number(s.wind_dir_deg)) + '°');
+  }}
+  return parts.join(' · ');
+}}
+function renderOverviewHud(sites) {{
+  const el = document.getElementById('ovHud');
+  if (!el) return;
+  const motor = hudLbl('hud_temp_motor', 'Motor');
+  const amb = hudLbl('hud_temp_ambient', 'Außen');
+  const wind = hudLbl('hud_wind', 'Wind');
+  el.innerHTML = (sites || []).map(s => {{
+    const name = escHud(s.profile_name || s.name || '');
+    const az = escHud(s.az_text || '–');
+    const off = s.online ? '' : ' offline';
+    let windHtml = '';
+    if (s.wind_visible) {{
+      const w = fmtHudWind(s);
+      if (w) windHtml = '<div class="ovHudWind">' + escHud(wind) + ': ' + escHud(w) + '</div>';
+    }}
+    return '<div class="ovHudCard' + off + '">'
+      + '<div class="ovHudAz">' + az + '</div>'
+      + '<div class="ovHudName">' + name + '</div>'
+      + '<div class="ovHudMeta">' + escHud(motor) + ': ' + escHud(fmtHudTemp(s.temp_motor_c))
+      + ' · ' + escHud(amb) + ': ' + escHud(fmtHudTemp(s.temp_ambient_c)) + '</div>'
+      + windHtml
+      + '</div>';
+  }}).join('');
+}}
+
 window.updateOverviewSites = function(sites) {{
   const ids = {{}};
   (sites || []).forEach(s => {{ ids[s.id] = true; drawSite(s); }});
   Object.keys(siteLayers).forEach(id => {{ if (!ids[id]) clearSite(id); }});
+  renderOverviewHud(sites);
 }};
 
 window.setOverviewView = function(lat, lon, zoom) {{
@@ -186,7 +265,8 @@ window.updateOverviewSites({sites_json});
 
 _WEB_CSS = """
 body.web-ov { display:flex; flex-direction:column; }
-body.web-ov #map { flex:1 1 auto; min-height:0; }
+body.web-ov #mapWrap { flex:1 1 auto; min-height:0; height:auto; }
+body.web-ov #map { height:100%; }
 #ovTop {
   flex:0 0 auto; z-index:1000; display:flex; align-items:center; gap:10px;
   padding:8px 12px; border-bottom:1px solid #8884;
@@ -266,23 +346,15 @@ def _web_chrome_html() -> str:
   <ul id="ovSiteList"></ul>
   <div id="ovEditor">
     <h3 id="ovEditTitle"></h3>
-    <div class="row"><label id="ovLblProfile"></label><select id="ovProfile"></select><button type="button" id="ovBtnImport"></button></div>
-    <div class="row"><label id="ovLblName"></label><input id="ovName" type="text"/></div>
+    <p id="ovEditHint" style="font-size:12px;opacity:.85;margin:0 0 8px;"></p>
     <div class="row"><label><input id="ovEnabled" type="checkbox"/> <span id="ovLblEnabled"></span></label></div>
-    <div class="row"><label id="ovLblLat"></label><input id="ovLat" type="number" step="0.000001"/></div>
-    <div class="row"><label id="ovLblLon"></label><input id="ovLon" type="number" step="0.000001"/></div>
-    <div class="row"><label id="ovLblLocator"></label><input id="ovLocator" type="text"/><button type="button" id="ovBtnLocator"></button></div>
-    <div class="row"><label id="ovLblMode"></label><select id="ovMode"><option value="tcp">TCP</option><option value="udp">UDP</option></select></div>
-    <div class="row"><label id="ovLblHost"></label><input id="ovHost" type="text"/></div>
-    <div class="row"><label id="ovLblPort"></label><input id="ovPort" type="number" min="1" max="65535"/></div>
-    <div class="row"><label id="ovLblUdp"></label><input id="ovUdpBind" type="number" min="0" max="65535"/></div>
-    <div class="row"><label id="ovLblMaster"></label><input id="ovMaster" type="number" min="0" max="254"/></div>
-    <div class="row"><label id="ovLblSlave"></label><input id="ovSlave" type="number" min="1" max="254"/></div>
-    <div class="row"><label id="ovLblPollPos"></label><input id="ovPollPos" type="number" min="200" max="60000"/></div>
-    <div class="row"><label id="ovLblPollRef"></label><input id="ovPollRef" type="number" min="1000" max="120000"/></div>
-    <div class="row"><label id="ovLblSmooth"></label><input id="ovSmooth" type="number" min="0.05" max="1" step="0.05"/></div>
-    <h3 id="ovAntennasTitle"></h3>
-    <div id="ovAntennas"></div>
+    <div class="row ov-app-only"><label id="ovLblHost"></label><input id="ovHost" type="text"/></div>
+    <div class="row ov-app-only"><label id="ovLblPort"></label><input id="ovPort" type="number" min="1" max="65535"/></div>
+    <div class="row ov-app-only"><label id="ovLblPassword"></label><input id="ovPassword" type="password" autocomplete="off"/></div>
+    <p id="ovMapHint" class="ov-app-only" style="font-size:12px;opacity:.85;margin:8px 0;"></p>
+    <h3 id="ovAntTitle" style="margin:12px 0 4px;"></h3>
+    <p id="ovAntHint" style="font-size:12px;opacity:.85;margin:0 0 6px;"></p>
+    <div id="ovAntChecks" class="row" style="flex-direction:column;align-items:flex-start;gap:4px;"></div>
     <div class="row" style="margin-top:12px;">
       <button type="button" id="ovBtnSaveSite"></button>
       <button type="button" id="ovBtnCancelEdit"></button>
@@ -308,24 +380,14 @@ const statusEl = document.getElementById('ovStatus');
   document.getElementById('ovBtnAdd').textContent = L('btn_add', 'Add');
   document.getElementById('ovBtnClosePanel').textContent = L('btn_close', 'Close');
   document.getElementById('ovEditTitle').textContent = L('site_edit_title', 'Edit');
-  document.getElementById('ovLblProfile').textContent = L('import_profile', 'Profile');
-  document.getElementById('ovBtnImport').textContent = L('btn_import_profile', 'Import');
-  document.getElementById('ovLblName').textContent = L('field_name', 'Name');
   document.getElementById('ovLblEnabled').textContent = L('field_enabled', 'Enabled');
-  document.getElementById('ovLblLat').textContent = L('field_lat', 'Lat');
-  document.getElementById('ovLblLon').textContent = L('field_lon', 'Lon');
-  document.getElementById('ovLblLocator').textContent = L('field_locator', 'Locator');
-  document.getElementById('ovBtnLocator').textContent = L('btn_locator_apply', 'Locator');
-  document.getElementById('ovLblMode').textContent = L('field_mode', 'Mode');
   document.getElementById('ovLblHost').textContent = L('field_host', 'Host');
   document.getElementById('ovLblPort').textContent = L('field_port', 'Port');
-  document.getElementById('ovLblUdp').textContent = L('field_udp_bind', 'UDP bind');
-  document.getElementById('ovLblMaster').textContent = L('field_master', 'Master');
-  document.getElementById('ovLblSlave').textContent = L('field_slave_az', 'Slave');
-  document.getElementById('ovLblPollPos').textContent = L('field_poll_pos', 'Poll POS');
-  document.getElementById('ovLblPollRef').textContent = L('field_poll_ref', 'Poll REF');
-  document.getElementById('ovLblSmooth').textContent = L('field_smooth', 'Smooth');
-  document.getElementById('ovAntennasTitle').textContent = L('antennas_group', 'Antennas');
+  document.getElementById('ovLblPassword').textContent = L('field_password', 'Password');
+  document.getElementById('ovPassword').placeholder = L('password_hint', 'empty = rotor');
+  document.getElementById('ovMapHint').textContent = L('map_server_hint', '');
+  document.getElementById('ovAntTitle').textContent = L('antennas_group', 'Antennas');
+  document.getElementById('ovAntHint').textContent = L('antennas_select_hint', '');
   document.getElementById('ovBtnSaveSite').textContent = L('btn_save', 'Save');
   document.getElementById('ovBtnCancelEdit').textContent = L('btn_cancel', 'Cancel');
   const chkActive = document.getElementById('ovChkActiveAnt');
@@ -370,7 +432,6 @@ const statusEl = document.getElementById('ovStatus');
 
   function openPanel() {
     renderSiteList();
-    fillProfiles();
     panel.classList.add('open');
     backdrop.classList.add('open');
   }
@@ -381,20 +442,11 @@ const statusEl = document.getElementById('ovStatus');
     editIndex = -1;
   }
 
-  function fillProfiles() {
-    const sel = document.getElementById('ovProfile');
-    sel.innerHTML = '';
-    const o0 = document.createElement('option');
-    o0.value = '';
-    o0.textContent = L('profile_none', '—');
-    sel.appendChild(o0);
-    (PROFILES || []).forEach(p => {
-      const o = document.createElement('option');
-      o.value = p.id;
-      o.textContent = p.name + (p.active ? L('profile_active_suffix', '') : '');
-      sel.appendChild(o);
-    });
+  function isLocal(s) {
+    return !!(s && (s.kind === 'local' || s.id === 'local'));
   }
+
+  function fillProfiles() {}
 
   function renderSiteList() {
     const ul = document.getElementById('ovSiteList');
@@ -403,99 +455,93 @@ const statusEl = document.getElementById('ovStatus');
       const li = document.createElement('li');
       const span = document.createElement('span');
       const en = s.enabled ? L('enabled_yes', 'on') : L('enabled_no', 'off');
-      span.textContent = (s.name || '') + ' · ' + en + ' · ' + (s.host || '');
+      if (isLocal(s)) {
+        span.textContent = L('local_site', 'This instance') + ' · ' + en;
+      } else {
+        span.textContent = (s.host || '') + ':' + (s.port || '') + ' · ' + en;
+      }
       const bEdit = document.createElement('button');
       bEdit.textContent = L('btn_edit', 'Edit');
       bEdit.onclick = () => openEditor(i);
-      const bDel = document.createElement('button');
-      bDel.textContent = L('btn_delete', 'Delete');
-      bDel.onclick = () => deleteSite(i);
       li.appendChild(span);
       li.appendChild(bEdit);
-      li.appendChild(bDel);
+      if (!isLocal(s)) {
+        const bDel = document.createElement('button');
+        bDel.textContent = L('btn_delete', 'Delete');
+        bDel.onclick = () => deleteSite(i);
+        li.appendChild(bDel);
+      }
       ul.appendChild(li);
     });
   }
 
-  function defaultAntennas() {
-    return [1,2,3].map((n, i) => ({
-      enabled: i === 0,
-      name: L('antenna_' + n, 'Ant. ' + n),
-      offset_deg: 0,
-      opening_deg: 30,
-      range_km: 100,
-      dipole: false,
-      color: ['#5BA3D0','#E67E22','#E74C3C'][i]
-    }));
+  function fillAntennaChecks(site) {
+    const box = document.getElementById('ovAntChecks');
+    if (!box) return;
+    box.innerHTML = '';
+    const ants = Array.isArray(site.antennas) ? site.antennas : [];
+    for (let i = 0; i < 3; i++) {
+      const ant = ants[i] || {};
+      const label = document.createElement('label');
+      label.style.display = 'flex';
+      label.style.alignItems = 'center';
+      label.style.gap = '6px';
+      label.style.fontSize = '12px';
+      const chk = document.createElement('input');
+      chk.type = 'checkbox';
+      chk.className = 'ovAntChk';
+      chk.dataset.slot = String(i + 1);
+      chk.checked = ant.enabled !== false;
+      const span = document.createElement('span');
+      const base = L('antenna_' + (i + 1), 'Ant. ' + (i + 1));
+      const nm = String(ant.name || '').trim();
+      span.textContent = (nm && !/^antenne\s/i.test(nm)) ? (base + ' · ' + nm) : base;
+      label.appendChild(chk);
+      label.appendChild(span);
+      box.appendChild(label);
+    }
   }
 
   function openEditor(idx) {
     editIndex = idx;
     editSite = JSON.parse(JSON.stringify((OV_CONFIG.sites || [])[idx] || {}));
-    if (!editSite.antennas) editSite.antennas = defaultAntennas();
-    document.getElementById('ovName').value = editSite.name || '';
+    const local = isLocal(editSite);
+    document.getElementById('ovEditHint').textContent = local
+      ? L('local_hint', '')
+      : L('add_hint', '');
     document.getElementById('ovEnabled').checked = !!editSite.enabled;
-    document.getElementById('ovLat').value = editSite.lat;
-    document.getElementById('ovLon').value = editSite.lon;
-    document.getElementById('ovLocator').value = editSite.locator || '';
-    document.getElementById('ovMode').value = editSite.mode || 'tcp';
     document.getElementById('ovHost').value = editSite.host || '';
-    document.getElementById('ovPort').value = editSite.port || 8886;
-    document.getElementById('ovUdpBind').value = editSite.udp_bind_port || 0;
-    document.getElementById('ovMaster').value = editSite.master_id || 0;
-    document.getElementById('ovSlave').value = editSite.slave_az || 20;
-    document.getElementById('ovPollPos').value = editSite.poll_pos_ms || 1000;
-    document.getElementById('ovPollRef').value = editSite.poll_ref_ms || 5000;
-    document.getElementById('ovSmooth').value = editSite.smooth_alpha || 0.35;
-    const box = document.getElementById('ovAntennas');
-    box.innerHTML = '';
-    for (let i = 0; i < 3; i++) {
-      const a = editSite.antennas[i] || defaultAntennas()[i];
-      const row = document.createElement('div');
-      row.className = 'ant-row';
-      row.innerHTML =
-        '<label><input type="checkbox" data-k="enabled"' + (a.enabled ? ' checked' : '') + '/> ' + L('antenna_' + (i+1), 'A'+(i+1)) + '</label>' +
-        '<input type="text" data-k="name" value="' + String(a.name||'').replace(/"/g,'&quot;') + '"/>' +
-        '<label class="dip" title="' + String(L('ant_dipole_tooltip','')).replace(/"/g,'&quot;') + '"><input type="checkbox" data-k="dipole"' + (a.dipole ? ' checked' : '') + '/> ' + L('ant_dipole','Dipol') + '</label>' +
-        '<input type="number" data-k="offset_deg" step="0.1" title="' + L('ant_offset','') + '" value="' + (a.offset_deg||0) + '"/>' +
-        '<input type="number" data-k="opening_deg" step="0.1" title="' + L('ant_opening','') + '" value="' + (a.opening_deg||30) + '"/>' +
-        '<input type="number" data-k="range_km" step="0.1" title="' + L('ant_range','') + '" value="' + (a.range_km||100) + '"/>' +
-        '<input type="color" data-k="color" value="' + (a.color || '#5BA3D0') + '" title="' + L('pick_color','') + '"/>';
-      box.appendChild(row);
-    }
+    document.getElementById('ovPort').value = editSite.port || 80;
+    document.getElementById('ovPassword').value = editSite.password || '';
+    document.querySelectorAll('.ov-app-only').forEach(el => {
+      el.style.display = local ? 'none' : '';
+    });
+    fillAntennaChecks(editSite);
     editor.classList.add('open');
   }
 
   function readEditorSite() {
-    const ants = [];
-    document.querySelectorAll('#ovAntennas .ant-row').forEach(row => {
-      const get = (k) => row.querySelector('[data-k="'+k+'"]');
-      ants.push({
-        enabled: !!get('enabled').checked,
-        name: get('name').value.trim() || 'Antenne',
-        dipole: !!(get('dipole') && get('dipole').checked),
-        offset_deg: parseFloat(get('offset_deg').value) || 0,
-        opening_deg: parseFloat(get('opening_deg').value) || 30,
-        range_km: parseFloat(get('range_km').value) || 100,
-        color: get('color').value || '#5BA3D0'
-      });
-    });
     const site = Object.assign({}, editSite || {});
-    site.name = document.getElementById('ovName').value.trim() || 'Standort';
     site.enabled = document.getElementById('ovEnabled').checked;
-    site.lat = parseFloat(document.getElementById('ovLat').value);
-    site.lon = parseFloat(document.getElementById('ovLon').value);
-    site.locator = document.getElementById('ovLocator').value.trim();
-    site.mode = document.getElementById('ovMode').value || 'tcp';
-    site.host = document.getElementById('ovHost').value.trim();
-    site.port = parseInt(document.getElementById('ovPort').value, 10) || 8886;
-    site.udp_bind_port = parseInt(document.getElementById('ovUdpBind').value, 10) || 0;
-    site.master_id = parseInt(document.getElementById('ovMaster').value, 10) || 0;
-    site.slave_az = parseInt(document.getElementById('ovSlave').value, 10) || 20;
-    site.poll_pos_ms = parseInt(document.getElementById('ovPollPos').value, 10) || 1000;
-    site.poll_ref_ms = parseInt(document.getElementById('ovPollRef').value, 10) || 5000;
-    site.smooth_alpha = parseFloat(document.getElementById('ovSmooth').value) || 0.35;
+    const ants = Array.isArray(site.antennas) ? site.antennas.slice() : [];
+    while (ants.length < 3) ants.push({ enabled: true, name: '' });
+    document.querySelectorAll('#ovAntChecks .ovAntChk').forEach((chk) => {
+      const slot = parseInt(chk.dataset.slot || '0', 10);
+      if (slot < 1 || slot > 3) return;
+      const ant = Object.assign({}, ants[slot - 1] || {});
+      ant.enabled = !!chk.checked;
+      ants[slot - 1] = ant;
+    });
     site.antennas = ants;
+    if (isLocal(site)) {
+      site.id = 'local';
+      site.kind = 'local';
+    } else {
+      site.kind = 'app';
+      site.host = document.getElementById('ovHost').value.trim();
+      site.port = parseInt(document.getElementById('ovPort').value, 10) || 80;
+      site.password = document.getElementById('ovPassword').value;
+    }
     return site;
   }
 
@@ -513,6 +559,11 @@ const statusEl = document.getElementById('ovStatus');
   }
 
   async function deleteSite(i) {
+    const s = (OV_CONFIG.sites || [])[i];
+    if (isLocal(s)) {
+      setMsg(L('cannot_delete_local', 'Cannot delete'), true);
+      return;
+    }
     if (!confirm(L('delete_confirm', 'Delete?'))) return;
     (OV_CONFIG.sites || []).splice(i, 1);
     editor.classList.remove('open');
@@ -527,8 +578,8 @@ const statusEl = document.getElementById('ovStatus');
     editIndex = -1;
   };
   document.getElementById('ovBtnAdd').onclick = async () => {
-    const res = await postAction('default_site', {});
-    const site = (res && res.site) || { name: L('new_site', 'New'), enabled: true, antennas: defaultAntennas() };
+    const res = await postAction('default_site', { port: 80 });
+    const site = (res && res.site) || { kind: 'app', enabled: true, host: '', port: 80, password: '' };
     if (!OV_CONFIG.sites) OV_CONFIG.sites = [];
     OV_CONFIG.sites.push(site);
     openEditor(OV_CONFIG.sites.length - 1);
@@ -538,29 +589,6 @@ const statusEl = document.getElementById('ovStatus');
     if (editIndex < 0) return;
     OV_CONFIG.sites[editIndex] = site;
     if (await persistConfig()) editor.classList.remove('open');
-  };
-  document.getElementById('ovBtnLocator').onclick = async () => {
-    const res = await postAction('locator', { locator: document.getElementById('ovLocator').value });
-    if (!res || !res.ok) {
-      setMsg(L('locator_invalid', 'Invalid locator'), true);
-      return;
-    }
-    document.getElementById('ovLat').value = res.lat;
-    document.getElementById('ovLon').value = res.lon;
-    setMsg('', false);
-  };
-  document.getElementById('ovBtnImport').onclick = async () => {
-    const pid = document.getElementById('ovProfile').value;
-    if (!pid) return;
-    const res = await postAction('import_profile', { profile_id: pid });
-    if (!res || !res.ok || !res.site) {
-      setMsg((res && res.error) || 'import failed', true);
-      return;
-    }
-    const keepId = editSite && editSite.id;
-    editSite = res.site;
-    if (keepId) editSite.id = keepId;
-    openEditor(editIndex);
   };
   document.getElementById('ovBtnReload').onclick = async () => {
     await postAction('reload', {});

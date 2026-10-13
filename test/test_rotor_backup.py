@@ -12,6 +12,7 @@ from rotortcpbridge.rotor_backup import (
     backup_hw_destinations,
     build_backup_work,
     controller_backupable_pairs,
+    controller_hw_norm,
     extract_gui_config_for_backup,
     is_controller_set_cmd,
     load_rotor_config_xml,
@@ -84,6 +85,131 @@ def test_controller_vs_rotor_pairs_partition() -> None:
     assert "SETANTOFF1" in rotor
     assert "SETANTNAME1" in rotor
     assert ctrl.isdisjoint(rotor)
+
+
+def test_controller_hw_norm_keeps_speaker_freq_above_254() -> None:
+    n = controller_hw_norm({"speaker_freq_hz": 1100, "cont_id": 2})
+    assert n["speaker_freq_hz"] == 1100
+    n2 = controller_hw_norm({"speaker_freq_hz": 4000})
+    assert n2["speaker_freq_hz"] == 4000
+    n3 = controller_hw_norm({"speaker_freq_hz": 50})
+    assert n3["speaker_freq_hz"] == 200
+    n4 = controller_hw_norm({"speaker_volume": 37})
+    assert n4["speaker_volume"] == 37
+
+
+class _FakeCtrl:
+    def __init__(self, stored: dict) -> None:
+        self.stored = dict(stored)
+        self.writes: list = []
+
+    def sync_ui_command_response(self, dst, cmd, params, expect, timeout_s=1.5):
+        if cmd.startswith("GET"):
+            key = "SET" + cmd[3:]
+            if key not in self.stored:
+                return None
+            return str(self.stored[key])
+        self.writes.append((cmd, params))
+        self.stored[cmd] = int(params)
+        return params
+
+
+def test_push_controller_hw_skips_equal_values() -> None:
+    from rotortcpbridge.rotor_backup import push_controller_hw_diff
+
+    chw = {
+        "enabled": True,
+        "cont_id": 2,
+        "slow_pwm": 30,
+        "fast_pwm": 80,
+        "speaker_freq_hz": 1500,
+        "speaker_volume": 37,
+        "display_brightness_pct": 60,
+        "encoder_delta": 10,
+        "antenna_realign_on_switch": False,
+        "az_rotor_id": 20,
+        "el_rotor_id": 0,
+        "wind_anemometer": False,
+        "usb_remote": False,
+    }
+    ctrl = _FakeCtrl(
+        {
+            "SETCONSPWM": 30,
+            "SETCONFPWM": 80,
+            "SETCONFRQ": 1500,
+            "SETLSL": 20,
+            "SETCONLEDP": 60,
+            "SETCONDELTA": 10,
+            "SETCONCHA": 0,
+            "SETCONTAZID": 20,
+            "SETCONTELID": 0,
+            "SETCONANO": 0,
+            "SETCONREMOTE": 0,
+        }
+    )
+    ok = push_controller_hw_diff(ctrl, old_chw=chw, new_chw=chw, connected=True, force=True)
+    assert ok
+    assert ctrl.writes == [("SETLSL", "37")]
+
+
+def test_push_controller_rotor_ids_follows_profile_slave_ids() -> None:
+    """Web-Display: Profilwechsel Default (22) → Rotor 2 (20) muss am Display ankommen."""
+    from rotortcpbridge.rotor_backup import push_controller_rotor_ids
+
+    cfg = {
+        "rotor_bus": {"slave_az": 20, "slave_el": 21, "enable_az": True, "enable_el": False},
+        "controller_hw": {"cont_id": 2, "enabled": False},
+    }
+    ctrl = _FakeCtrl({"SETCONTAZID": 22, "SETCONTELID": 0})
+    assert push_controller_rotor_ids(ctrl, cfg)
+    assert ctrl.writes == [("SETCONTAZID", "20")]
+    # zweiter Aufruf: nichts mehr zu schreiben
+    ctrl.writes.clear()
+    assert push_controller_rotor_ids(ctrl, cfg)
+    assert ctrl.writes == []
+
+
+def test_app_config_link_mode_normalized() -> None:
+    from rotortcpbridge.app_config import migrate_and_merge_config
+
+    cfg = migrate_and_merge_config(
+        {"controller_hw": {"enabled": True, "usb_remote": True, "link_mode": 2}}
+    )
+    assert cfg["controller_hw"]["link_mode"] == 2
+    assert cfg["controller_hw"]["usb_remote"] is False
+    cfg = migrate_and_merge_config({"controller_hw": {"enabled": True, "usb_remote": True}})
+    assert cfg["controller_hw"]["link_mode"] == 1
+
+
+def test_push_controller_hw_skip_remote_keeps_web_link() -> None:
+    """Display per Web Serial: Profilwechsel darf SETCONREMOTE/Link nicht anfassen."""
+    from rotortcpbridge.rotor_backup import push_controller_hw_diff
+
+    chw = {"enabled": True, "cont_id": 2, "az_rotor_id": 20, "usb_remote": False}
+    link = object()
+
+    class _Ctrl(_FakeCtrl):
+        def __init__(self) -> None:
+            super().__init__({"SETCONREMOTE": 1, "SETCONTAZID": 11})
+            self.ctrl_hw = link
+            self.usb_remote = True
+
+        def set_controller_link(self, hw, enabled) -> None:
+            self.ctrl_hw = hw
+            self.usb_remote = bool(enabled) and hw is not None
+
+    ctrl = _Ctrl()
+    ok = push_controller_hw_diff(
+        ctrl, old_chw=chw, new_chw=chw, connected=True, force=True, skip_remote=True
+    )
+    assert ok
+    assert ctrl.usb_remote is True and ctrl.ctrl_hw is link
+    assert all(cmd != "SETCONREMOTE" for cmd, _ in ctrl.writes)
+    assert ("SETCONTAZID", "20") in ctrl.writes
+
+    ctrl2 = _Ctrl()
+    push_controller_hw_diff(ctrl2, old_chw=chw, new_chw=chw, connected=True, force=True)
+    assert ctrl2.usb_remote is False  # ohne skip_remote: bisheriges Verhalten
 
 
 def test_backup_hw_destinations_include_controller() -> None:
@@ -219,3 +345,87 @@ def test_xml_roundtrip(tmp_path: Path) -> None:
     assert loaded_gui is not None
     assert loaded_gui["ui"]["antenna_names"] == ["A", "B", "C"]
     assert loaded_gui["rotctld_server"]["enabled"] is True
+
+
+class _FakeAz:
+    antoff1 = 10.0
+    antoff2 = 20.0
+    antoff3 = 30.0
+    antdp1 = False
+    antdp2 = False
+    antdp3 = False
+
+
+class _FakeCtrlOffsets:
+    def __init__(self) -> None:
+        self.az = _FakeAz()
+        self.enable_az = True
+        self.slave_az = 20
+        self.synced: list[tuple] = []
+        self.dipole_calls: list[tuple] = []
+        self._antenna_bootstrap_requested = False
+        self.on_antenna_offsets_changed = None
+        self.on_antenna_dipoles_changed = None
+
+    def sync_ui_command_response(self, dst, cmd, params, expect_prefix, timeout_s=5.0):
+        self.synced.append((dst, cmd, params, expect_prefix, timeout_s))
+        return "1"
+
+    def set_antenna_dipole(self, axis, slot, value_enabled, on_done=None):
+        self.dipole_calls.append((axis, slot, bool(value_enabled)))
+        if on_done:
+            on_done(True)
+
+
+def test_push_profile_antenna_offsets_writes_setantoff() -> None:
+    from rotortcpbridge.rotor_backup import push_profile_antenna_offsets
+
+    ctrl = _FakeCtrlOffsets()
+    cfg = {
+        "ui": {
+            "antenna_offsets_az": [11.0, 22.0, 33.0],
+            "antenna_dipoles_az": [False, True, False],
+        }
+    }
+    assert push_profile_antenna_offsets(ctrl, cfg, connected=True) is True
+    assert ctrl.az.antoff1 == 11.0
+    assert ctrl.az.antoff2 == 22.0
+    assert ctrl.az.antoff3 == 33.0
+    assert ctrl.az.antdp2 is True
+    cmds = [c[1] for c in ctrl.synced]
+    assert cmds == [
+        "SETANTOFF1",
+        "SETANTOFF2",
+        "SETANTOFF3",
+        "SETANTDP1",
+        "SETANTDP2",
+        "SETANTDP3",
+    ]
+    assert ctrl.synced[4][2] == "1"
+    assert ctrl._antenna_bootstrap_requested is True
+
+
+def test_push_profile_antenna_offsets_seeds_when_offline() -> None:
+    from rotortcpbridge.rotor_backup import push_profile_antenna_offsets
+
+    ctrl = _FakeCtrlOffsets()
+    cfg = {
+        "ui": {
+            "antenna_offsets_az": [5.0, 6.0, 7.0],
+            "antenna_dipoles_az": [True, False, False],
+        }
+    }
+    assert push_profile_antenna_offsets(ctrl, cfg, connected=False) is True
+    assert ctrl.az.antoff1 == 5.0
+    assert ctrl.az.antdp1 is True
+    assert ctrl.synced == []
+    assert ctrl._antenna_bootstrap_requested is False
+
+
+def test_push_antenna_dipoles_async_sets_all_slots() -> None:
+    from rotortcpbridge.rotor_backup import push_antenna_dipoles_async
+
+    ctrl = _FakeCtrlOffsets()
+    cfg = {"ui": {"antenna_dipoles_az": [True, False, True]}}
+    push_antenna_dipoles_async(ctrl, cfg)
+    assert ctrl.dipole_calls == [("az", 1, True), ("az", 2, False), ("az", 3, True)]

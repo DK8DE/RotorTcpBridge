@@ -466,20 +466,28 @@ def current_rotor_az_deg(az_axis, *, now: float | None = None) -> float | None:
 
 
 def antenna_dipole_enabled(az_axis, cfg: dict | None, ant_idx: int) -> bool:
-    """Dipol-Flag für Antenne ant_idx (0–2): Rotor-Zustand, sonst Config."""
+    """Dipol-Flag für Antenne ant_idx (0–2).
+
+    Anzeige: aktiv, wenn der Rotor ``GETANTDP``=1 gemeldet hat **oder** das
+    Profil-Flag gesetzt ist. ``GETANTDP``=0 darf ein gesetztes Profil-Flag
+    nicht löschen (sonst fehlt die Gegenkeule nach Rotorwechsel, solange
+    noch alte Bus-Werte hängen oder der neue Rotor das Flag nicht in NVS hat).
+    """
     ant_idx = max(0, min(2, int(ant_idx)))
     slot = ant_idx + 1
+    hw_on = False
     if az_axis is not None:
         hw_v = getattr(az_axis, f"antdp{slot}", None)
-        if hw_v is not None:
-            return bool(hw_v)
+        if hw_v is True:
+            hw_on = True
+    cfg_on = False
     if cfg:
         dips = (cfg.get("ui") or {}).get("antenna_dipoles_az", [False, False, False])
         try:
-            return bool(dips[ant_idx])
+            cfg_on = bool(dips[ant_idx])
         except (IndexError, TypeError):
-            pass
-    return False
+            cfg_on = False
+    return bool(hw_on or cfg_on)
 
 
 def rotor_az_for_display_bearing(

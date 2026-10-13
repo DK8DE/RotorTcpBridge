@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from rotortcpbridge.angle_utils import (
+    antenna_dipole_enabled,
     az_pos_deg_from_d10,
     clamp_el,
     deg_str_to_d10,
@@ -273,3 +274,16 @@ def test_dipole_west_from_east_stop_uses_back_lobe() -> None:
     assert dipole_rotor_move_cost(9, 350) == pytest.approx(341)
     assert dipole_rotor_move_cost(9, 170) == pytest.approx(161)
     assert rotor_az_for_display_bearing(80, 90, 9, dipole=True) == pytest.approx(170)
+
+
+def test_antenna_dipole_enabled_hw_false_keeps_profile_flag() -> None:
+    class _Az:
+        antdp1 = False
+        antdp2 = None
+        antdp3 = True
+
+    cfg = {"ui": {"antenna_dipoles_az": [True, True, False]}}
+    assert antenna_dipole_enabled(_Az(), cfg, 0) is True
+    assert antenna_dipole_enabled(_Az(), cfg, 1) is True
+    assert antenna_dipole_enabled(_Az(), cfg, 2) is True
+    assert antenna_dipole_enabled(_Az(), {"ui": {}}, 0) is False

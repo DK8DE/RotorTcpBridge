@@ -12,6 +12,7 @@ from collections import deque
 from typing import Any, Deque, FrozenSet, Optional, Tuple
 
 from .hardware_client import HardwareClient, HwRequest
+from .rotor_parse_utils import parse_setposdg_params
 from .rs485_protocol import build, parse
 
 # Software-TX die das Display sehen muss (Soll/Steuerung). Routine-GETs nicht spiegeln.
@@ -27,15 +28,46 @@ _MIRROR_TX_CMDS: FrozenSet[str] = frozenset(
         "SETCONTAZID",
         "SETCONTELID",
         "SETCONTID",
+        "SETANTOFF1",
+        "SETANTOFF2",
+        "SETANTOFF3",
+        "SETANTDP1",
+        "SETANTDP2",
+        "SETANTDP3",
+        "SETANGLE1",
+        "SETANGLE2",
+        "SETANGLE3",
     }
 )
 
 _FIRE_AND_FORGET_CMDS: FrozenSet[str] = frozenset(
     {
         "SETPOSCC",
+        "SETPOSDG",
+        "STOP",
+        "NSTOP",
         "SETASELECT",
     }
 )
+
+# Zyklische/laute Display-GETs, die während lokaler Fahrt nicht auf den Rotor-Bus sollen.
+_MOTION_DROP_GETS: FrozenSet[str] = frozenset(
+    {
+        "GETPOSDG",
+        "GETREF",
+        "GETTEMPA",
+        "GETTEMPM",
+        "GETWINDDIR",
+        "GETANEMO",
+        "GETACCBINS",
+        "GETWARN",
+        "GETERR",
+    }
+)
+
+# Fahrbefehle: als Software-Master auf den Rotor-Bus, sonst nimmt die Firmware
+# nach einem zweiten Master (Handy-App) oft nur noch dessen SETPOSDG an.
+_TAKEOVER_CMDS: FrozenSet[str] = frozenset({"SETPOSDG", "STOP", "NSTOP", "SETREF"})
 
 
 class ControllerRemoteUsbProxy:
@@ -535,12 +567,113 @@ class ControllerRemoteUsbProxy:
                     return False
         except Exception:
             pass
+        # Während Profil-Sync: Display-SETPOSDG nicht weiterleiten (Deadman-Schutz).
+        if cmd_u == "SETPOSDG":
+            try:
+                ready_fn = getattr(self.ctrl, "drive_ready", None)
+                if callable(ready_fn) and (not bool(ready_fn())):
+                    return False
+            except Exception:
+                pass
+        # Während lokaler Fahrt: zyklische Display-GETs nicht weiterleiten.
+        # Die Bridge pollt GETPOSDG selbst; Temp/Wind/REF/ACCBINS vom Display
+        # würden den Bus überlasten und den Zeiger ruckeln lassen.
+        # Einmalige Konfig-GETs (Antennen, Winkel, Encoder, Max-Grad …) des Display-Starts
+        # dürfen durch — sonst hängt dessen Boot-Kette bis Fahrtende und der Controller
+        # sendet in dieser Zeit kein SETPOSDG (Soll wird scheinbar nicht gesetzt).
+        if (
+            cmd_u.startswith("GET")
+            and cmd_u in _MOTION_DROP_GETS
+            and self._local_motion_busy()
+        ):
+            return False
         return True
+
+
+    def _local_motion_busy(self) -> bool:
+        try:
+            fn = getattr(self.ctrl, "_motion_poll_restrict_active", None)
+            if not callable(fn):
+                return False
+            pos_fast_s = 0.2
+            try:
+                cfg = getattr(self.ctrl, "_cfg_poll", None) or {}
+                pos_fast_s = float(cfg.get("pos_fast", 200) or 200) / 1000.0
+            except Exception:
+                pos_fast_s = 0.2
+            return bool(fn(time.time(), pos_fast_s))
+        except Exception:
+            return False
+
+    def _master_id(self) -> int:
+        try:
+            return int(getattr(self.ctrl, "master_id", 0) or 0)
+        except Exception:
+            return 0
+
+    def _slave_az(self) -> int:
+        try:
+            return int(getattr(self.ctrl, "slave_az", 0) or 0)
+        except Exception:
+            return 0
+
+    def _slave_el(self) -> int:
+        try:
+            return int(getattr(self.ctrl, "slave_el", 0) or 0)
+        except Exception:
+            return 0
+
+    def _resolve_drive_dst(self, tel: Any) -> int:
+        d = int(tel.dst)
+        saz = self._slave_az()
+        sel = self._slave_el()
+        if saz > 0 and d == saz:
+            return saz
+        if sel > 0 and d == sel:
+            return sel
+        cmd_u = str(tel.cmd or "").strip().upper()
+        rid = None
+        if cmd_u == "SETPOSDG":
+            try:
+                _, rid = parse_setposdg_params(str(tel.params or ""))
+            except Exception:
+                rid = None
+        if rid is not None:
+            if saz > 0 and rid == saz:
+                return saz
+            if sel > 0 and rid == sel:
+                return sel
+        mid = self._master_id()
+        if d == mid:
+            if saz > 0 and bool(getattr(self.ctrl, "enable_az", True)):
+                return saz
+            if sel > 0 and bool(getattr(self.ctrl, "enable_el", False)):
+                return sel
+        return d
+
+    def _rewrite_drive_line_for_rotor(self, line: str, tel: Any, cmd_u: str) -> str:
+        """SETPOSDG/STOP als Bridge-Master an den Rotor-Slave (Übernahme vom 2. Master)."""
+        if cmd_u not in _TAKEOVER_CMDS:
+            return line
+        try:
+            dst = self._resolve_drive_dst(tel)
+            rebuilt = build(
+                self._master_id(),
+                int(dst),
+                str(tel.cmd),
+                str(tel.params or ""),
+            )
+            return rebuilt if rebuilt else line
+        except Exception:
+            return line
 
     def _forward_to_rotor(self, line: str, cmd_u: str) -> None:
         self._note_dedup(line)
         try:
-            if cmd_u in _FIRE_AND_FORGET_CMDS:
+            # GETs immer fire-and-forget: auf Antwort zu warten blockiert den Bus bis Timeout,
+            # wenn die Display-Slave-ID nicht der aktive Rotor ist (stummer Zweit-Rotor).
+            # ACKs kommen weiterhin per RX und werden ans Display gespiegelt.
+            if cmd_u in _FIRE_AND_FORGET_CMDS or cmd_u.startswith("GET"):
                 self.rotor_hw.send_line_fire_and_forget(line)
             else:
                 prio = 0 if cmd_u in ("SETPOSDG", "STOP", "NSTOP", "SETREF") else 1
@@ -566,6 +699,15 @@ class ControllerRemoteUsbProxy:
             return
         tel = parse(line)
         cmd_u = str(tel.cmd or "").strip().upper() if tel is not None else ""
+        self._note_dedup(line)
+        if tel is not None and cmd_u in _TAKEOVER_CMDS:
+            try:
+                clearer = getattr(self.ctrl, "clear_foreign_master_follow", None)
+                if callable(clearer):
+                    clearer()
+            except Exception:
+                pass
+            line = self._rewrite_drive_line_for_rotor(line, tel, cmd_u)
         self._forward_to_rotor(line, cmd_u)
         try:
             if tel is not None and hasattr(self.ctrl, "on_controller_link_telegram"):

@@ -252,10 +252,14 @@ class AxisState:
     foreign_follow_active: bool = False
     foreign_follow_last_rx_ts: float = 0.0
     referenced: bool = False
+    # True sobald ein GETREF-ACK (0 oder 1) vom aktuellen Rotor vorliegt.
+    ref_status_known: bool = False
     moving: bool = False
     error_code: int = 0
     warnings: Set[int] = field(default_factory=set)
     ref_poll_active: bool = False
+    # Korrekturwinkel (GETDGCAL/SETDGCAL) in 0,1°; None = noch nicht gelesen
+    dgcal_d10: Optional[int] = None
     online: bool = False
     last_rx_ts: float = 0.0
     telemetry: AxisTelemetry = field(default_factory=AxisTelemetry)

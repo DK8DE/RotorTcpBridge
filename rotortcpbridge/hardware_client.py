@@ -199,6 +199,13 @@ class HardwareClient:
         except Exception:
             pass
 
+    def clear_reply_gate(self) -> None:
+        """Half-Duplex-Wartefenster lösen (ohne Pending mit expect_prefix zu verwerfen)."""
+        try:
+            self._clear_reply_gate()
+        except Exception:
+            pass
+
     def set_expected_response_dst(self, master_id: int) -> None:
         """Nur Telegramme mit ``dst == master_id`` dürfen ein ausstehendes TX-Match sein."""
         try:

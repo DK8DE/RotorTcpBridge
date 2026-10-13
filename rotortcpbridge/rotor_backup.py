@@ -380,6 +380,13 @@ def _clamp_cont_id(v: Any, default: int = 0) -> int:
         return default
 
 
+def _clamp_int(v: Any, lo: int, hi: int, default: int) -> int:
+    try:
+        return max(lo, min(hi, int(v)))
+    except (TypeError, ValueError):
+        return default
+
+
 def controller_hw_norm(chw: Optional[Dict[str, Any]]) -> Dict[str, int]:
     """Normierte Controller-HW-Werte für Diff/Push (inkl. AZ/EL-Rotor-IDs)."""
     ch = chw if isinstance(chw, dict) else {}
@@ -389,16 +396,17 @@ def controller_hw_norm(chw: Optional[Dict[str, Any]]) -> Dict[str, int]:
         ed = 10
     if ed not in (1, 10):
         ed = 10
+    freq = _clamp_int(ch.get("speaker_freq_hz", 1100), 200, 4000, 1100)
+    vol = _clamp_int(ch.get("speaker_volume", 50), 0, 50, 50)
     return {
         "cont_id": _clamp_cont_id(ch.get("cont_id", 2), 2),
-        "slow_pwm": max(0, min(100, _clamp_cont_id(ch.get("slow_pwm", 30), 30))),
-        "fast_pwm": max(0, min(100, _clamp_cont_id(ch.get("fast_pwm", 80), 80))),
-        "speaker_freq_hz": max(
-            200, min(4000, _clamp_cont_id(ch.get("speaker_freq_hz", 1100), 1100))
-        ),
-        "speaker_volume": max(0, min(50, _clamp_cont_id(ch.get("speaker_volume", 50), 50))),
-        "display_brightness_pct": max(
-            0, min(100, _clamp_cont_id(ch.get("display_brightness_pct", 100), 100))
+        "slow_pwm": _clamp_int(ch.get("slow_pwm", 30), 0, 100, 30),
+        "fast_pwm": _clamp_int(ch.get("fast_pwm", 80), 0, 100, 80),
+        # Nicht über _clamp_cont_id (max 254): SETCONFRQ ist 200…4000 Hz.
+        "speaker_freq_hz": freq,
+        "speaker_volume": vol,
+        "display_brightness_pct": _clamp_int(
+            ch.get("display_brightness_pct", 100), 0, 100, 100
         ),
         "wind_anemometer": 1 if bool(ch.get("wind_anemometer", False)) else 0,
         "encoder_delta": ed,
@@ -409,6 +417,79 @@ def controller_hw_norm(chw: Optional[Dict[str, Any]]) -> Dict[str, int]:
     }
 
 
+def controller_get_cmd_for_set(set_cmd: str) -> Optional[str]:
+    """``SETCONxxx`` → ``GETCONxxx``; ``SETLSL`` → ``GETLSL``."""
+    name = str(set_cmd or "").strip().upper()
+    if name.startswith("SET"):
+        return "GET" + name[3:]
+    return None
+
+
+def read_controller_int(ctrl: Any, dst: int, set_cmd: str) -> Optional[int]:
+    """Aktuell im Controller gespeicherten Wert lesen; None bei Timeout/NAK/Parsefehler."""
+    from .rotor_controller import SYNC_UI_NAK_PREFIX
+
+    get_cmd = controller_get_cmd_for_set(set_cmd)
+    if not get_cmd:
+        return None
+    try:
+        r = ctrl.sync_ui_command_response(
+            int(dst), get_cmd, "0", "ACK_" + get_cmd, timeout_s=1.2
+        )
+    except Exception:
+        return None
+    if r is None or str(r).startswith(SYNC_UI_NAK_PREFIX):
+        return None
+    try:
+        return int(float(str(r).strip().split(";")[0].replace(",", ".")))
+    except (TypeError, ValueError):
+        return None
+
+
+def controller_rotor_ids_from_cfg(cfg: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    """Rotor-IDs, die der Display-Controller ansprechen muss (= Slave-IDs des aktiven Profils)."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    rb = cfg.get("rotor_bus") if isinstance(cfg.get("rotor_bus"), dict) else {}
+    chw = cfg.get("controller_hw") if isinstance(cfg.get("controller_hw"), dict) else {}
+    az = _clamp_cont_id(rb.get("slave_az", chw.get("az_rotor_id", 20)), 20)
+    el = _clamp_cont_id(rb.get("slave_el", chw.get("el_rotor_id", 0)), 0)
+    if not bool(rb.get("enable_az", True)):
+        az = 0
+    if not bool(rb.get("enable_el", False)):
+        el = 0
+    return {
+        "cont_id": _clamp_cont_id(chw.get("cont_id", 2), 2),
+        "az_rotor_id": az,
+        "el_rotor_id": el,
+    }
+
+
+def push_controller_rotor_ids(ctrl: Any, cfg: Optional[Dict[str, Any]]) -> bool:
+    """AZ/EL-Rotor-ID im Display-Controller auf das aktive Profil stellen (nur bei Abweichung).
+
+    Wird für Controller im Modus WEB gebraucht: der Display spricht über den Browser
+    direkt den Rotor an — hat das Profil eine andere Slave-ID, antwortet sonst niemand.
+    """
+    if not hasattr(ctrl, "sync_ui_command_response"):
+        return True
+    ids = controller_rotor_ids_from_cfg(cfg)
+    dst = int(ids["cont_id"])
+    if dst <= 0:
+        return True
+    from .rotor_controller import SYNC_UI_NAK_PREFIX
+
+    ok_all = True
+    for key, cmd in (("az_rotor_id", "SETCONTAZID"), ("el_rotor_id", "SETCONTELID")):
+        want = int(ids[key])
+        cur = read_controller_int(ctrl, dst, cmd)
+        if cur is not None and int(cur) == want:
+            continue
+        r = ctrl.sync_ui_command_response(dst, cmd, str(want), "ACK_" + cmd, timeout_s=1.5)
+        if r is None or str(r).startswith(SYNC_UI_NAK_PREFIX):
+            ok_all = False
+    return ok_all
+
+
 def push_controller_hw_diff(
     ctrl: Any,
     *,
@@ -417,8 +498,13 @@ def push_controller_hw_diff(
     connected: bool,
     encoder_type3: bool = False,
     force: bool = False,
+    skip_remote: bool = False,
 ) -> bool:
     """``controller_hw``-Werte per SETCON* an den Controller schreiben.
+
+    ``skip_remote=True``: ``SETCONREMOTE`` nicht anfassen und den Controller-Link nicht
+    umschalten (Display hängt per Web Serial am Browser-Relay — der Link muss über den
+    Profilwechsel hinweg stehen bleiben).
 
     - ``force=False`` (Default): nur Differenzen old→new.
     - ``force=True``: alle SETCON*-Werte aus ``new_chw`` schreiben (Profilwechsel),
@@ -452,6 +538,16 @@ def push_controller_hw_diff(
     if dst <= 0:
         return True
 
+    def _write_if_differs(set_cmd: str, value: int) -> bool:
+        """Controller-Wert lesen und nur bei Abweichung schreiben (Flash schonen)."""
+        cur = read_controller_int(ctrl, dst, set_cmd)
+        if cur is not None and int(cur) == int(value):
+            return True
+        r = ctrl.sync_ui_command_response(
+            dst, set_cmd, str(int(value)), "ACK_" + set_cmd, timeout_s=1.5
+        )
+        return _ok(r)
+
     if _changed("cont_id"):
         id_dst = int(new_n["cont_id"]) if int(old_n["cont_id"]) == 0 else int(old_n["cont_id"])
         # Bei force und gleicher ID: SETCONTID überspringen (Adresse unverändert).
@@ -465,21 +561,20 @@ def push_controller_hw_diff(
                 all_ok = False
 
     pairs = (
-        ("slow_pwm", "SETCONSPWM", "ACK_SETCONSPWM"),
-        ("fast_pwm", "SETCONFPWM", "ACK_SETCONFPWM"),
-        ("speaker_freq_hz", "SETCONFRQ", "ACK_SETCONFRQ"),
-        ("speaker_volume", "SETLSL", "ACK_SETLSL"),
-        ("display_brightness_pct", "SETCONLEDP", "ACK_SETCONLEDP"),
-        ("encoder_delta", "SETCONDELTA", "ACK_SETCONDELTA"),
-        ("antenna_realign_on_switch", "SETCONCHA", "ACK_SETCONCHA"),
-        ("az_rotor_id", "SETCONTAZID", "ACK_SETCONTAZID"),
-        ("el_rotor_id", "SETCONTELID", "ACK_SETCONTELID"),
+        ("slow_pwm", "SETCONSPWM"),
+        ("fast_pwm", "SETCONFPWM"),
+        ("speaker_freq_hz", "SETCONFRQ"),
+        ("speaker_volume", "SETLSL"),
+        ("display_brightness_pct", "SETCONLEDP"),
+        ("encoder_delta", "SETCONDELTA"),
+        ("antenna_realign_on_switch", "SETCONCHA"),
+        ("az_rotor_id", "SETCONTAZID"),
+        ("el_rotor_id", "SETCONTELID"),
     )
     # Remote-USB: immer sicherstellen (nicht nur bei Toggle) — Flag kann auf dem
     # Controller nach Reset/Flash fehlen, während die Software-Config schon „an“ ist.
-    if int(new_n["usb_remote"]) == 1:
-        r = ctrl.sync_ui_command_response(dst, "SETCONREMOTE", "1", "ACK_SETCONREMOTE", timeout_s=1.5)
-        if not _ok(r):
+    if (not skip_remote) and int(new_n["usb_remote"]) == 1:
+        if not _write_if_differs("SETCONREMOTE", 1):
             all_ok = False
         try:
             setter = getattr(ctrl, "set_controller_link", None)
@@ -488,28 +583,19 @@ def push_controller_hw_diff(
         except Exception:
             pass
 
-    for key, cmd, ack in pairs:
+    for key, cmd in pairs:
         if not _changed(key):
             continue
-        r = ctrl.sync_ui_command_response(dst, cmd, str(int(new_n[key])), ack, timeout_s=1.5)
-        if not _ok(r):
+        if not _write_if_differs(cmd, int(new_n[key])):
             all_ok = False
 
     if _changed("wind_anemometer") and not encoder_type3:
-        r = ctrl.sync_ui_command_response(
-            dst,
-            "SETCONANO",
-            str(int(new_n["wind_anemometer"])),
-            "ACK_SETCONANO",
-            timeout_s=1.5,
-        )
-        if not _ok(r):
+        if not _write_if_differs("SETCONANO", int(new_n["wind_anemometer"])):
             all_ok = False
 
     # Remote-USB ausschalten zuletzt (vorherige SETs noch über USB).
-    if _changed("usb_remote") and int(new_n["usb_remote"]) == 0:
-        r = ctrl.sync_ui_command_response(dst, "SETCONREMOTE", "0", "ACK_SETCONREMOTE", timeout_s=1.5)
-        if not _ok(r):
+    if (not skip_remote) and _changed("usb_remote") and int(new_n["usb_remote"]) == 0:
+        if not _write_if_differs("SETCONREMOTE", 0):
             all_ok = False
         try:
             setter = getattr(ctrl, "set_controller_link", None)
@@ -518,6 +604,169 @@ def push_controller_hw_diff(
         except Exception:
             pass
 
+    return all_ok
+
+
+def _ui_list3(ui: Dict[str, Any], key: str, default: Any) -> list:
+    raw = ui.get(key) if isinstance(ui, dict) else None
+    out: list = []
+    for i in range(3):
+        try:
+            out.append(raw[i])
+        except Exception:
+            out.append(default)
+    return out
+
+
+def seed_antenna_offsets_from_cfg(ctrl: Any, cfg: Optional[Dict[str, Any]]) -> None:
+    """Profil-Versätze sofort in den Achsen-Cache (Anzeige nicht auf alten GETANTOFF warten)."""
+    ui = (cfg or {}).get("ui") if isinstance(cfg, dict) else {}
+    if not isinstance(ui, dict):
+        ui = {}
+    offs = _ui_list3(ui, "antenna_offsets_az", 0.0)
+    try:
+        az = ctrl.az
+        for i, slot in enumerate((1, 2, 3)):
+            try:
+                setattr(az, f"antoff{slot}", max(0.0, min(360.0, float(offs[i]))))
+            except Exception:
+                setattr(az, f"antoff{slot}", 0.0)
+    except Exception:
+        return
+    cb = getattr(ctrl, "on_antenna_offsets_changed", None)
+    if callable(cb):
+        try:
+            cb()
+        except Exception:
+            pass
+
+
+def seed_antenna_dipoles_from_cfg(ctrl: Any, cfg: Optional[Dict[str, Any]]) -> None:
+    """Profil-Dipolflags sofort in den Achsen-Cache (Display braucht SETANTDP, nicht nur UI)."""
+    from .angle_utils import antenna_dipole_enabled
+
+    try:
+        az = ctrl.az
+    except Exception:
+        return
+    for i, slot in enumerate((1, 2, 3)):
+        try:
+            en = bool(antenna_dipole_enabled(az, cfg, i))
+        except Exception:
+            en = False
+        try:
+            setattr(az, f"antdp{slot}", en)
+        except Exception:
+            pass
+    cb = getattr(ctrl, "on_antenna_dipoles_changed", None)
+    if callable(cb):
+        try:
+            cb()
+        except Exception:
+            pass
+
+
+def push_antenna_dipoles_async(ctrl: Any, cfg: Optional[Dict[str, Any]]) -> None:
+    """SETANTDP1–3 asynchron (Antennenwechsel) — Display snifft/spiegelt Doppelkeule."""
+    if not bool(getattr(ctrl, "enable_az", True)):
+        return
+    if not hasattr(ctrl, "set_antenna_dipole"):
+        return
+    seed_antenna_dipoles_from_cfg(ctrl, cfg)
+    from .angle_utils import antenna_dipole_enabled
+
+    for i, slot in enumerate((1, 2, 3)):
+        try:
+            en = bool(antenna_dipole_enabled(getattr(ctrl, "az", None), cfg, i))
+        except Exception:
+            en = False
+        try:
+            ctrl.set_antenna_dipole("az", slot, en, on_done=None)
+        except Exception:
+            pass
+
+
+def push_profile_antenna_offsets(
+    ctrl: Any,
+    cfg: Optional[Dict[str, Any]],
+    *,
+    connected: bool,
+) -> bool:
+    """Profil-Versätze + Dipolflags auf den AZ-Rotor schreiben (SETANTOFF / SETANTDP).
+
+    Nach Profilwechsel sonst: alter Cache, GET* erst beim USB-Reconnect, Display ohne SET-Spiegel.
+    """
+    seed_antenna_offsets_from_cfg(ctrl, cfg)
+    seed_antenna_dipoles_from_cfg(ctrl, cfg)
+    if not connected or not bool(getattr(ctrl, "enable_az", True)):
+        return True
+    if not hasattr(ctrl, "sync_ui_command_response"):
+        return True
+    from .angle_utils import antenna_dipole_enabled
+    from .rotor_controller import SYNC_UI_NAK_PREFIX
+
+    try:
+        dst = int(getattr(ctrl, "slave_az", 0) or 0)
+    except Exception:
+        dst = 0
+    if dst <= 0:
+        return True
+    ui = (cfg or {}).get("ui") if isinstance(cfg, dict) else {}
+    if not isinstance(ui, dict):
+        ui = {}
+    offs = _ui_list3(ui, "antenna_offsets_az", 0.0)
+    all_ok = True
+    az = getattr(ctrl, "az", None)
+    for slot in (1, 2, 3):
+        try:
+            v = max(0.0, min(360.0, float(offs[slot - 1])))
+        except Exception:
+            v = 0.0
+        param = str(round(v, 1))
+        r = ctrl.sync_ui_command_response(
+            dst, f"SETANTOFF{slot}", param, f"ACK_SETANTOFF{slot}", timeout_s=1.5
+        )
+        if r is None or str(r).startswith(SYNC_UI_NAK_PREFIX):
+            all_ok = False
+            continue
+        if az is not None:
+            try:
+                setattr(az, f"antoff{slot}", v)
+            except Exception:
+                pass
+    for slot in (1, 2, 3):
+        try:
+            en = bool(antenna_dipole_enabled(az, cfg, slot - 1))
+        except Exception:
+            en = False
+        r = ctrl.sync_ui_command_response(
+            dst, f"SETANTDP{slot}", "1" if en else "0", f"ACK_SETANTDP{slot}", timeout_s=1.5
+        )
+        if r is None or str(r).startswith(SYNC_UI_NAK_PREFIX):
+            all_ok = False
+            continue
+        if az is not None:
+            try:
+                setattr(az, f"antdp{slot}", en)
+            except Exception:
+                pass
+    cb = getattr(ctrl, "on_antenna_offsets_changed", None)
+    if callable(cb):
+        try:
+            cb()
+        except Exception:
+            pass
+    cb_dp = getattr(ctrl, "on_antenna_dipoles_changed", None)
+    if callable(cb_dp):
+        try:
+            cb_dp()
+        except Exception:
+            pass
+    if all_ok:
+        try:
+            ctrl._antenna_bootstrap_requested = True
+        except Exception:
+            pass
     return all_ok
 
 

@@ -6,6 +6,8 @@ import base64
 import json
 from pathlib import Path
 
+from .web_serial_js import web_serial_js
+
 
 def _data_url_png(path: Path) -> str:
     try:
@@ -41,7 +43,7 @@ def build_compass_html(params: dict) -> str:
     windrose_js = json.dumps(windrose)
     wind_arrow_js = json.dumps(wind_arrow)
 
-    return f"""<!DOCTYPE html>
+    html = f"""<!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="UTF-8">
@@ -54,7 +56,7 @@ def build_compass_html(params: dict) -> str:
     #app {{ display:flex; flex-direction:column; height:100%; gap:6px; padding:6px; }}
     #main {{ flex:1 1 auto; min-height:0; display:flex; flex-direction:row; gap:6px; }}
     .block {{ display:flex; flex-direction:row; gap:6px; min-width:0; min-height:0; }}
-    #azBlock {{ flex:1.25 1 0; }}
+    #azBlock {{ flex:1.25 1 0; min-height:0; height:100%; }}
     #elBlock {{ flex:1 1 0; display:none; }}
     body.el-on #elBlock {{ display:flex; }}
     #azLeftCol {{
@@ -69,9 +71,12 @@ def build_compass_html(params: dict) -> str:
       flex:0 0 168px; width:168px; min-width:140px; max-width:180px; overflow:auto;
     }}
     .canvasCol {{ flex:1 1 auto; min-width:0; min-height:0; display:flex; flex-direction:column; }}
-    .canvasWrap {{ flex:1 1 auto; min-height:160px; position:relative;
+    .canvasWrap {{ flex:1 1 auto; min-height:220px; position:relative;
       border:1px solid {border}; border-radius:10px; background:{panel_bg}; overflow:hidden; }}
-    canvas {{ display:block; width:100%; height:100%; touch-action:none; }}
+    /* Absolut füllen — sonst height:100% bei Parent-Höhe 0 → unsichtbarer Kompass */
+    .canvasWrap canvas {{
+      position:absolute; inset:0; display:block; width:100%; height:100%; touch-action:none;
+    }}
     .card {{
       display:flex; flex-direction:column; gap:5px; padding:8px;
       border:1px solid {border}; border-radius:8px; background:{panel_bg}; flex:0 0 auto;
@@ -86,6 +91,22 @@ def build_compass_html(params: dict) -> str:
       background:rgba(0,0,0,0.45); padding:16px;
     }}
     #uiMsgOverlay.show {{ display:flex; }}
+    #driveSyncOverlay {{
+      display:none; position:fixed; inset:0; z-index:1400;
+      align-items:center; justify-content:center;
+      background:rgba(0,0,0,0.5); padding:16px;
+      touch-action:none;
+    }}
+    #driveSyncOverlay.show {{ display:flex; }}
+    #driveSyncBox {{
+      width:min(440px, calc(100vw - 32px)); max-width:100%;
+      display:flex; flex-direction:column; gap:10px; padding:20px 22px;
+      border-radius:12px; border:1px solid {border}; background:{panel_bg};
+      box-shadow:0 10px 32px rgba(0,0,0,0.45); color:{fg};
+      text-align:center;
+    }}
+    #driveSyncTitle {{ font-weight:700; font-size:16px; }}
+    #driveSyncBody {{ font-size:13px; opacity:0.95; white-space:pre-wrap; }}
     #uiMsgBox {{
       width:min(420px, calc(100vw - 32px)); max-width:100%;
       display:flex; flex-direction:column; gap:10px; padding:16px 18px;
@@ -117,12 +138,26 @@ def build_compass_html(params: dict) -> str:
       background:rgba(30,30,30,0.55); border-radius:5px;
     }}
     .statusRow span:last-child {{ font-weight:700; }}
+    .jogBtn {{
+      touch-action:none; user-select:none; -webkit-user-select:none;
+      -webkit-touch-callout:none; white-space:nowrap;
+    }}
+    .jogBtn.jogOn {{ background:#2563eb; border-color:#2563eb; color:#fff; }}
+    .rigQrg {{ font-size:16px; font-weight:700; white-space:nowrap; }}
+    .rigQrg.oob {{ color:#dc2626; }}
     .windRow {{
       display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px;
     }}
     .windSpeed {{ display:flex; align-items:baseline; justify-content:center; gap:4px; width:100%; }}
     .windSpeed .val {{ flex:1; }}
     .unit {{ font-size:13px; color:#aaa; }}
+    .tempRows {{ display:flex; flex-direction:column; gap:4px; margin-top:6px; }}
+    .tempRow {{
+      display:flex; align-items:baseline; justify-content:space-between; gap:6px;
+      padding:4px 8px; background:rgba(30,30,30,0.55); border-radius:5px;
+    }}
+    .tempLbl {{ font-size:12px; color:#aaa; }}
+    .tempVal {{ font-size:16px; font-weight:700; color:#ffb454; }}
     .pwmRow {{ display:flex; align-items:center; gap:6px; }}
     .pwmRow input[type=range] {{
       flex:1 1 auto; min-width:0; width:auto; padding:4px 0; border:none; background:transparent;
@@ -194,9 +229,13 @@ def build_compass_html(params: dict) -> str:
       }}
       #elRight .card {{ flex:1 1 150px; min-width:140px; }}
     }}
+    body.embed #btnBack {{ display:none !important; }}
+    body.embed #lblWebSerial, body.embed #webSerialHttpsBanner, body.embed #btnWebSerial,
+    body.embed #webSerialHttpsLink, body.embed #webSerialStatus, body.embed #webSerialHint {{ display:none !important; }}
   </style>
 </head>
 <body class="{'map-dark' if dark else ''}">
+<script>if (window.parent !== window) document.body.classList.add('embed');</script>
   <div id="app">
     <div id="main">
       <div class="block" id="azBlock">
@@ -229,6 +268,10 @@ def build_compass_html(params: dict) -> str:
               </form>
             </div>
             <div class="card">
+              <div class="cardHdr" id="lblProfile">Profil</div>
+              <select id="selProfile"></select>
+            </div>
+            <div class="card">
               <div class="cardHdr" id="lblAnt">Antenne</div>
               <select id="selAnt"></select>
             </div>
@@ -236,17 +279,20 @@ def build_compass_html(params: dict) -> str:
           <aside class="side" id="azLeftBottom">
             <div class="card" id="windBox" style="display:none;">
               <div class="cardHdr" id="lblWind">Wind</div>
-              <div class="windRow">
+              <div class="windRow" id="windRow">
                 <div class="windSpeed">
                   <span class="val wind" id="windKmh" style="padding:4px 6px;font-size:22px;">—</span>
                   <span class="unit">km/h</span>
                 </div>
-                <img id="windArr" width="36" height="36" alt="" style="display:none;" />
+              </div>
+              <div class="tempRows" id="tempRows">
+                <div class="tempRow"><span class="tempLbl" id="lblTempAmb">Außen</span><span class="tempVal" id="tempAmb">—</span></div>
+                <div class="tempRow"><span class="tempLbl" id="lblTempMot">Motor</span><span class="tempVal" id="tempMot">—</span></div>
               </div>
             </div>
             <div class="card">
               <div class="cardHdr" id="lblDgcal">Korrekturwinkel</div>
-              <div class="val" id="dgcalCur">–</div>
+              <div class="val ist" id="dgcalCur">–</div>
               <input id="edDgcal" type="number" step="0.1" />
               <div class="row">
                 <button type="button" id="btnDgcalSave">Speichern</button>
@@ -259,11 +305,25 @@ def build_compass_html(params: dict) -> str:
           <div class="canvasWrap"><canvas id="azCanvas"></canvas></div>
         </div>
         <aside class="side" id="azRight">
-          <div class="card">
-            <div class="cardHdr" id="lblConn">Verbindung</div>
-            <div class="statusRow"><span class="led off" id="ledMoving"></span><span id="lblMoving">Moving</span></div>
-            <div class="statusRow" id="refWrap"><span class="led off" id="ledRef"></span><span id="lblRef">Home</span></div>
-            <div class="statusRow"><span class="led off" id="ledOnline"></span><span id="lblOnline">Online</span></div>
+            <div class="card">
+              <div class="cardHdr" id="lblConn">Verbindung</div>
+              <div class="statusRow"><span class="led off" id="ledMoving"></span><span id="lblMoving">Moving</span></div>
+              <div class="statusRow" id="refWrap"><span class="led off" id="ledRef"></span><span id="lblRef">Home</span></div>
+              <div class="statusRow"><span class="led off" id="ledOnline"></span><span id="lblOnline">Online</span></div>
+              <div class="cardHdr" id="lblWebSerial" style="margin-top:8px;">Controller USB</div>
+              <div id="webSerialHttpsBanner" style="display:none;font-size:11px;line-height:1.35;padding:6px 8px;margin-bottom:4px;border-radius:6px;background:rgba(220,38,38,0.2);border:1px solid rgba(220,38,38,0.55);color:#fecaca;">
+                HTTPS nötig für COM-Port
+              </div>
+              <button type="button" id="btnWebSerial">USB verbinden</button>
+              <a id="webSerialHttpsLink" href="#" style="display:none;font-size:11px;margin-top:4px;text-align:center;font-weight:700;color:#7dd3fc;">HTTPS-Adresse öffnen</a>
+              <div id="webSerialStatus" style="display:none;font-size:12px;margin-top:4px;opacity:0.9;"></div>
+              <div id="webSerialHint" style="display:none;font-size:11px;margin-top:2px;opacity:0.75;"></div>
+            </div>
+          <div class="card" id="rigCard" style="display:none;">
+            <div class="cardHdr" id="lblRig">RIG</div>
+            <div class="statusRow" id="rigBox" style="justify-content:center;padding:4px 10px;">
+              <span class="rigQrg" id="rigQrg">—</span>
+            </div>
           </div>
           <div class="card">
             <div class="cardHdr" id="lblCtrl">Steuerung</div>
@@ -271,6 +331,10 @@ def build_compass_html(params: dict) -> str:
             <div class="pwmRow">
               <input id="slPwmAz" type="range" min="0" max="100" step="1" value="0" />
               <span class="pwmVal" id="slPwmAzVal">0</span>
+            </div>
+            <div class="row" id="jogRow">
+              <button type="button" id="btnJogLeft" class="jogBtn">&#9664; Links</button>
+              <button type="button" id="btnJogRight" class="jogBtn">Rechts &#9654;</button>
             </div>
             <button type="button" id="btnStopAz">STOP AZ</button>
             <button type="button" id="btnRefAz">AZ Homing</button>
@@ -323,6 +387,7 @@ def build_compass_html(params: dict) -> str:
           </div>
           <div class="card">
             <div class="cardHdr" id="lblElDgcal">Korrekturwinkel</div>
+            <div class="val ist" id="elDgcalCur">–</div>
             <input id="edElDgcal" type="number" step="0.1" />
             <div class="row">
               <button type="button" id="btnElDgcalSave">Speichern</button>
@@ -335,6 +400,10 @@ def build_compass_html(params: dict) -> str:
             <div class="pwmRow">
               <input id="slPwmEl" type="range" min="0" max="100" step="1" value="0" />
               <span class="pwmVal" id="slPwmElVal">0</span>
+            </div>
+            <div class="row" id="jogElRow">
+              <button type="button" id="btnJogDown" class="jogBtn">&#9660; Runter</button>
+              <button type="button" id="btnJogUp" class="jogBtn">Hoch &#9650;</button>
             </div>
             <button type="button" id="btnStopEl">STOP EL</button>
             <button type="button" id="btnRefEl">EL Homing</button>
@@ -355,6 +424,12 @@ def build_compass_html(params: dict) -> str:
       <div id="uiMsgTitle"></div>
       <div id="uiMsgBody"></div>
       <div id="uiMsgActions"><button type="button" id="uiMsgOk">OK</button></div>
+    </div>
+  </div>
+  <div id="driveSyncOverlay" role="status" aria-live="polite">
+    <div id="driveSyncBox">
+      <div id="driveSyncTitle">Profildaten werden gelesen …</div>
+      <div id="driveSyncBody"></div>
     </div>
   </div>
   <script>
@@ -391,6 +466,81 @@ def build_compass_html(params: dict) -> str:
           return data;
         }});
       }}).catch(function() {{ return {{ ok: false }}; }});
+    }}
+    function fillProfiles(sel, data) {{
+      if (!sel || !data) return;
+      const items = data.profiles || [];
+      const active = String(data.active_id || '');
+      let html = '';
+      for (let i = 0; i < items.length; i++) {{
+        const p = items[i] || {{}};
+        const id = String(p.id || '');
+        if (!id) continue;
+        html += '<option value="' + id.replace(/"/g, '&quot;') + '">' + String(p.name || id) + '</option>';
+      }}
+      const prev = sel.value;
+      sel.innerHTML = html;
+      if (active && sel.querySelector('option[value="' + active + '"]')) sel.value = active;
+      else if (prev && sel.querySelector('option[value="' + prev + '"]')) sel.value = prev;
+    }}
+    function loadProfiles() {{
+      const sel = document.getElementById('selProfile');
+      if (!sel) return;
+      fetch('/api/profiles', {{ method: 'GET' }})
+        .then(function(r) {{ return r.json(); }})
+        .then(function(data) {{
+          if (data && data.ok) fillProfiles(sel, data);
+        }})
+        .catch(function() {{}});
+    }}
+    function reloadWhenReady(wantId, attempt) {{
+      const n = (attempt == null) ? 0 : attempt;
+      if (n > 40) {{ location.reload(); return; }}
+      fetch('/api/profiles', {{ method: 'GET', cache: 'no-store' }})
+        .then(function(r) {{
+          if (!r.ok) throw new Error('http');
+          return r.json();
+        }})
+        .then(function(data) {{
+          const applied = String(data.applied_id || data.active_id || '');
+          if (data && data.ok && applied === String(wantId || '')) {{
+            location.reload();
+            return;
+          }}
+          setTimeout(function() {{ reloadWhenReady(wantId, n + 1); }}, 150);
+        }})
+        .catch(function() {{
+          setTimeout(function() {{ reloadWhenReady(wantId, n + 1); }}, 200);
+        }});
+    }}
+    function switchProfile(pid) {{
+      const id = String(pid || '').trim();
+      if (!id) return;
+      const sel = document.getElementById('selProfile');
+      if (sel) sel.disabled = true;
+      fetch('/api/profile', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ id: id }})
+      }})
+        .then(function(r) {{ return r.json(); }})
+        .then(function(data) {{
+          if (!data || !data.ok) {{
+            if (sel) sel.disabled = false;
+            showUiError(data || {{ ok: false, error: 'profile' }});
+            loadProfiles();
+            return;
+          }}
+          if (data.unchanged) {{
+            if (sel) sel.disabled = false;
+            return;
+          }}
+          reloadWhenReady(id, 0);
+        }})
+        .catch(function() {{
+          if (sel) sel.disabled = false;
+          loadProfiles();
+        }});
     }}
     function hideUiError() {{
       const ov = document.getElementById('uiMsgOverlay');
@@ -487,59 +637,18 @@ def build_compass_html(params: dict) -> str:
       if (x < 0) x += 360;
       return x;
     }}
-    function shortestDeltaDeg(a, b) {{
-      let d = Number(b) - Number(a);
-      while (d > 180) d -= 360;
-      while (d < -180) d += 360;
-      return d;
+    // Wie Desktop: Ist/Soll kommen bereits SmoothDamp-geglättet vom Server —
+    // keine zweite Browser-Interpolation (sonst laufen Zeiger und Gradzahlen auseinander).
+    function azIstNeedle(az) {{
+      if (az.ist_needle != null) return Number(az.ist_needle);
+      return az.ist != null ? wrapDeg(az.ist) : null;
     }}
-    let _needleAzIst = null;
-    let _needleElIst = null;
-    let _needleAnimStarted = false;
-    function azIstForDraw(az) {{
-      if (_needleAzIst != null) return _needleAzIst;
-      return az.ist;
+    function azSollNeedle(az) {{
+      if (az.soll_needle != null) return Number(az.soll_needle);
+      return az.soll != null ? wrapDeg(az.soll) : null;
     }}
-    function elIstForDraw(el) {{
-      if (_needleElIst != null) return _needleElIst;
-      return el.ist;
-    }}
-    function ensureNeedleAnimLoop() {{
-      if (_needleAnimStarted) return;
-      _needleAnimStarted = true;
-      function frame() {{
-        const az = (state && state.az) || {{}};
-        const el = (state && state.el) || {{}};
-        let dirty = false;
-        if (az.ist != null) {{
-          if (_needleAzIst == null) _needleAzIst = Number(az.ist);
-          const d = shortestDeltaDeg(_needleAzIst, az.ist);
-          if (Math.abs(d) > 0.04) {{
-            _needleAzIst = wrapDeg(_needleAzIst + d * 0.42);
-            dirty = true;
-          }} else if (Math.abs(d) > 1e-6) {{
-            _needleAzIst = Number(az.ist);
-            dirty = true;
-          }}
-        }}
-        if (state.enable_el && el.ist != null) {{
-          if (_needleElIst == null) _needleElIst = Number(el.ist);
-          const de = Number(el.ist) - _needleElIst;
-          if (Math.abs(de) > 0.04) {{
-            _needleElIst = _needleElIst + de * 0.42;
-            dirty = true;
-          }} else if (Math.abs(de) > 1e-6) {{
-            _needleElIst = Number(el.ist);
-            dirty = true;
-          }}
-        }}
-        if (dirty) {{
-          drawAz();
-          drawEl();
-        }}
-        requestAnimationFrame(frame);
-      }}
-      requestAnimationFrame(frame);
+    function elIstNeedle(el) {{
+      return el.ist != null ? Number(el.ist) : null;
     }}
     function heatColor(t) {{
       t = Math.max(0, Math.min(1, t));
@@ -796,7 +905,7 @@ def build_compass_html(params: dict) -> str:
       if (az.beam_overlay && az.ist != null) {{
         const open = Number(az.opening_deg || 30);
         const halfOpen = open/2;
-        const c = azIstForDraw(az);
+        const c = azIstNeedle(az);
         const colors = az.beam_color || 'rgba(80,160,255,0.25)';
         function wedge(center) {{
           const a0 = (center - halfOpen - 90) * Math.PI/180;
@@ -808,8 +917,10 @@ def build_compass_html(params: dict) -> str:
           ctx.fillStyle = colors;
           ctx.fill();
         }}
-        wedge(c);
-        if (az.dipole) wedge(wrapDeg(c+180));
+        if (c != null) {{
+          wedge(c);
+          if (az.dipole) wedge(wrapDeg(c+180));
+        }}
       }}
       const rings = ringStackOutside(r, modes);
       const off = Number(az.offset_deg || 0);
@@ -837,13 +948,18 @@ def build_compass_html(params: dict) -> str:
         ctx.fill();
       }}
       if (az.soll != null) {{
-        drawArrow(ctx, cx, cy, r*0.82, az.soll, '#e74c3c', 7);
-        if (az.dipole) drawDashedArrow(ctx, cx, cy, r*0.78, wrapDeg(az.soll+180), '#e74c3c', 3);
+        const sollDraw = azSollNeedle(az);
+        if (sollDraw != null) {{
+          drawArrow(ctx, cx, cy, r*0.82, sollDraw, '#e74c3c', 7);
+          if (az.dipole) drawDashedArrow(ctx, cx, cy, r*0.78, wrapDeg(sollDraw+180), '#e74c3c', 3);
+        }}
       }}
       if (az.ist != null) {{
-        const istDraw = azIstForDraw(az);
-        drawArrow(ctx, cx, cy, r*0.72, istDraw, '#2ecc40', 7);
-        if (az.dipole) drawDashedArrow(ctx, cx, cy, r*0.68, wrapDeg(istDraw+180), '#2ecc40', 3);
+        const istDraw = azIstNeedle(az);
+        if (istDraw != null) {{
+          drawArrow(ctx, cx, cy, r*0.72, istDraw, '#2ecc40', 7);
+          if (az.dipole) drawDashedArrow(ctx, cx, cy, r*0.68, wrapDeg(istDraw+180), '#2ecc40', 3);
+        }}
       }}
       if (az.wind_visible && az.wind_dir != null) {{
         let wd = Number(az.wind_dir);
@@ -965,7 +1081,8 @@ def build_compass_html(params: dict) -> str:
         ctx.fill();
       }}
       if (el.soll != null) elArrow(el.soll, '#e74c3c');
-      if (el.ist != null) elArrow(elIstForDraw(el), '#2ecc40');
+      const elIst = elIstNeedle(el);
+      if (elIst != null) elArrow(elIst, '#2ecc40');
       ctx.fillStyle = '{fg}';
       ctx.beginPath();
       ctx.arc(cx, cy, 5, 0, Math.PI * 2);
@@ -985,17 +1102,28 @@ def build_compass_html(params: dict) -> str:
       set('lblIstRev', L.ist_reverse || 'Ist Reverse');
       set('lblWind', L.wind || 'Wind');
       set('lblConn', L.connection || 'Verbindung');
+      set('lblRig', L.rig || 'RIG');
       set('lblCtrl', L.control || 'Steuerung');
       set('lblPwmAz', L.motorspeed || 'Motorspeed %');
       set('lblPwmEl', L.motorspeed || 'Motorspeed %');
       set('lblFav', L.fav_header || 'Favoriten');
+      set('lblProfile', L.profile || 'Profil');
       set('lblAnt', L.antenna || 'Antenne');
       set('lblHeat', L.heatmap_rings || 'Ringe');
       set('btnStopAz', L.stop_az || 'STOP AZ');
+      set('btnJogLeft', '\u25C0 ' + (L.jog_left || 'Links'));
+      set('btnJogRight', (L.jog_right || 'Rechts') + ' \u25B6');
+      set('btnJogDown', '\u25BC ' + (L.jog_down || 'Runter'));
+      set('btnJogUp', (L.jog_up || 'Hoch') + ' \u25B2');
       set('btnRefAz', L.ref_az || 'AZ Homing');
       set('lblMoving', L.moving || 'Moving');
       set('lblOnline', L.online || 'Online');
       set('lblRef', L.ref || 'Home');
+      set('lblWebSerial', L.web_serial || 'Controller USB');
+      const btnWsLab = document.getElementById('btnWebSerial');
+      if (btnWsLab && typeof WebSerial !== 'undefined' && !WebSerial.isLocal()) {{
+        btnWsLab.textContent = L.web_serial_connect || 'USB verbinden';
+      }}
       set('lblHeatStrom', L.heatmap_strom || 'Strom');
       set('lblHeatOm', L.heatmap_om || 'OM');
       set('lblHeatDwell', L.heatmap_dwell || 'Standzeit');
@@ -1029,6 +1157,39 @@ def build_compass_html(params: dict) -> str:
       setPh('edScanA', L.scan_a || 'A');
       setPh('edScanB', L.scan_b || 'B');
     }}
+    function applyDriveSync(s) {{
+      const ov = document.getElementById('driveSyncOverlay');
+      if (!ov) return;
+      const on = !!(s && s.drive_sync);
+      ov.classList.toggle('show', on);
+      if (on) {{
+        const L = (s && s.labels) || labels || {{}};
+        const tEl = document.getElementById('driveSyncTitle');
+        const bEl = document.getElementById('driveSyncBody');
+        if (tEl) tEl.textContent = L.profile_sync_title || 'Profildaten werden gelesen …';
+        if (bEl) bEl.textContent = L.profile_sync_body || '';
+      }}
+      const sel = document.getElementById('selProfile');
+      if (sel && document.activeElement !== sel) sel.disabled = on || !!(s && s.profile_locked);
+    }}
+    let rigFitKey = '';
+    function fitRigQrg() {{
+      const box = document.getElementById('rigBox');
+      const rq = document.getElementById('rigQrg');
+      if (!box || !rq) return;
+      const availW = box.clientWidth - 20;  /* 10 px Rand links/rechts */
+      if (availW <= 0) return;
+      const key = rq.textContent + '|' + availW;
+      if (key === rigFitKey) return;
+      rigFitKey = key;
+      rq.style.fontSize = '20px';
+      const w = rq.getBoundingClientRect().width;
+      if (w <= 0) return;
+      const px = Math.max(9, Math.min(30, Math.floor(20 * availW / w)));
+      rq.style.fontSize = px + 'px';
+    }}
+    window.addEventListener('resize', function() {{ rigFitKey = ''; fitRigQrg(); }});
+
     function applyState(s) {{
       if (!s) return;
       state = s;
@@ -1048,10 +1209,21 @@ def build_compass_html(params: dict) -> str:
         if (rev && az.ist != null) rev.textContent = fmt(wrapDeg(az.ist+180));
       }}
       const ed = document.getElementById('edAzSoll');
-      if (ed && document.activeElement !== ed) ed.value = (az.soll != null) ? fmt(az.soll) : '';
+      if (ed && !sollInputBusy(ed)) ed.value = (az.soll != null) ? fmt(az.soll) : '';
       setLed(document.getElementById('ledMoving'), !!az.moving, false);
       setLed(document.getElementById('ledOnline'), !!az.online, false);
       setLed(document.getElementById('ledRef'), !!az.referenced, !!az.ref_blink);
+      const rigCard = document.getElementById('rigCard');
+      if (rigCard) {{
+        const rig = s.rig || {{}};
+        rigCard.style.display = rig.show ? '' : 'none';
+        const rq = document.getElementById('rigQrg');
+        if (rq) {{
+          rq.textContent = rig.text || '—';
+          rq.classList.toggle('oob', !!rig.oob);
+          if (rig.show) fitRigQrg();
+        }}
+      }}
       const refWrap = document.getElementById('refWrap');
       if (refWrap) refWrap.style.display = s.ref_visible === false ? 'none' : '';
       const btnRef = document.getElementById('btnRefAz');
@@ -1089,6 +1261,20 @@ def build_compass_html(params: dict) -> str:
             fav.appendChild(o);
           }});
         }}
+        // Favorit bleibt nur gewählt, solange der Soll-Winkel dort liegt — sonst leeren,
+        // damit derselbe Favorit erneut gewählt werden kann (change feuert nur bei Änderung).
+        if (fav.value !== '-1') {{
+          if ((Date.now() - favPickTs) > 2500 && az.soll != null) {{
+            if (favBaseSoll == null) {{
+              favBaseSoll = az.soll;
+            }} else if (angDiff(az.soll, favBaseSoll) > 0.3) {{
+              fav.value = '-1';
+              favBaseSoll = null;
+            }}
+          }}
+        }} else {{
+          favBaseSoll = null;
+        }}
       }}
       // heatmap checks
       const modes = az.heatmap_modes || [];
@@ -1102,20 +1288,31 @@ def build_compass_html(params: dict) -> str:
       // wind
       const wb = document.getElementById('windBox');
       if (wb) {{
-        if (az.wind_visible) {{
+        const hasTemp = (az.temp_ambient != null) || (az.temp_motor != null);
+        const L2 = (s && s.labels) || labels || {{}};
+        if (az.wind_visible || hasTemp) {{
           wb.style.display = '';
+          const wr = document.getElementById('windRow');
+          if (wr) wr.style.display = az.wind_visible ? '' : 'none';
+          const wh = document.getElementById('lblWind');
+          if (wh) wh.textContent = az.wind_visible ? (L2.wind || 'Wind') : (L2.temp_title || 'Temperatur');
           const wk = document.getElementById('windKmh');
           if (wk) wk.textContent = (az.wind_kmh != null) ? String(Math.round(az.wind_kmh*10)/10) : '—';
-          const wa = document.getElementById('windArr');
-          if (wa && az.wind_dir != null) {{
-            let deg = Number(az.wind_dir);
-            if ((az.wind_mode||'to') === 'to') deg = wrapDeg(deg+180);
-            wa.style.transform = 'rotate('+deg+'deg)';
-          }}
+          const fmtT = function(v) {{ return (v != null) ? (Number(v).toFixed(1) + ' °C') : '—'; }};
+          const ta = document.getElementById('tempAmb');
+          if (ta) ta.textContent = fmtT(az.temp_ambient);
+          const tm = document.getElementById('tempMot');
+          if (tm) tm.textContent = fmtT(az.temp_motor);
+          const la = document.getElementById('lblTempAmb');
+          if (la) la.textContent = L2.temp_ambient || 'Außen';
+          const lm = document.getElementById('lblTempMot');
+          if (lm) lm.textContent = L2.temp_motor || 'Motor';
         }} else wb.style.display = 'none';
       }}
       const dg = document.getElementById('dgcalCur');
-      if (dg) dg.textContent = (az.dgcal != null) ? fmt(az.dgcal) : '–';
+      if (dg) dg.textContent = (az.dgcal != null) ? (fmt(az.dgcal) + '°') : '–';
+      const dgEl = document.getElementById('elDgcalCur');
+      if (dgEl) dgEl.textContent = (el.dgcal != null) ? (fmt(el.dgcal) + '°') : '–';
       // EL
       if (s.enable_el) {{
         const ei = document.getElementById('elIst');
@@ -1123,7 +1320,7 @@ def build_compass_html(params: dict) -> str:
         const esd = document.getElementById('elSollDisp');
         if (esd) esd.textContent = fmt(el.soll);
         const ee = document.getElementById('edElSoll');
-        if (ee && document.activeElement !== ee) ee.value = (el.soll != null) ? fmt(el.soll) : '';
+        if (ee && !sollInputBusy(ee)) ee.value = (el.soll != null) ? fmt(el.soll) : '';
         setLed(document.getElementById('ledElMoving'), !!el.moving, false);
         setLed(document.getElementById('ledElOnline'), !!el.online, false);
         setLed(document.getElementById('ledElRef'), !!el.referenced, !!el.ref_blink);
@@ -1137,7 +1334,36 @@ def build_compass_html(params: dict) -> str:
       }}
       drawAz();
       drawEl();
-      ensureNeedleAnimLoop();
+      applyDriveSync(s);
+    }}
+
+    /* Soll-Eingabe: nicht vom Live-Update überschreiben, solange getippt wurde / Fokus drin ist
+       (beim Klick auf OK verliert das Feld sonst vorher den Fokus und bekommt den Ist-Wert). */
+    var favPickTs = 0;
+    var favBaseSoll = null;
+    function angDiff(a, b) {{
+      return Math.abs((((Number(a) - Number(b)) % 360) + 540) % 360 - 180);
+    }}
+    function sollInputBusy(ed) {{
+      if (!ed) return false;
+      if (document.activeElement === ed) return true;
+      const t = parseInt(ed.dataset.dirtyTs || '0', 10);
+      return t > 0 && (Date.now() - t) < 30000;
+    }}
+    function bindSollInput(inputId, btnId) {{
+      const ed = document.getElementById(inputId);
+      const btn = document.getElementById(btnId);
+      if (!ed) return;
+      ed.addEventListener('input', function() {{ ed.dataset.dirtyTs = String(Date.now()); }});
+      ed.addEventListener('keydown', function(ev) {{
+        if (ev.key === 'Enter' && btn) {{ ev.preventDefault(); btn.click(); }}
+      }});
+    }}
+    function readSollInput(inputId) {{
+      const ed = document.getElementById(inputId);
+      const deg = parseFloat(String((ed && ed.value) || '').replace(',', '.'));
+      if (ed) delete ed.dataset.dirtyTs;
+      return deg;
     }}
 
     function azClick(ev) {{
@@ -1153,6 +1379,10 @@ def build_compass_html(params: dict) -> str:
       const rad = Math.atan2(dx, -dy);
       let deg = rad * 180 / Math.PI;
       if (deg < 0) deg += 360;
+      if (typeof WebSerial !== 'undefined' && WebSerial.canCommand && WebSerial.canCommand()) {{
+        WebSerial.setAz(deg).catch(function() {{ api('set_az', {{ deg: deg }}); }});
+        return;
+      }}
       api('set_az', {{ deg: deg }});
     }}
     function elClick(ev) {{
@@ -1178,6 +1408,10 @@ def build_compass_html(params: dict) -> str:
       }}
       if (deg < 0) deg = 0;
       if (deg > maxDeg) deg = maxDeg;
+      if (typeof WebSerial !== 'undefined' && WebSerial.canCommand && WebSerial.canCommand()) {{
+        WebSerial.setEl(deg).catch(function() {{ api('set_el', {{ deg: deg }}); }});
+        return;
+      }}
       api('set_el', {{ deg: deg }});
     }}
 
@@ -1188,15 +1422,96 @@ def build_compass_html(params: dict) -> str:
       if (document.getElementById('chkHeatDwell').checked) modes.push('dwell');
       return modes.slice(0, 2);
     }}
+    /* JOG: solange die Taste gehalten wird, alle 80 ms dir=1|2 senden; Loslassen = dir=0.
+       Fällt das Wiederholen aus (Verbindung weg), stoppt die Firmware nach ~500 ms selbst. */
+    const jogStops = [];
+    function bindJog(btnId, dir, action) {{
+      action = action || 'jog_az';
+      const b = document.getElementById(btnId);
+      if (!b) return;
+      let timer = null;
+      let inflight = null;
+      function sendRun() {{
+        if (inflight) return;
+        inflight = api(action, {{ dir: dir }}).then(function() {{ inflight = null; }});
+      }}
+      function stop() {{
+        if (timer === null) return;
+        clearInterval(timer);
+        timer = null;
+        b.classList.remove('jogOn');
+        /* Stopp erst nach einem noch laufenden Lauf-Request, damit er nicht überholt wird */
+        (inflight || Promise.resolve()).then(function() {{ api(action, {{ dir: 0 }}); }});
+      }}
+      function start(ev) {{
+        ev.preventDefault();
+        if (timer !== null) return;
+        try {{ b.setPointerCapture(ev.pointerId); }} catch (e) {{}}
+        b.classList.add('jogOn');
+        sendRun();
+        timer = setInterval(sendRun, 80);
+      }}
+      b.addEventListener('pointerdown', start);
+      b.addEventListener('pointerup', stop);
+      b.addEventListener('pointercancel', stop);
+      b.addEventListener('lostpointercapture', stop);
+      b.addEventListener('contextmenu', function(ev) {{ ev.preventDefault(); }});
+      jogStops.push(stop);
+    }}
+    window.addEventListener('blur', function() {{ jogStops.forEach(function(f) {{ f(); }}); }});
+    document.addEventListener('visibilitychange', function() {{
+      if (document.hidden) jogStops.forEach(function(f) {{ f(); }});
+    }});
+
     function bind() {{
+      bindJog('btnJogLeft', 1);
+      bindJog('btnJogRight', 2);
+      bindJog('btnJogDown', 1, 'jog_el');
+      bindJog('btnJogUp', 2, 'jog_el');
+      const backLink = document.getElementById('btnBack');
+      if (backLink) {{
+        backLink.addEventListener('click', function(ev) {{
+          if (window.parent !== window) {{
+            ev.preventDefault();
+            try {{ window.parent.postMessage({{ rotorView: 'map' }}, window.location.origin); }} catch (e) {{}}
+          }}
+        }});
+      }}
       document.getElementById('azCanvas').addEventListener('click', azClick);
       document.getElementById('elCanvas').addEventListener('click', elClick);
+      bindSollInput('edAzSoll', 'btnAzSoll');
+      bindSollInput('edElSoll', 'btnElSoll');
       document.getElementById('btnAzSoll').addEventListener('click', function() {{
-        api('set_az', {{ deg: parseFloat(document.getElementById('edAzSoll').value), exact: true }});
+        const deg = readSollInput('edAzSoll');
+        if (isNaN(deg)) return;
+        if (typeof WebSerial !== 'undefined' && WebSerial.canCommand && WebSerial.canCommand()) {{
+          WebSerial.setAz(deg).catch(function() {{ api('set_az', {{ deg: deg, exact: true }}); }});
+          return;
+        }}
+        api('set_az', {{ deg: deg, exact: true }});
       }});
-      document.getElementById('btnStopAz').addEventListener('click', function() {{ api('stop_az'); }});
-      document.getElementById('btnRefAz').addEventListener('click', function() {{ api('ref_az'); }});
+      document.getElementById('btnStopAz').addEventListener('click', function() {{
+        if (typeof WebSerial !== 'undefined' && WebSerial.canCommand && WebSerial.canCommand()) {{
+          WebSerial.stopAz().catch(function() {{ api('stop_az'); }});
+          return;
+        }}
+        api('stop_az');
+      }});
+      document.getElementById('btnRefAz').addEventListener('click', function() {{
+        if (typeof WebSerial !== 'undefined' && WebSerial.canCommand && WebSerial.canCommand()) {{
+          WebSerial.refAz().catch(function() {{ api('ref_az'); }});
+          return;
+        }}
+        api('ref_az');
+      }});
       bindPwmSlider('az', 'slPwmAz', 'slPwmAzVal');
+      const selProfile = document.getElementById('selProfile');
+      if (selProfile) {{
+        loadProfiles();
+        selProfile.addEventListener('change', function() {{
+          switchProfile(selProfile.value);
+        }});
+      }}
       document.getElementById('selAnt').addEventListener('change', function() {{
         api('antenna', {{ index: parseInt(this.value,10)||0 }});
       }});
@@ -1208,6 +1523,8 @@ def build_compass_html(params: dict) -> str:
       document.getElementById('btnDwellReset').addEventListener('click', function() {{ api('dwell_reset'); }});
       document.getElementById('selFav').addEventListener('change', function() {{
         const idx = parseInt(this.value,10);
+        favPickTs = Date.now();
+        favBaseSoll = null;
         if (idx >= 0) api('fav_select', {{ index: idx }});
       }});
       document.getElementById('btnFavSave').addEventListener('click', function() {{
@@ -1254,10 +1571,28 @@ def build_compass_html(params: dict) -> str:
         api('dgcal_az', {{ clear: true }});
       }});
       document.getElementById('btnElSoll').addEventListener('click', function() {{
-        api('set_el', {{ deg: parseFloat(document.getElementById('edElSoll').value) }});
+        const deg = readSollInput('edElSoll');
+        if (isNaN(deg)) return;
+        if (typeof WebSerial !== 'undefined' && WebSerial.canCommand && WebSerial.canCommand()) {{
+          WebSerial.setEl(deg).catch(function() {{ api('set_el', {{ deg: deg }}); }});
+          return;
+        }}
+        api('set_el', {{ deg: deg }});
       }});
-      document.getElementById('btnStopEl').addEventListener('click', function() {{ api('stop_el'); }});
-      document.getElementById('btnRefEl').addEventListener('click', function() {{ api('ref_el'); }});
+      document.getElementById('btnStopEl').addEventListener('click', function() {{
+        if (typeof WebSerial !== 'undefined' && WebSerial.canCommand && WebSerial.canCommand()) {{
+          WebSerial.stopEl().catch(function() {{ api('stop_el'); }});
+          return;
+        }}
+        api('stop_el');
+      }});
+      document.getElementById('btnRefEl').addEventListener('click', function() {{
+        if (typeof WebSerial !== 'undefined' && WebSerial.canCommand && WebSerial.canCommand()) {{
+          WebSerial.refEl().catch(function() {{ api('ref_el'); }});
+          return;
+        }}
+        api('ref_el');
+      }});
       bindPwmSlider('el', 'slPwmEl', 'slPwmElVal');
       document.getElementById('chkHeatElStrom').addEventListener('change', function() {{
         api('heatmap_el', {{ mode: this.checked ? 'strom' : 'off' }});
@@ -1326,16 +1661,253 @@ def build_compass_html(params: dict) -> str:
       }});
     }}
 
-    bind();
-    applyState(state);
+    /* Web Serial zuerst laden — Fehler dürfen Kompass/SSE nicht blockieren */
+    try {{
+      __WEB_SERIAL_JS__
+    }} catch (e) {{ console.error('WebSerial init', e); }}
+    var WebSerial = window.WebSerial;
+
+    try {{ bind(); }} catch (e) {{ console.error('compass bind', e); }}
+    try {{
+      applyState(state);
+      drawAz();
+      drawEl();
+    }} catch (e) {{ console.error('compass apply', e); }}
+
+    try {{
+      if (typeof ResizeObserver !== 'undefined') {{
+        const azWrap = document.querySelector('#azBlock .canvasWrap');
+        if (azWrap) {{
+          new ResizeObserver(function() {{ try {{ drawAz(); }} catch (e) {{}} }}).observe(azWrap);
+        }}
+        const elWrap = document.querySelector('#elBlock .canvasWrap');
+        if (elWrap) {{
+          new ResizeObserver(function() {{ try {{ drawEl(); }} catch (e) {{}} }}).observe(elWrap);
+        }}
+      }} else {{
+        window.addEventListener('resize', function() {{
+          try {{ drawAz(); drawEl(); }} catch (e) {{}}
+        }});
+      }}
+    }} catch (e) {{}}
+
+    (function() {{
+      if (!WebSerial) {{
+        const status = document.getElementById('webSerialStatus');
+        if (status) status.textContent = (labels && labels.web_serial_unsupported) || 'Web Serial nur in Chrome/Edge';
+        return;
+      }}
+      function wsIdsFromState(s) {{
+        const bus = (s && s.bus) || {{}};
+        return {{
+          pc_id: bus.pc_id,
+          master_id: bus.master_id,
+          cont_id: bus.cont_id,
+          az_id: bus.az_id,
+          el_id: bus.el_id,
+          enable_el: !!(s && s.enable_el)
+        }};
+      }}
+      function httpsCompassUrl() {{
+        try {{
+          const u = new URL(window.location.href);
+          u.protocol = 'https:';
+          if (!u.pathname || u.pathname === '/' || u.pathname === '/map') u.pathname = '/compass';
+          return u.toString();
+        }} catch (e) {{
+          return '';
+        }}
+      }}
+      function updateWebSerialUi(st) {{
+        const btn = document.getElementById('btnWebSerial');
+        const status = document.getElementById('webSerialStatus');
+        const hint = document.getElementById('webSerialHint');
+        const banner = document.getElementById('webSerialHttpsBanner');
+        const httpsLink = document.getElementById('webSerialHttpsLink');
+        const L = labels || {{}};
+        const insecure = !(st && st.secure);
+        if (banner) {{
+          banner.style.display = insecure ? 'block' : 'none';
+          banner.textContent = L.web_serial_banner_https ||
+            'COM-Port nur mit HTTPS (oder http://127.0.0.1). Einstellungen → Webserver → HTTPS aktiv.';
+        }}
+        if (httpsLink) {{
+          const href = httpsCompassUrl();
+          if (insecure && href) {{
+            httpsLink.style.display = 'block';
+            httpsLink.href = href;
+            httpsLink.textContent = L.web_serial_open_https || ('HTTPS öffnen: ' + href);
+          }} else {{
+            httpsLink.style.display = 'none';
+          }}
+        }}
+        if (btn) {{
+          btn.textContent = (st && st.connected)
+            ? (L.web_serial_disconnect || 'USB trennen')
+            : (L.web_serial_connect || 'USB verbinden');
+          btn.disabled = false;
+        }}
+        if (status) {{
+          if (!st || !st.supported) {{
+            status.textContent = insecure
+              ? (L.web_serial_need_https || 'HTTPS nötig für Web Serial')
+              : (L.web_serial_unsupported || 'Web Serial nur in Chrome/Edge');
+          }} else if (!st.secure) {{
+            status.textContent = L.web_serial_need_https || 'HTTPS nötig für COM-Port-Dialog';
+          }} else if (st.connected) {{
+            // Verbunden und alles ok: keine Statuszeile (Fehler/Warten bleiben sichtbar)
+            if (!st.busReady) {{
+              status.textContent = (L.web_serial_connected || 'Verbunden') + ' · warte Bus…';
+            }} else if (st.rotorOk === false && st.lastError) {{
+              status.textContent = (L.web_serial_connected || 'Verbunden') + ' · Rotor?';
+            }} else {{
+              status.textContent = '';
+            }}
+          }} else {{
+            status.textContent = '';
+          }}
+          status.style.display = status.textContent ? '' : 'none';
+        }}
+        if (hint) {{
+          if (st && st.connected && st.lastError) {{
+            hint.textContent = st.lastError;
+          }} else if (st && st.connected && !st.busReady) {{
+            hint.textContent = 'USB offen — Verbindung zur Bridge wird aufgebaut …';
+          }} else if (st && st.connected) {{
+            hint.textContent = '';
+          }} else if (insecure) {{
+            hint.textContent = L.web_serial_hint_https_steps ||
+              '1) HTTPS in den Einstellungen aktivieren  2) https://…/compass öffnen  3) Zertifikat akzeptieren';
+          }} else {{
+            hint.textContent = '';
+          }}
+          hint.style.display = hint.textContent ? '' : 'none';
+        }}
+      }}
+      WebSerial.setIds(wsIdsFromState(state));
+      WebSerial.setCallbacks({{
+        onStatus: updateWebSerialUi,
+        onLive: function(live) {{
+          if (!WebSerial.isLocal()) return;
+          const az = state.az || (state.az = {{}});
+          const el = state.el || (state.el = {{}});
+          if (live.az) {{
+            if (live.az.ist != null) {{
+              az.ist = live.az.ist;
+              az.ist_needle = live.az.ist;
+            }}
+            if (live.az.online != null) az.online = live.az.online;
+            if (live.az.referenced != null) az.referenced = live.az.referenced;
+          }}
+          if (live.el) {{
+            if (live.el.ist != null) el.ist = live.el.ist;
+            if (live.el.online != null) el.online = live.el.online;
+          }}
+          const istEl = document.getElementById('azIst');
+          if (istEl && az.ist != null) istEl.textContent = fmt(az.ist);
+          setLed(document.getElementById('ledOnline'), !!az.online, false);
+          setLed(document.getElementById('ledRef'), !!az.referenced, !!az.ref_blink);
+          if (state.enable_el) {{
+            const elIst = document.getElementById('elIst');
+            if (elIst && el.ist != null) elIst.textContent = fmt(el.ist);
+          }}
+          drawAz();
+          drawEl();
+        }}
+      }});
+      updateWebSerialUi({{
+        connected: false,
+        supported: WebSerial.supported(),
+        secure: WebSerial.secureOk(),
+        linkMode: null
+      }});
+      const btnWs = document.getElementById('btnWebSerial');
+      if (btnWs) {{
+        btnWs.addEventListener('click', function() {{
+          const WS = window.WebSerial;
+          if (!WS) {{
+            showUiError({{
+              ok: false,
+              title: (labels && labels.web_serial_error_title) || 'USB',
+              message: (labels && labels.web_serial_unsupported) || 'Web Serial nicht geladen'
+            }});
+            return;
+          }}
+          if (WS.isLocal()) {{
+            WS.disconnect();
+            return;
+          }}
+          WS.setIds(wsIdsFromState(state));
+          /* requestPort synchron im Klick starten (User-Gesture) */
+          let portPromise;
+          try {{
+            portPromise = WS.requestPortFromUser();
+          }} catch (err) {{
+            showUiError({{
+              ok: false,
+              title: (labels && labels.web_serial_error_title) || 'USB',
+              message: String((err && err.message) || err || '')
+            }});
+            return;
+          }}
+          portPromise
+            .then(function(p) {{ return WS.attachPort(p); }})
+            .catch(function(err) {{
+              if (err && (err.name === 'NotFoundError' || err.name === 'AbortError')) return;
+              showUiError({{
+                ok: false,
+                title: (labels && labels.web_serial_error_title) || 'USB',
+                message: String(
+                  (err && err.message) ||
+                  (WS.httpsHelpMessage && WS.httpsHelpMessage()) ||
+                  err ||
+                  ''
+                )
+              }});
+              updateWebSerialUi({{
+                connected: false,
+                supported: WS.supported(),
+                secure: WS.secureOk(),
+                linkMode: null
+              }});
+            }});
+        }});
+      }}
+    }})();
     if (typeof EventSource !== 'undefined') {{
       try {{
         const es = new EventSource('/api/events');
         es.addEventListener('compass', function(ev) {{
-          try {{ applyState(JSON.parse(ev.data)); }} catch (e) {{}}
+          try {{
+            const s = JSON.parse(ev.data);
+            const usbLive = (typeof WebSerial !== 'undefined' && WebSerial.canCommand && WebSerial.canCommand());
+            if (usbLive) {{
+              /* Server-SSE: UI/Labels/Favs, aber Ist vom lokalen USB behalten */
+              const keepAz = (state.az && state.az.ist != null) ? state.az.ist : null;
+              const keepEl = (state.el && state.el.ist != null) ? state.el.ist : null;
+              const keepNeedle = (state.az && state.az.ist_needle != null) ? state.az.ist_needle : keepAz;
+              applyState(s);
+              if (keepAz != null && state.az) {{
+                state.az.ist = keepAz;
+                state.az.ist_needle = keepNeedle;
+                const istEl = document.getElementById('azIst');
+                if (istEl) istEl.textContent = fmt(keepAz);
+              }}
+              if (keepEl != null && state.el) {{
+                state.el.ist = keepEl;
+                const elIst = document.getElementById('elIst');
+                if (elIst) elIst.textContent = fmt(keepEl);
+              }}
+              drawAz();
+              drawEl();
+            }} else {{
+              applyState(s);
+            }}
+          }} catch (e) {{}}
         }});
       }} catch (e) {{}}
     }}
   </script>
 </body>
 </html>"""
+    return html.replace("__WEB_SERIAL_JS__", web_serial_js())

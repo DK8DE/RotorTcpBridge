@@ -133,3 +133,66 @@ def test_export_import_profile(profile_env):
     pid2 = ps.import_profile(plain, name="Plain Import")
     assert ps.load_profile_config(pid2).get("rotor_bus", {}).get("slave_az") == 55
     assert any(p["id"] == pid2 and p["name"] == "Plain Import" for p in ps.list_profiles())
+
+
+def test_create_profile_single_list_entry(profile_env):
+    _tmp, _ac, ps = profile_env
+    ps.ensure_profiles_migrated()
+    pid = ps.create_profile("Mein Rotor")
+    rows = [p for p in ps.list_profiles() if p["id"] == pid]
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Mein Rotor"
+    ids = [p["id"] for p in ps.list_profiles()]
+    assert len(ids) == len(set(ids))
+
+
+def test_normalize_index_dedupes_duplicate_ids():
+    from rotortcpbridge.profile_store import _normalize_index
+
+    idx = _normalize_index(
+        {
+            "active_id": "p_abc",
+            "profiles": [
+                {"id": "default", "name": "Default", "file": "default.json", "is_default": True},
+                {"id": "p_abc", "name": "p_abc", "file": "p_abc.json"},
+                {"id": "p_abc", "name": "Station West", "file": "p_abc.json"},
+            ],
+        }
+    )
+    rows = [p for p in idx["profiles"] if p["id"] == "p_abc"]
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Station West"
+
+
+def test_load_index_does_not_rewrite_on_every_read(profile_env, monkeypatch):
+    _tmp, _ac, ps = profile_env
+    ps.ensure_profiles_migrated()
+    writes = {"n": 0}
+    real = ps._save_index_unlocked
+
+    def counted(index):
+        writes["n"] += 1
+        return real(index)
+
+    monkeypatch.setattr(ps, "_save_index_unlocked", counted)
+    before = writes["n"]
+    ps.list_profiles()
+    ps.get_active_profile_id()
+    ps.get_active_profile_meta()
+    assert writes["n"] == before
+
+
+def test_recover_orphan_profile_files_after_wiped_index(profile_env):
+    tmp_path, _ac, ps = profile_env
+    ps.ensure_profiles_migrated()
+    pid = ps.create_profile("Station Lost")
+    cfg = ps.load_profile_config(pid)
+    cfg.setdefault("rotor_bus", {})["slave_az"] = 33
+    ps.save_profile_config(pid, cfg)
+    # Index auf Default zurücksetzen, Datei bleibt liegen (wie nach Race).
+    ps.save_index(ps._empty_index())
+    ps._INDEX_CACHE = None
+    ps._INDEX_CACHE_PATH = None
+    names = {p["id"]: p for p in ps.list_profiles()}
+    assert pid in names
+    assert ps.load_profile_config(pid).get("rotor_bus", {}).get("slave_az") == 33

@@ -134,15 +134,43 @@ class NetworkModule:
         )
 
 
+def _module_identity_key(m: NetworkModule) -> tuple:
+    host = str(m.host or "").strip().lower()
+    try:
+        port = int(m.at_port)
+    except (TypeError, ValueError):
+        port = 0
+    uid = str(m.uid or "").strip().upper()
+    mac = str(m.mac or "").strip().upper()
+    return (str(m.vendor or ""), host, port, uid, mac)
+
+
+def dedupe_network_modules(modules: Sequence[NetworkModule]) -> List[NetworkModule]:
+    """Gleiche Host/Port (bzw. UID/MAC) nur einmal — gelöschte Duplikate aus alten Saves."""
+    seen: set = set()
+    out: List[NetworkModule] = []
+    for m in modules:
+        host = str(m.host or "").strip()
+        if not host:
+            out.append(m)
+            continue
+        key = _module_identity_key(m)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(m)
+    return out
+
+
 def modules_from_cfg(cfg: Dict[str, Any]) -> List[NetworkModule]:
     raw = cfg.get("network_modules") if isinstance(cfg, dict) else None
     if not isinstance(raw, list):
         return []
-    return [NetworkModule.from_dict(item) for item in raw]
+    return dedupe_network_modules([NetworkModule.from_dict(item) for item in raw])
 
 
 def modules_to_cfg(modules: Sequence[NetworkModule]) -> List[Dict[str, Any]]:
-    return [m.to_dict() for m in modules]
+    return [m.to_dict() for m in dedupe_network_modules(list(modules))]
 
 
 # ---------------------------------------------------------------------------

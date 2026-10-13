@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
 import socket
+import ssl
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
@@ -27,8 +30,33 @@ def resolve_map_webserver_password(password: Optional[str]) -> str:
     return s if s else DEFAULT_MAP_WEBSERVER_PASSWORD
 
 
+def map_webserver_tls_dir() -> Path:
+    from .app_config import appdata_dir
+
+    p = appdata_dir() / "map_webserver_tls"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def ensure_map_webserver_tls_files() -> tuple[Path, Path]:
+    """Self-Signed-Zertifikat bereitstellen (AppData, Fallback aus Paket-certs/)."""
+    d = map_webserver_tls_dir()
+    crt = d / "map_webserver.crt"
+    key = d / "map_webserver.key"
+    if crt.is_file() and key.is_file() and crt.stat().st_size > 0 and key.stat().st_size > 0:
+        return crt, key
+    pkg = Path(__file__).resolve().parent / "certs"
+    src_crt = pkg / "map_webserver.crt"
+    src_key = pkg / "map_webserver.key"
+    if not src_crt.is_file() or not src_key.is_file():
+        raise FileNotFoundError("TLS-Zertifikat fehlt (rotortcpbridge/certs/map_webserver.*)")
+    shutil.copy2(src_crt, crt)
+    shutil.copy2(src_key, key)
+    return crt, key
+
+
 class MapWebServer:
-    """Threading-HTTP-Server für die Browser-Antennenkarte."""
+    """Threading-HTTP(S)-Server für die Browser-Antennenkarte."""
 
     def __init__(
         self,
@@ -37,6 +65,7 @@ class MapWebServer:
         log: Any,
         *,
         password: Optional[str] = None,
+        ssl_enabled: bool = False,
         html_provider: Optional[Callable[[], str]] = None,
         compass_html_provider: Optional[Callable[[], str]] = None,
         overview_html_provider: Optional[Callable[[], str]] = None,
@@ -44,16 +73,23 @@ class MapWebServer:
         compass_provider: Optional[Callable[[], dict]] = None,
         overview_provider: Optional[Callable[[], dict]] = None,
         overview_action_handler: Optional[Callable[..., dict]] = None,
+        node_provider: Optional[Callable[[], dict]] = None,
         setaz_handler: Optional[Callable[..., None]] = None,
         ui_action_handler: Optional[Callable[..., None]] = None,
+        profiles_provider: Optional[Callable[[], dict]] = None,
+        profile_switch_handler: Optional[Callable[..., dict]] = None,
         aswatch_provider: Optional[Callable[[], tuple]] = None,
         aircraft_provider: Optional[Callable[[], list]] = None,
         asnearest_provider: Optional[Callable[[], list]] = None,
+        bus_handler: Optional[Callable[[dict], dict]] = None,
+        shell_html_provider: Optional[Callable[[], str]] = None,
     ) -> None:
+        self.shell_html_provider = shell_html_provider
         self.host = str(host or DEFAULT_MAP_WEBSERVER_HOST).strip() or DEFAULT_MAP_WEBSERVER_HOST
         self.port = int(port or DEFAULT_MAP_WEBSERVER_PORT)
         self.log = log
         self._password_cfg = str(password if password is not None else DEFAULT_MAP_WEBSERVER_PASSWORD)
+        self.ssl_enabled = bool(ssl_enabled)
         self.html_provider = html_provider
         self.compass_html_provider = compass_html_provider
         self.overview_html_provider = overview_html_provider
@@ -61,11 +97,15 @@ class MapWebServer:
         self.compass_provider = compass_provider
         self.overview_provider = overview_provider
         self.overview_action_handler = overview_action_handler
+        self.node_provider = node_provider
         self.setaz_handler = setaz_handler
         self.ui_action_handler = ui_action_handler
+        self.profiles_provider = profiles_provider
+        self.profile_switch_handler = profile_switch_handler
         self.aswatch_provider = aswatch_provider
         self.aircraft_provider = aircraft_provider
         self.asnearest_provider = asnearest_provider
+        self.bus_handler = bus_handler
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -90,10 +130,19 @@ class MapWebServer:
         """Passwort zur Laufzeit setzen (ohne Server-Neustart)."""
         self._password_cfg = str(password if password is not None else "")
 
+    def set_ssl_enabled(self, enabled: bool) -> None:
+        """TLS-Flag setzen (wirksam beim nächsten start/restart)."""
+        self.ssl_enabled = bool(enabled)
+
+    @property
+    def scheme(self) -> str:
+        return "https" if self.ssl_enabled else "http"
+
     def configure(
         self,
         *,
         password: Optional[str] = None,
+        ssl_enabled: Optional[bool] = None,
         html_provider: Optional[Callable[[], str]] = None,
         compass_html_provider: Optional[Callable[[], str]] = None,
         overview_html_provider: Optional[Callable[[], str]] = None,
@@ -101,14 +150,25 @@ class MapWebServer:
         compass_provider: Optional[Callable[[], dict]] = None,
         overview_provider: Optional[Callable[[], dict]] = None,
         overview_action_handler: Optional[Callable[..., dict]] = None,
+        node_provider: Optional[Callable[[], dict]] = None,
         setaz_handler: Optional[Callable[..., None]] = None,
         ui_action_handler: Optional[Callable[..., None]] = None,
+        profiles_provider: Optional[Callable[[], dict]] = None,
+        profile_switch_handler: Optional[Callable[..., dict]] = None,
         aswatch_provider: Optional[Callable[[], tuple]] = None,
         aircraft_provider: Optional[Callable[[], list]] = None,
         asnearest_provider: Optional[Callable[[], list]] = None,
+        bus_handler: Optional[Callable[[dict], dict]] = None,
+        shell_html_provider: Optional[Callable[[], str]] = None,
     ) -> None:
+        if bus_handler is not None:
+            self.bus_handler = bus_handler
+        if shell_html_provider is not None:
+            self.shell_html_provider = shell_html_provider
         if password is not None:
             self.set_password(password)
+        if ssl_enabled is not None:
+            self.set_ssl_enabled(bool(ssl_enabled))
         if html_provider is not None:
             self.html_provider = html_provider
         if compass_html_provider is not None:
@@ -123,10 +183,16 @@ class MapWebServer:
             self.overview_provider = overview_provider
         if overview_action_handler is not None:
             self.overview_action_handler = overview_action_handler
+        if node_provider is not None:
+            self.node_provider = node_provider
         if setaz_handler is not None:
             self.setaz_handler = setaz_handler
         if ui_action_handler is not None:
             self.ui_action_handler = ui_action_handler
+        if profiles_provider is not None:
+            self.profiles_provider = profiles_provider
+        if profile_switch_handler is not None:
+            self.profile_switch_handler = profile_switch_handler
         if aswatch_provider is not None:
             self.aswatch_provider = aswatch_provider
         if aircraft_provider is not None:
@@ -200,6 +266,25 @@ class MapWebServer:
 
                 httpd = _MapHTTPServer((self.host, int(self.port)), handler)
                 httpd.daemon_threads = True
+                if self.ssl_enabled:
+                    try:
+                        crt, key = ensure_map_webserver_tls_files()
+                        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+                        ctx.load_cert_chain(certfile=str(crt), keyfile=str(key))
+                        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+                    except Exception as exc:
+                        try:
+                            httpd.server_close()
+                        except Exception:
+                            pass
+                        err = f"TLS-Start fehlgeschlagen: {exc}"
+                        self._last_error = err
+                        try:
+                            self.log.write("WARN", f"Map-Webserver: {err}")
+                        except Exception:
+                            pass
+                        return False, err
                 self._httpd = httpd
                 self._running = True
                 self._thread = threading.Thread(
@@ -209,7 +294,7 @@ class MapWebServer:
                 try:
                     self.log.write(
                         "INFO",
-                        f"Map-Webserver aktiv auf http://{self.host}:{int(self.port)}/",
+                        f"Map-Webserver aktiv auf {self.scheme}://{self.host}:{int(self.port)}/",
                     )
                 except Exception:
                     pass
@@ -266,13 +351,17 @@ class MapWebServer:
         except Exception:
             pass
 
-    def restart(self, host: str, port: int) -> tuple[bool, str]:
+    def restart(
+        self, host: str, port: int, *, ssl_enabled: Optional[bool] = None
+    ) -> tuple[bool, str]:
         self.stop()
         self.host = str(host or DEFAULT_MAP_WEBSERVER_HOST).strip() or DEFAULT_MAP_WEBSERVER_HOST
         try:
             self.port = int(port)
         except Exception:
             self.port = DEFAULT_MAP_WEBSERVER_PORT
+        if ssl_enabled is not None:
+            self.set_ssl_enabled(bool(ssl_enabled))
         return self.start()
 
     def _serve(self) -> None:
@@ -322,6 +411,8 @@ class MapWebServer:
             def _cors(self) -> None:
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                # Web Serial API in Chromium/Edge freigeben
+                self.send_header("Permissions-Policy", "serial=(self)")
                 self.send_header(
                     "Access-Control-Allow-Headers", "Content-Type, Authorization"
                 )
@@ -398,6 +489,12 @@ class MapWebServer:
                 if not self._check_auth():
                     return
                 path = urlparse(self.path).path or "/"
+                if path in ("/", "/index.html") and callable(
+                    getattr(server, "shell_html_provider", None)
+                ):
+                    # Gemeinsame Seite (Karte + Kompass), Controller bleibt beim Umschalten verbunden
+                    if self._handle_shell():
+                        return
                 if path in ("/", "/index.html", "/map"):
                     self._handle_map()
                     return
@@ -416,8 +513,14 @@ class MapWebServer:
                 if path == "/api/overview":
                     self._handle_overview_state()
                     return
+                if path == "/api/overview/node":
+                    self._handle_overview_node()
+                    return
                 if path == "/api/events":
                     self._handle_sse()
+                    return
+                if path == "/api/profiles":
+                    self._handle_profiles()
                     return
                 self._send_json(404, {"ok": False, "error": "not_found"})
 
@@ -431,13 +534,53 @@ class MapWebServer:
                 if path == "/api/ui":
                     self._handle_ui()
                     return
+                if path == "/api/profile":
+                    self._handle_profile_switch()
+                    return
                 if path == "/api/geocode":
                     self._handle_geocode()
                     return
                 if path == "/api/overview/action":
                     self._handle_overview_action()
                     return
+                if path == "/api/bus":
+                    self._handle_bus()
+                    return
                 self._send_json(404, {"ok": False, "error": "not_found"})
+
+            def _handle_bus(self) -> None:
+                """Browser-Relay: Display-USB-Frames ↔ Rotor-Bus (Web Serial)."""
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except Exception:
+                    length = 0
+                raw = self.rfile.read(max(0, min(length, 65536))) if length > 0 else b"{}"
+                try:
+                    payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+                except Exception:
+                    self._send_json(400, {"ok": False, "error": "invalid_json"})
+                    return
+                if not callable(server.bus_handler):
+                    self._send_json(503, {"ok": False, "error": "bus_unavailable"})
+                    return
+                try:
+                    server.last_rx_ts = time.time()
+                    result = server.bus_handler(payload)
+                    if not isinstance(result, dict):
+                        result = {"ok": True}
+                    self._send_json(200, result)
+                except Exception as exc:
+                    self._send_json(500, {"ok": False, "error": str(exc)})
+
+            def _handle_shell(self) -> bool:
+                try:
+                    html = str(server.shell_html_provider() or "")
+                except Exception:
+                    html = ""
+                if not html:
+                    return False
+                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+                return True
 
             def _handle_map(self) -> None:
                 try:
@@ -514,6 +657,62 @@ class MapWebServer:
                     if callable(server.overview_provider):
                         data = server.overview_provider() or {}
                     self._send_json(200, {"ok": True, "data": data})
+                except Exception as exc:
+                    self._send_json(500, {"ok": False, "error": str(exc)})
+
+            def _handle_overview_node(self) -> None:
+                try:
+                    data = {}
+                    if callable(getattr(server, "node_provider", None)):
+                        data = server.node_provider() or {}
+                    self._send_json(200, {"ok": True, "data": data})
+                except Exception as exc:
+                    self._send_json(500, {"ok": False, "error": str(exc)})
+
+            def _handle_profiles(self) -> None:
+                try:
+                    data: dict = {"ok": True, "active_id": "", "profiles": []}
+                    if callable(getattr(server, "profiles_provider", None)):
+                        result = server.profiles_provider() or {}
+                        if isinstance(result, dict):
+                            data = dict(result)
+                            if "ok" not in data:
+                                data["ok"] = True
+                    self._send_json(200 if data.get("ok") else 500, data)
+                except Exception as exc:
+                    self._send_json(500, {"ok": False, "error": str(exc)})
+
+            def _handle_profile_switch(self) -> None:
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except Exception:
+                    length = 0
+                raw = self.rfile.read(max(0, min(length, 65536))) if length > 0 else b"{}"
+                try:
+                    payload = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+                except Exception:
+                    self._send_json(400, {"ok": False, "error": "invalid_json"})
+                    return
+                pid = str(
+                    payload.get("id")
+                    or payload.get("profile_id")
+                    or payload.get("profile")
+                    or ""
+                ).strip()
+                if not pid:
+                    self._send_json(400, {"ok": False, "error": "profile_id_required"})
+                    return
+                try:
+                    server.last_rx_ts = time.time()
+                    if callable(getattr(server, "profile_switch_handler", None)):
+                        result = server.profile_switch_handler(pid) or {}
+                        if not isinstance(result, dict):
+                            result = {"ok": True}
+                        if "ok" not in result:
+                            result = {"ok": True, **result}
+                        self._send_json(200 if result.get("ok") else 400, result)
+                    else:
+                        self._send_json(503, {"ok": False, "error": "unavailable"})
                 except Exception as exc:
                     self._send_json(500, {"ok": False, "error": str(exc)})
 

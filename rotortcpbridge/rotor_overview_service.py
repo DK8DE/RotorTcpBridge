@@ -10,12 +10,13 @@ from .angle_utils import antenna_bearing_from_rotor_and_offset, fmt_deg, wrap_de
 from .geo_utils import beam_polygon_points, maidenhead_to_lat_lon
 from .i18n import t
 from .rotor_overview_config import (
+    LOCAL_SITE_ID,
     deep_copy_config,
     default_site,
     load_overview_config,
+    merge_site_antennas,
     normalize_overview_config,
     save_overview_config,
-    site_from_profile,
 )
 from .rotor_overview_monitor import RotorOverviewMonitor, SiteLiveState
 
@@ -56,6 +57,7 @@ class RotorOverviewService:
         self._live: Dict[str, SiteLiveState] = {}
         self._reasons: set[str] = set()
         self._revision = 0
+        self._local_provider: Optional[Callable[[], Optional[Dict[str, Any]]]] = None
         self._monitor = RotorOverviewMonitor(on_update=self._on_live)
         self._cfg_listeners: List[Callable[[], None]] = []
         self._live_cache: Dict[str, Any] = {}
@@ -86,6 +88,10 @@ class RotorOverviewService:
             except Exception:
                 pass
 
+    def set_local_node_provider(self, fn: Optional[Callable[[], Optional[Dict[str, Any]]]]) -> None:
+        self._local_provider = fn
+        self._monitor.set_local_provider(fn)
+
     def _on_live(self, st: SiteLiveState) -> None:
         with self._lock:
             self._live[st.site_id] = st
@@ -96,9 +102,10 @@ class RotorOverviewService:
             was = bool(self._reasons)
             already = key in self._reasons
             self._reasons.add(key)
-            sites = list(self._cfg.get("sites") or [])
+            cfg = deep_copy_config(self._cfg)
         if not was or not already:
-            self._monitor.start(sites)
+            self._monitor.set_local_provider(self._local_provider)
+            self._monitor.start(cfg)
 
     def release(self, reason: str) -> None:
         key = str(reason or "").strip() or "anon"
@@ -124,10 +131,11 @@ class RotorOverviewService:
         with self._lock:
             self._cfg = load_overview_config()
             self._revision += 1
-            sites = list(self._cfg.get("sites") or [])
+            cfg = deep_copy_config(self._cfg)
             active = bool(self._reasons)
         if active:
-            self._monitor.start(sites)
+            self._monitor.set_local_provider(self._local_provider)
+            self._monitor.start(cfg)
         self._notify_cfg()
 
     def replace_config(self, cfg: Any, *, persist: bool = True) -> Dict[str, Any]:
@@ -137,12 +145,13 @@ class RotorOverviewService:
             self._revision += 1
             self._html_cache = ""
             self._live_cache = {}
-            sites = list(self._cfg.get("sites") or [])
+            cfg = deep_copy_config(self._cfg)
             active = bool(self._reasons)
         if persist:
             save_overview_config(data)
         if active:
-            self._monitor.start(sites)
+            self._monitor.set_local_provider(self._local_provider)
+            self._monitor.start(cfg)
         self._notify_cfg()
         return deep_copy_config(data)
 
@@ -169,10 +178,11 @@ class RotorOverviewService:
 
     def restart_monitor(self) -> None:
         with self._lock:
-            sites = list(self._cfg.get("sites") or [])
+            cfg = deep_copy_config(self._cfg)
             active = bool(self._reasons)
         if active:
-            self._monitor.start(sites)
+            self._monitor.set_local_provider(self._local_provider)
+            self._monitor.start(cfg)
 
     def _selected_antennas(
         self, site: dict, *, aselect: Optional[int] = None
@@ -227,6 +237,37 @@ class RotorOverviewService:
                 )
         return beams
 
+    def _overlay_site(self, site: dict, st: Optional[SiteLiveState]) -> dict:
+        overlay = dict(site)
+        if st is not None:
+            overlay["antennas"] = merge_site_antennas(
+                site.get("antennas"), st.antennas
+            )
+            if st.lat is not None:
+                overlay["lat"] = float(st.lat)
+            if st.lon is not None:
+                overlay["lon"] = float(st.lon)
+        return overlay
+
+    def _site_label(self, site: dict, st: Optional[SiteLiveState]) -> str:
+        name = ""
+        locator = ""
+        if st is not None:
+            name = str(st.profile_name or "").strip()
+            locator = str(st.locator or "").strip()
+        if not name:
+            name = str(site.get("name") or "").strip()
+        if not name:
+            if str(site.get("kind") or "") == "local" or str(site.get("id") or "") == LOCAL_SITE_ID:
+                name = t("overview.local_site")
+            else:
+                host = str(site.get("host") or "").strip()
+                port = site.get("port")
+                name = f"{host}:{port}" if host else t("overview.new_site")
+        if locator:
+            return f"{name} · {locator}"
+        return name
+
     def render_sites(self) -> List[dict]:
         with self._lock:
             sites = list(self._cfg.get("sites") or [])
@@ -237,6 +278,7 @@ class RotorOverviewService:
                 continue
             sid = str(site.get("id") or "")
             st = live.get(sid)
+            overlay = self._overlay_site(site, st)
             az = None
             aselect = None
             if st is not None:
@@ -252,23 +294,35 @@ class RotorOverviewService:
             else:
                 ref_text = t("overview.ref_unknown")
             color = "#2e7d32"
-            selected = self._selected_antennas(site, aselect=aselect)
+            selected = self._selected_antennas(overlay, aselect=aselect)
             if selected:
                 color = str(selected[0].get("color") or color)
+            beam_az = float(az) if (online and az is not None) else None
+            profile_name = ""
+            if st is not None:
+                profile_name = str(st.profile_name or "").strip()
+            if not profile_name:
+                profile_name = str(site.get("name") or "").strip()
+            if not profile_name:
+                profile_name = self._site_label(site, st)
             out.append(
                 {
                     "id": sid,
-                    "name": site.get("name") or "",
-                    "lat": float(site["lat"]),
-                    "lon": float(site["lon"]),
+                    "name": self._site_label(site, st),
+                    "profile_name": profile_name,
+                    "lat": float(overlay["lat"]),
+                    "lon": float(overlay["lon"]),
                     "online": online,
                     "az_text": az_text,
                     "ref_text": ref_text,
                     "marker_color": color,
                     "aselect": aselect,
-                    "beams": self.site_beams(
-                        site, float(az) if az is not None else None, aselect=aselect
-                    ),
+                    "temp_motor_c": (st.temp_motor_c if st is not None else None),
+                    "temp_ambient_c": (st.temp_ambient_c if st is not None else None),
+                    "wind_visible": bool(st.wind_visible) if st is not None else False,
+                    "wind_kmh": (st.wind_kmh if st is not None else None),
+                    "wind_dir_deg": (st.wind_dir_deg if st is not None else None),
+                    "beams": self.site_beams(overlay, beam_az, aselect=aselect),
                 }
             )
         return out
@@ -357,6 +411,7 @@ class RotorOverviewService:
             "overview.field_poll_ref",
             "overview.field_smooth",
             "overview.antennas_group",
+            "overview.antennas_select_hint",
             "overview.ant_offset",
             "overview.ant_opening",
             "overview.ant_range",
@@ -378,11 +433,22 @@ class RotorOverviewService:
             "overview.web_hint",
             "overview.chk_active_antenna",
             "overview.chk_active_antenna_tooltip",
+            "overview.field_password",
+            "overview.password_hint",
+            "overview.local_site",
+            "overview.local_hint",
+            "overview.cannot_delete_local",
+            "overview.add_hint",
+            "overview.map_server_hint",
         )
         labels = {k.split(".", 1)[1]: t(k) for k in keys}
         labels["antenna_1"] = t("overview.antenna_n", n=1)
         labels["antenna_2"] = t("overview.antenna_n", n=2)
         labels["antenna_3"] = t("overview.antenna_n", n=3)
+        labels["hud_temp_motor"] = t("weather.temp_motor_label")
+        labels["hud_temp_ambient"] = t("weather.temp_ambient_label")
+        labels["hud_wind"] = t("weather.wind_speed_label")
+        labels["hud_wind_dir"] = t("weather.wind_dir_label")
         return labels
 
     def build_web_html(self, *, force: bool = False) -> str:
@@ -460,21 +526,12 @@ class RotorOverviewService:
                 return {"ok": True, "lat": float(lat), "lon": float(lon)}
             except Exception:
                 return {"ok": False, "error": "locator_invalid"}
-        if act == "import_profile":
-            pid = str(data.get("profile_id") or "").strip()
-            if not pid:
-                return {"ok": False, "error": "profile_required"}
-            try:
-                from .profile_store import get_profile_meta, load_profile_config
-
-                meta = get_profile_meta(pid) or {}
-                cfg = load_profile_config(pid)
-                site = site_from_profile(pid, str(meta.get("name") or pid), cfg)
-                return {"ok": True, "site": site}
-            except Exception as exc:
-                return {"ok": False, "error": str(exc)}
         if act == "default_site":
-            return {"ok": True, "site": default_site(name=t("overview.new_site"))}
+            try:
+                port = int(data.get("port") or 0)
+            except (TypeError, ValueError):
+                port = 0
+            return {"ok": True, "site": default_site(name=t("overview.new_site"), port=port or None)}
         if act == "save_config":
             try:
                 cfg = data.get("config") if "config" in data else data

@@ -130,6 +130,8 @@ class CompassWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._current_deg: Optional[float] = None
+        # Absolute Rotorstellung (ohne Wrap), für Anschlag-Farbe 0…360 / >360
+        self._rotor_pos_deg: Optional[float] = None
         self._target_deg: Optional[float] = None
         self._wind_dir_deg: Optional[float] = None
         self._wind_dir_draw_deg: Optional[float] = None
@@ -335,6 +337,14 @@ class CompassWidget(QWidget):
 
     def set_current_deg(self, deg: Optional[float]) -> None:
         self._current_deg = None if deg is None else wrap_deg(deg)
+        self.update()
+
+    def set_rotor_pos_deg(self, deg: Optional[float]) -> None:
+        """Absolute Rotorstellung (°); steuert Anschlag-Dreieck (grün <360°, rot ≥360°)."""
+        try:
+            self._rotor_pos_deg = None if deg is None else float(deg)
+        except Exception:
+            self._rotor_pos_deg = None
         self.update()
 
     def set_target_deg(self, deg: Optional[float]) -> None:
@@ -758,7 +768,7 @@ class CompassWidget(QWidget):
                     paint_az_ring_gap_black(painter, cx, cy, inner_r + ring_w, gap_w)
                 inner_r += ring_w + (gap_w if i < len(modes) - 1 else 0.0)
 
-            # Rotes Dreieck: Anschlag der Antenne (auf Kreislinie, nach innen zeigend)
+            # Anschlag-Dreieck: grün in 1. Umdrehung (0…360°), rot in Overlap (≥360°)
             self._draw_anschlag_triangle(painter, cx, cy, r)
 
             # Kreis-Kontur erneut
@@ -886,7 +896,10 @@ class CompassWidget(QWidget):
             painter.restore()
 
     def _draw_anschlag_triangle(self, painter: QPainter, cx: float, cy: float, r: float) -> None:
-        """Rotes Dreieck auf der Kreislinie am Antennenversatz, Spitze nach innen."""
+        """Dreieck auf der Kreislinie am Antennenversatz, Spitze nach innen.
+
+        Farbe: grün bei Rotor 0…<360°, rot ab 360° (zweite Umdrehung / Overlap).
+        """
         deg = float(self._heatmap_offset_deg)
         spread = 4.0  # halb so groß (urspr. 8)
         tip_r = r * 0.96
@@ -903,8 +916,14 @@ class CompassWidget(QWidget):
         poly = QPolygonF(
             [QPointF(tip_x, tip_y), QPointF(base_l_x, base_l_y), QPointF(base_r_x, base_r_y)]
         )
+        try:
+            rotor = float(self._rotor_pos_deg) if self._rotor_pos_deg is not None else 0.0
+        except Exception:
+            rotor = 0.0
+        # Ab 360° = zweite Runde (Overlap)
+        color = QColor(220, 0, 0) if rotor >= 360.0 - 1e-9 else QColor(0, 170, 0)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(220, 0, 0))
+        painter.setBrush(color)
         painter.drawPolygon(poly)
 
     @staticmethod

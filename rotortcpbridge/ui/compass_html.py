@@ -933,7 +933,7 @@ def build_compass_html(params: dict) -> str:
           drawOmOrDwell(ctx, cx, cy, ring.inner, ring.outer, az.dwell_seconds, az.dwell_full || 300, off);
         }}
       }});
-      // Anschlag
+      // Anschlag: grün 0…<360°, rot ab 360° (zweite Umdrehung / Overlap)
       {{
         const deg = off;
         const spread = 4;
@@ -944,7 +944,8 @@ def build_compass_html(params: dict) -> str:
         ctx.lineTo(cx + Math.sin((deg-spread)*Math.PI/180)*base_r, cy - Math.cos((deg-spread)*Math.PI/180)*base_r);
         ctx.lineTo(cx + Math.sin((deg+spread)*Math.PI/180)*base_r, cy - Math.cos((deg+spread)*Math.PI/180)*base_r);
         ctx.closePath();
-        ctx.fillStyle = '#dc0000';
+        const rotor = (az.rotor_deg != null) ? Number(az.rotor_deg) : 0;
+        ctx.fillStyle = (rotor >= 360) ? '#dc0000' : '#00aa00';
         ctx.fill();
       }}
       if (az.soll != null) {{

@@ -53,10 +53,14 @@ from ..angle_utils import (
     compute_dgcal_deg,
     current_rotor_az_deg,
     el_max_deg_from_rotor_type,
+    favorite_rotor_az_for_drive,
+    favorite_rotor_az_for_store,
     fmt_deg,
+    normalize_az_soll_display_input,
     om_beam_contributions_per_sector,
     raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
+    rotor_deg_from_display_exact,
     wrap_deg,
     shortest_delta_az_rotor_deg,
     shortest_delta_deg,
@@ -2043,17 +2047,22 @@ class CompassWindow(QDialog):
         data = self.cb_fav.itemData(idx)
         if not isinstance(data, dict) or "az" not in data or "el" not in data:
             return
-        rotor_az = wrap_deg(float(data["az"]))
+        rotor_az = favorite_rotor_az_for_drive(
+            float(data["az"]), getattr(self.ctrl, "az", None)
+        )
         rotor_el = self._clamp_el(float(data["el"]))
         self._stop_az_ts = None
         self._stop_el_ts = None
         self._cc_display_latch_az_d10 = None
         self._cc_display_latch_el_d10 = None
         off_az = self._get_antenna_offset_az()
-        az_display = wrap_deg(rotor_az + off_az)
+        az_display = antenna_bearing_from_rotor_and_offset(
+            rotor_az, off_az, max_d10=self._az_max_d10()
+        )
+        needle = wrap_deg(float(rotor_az) + float(off_az))
         self._target_az = rotor_az
         self._target_el = rotor_el
-        self.az_compass.set_target_deg(az_display)
+        self.az_compass.set_target_deg(needle)
         self.el_compass.set_target_deg(rotor_el)
         self.ed_az_soll.setText(f"{az_display:.1f}")
         self.ed_el_soll.setText(f"{rotor_el:.1f}")
@@ -2086,9 +2095,9 @@ class CompassWindow(QDialog):
             return
         if az_d10 is None:
             return
-        az_deg = float(az_d10) / 10.0
+        az_deg = favorite_rotor_az_for_store(getattr(self.ctrl, "az", None), int(az_d10))
         el_deg = self._clamp_el(float(el_d10 or 0) / 10.0)  # EL 0 bei nur AZ
-        fav = {"name": name[:15], "az": wrap_deg(az_deg), "el": el_deg}
+        fav = {"name": name[:15], "az": az_deg, "el": el_deg}
         if "ui" not in self.cfg:
             self.cfg["ui"] = {}
         favs = self._get_favorites()
@@ -2907,8 +2916,16 @@ class CompassWindow(QDialog):
             # Windrose/Zeiger: immer 0..360°; Zahlen: erweiterter Bereich inkl. Versatz
             cur_display_needle = wrap_deg(float(cur_smooth) + float(off_az))
             self.az_compass.set_current_deg(cur_display_needle)
+            try:
+                self.az_compass.set_rotor_pos_deg(float(cur_smooth))
+            except Exception:
+                pass
         else:
             cur_display_needle = None
+            try:
+                self.az_compass.set_rotor_pos_deg(None)
+            except Exception:
+                pass
         self.az_compass.set_dipole_active(self._selected_antenna_dipole_enabled())
         try:
             overlay_on = bool(self.cfg.get("ui", {}).get("compass_antenna_overlay", True))
@@ -3623,22 +3640,13 @@ class CompassWindow(QDialog):
 
     def _normalize_soll_display_input(self, v: float) -> float:
         """SOLL-Anzeige: bei MAXDG>360 ohne Wrap auf 0..(max+Versatz), sonst 0..360."""
-        max_deg = float(self._az_max_d10()) / 10.0
-        if max_deg > 360.0 + 1e-9:
-            off = float(self._get_antenna_offset_az())
-            hi = max_deg + max(0.0, off)
-            return max(0.0, min(hi, float(v)))
-        return wrap_deg(float(v))
+        return normalize_az_soll_display_input(
+            v, float(self._get_antenna_offset_az()), self._az_max_d10()
+        )
 
     def _rotor_from_display_exact(self, display: float, off_az: float) -> float:
         """Anzeige → Rotor exakt (Versatz abziehen), ohne ±360-Umschaltung."""
-        max_deg = float(self._az_max_d10()) / 10.0
-        rotor = float(display) - float(off_az)
-        if max_deg > 360.0 + 1e-9:
-            if rotor < 0.0:
-                rotor += 360.0
-            return max(0.0, min(max_deg, rotor))
-        return wrap_deg(rotor)
+        return rotor_deg_from_display_exact(display, off_az, self._az_max_d10())
 
     def _apply_az_target_from_display(self, deg: float, *, exact: bool) -> None:
         """deg = Antennenrichtung. exact=True: SOLL-Feld ohne kürzesten Weg."""

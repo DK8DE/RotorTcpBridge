@@ -12,10 +12,12 @@ from PySide6.QtCore import (
     QSize,
     Qt,
     QTimer,
+    QUrl,
 )
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
+    QDesktopServices,
     QFont,
     QGuiApplication,
     QHideEvent,
@@ -55,6 +57,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..angle_utils import az_extended_range_active
 from ..compass.statistic_compass_widget import compute_bin_min_max
 from ..app_icon import get_app_icon
 from ..command_catalog import command_specs, format_cmd_tooltip
@@ -68,6 +71,7 @@ from .settings_rig_bridge_tab import RigBridgeTab
 from .settings_com0com_tab import Com0ComTab
 from .settings_shortcuts_tab import ShortcutsTab
 from .settings_weather_tab import WeatherThresholdsTab
+from .settings_update_tab import UpdateTab
 from .settings_network_tab import NetworkModulesTab
 from .led_widget import Led
 from .ui_utils import px_to_dip
@@ -1806,6 +1810,11 @@ class SettingsWindow(QDialog):
         self._settings_stack.addWidget(_scroll_page(self._shortcuts_tab))
         self._weather_tab = WeatherThresholdsTab(self.cfg, self)
         self._settings_stack.addWidget(_scroll_page(self._weather_tab))
+        self._update_tab = UpdateTab(self)
+        self._update_tab.softap_toggled.connect(self._on_softap_toggled)
+        self._update_tab.refresh_clicked.connect(self._refresh_softap_status)
+        self._update_tab.open_webflasher_clicked.connect(self._open_softap_webflasher)
+        self._settings_stack.addWidget(_scroll_page(self._update_tab))
         self._network_tab = NetworkModulesTab(self.cfg, self)
         self._network_tab.save_requested.connect(self._on_network_modules_save_requested)
         gb_network = QGroupBox(t("settings.tab_network"))
@@ -1827,6 +1836,10 @@ class SettingsWindow(QDialog):
         self._tab_com0com_index = 8
         self._tab_shortcuts_index = 9
         self._tab_weather_index = 10
+        self._tab_update_index = 11
+        self._softap_poll_timer = QTimer(self)
+        self._softap_poll_timer.setInterval(3000)
+        self._softap_poll_timer.timeout.connect(self._refresh_softap_status)
         self._calvalid_timer = QTimer(self)
         self._calvalid_timer.setInterval(5000)
         self._calvalid_timer.timeout.connect(self._poll_getcalvalid_once)
@@ -1855,6 +1868,7 @@ class SettingsWindow(QDialog):
             t("com0com.tab_title"),
             t("settings.tab_shortcuts"),
             t("settings.tab_weather"),
+            t("settings.tab_update"),
         ):
             self._settings_nav.addItem(_lbl)
         self._settings_nav.currentRowChanged.connect(self._on_settings_nav_changed)
@@ -2026,7 +2040,7 @@ class SettingsWindow(QDialog):
         # Antennennamen vom Rotor (GETANTNAME1–3 am AZ-Slave, nicht Display-Controller)
         try:
             self.ctrl.on_antenna_names_changed = lambda: QTimer.singleShot(
-                0, self._apply_rotor_antenna_names_from_cache
+                0, self, self._apply_rotor_antenna_names_from_cache
             )
         except Exception:
             pass
@@ -2072,6 +2086,10 @@ class SettingsWindow(QDialog):
         self._pst_tcp_status_timer.stop()
         self._stop_calvalid_timer()
         try:
+            self._softap_poll_timer.stop()
+        except Exception:
+            pass
+        try:
             if getattr(self.ctrl, "on_antenna_names_changed", None) is not None:
                 self.ctrl.on_antenna_names_changed = None
         except Exception:
@@ -2106,6 +2124,10 @@ class SettingsWindow(QDialog):
         self._hw_link_timer.stop()
         self._pst_tcp_status_timer.stop()
         self._stop_calvalid_timer()
+        try:
+            self._softap_poll_timer.stop()
+        except Exception:
+            pass
         if hasattr(self.ctrl, "set_settings_window_open"):
             self.ctrl.set_settings_window_open(False)
         super().closeEvent(event)
@@ -3314,6 +3336,85 @@ class SettingsWindow(QDialog):
             self.maybe_refresh_antenna_names_for_shortcuts_tab()
             QTimer.singleShot(0, self._shortcuts_tab.refresh_antenna_shortcut_row_labels)
             QTimer.singleShot(400, self._shortcuts_tab.refresh_antenna_shortcut_row_labels)
+        if row == getattr(self, "_tab_update_index", -1):
+            QTimer.singleShot(0, self._refresh_softap_status)
+            if not self._softap_poll_timer.isActive():
+                self._softap_poll_timer.start()
+        else:
+            self._softap_poll_timer.stop()
+
+    def _az_slave_dst_for_softap(self) -> int:
+        try:
+            dst = int(self.sp_slave_az.value())
+        except Exception:
+            dst = int(getattr(self.ctrl, "slave_az", 0) or 0)
+        return dst if dst > 0 else 0
+
+    def _refresh_softap_status(self) -> None:
+        """GETWLAN → LED/Checkbox im Update-Tab."""
+        tab = getattr(self, "_update_tab", None)
+        if tab is None:
+            return
+        if not bool(getattr(self.hw, "is_connected", lambda: False)()):
+            tab.set_softap_active(False)
+            tab.set_status(t("settings.update_status_offline"))
+            return
+        if not hasattr(self.ctrl, "sync_ui_command_response"):
+            tab.set_status(t("settings.update_status_error"))
+            return
+        dst = self._az_slave_dst_for_softap()
+        if dst <= 0:
+            tab.set_status(t("settings.update_status_error"))
+            return
+        r = self.ctrl.sync_ui_command_response(
+            dst, "GETWLAN", "0", "ACK_GETWLAN", timeout_s=1.2
+        )
+        if not _sync_got_ack_value(r):
+            tab.set_softap_active(False)
+            tab.set_status(t("settings.update_status_error"))
+            return
+        try:
+            on = int(float(str(r).strip().split(";")[0].replace(",", "."))) != 0
+        except Exception:
+            on = False
+        tab.set_softap_active(on)
+        tab.set_status(
+            t("settings.update_status_on") if on else t("settings.update_status_off")
+        )
+
+    def _on_softap_toggled(self, want_on: bool) -> None:
+        """SETWLAN:1/0 am AZ-Slave; SoftAP ist nicht persistent."""
+        tab = getattr(self, "_update_tab", None)
+        if tab is None:
+            return
+        if not bool(getattr(self.hw, "is_connected", lambda: False)()):
+            tab.set_softap_active(False)
+            tab.set_status(t("settings.update_status_offline"))
+            return
+        if not hasattr(self.ctrl, "sync_ui_command_response"):
+            tab.set_status(t("settings.update_status_error"))
+            return
+        dst = self._az_slave_dst_for_softap()
+        if dst <= 0:
+            tab.set_status(t("settings.update_status_error"))
+            return
+        tab.set_status(t("settings.update_status_saving"))
+        QApplication.processEvents()
+        r = self.ctrl.sync_ui_command_response(
+            dst,
+            "SETWLAN",
+            "1" if want_on else "0",
+            "ACK_SETWLAN",
+            timeout_s=2.0,
+        )
+        if not _sync_got_ack_value(r):
+            tab.set_status(t("settings.update_status_error"))
+            QTimer.singleShot(0, self._refresh_softap_status)
+            return
+        QTimer.singleShot(0, self._refresh_softap_status)
+
+    def _open_softap_webflasher(self) -> None:
+        QDesktopServices.openUrl(QUrl("http://192.168.4.1"))
 
     def refresh_nav_theme(self) -> None:
         """Nach globalem Palette-/Style-Wechsel (z. B. Force-Dark): linke Tab-Leiste neu einfärben."""
@@ -5358,14 +5459,15 @@ class SettingsWindow(QDialog):
         self._update_weather_tab_visibility()
 
     def _update_az_overlap_checkboxes_ui(self, *_args) -> None:
-        """Kürzerer Weg / 0…360-Ausgabe nur bei Absolut-Encoder Typ 3; Ausgabe nur mit kürzerem Weg.
+        """Kürzerer Weg / 0…360-Ausgabe bei MAXDG > 360° (Encoder Typ 1/2/3); Ausgabe nur mit kürzerem Weg.
 
-        Checked-Zustand der 0…360-Box nicht anfassen: Beim Start ist GETENCTYPE oft
+        Checked-Zustand der 0…360-Box nicht anfassen: Beim Start ist GETMAXDG oft
         noch unbekannt (show=False) — ein Force-Uncheck würde den aus der Config
         geladenen Haken verwerfen, während „Kürzerer Weg“ stehen bleibt.
         Speichern schreibt ``az_report_mod360`` ohnehin nur wenn kürzerer Weg an ist.
         """
-        show = self._rotor_has_abs_encoder_type3()
+        max_known = bool(getattr(self.ctrl, "_max_deg_known", False))
+        show = max_known and az_extended_range_active(getattr(self.ctrl, "az", None))
         pairs = (
             (getattr(self, "chk_pst_az_shortest", None), getattr(self, "chk_pst_az_report_mod360", None)),
             (

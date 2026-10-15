@@ -152,6 +152,7 @@ Programme meist uninteressant):
     "az": {
       "ist": 123.4, "ist_needle": 123.4,
       "soll": 150.0, "soll_needle": 150.0,
+      "max_deg": 360.0,
       "moving": true, "online": true, "referenced": true, "ref_blink": false,
       "offset_deg": 0.0, "dipole": false, "opening_deg": 30.0,
       "wind_visible": true, "wind_dir": 270.0, "wind_kmh": 12.3, "wind_mode": "to",
@@ -175,6 +176,8 @@ Felder (Auszug):
 | `enable_el`                       | bool             | Elevation aktiv (sonst `el.*` leer/`null`)                                |
 | `az.ist` / `az.soll`              | float \| null    | **Antennen-Peilung** in °: Rotorwinkel **+ Antennen-Offset**, geglättet   |
 | `az.ist_needle` / `soll_needle`   | float \| null    | wie oben, aber ungeglättet für Zeiger                                     |
+| `az.max_deg`                      | float            | Rotor-MAXDG in ° (z. B. 360 oder 720; Encoder Typ 1/2/3)                  |
+| `az.rotor_deg`                    | float \| null    | Absolute Rotorstellung ohne Wrap (Anschlag-Dreieck: grün unter 360°, rot ab 360°) |
 | `az.offset_deg`                   | float            | Offset der gewählten Antenne (Peilung = Rotorwinkel + Offset)             |
 | `az.dipole`                       | bool             | Dipol-Betrieb (Gegenrichtung +180° gleichwertig)                          |
 | `az.moving` / `online` / `referenced` | bool         | Bewegt sich / Rotor antwortet / Referenzfahrt erfolgt                     |
@@ -332,7 +335,7 @@ ist `locator` (siehe unten). Aktionsnamen sind **Kleinbuchstaben**.
 
 | `action`   | Parameter                                  | Wirkung                                                                                   |
 |------------|--------------------------------------------|-------------------------------------------------------------------------------------------|
-| `set_az`   | `deg` (float), `exact` (bool, optional)    | Azimut-Ziel. `deg` ist die **Antennen-Peilung** (Offset und ggf. Dipol werden eingerechnet). `exact:true` nimmt `deg` ohne Wrap (z. B. Winkel > 360° bei Rotoren mit großem Bereich). |
+| `set_az`   | `deg` (float), `exact` (bool, optional)    | Azimut-Ziel. `deg` ist die **Antennen-Peilung** (Offset und ggf. Dipol werden eingerechnet). Ohne `exact`: kürzester Weg bei MAXDG>360°. `exact:true` nimmt `deg` ohne Wrap (z. B. Winkel > 360° bei Encoder Typ 1/2/3 mit MAXDG bis 720°). |
 | `set_el`   | `deg` (float)                              | Elevation-Ziel (auf `max_deg` begrenzt; ohne aktive EL ignoriert)                          |
 | `stop_az`  | –                                          | AZ sofort anhalten, aktuelle Position halten                                              |
 | `stop_el`  | –                                          | EL anhalten                                                                               |

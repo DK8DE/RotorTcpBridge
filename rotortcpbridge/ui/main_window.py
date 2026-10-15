@@ -46,9 +46,7 @@ class _JogRepeatController:
     """
 
     def __init__(self) -> None:
-        self._timer = QTimer()
-        self._timer.setSingleShot(False)
-        self._timer.timeout.connect(self._on_tick)
+        self._timer: QTimer | None = None
         self._current_action: str | None = None
         self._current_vk: int | None = None
         self._execute_cb = None
@@ -63,11 +61,15 @@ class _JogRepeatController:
         else:
             self._user32 = None
 
-    def setup(self, execute_cb, vk_getter, delay_getter) -> None:
+    def setup(self, parent: QWidget, execute_cb, vk_getter, delay_getter) -> None:
         """Bindung: execute_cb(action), vk_getter(action)→int|None, delay_getter()→int."""
         self._execute_cb = execute_cb
         self._vk_getter = vk_getter
         self._delay_getter = delay_getter
+        if self._timer is None:
+            self._timer = QTimer(parent)
+            self._timer.setSingleShot(False)
+            self._timer.timeout.connect(self._on_tick)
 
     def arm(self, action: str) -> None:
         """Nach dem ersten Tastendruck aufrufen: startet den Repeat-Timer.
@@ -88,18 +90,22 @@ class _JogRepeatController:
             pass
         self._current_action = action
         self._current_vk = vk
+        if self._timer is None:
+            return
         self._timer.stop()
         self._timer.setInterval(delay)
         self._timer.start()
 
     def stop(self) -> None:
-        self._timer.stop()
+        if self._timer is not None:
+            self._timer.stop()
         self._current_action = None
         self._current_vk = None
 
     def _on_tick(self) -> None:
-        if self._current_action is None:
-            self._timer.stop()
+        if self._timer is None or self._current_action is None:
+            if self._timer is not None:
+                self._timer.stop()
             return
         if self._current_vk is not None and not self._is_key_down(self._current_vk):
             self.stop()
@@ -160,7 +166,10 @@ from .axis_widget import (
 
 class MainWindow(QMainWindow):
     _encoder_type_changed_ui = Signal()
+    _az_max_deg_changed_ui = Signal()
     _rotor_type_changed_ui = Signal()
+    _internet_check_finished = Signal(bool)
+    _browser_relay_attached = Signal()
     web_profile_switch_requested = Signal(str)
 
     @staticmethod
@@ -862,6 +871,8 @@ class MainWindow(QMainWindow):
         self._homing_ui_hidden_for_abs_enc = False
         self._encoder_type_changed_ui.connect(self._on_encoder_type_changed_ui)
         self.ctrl.on_encoder_type_changed = self._on_encoder_type_changed
+        self._az_max_deg_changed_ui.connect(self._on_az_max_deg_changed_ui)
+        self.ctrl.on_az_max_deg_changed = self._on_az_max_deg_changed
         self._rotor_type_changed_ui.connect(self._on_rotor_type_changed_ui)
         self.ctrl.on_rotor_type_changed = self._on_rotor_type_changed
         QTimer.singleShot(0, self._update_homing_buttons_visibility)
@@ -878,6 +889,7 @@ class MainWindow(QMainWindow):
         self._internet_check_timer = QTimer(self)
         self._internet_check_timer.setInterval(3_000)
         self._internet_check_timer.timeout.connect(self._on_internet_check_timer)
+        self._internet_check_finished.connect(self._handle_internet_result)
         self._internet_check_timer.start()
         QTimer.singleShot(300, self._on_internet_check_timer)
         QTimer.singleShot(500, self._check_pst_udp_startup_error)
@@ -980,6 +992,10 @@ class MainWindow(QMainWindow):
             self._on_web_profile_switch_requested,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._browser_relay_attached.connect(
+            self._schedule_push_web_display_rotor_ids_after_relay,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._wire_map_webserver()
         QTimer.singleShot(400, self._start_map_webserver_if_enabled)
 
@@ -1005,11 +1021,14 @@ class MainWindow(QMainWindow):
 
             self._global_hotkey_controller = GlobalHotkeyController(
                 lambda: int(self.winId()),
-                lambda a: QTimer.singleShot(0, partial(self._apply_global_shortcut_action, a)),
+                lambda a: QTimer.singleShot(
+                    0, self, partial(self._apply_global_shortcut_action, a)
+                ),
             )
 
         self._jog_repeat = _JogRepeatController()
         self._jog_repeat.setup(
+            self,
             execute_cb=self._do_jog_action,
             vk_getter=lambda a: (
                 hc.get_action_vk(a)
@@ -1939,10 +1958,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._log_exception("_push_web_display_rotor_ids", e)
 
+    def _schedule_push_web_display_rotor_ids_after_relay(self) -> None:
+        """UI-Thread: Display-IDs nach Browser-Anbindung (Web Serial) verzögert pushen."""
+        QTimer.singleShot(700, self, self._push_web_display_rotor_ids)
+
     def _on_browser_relay_attached(self) -> None:
-        """Browser hat sich verbunden (evtl. nach Profilwechsel): IDs am Display angleichen."""
+        """Browser hat POST /api/bus (Relay) — Callback läuft im HTTP-Thread."""
         try:
-            QTimer.singleShot(700, self, self._push_web_display_rotor_ids)
+            self._browser_relay_attached.emit()
         except Exception as e:
             self._log_exception("_on_browser_relay_attached", e)
 
@@ -3144,21 +3167,19 @@ class MainWindow(QMainWindow):
             return  # Vorherige Prüfung noch aktiv → überspringen
         self._internet_checking = True
 
-        def do_check():
+        def do_check() -> None:
             try:
                 online = check_internet()
             except Exception as e:
-                exc = e
-
-                def _apply_err() -> None:
-                    self._log_exception("check_internet (Hintergrund)", exc)
-                    self._handle_internet_result(False)
-
-                QTimer.singleShot(0, _apply_err)
+                try:
+                    self.logbuf.write("WARN", f"check_internet (Hintergrund): {e}")
+                except Exception:
+                    pass
+                self._internet_check_finished.emit(False)
                 return
-            QTimer.singleShot(0, lambda o=online: self._handle_internet_result(o))
+            self._internet_check_finished.emit(bool(online))
 
-        threading.Thread(target=do_check, daemon=True).start()
+        threading.Thread(target=do_check, daemon=True, name="internet-check").start()
 
     def _handle_internet_result(self, online: bool) -> None:
         """Ergebnis der Internet-Prüfung auf Hauptthread verarbeiten."""
@@ -4159,17 +4180,19 @@ class MainWindow(QMainWindow):
 
     def _on_encoder_type_changed(self) -> None:
         """GETENCTYPE gelesen — Homing-UI auf UI-Thread aktualisieren (Callback aus HW-Thread)."""
-        try:
-            self._encoder_type_changed_ui.emit()
-        except Exception:
-            QTimer.singleShot(0, self._on_encoder_type_changed_ui)
+        self._encoder_type_changed_ui.emit()
+
+    def _on_az_max_deg_changed(self) -> None:
+        """GETMAXDG gelesen — Overlap-UI auf UI-Thread aktualisieren (Callback aus HW-Thread)."""
+        self._az_max_deg_changed_ui.emit()
+
+    def _on_az_max_deg_changed_ui(self) -> None:
+        """UI-Thread: Kürzerer-Weg-Checkboxen nach GETMAXDG ein-/ausblenden."""
+        self._update_encoder_dependent_settings_ui()
 
     def _on_rotor_type_changed(self) -> None:
         """GETROTORTYPE gelesen — EL-Grafik 90°/180° (Callback aus HW-Thread)."""
-        try:
-            self._rotor_type_changed_ui.emit()
-        except Exception:
-            QTimer.singleShot(0, self._on_rotor_type_changed_ui)
+        self._rotor_type_changed_ui.emit()
 
     def _on_rotor_type_changed_ui(self) -> None:
         """UI-Thread: Elevations-Kompass an Rotortyp anpassen."""
@@ -4245,7 +4268,11 @@ class MainWindow(QMainWindow):
         """Wird aus Hintergrundthread aufgerufen – auf UI-Thread weiterleiten."""
         from PySide6.QtCore import QTimer as _QTimer
 
-        _QTimer.singleShot(0, lambda: self._show_ref_failed_popup(str(axis)))
+        _QTimer.singleShot(
+            0,
+            self,
+            lambda a=axis: self._show_ref_failed_popup(str(a)),
+        )
 
     def _show_ref_failed_popup(self, axis: str) -> None:
         """Zeigt Hinweis, dass SETREF kein ACK erhalten hat."""

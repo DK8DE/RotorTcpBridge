@@ -568,23 +568,23 @@ SPECS_DATA: list[dict] = [
         "name": "SETPOSDG",
         "kind": "float",
         "min_value": 0.0,
-        "max_value": 360.0,
+        "max_value": 720.0,
         "decimals": 2,
         "step": 0.01,
         "default": 0.0,
-        "help_text": "Positionsfahrt in Grad starten. Zielwinkel z.B. 160,00. Bei kleinen Schritten ARRTOL evtl. größer wählen.",
-        "help_text_en": "Start position move in degrees. Target angle e.g. 160.00. For small steps increase ARRTOL if needed.",
+        "help_text": "Positionsfahrt in Grad starten. Ziel 0…MAXDG (bei MAXDG>360 z. B. Overlap 370° bis 720°). Bei kleinen Schritten ARRTOL evtl. größer wählen.",
+        "help_text_en": "Start position move in degrees. Target 0…MAXDG (with MAXDG>360 e.g. overlap 370° up to 720°). For small steps increase ARRTOL if needed.",
     },
     {
         "name": "SETPOSCC",
         "kind": "float",
         "min_value": 0.0,
-        "max_value": 360.0,
+        "max_value": 720.0,
         "decimals": 2,
         "step": 0.01,
         "default": 0.0,
-        "help_text": "Kompass-Soll in Grad (Anzeige), keine Positionsfahrt. Optional ``Winkel;Rotor-ID`` (z.B. 151,30;20) für AZ/EL-Zuordnung bei Ziel PC-Master.",
-        "help_text_en": "Compass target in degrees (display only), no position move. Optional ``angle;rotor_id`` (e.g. 151,30;20) to pick AZ vs EL when destination is the PC master.",
+        "help_text": "Kompass-Soll in Grad (Anzeige), keine Positionsfahrt. Ziel 0…MAXDG. Optional ``Winkel;Rotor-ID`` (z.B. 151,30;20) für AZ/EL-Zuordnung bei Ziel PC-Master.",
+        "help_text_en": "Compass target in degrees (display only), no position move. Target 0…MAXDG. Optional ``angle;rotor_id`` (e.g. 151,30;20) to pick AZ vs EL when destination is the PC master.",
     },
     {
         "name": "SETID",
@@ -666,8 +666,8 @@ SPECS_DATA: list[dict] = [
         "decimals": 2,
         "step": 0.01,
         "default": 360.0,
-        "help_text": "Max-Winkel setzen. Typisch 360,00; Absolut-Encoder oft >360 (z. B. 430).",
-        "help_text_en": "Set maximum angle. Typically 360.00; absolute encoders often >360 (e.g. 430).",
+        "help_text": "Max-Winkel setzen. Typisch 360,00; Encoder Typ 1/2/3 bis 720° (Overlap, z. B. 420).",
+        "help_text_en": "Set maximum angle. Typically 360.00; encoder types 1/2/3 up to 720° (overlap, e.g. 420).",
     },
     {
         "name": "GETMAXDG",
@@ -1708,6 +1708,34 @@ SPECS_DATA: list[dict] = [
         "params_literal": "0",
         "help_text": "Aktuell gewählte Antenne (1–3) vom AZ-Rotor lesen.",
         "help_text_en": "Read currently selected antenna (1–3) from the AZ rotor.",
+    },
+    {
+        "name": "SETWLAN",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "SoftAP für Web-OTA: 1 = ein, 0 = aus. Nur SoftAP (kein STA). "
+            "SSID Rotor_<UID> (MAC SoftAP Bytes 3–5), Passwort Rotorconfig. "
+            "Nicht persistent — nach Reboot immer aus. Web: http://192.168.4.1 "
+            "(HTTP Basic admin / Rotorconfig)."
+        ),
+        "help_text_en": (
+            "SoftAP for web OTA: 1 = on, 0 = off. SoftAP only (no STA). "
+            "SSID Rotor_<UID> (SoftAP MAC bytes 3–5), password Rotorconfig. "
+            "Not persistent — always off after reboot. Web: http://192.168.4.1 "
+            "(HTTP Basic admin / Rotorconfig)."
+        ),
+    },
+    {
+        "name": "GETWLAN",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "SoftAP-Status lesen. 0 = aus, 1 = ein.",
+        "help_text_en": "Read SoftAP status. 0 = off, 1 = on.",
     },
 ]
 

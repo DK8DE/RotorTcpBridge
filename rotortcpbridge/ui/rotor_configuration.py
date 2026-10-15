@@ -74,6 +74,7 @@ _BLOCK1_DEFS = [
     ("cmd.label_homing_timeout", "SETHOMETIMEOUT", "GETHOMETIMEOUT"),
     ("cmd.label_home_pos", "SETHOMEPOS", "GETHOMEPOS"),
     ("cmd.label_max_angle", "SETMAXDG", "GETMAXDG"),
+    ("cmd.label_wlan", "SETWLAN", "GETWLAN"),
 ]
 
 # Block 2
@@ -126,6 +127,7 @@ _PARAM_SPEC = {
     "SETHOMEPOS": (0, 720, "°", False, False),
     "SETMINPWM": (15, 100, "%", False, False),
     "SETMAXDG": (0, 720, "°", False, False),
+    "SETWLAN": (0, 1, "", False, False),
     "SETDGCAL": (-360, 360, "°", False, False),
     "SETIWARN": (100, 10000, "mA", True, False),
     "SETIMAX": (100, 10000, "mA", True, False),
@@ -151,11 +153,13 @@ _INTEGER_PERCENT_SET_CMDS = frozenset(
 # SET mit Dezimalwert 0..1 (kein int()-Truncate wie bei Homing-Winkeln).
 _FLOAT_01_SET_CMDS = frozenset({"SETHOMEBLSCALE"})
 # SET mit Dezimal-Winkel (Nachkommastellen behalten).
-_FLOAT_ANGLE_SET_CMDS = frozenset({"SETDGCAL", "SETHOMEPOS"})
+_FLOAT_ANGLE_SET_CMDS = frozenset({"SETDGCAL", "SETHOMEPOS", "SETMAXDG"})
 
 # Spezielle Steuerelemente statt freier Zahleneingabe
 _PARAM_COMBO_SET_CMDS = frozenset({"SETROTORTYPE", "SETENCTYPE"})
-_PARAM_CHECK_SET_CMDS = frozenset({"SETWINDENABLE", "SETSWAPTEMP", "SETHOMERETURN"})
+_PARAM_CHECK_SET_CMDS = frozenset(
+    {"SETWINDENABLE", "SETSWAPTEMP", "SETHOMERETURN", "SETWLAN"}
+)
 
 # Dropdown-Optionen: (Wert, i18n-Key)
 _PARAM_COMBO_OPTIONS: dict[str, tuple[tuple[int, str], ...]] = {
@@ -294,7 +298,7 @@ class CommandButtonsWindow(QDialog):
         self.setWindowTitle(t("cmd.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setFixedSize(730, 778)
+        self.setFixedSize(730, 798)
 
         self._backup_state: Optional[dict] = None
         self._restore_state: Optional[dict] = None
@@ -754,6 +758,11 @@ class CommandButtonsWindow(QDialog):
         if cmd == "SETID":
             self._id_change_combo_index = max(0, self.cb_dst.currentIndex())
             self._slave_renumber_old_snap = int(dst)
+        if cmd in ("SETPOSDG", "SETPOSCC"):
+            warn = self._warn_if_az_target_above_max(params)
+            if warn:
+                QMessageBox.warning(self, "Befehl", warn)
+                return
         try:
 
             def done(tel, err):
@@ -770,6 +779,11 @@ class CommandButtonsWindow(QDialog):
                     str(getattr(tel, "params", "") or ""),
                     "",
                 )
+                if cmd == "SETMAXDG" and hasattr(self.ctrl, "request_max_deg"):
+                    try:
+                        self.ctrl.request_max_deg()
+                    except Exception:
+                        pass
                 if cmd == "SETID":
                     try:
                         nid = int(float(str(params).replace(",", ".")))
@@ -1443,6 +1457,30 @@ class CommandButtonsWindow(QDialog):
         except (ValueError, TypeError):
             return None
 
+    def _warn_if_az_target_above_max(self, params: str) -> str | None:
+        """Warnung wenn SETPOSDG/SETPOSCC über GETMAXDG bzw. Bridge-Cache liegt."""
+        try:
+            raw = str(params or "").strip().replace(" ", "").split(";")[0]
+            tgt = float(raw.replace(",", "."))
+        except (ValueError, TypeError):
+            return None
+        max_rotor = self._rotor_angle_from_ui()
+        if max_rotor is None:
+            try:
+                from ..angle_utils import az_max_d10_from_axis
+
+                max_rotor = float(az_max_d10_from_axis(getattr(self.ctrl, "az", None))) / 10.0
+            except Exception:
+                max_rotor = None
+        if max_rotor is None:
+            return None
+        if tgt > float(max_rotor) + 1e-9:
+            return (
+                f"Ziel {tgt:g}° liegt über dem Max-Winkel ({max_rotor:g}°). "
+                "Bitte SETMAXDG erhöhen oder kleineren Winkel wählen."
+            )
+        return None
+
     def _validate_and_convert_param(self, cmd: str, raw: str) -> tuple[str | None, str | None]:
         """Prüft den Wert; konvertiert mA→mV (Strom) bzw. s→ms (Timeout).
         Returns (params_to_send, error_msg); bei Ok ist error_msg None."""
@@ -1570,6 +1608,12 @@ class CommandButtonsWindow(QDialog):
                 val = getattr(tel, "params", "") or params
                 try:
                     self.ctrl.apply_el_rotor_type_from_value(val, dst=int(dst), reread=True)
+                except Exception:
+                    pass
+            if cmd == "SETMAXDG" and hasattr(self.ctrl, "request_max_deg"):
+                # Nach Set: Bridge-Cache + Overlap-UI (Kürzerer Weg) aktualisieren
+                try:
+                    self.ctrl.request_max_deg()
                 except Exception:
                     pass
             self.sig_send_result.emit(

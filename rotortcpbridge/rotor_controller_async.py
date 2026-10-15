@@ -794,10 +794,21 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             except Exception:
                                 pass
                         self.log.write("INFO", f"{axis_name} referenziert")
-                        # Falls Ziel bereits gesetzt ist, erneut anstoßen
+                        # Falls Ziel bereits gesetzt ist, erneut anstoßen.
+                        # AZ: shortest_path=True bei MAXDG>360 — sonst wickelt
+                        # resolve_external_az_d10 Overlap-Ziele (z. B. 367°) auf 0…360 (7°)
+                        # und löst nach erfolgreicher Kurzfahrt den langen Rückweg aus.
                         if abs(axis_state.target_d10) > 0:
                             if axis_name == "AZ":
-                                self.set_az_from_spid(axis_state.target_d10)
+                                try:
+                                    from .angle_utils import az_extended_range_active
+
+                                    use_short = bool(az_extended_range_active(axis_state))
+                                except Exception:
+                                    use_short = False
+                                self.set_az_from_spid(
+                                    axis_state.target_d10, shortest_path=use_short
+                                )
                             else:
                                 self.set_el_from_spid(axis_state.target_d10)
                     else:
@@ -936,6 +947,11 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             max_d10 = int(round(float(v) * 10.0))
                         if max_d10 <= 0:
                             max_d10 = 3600
+                        try:
+                            prev_max = int(getattr(axis_state, "pos_max_d10", 3600) or 3600)
+                        except Exception:
+                            prev_max = 3600
+                        was_known = bool(getattr(self, "_max_deg_known", False))
                         axis_state.pos_max_d10 = max_d10
                         # Erweiterter Bereich (>360°): lineare Positionsrechnung, kein Kreis-Wrap
                         axis_state.position_wrap_360 = max_d10 <= 3600
@@ -944,6 +960,13 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             self.drive_ready()
                         except Exception:
                             pass
+                        if (not was_known) or prev_max != max_d10:
+                            cb = getattr(self, "on_az_max_deg_changed", None)
+                            if callable(cb):
+                                try:
+                                    cb()
+                                except Exception:
+                                    pass
                     return
                 # Hom-/Parkwinkel (GETHOMEPOS) — Wire: Grad; intern 0,1°
                 if tel.cmd.startswith("ACK_GETHOMEPOS"):

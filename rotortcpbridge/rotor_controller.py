@@ -208,6 +208,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.on_antenna_dipoles_changed: Optional[Callable[[], None]] = None
         self.on_antenna_names_changed: Optional[Callable[[], None]] = None
         self.on_encoder_type_changed: Optional[Callable[[], None]] = None
+        self.on_az_max_deg_changed: Optional[Callable[[], None]] = None
         # GETENCTYPE (1=Motor, 2=Ring, 3=Absolut R&S) — einmal pro Verbindung
         self.encoder_type: Optional[int] = None
         self.encoder_type_known: bool = False
@@ -2208,8 +2209,21 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     max_d10 = int(deg_to_d10(v))
                     if max_d10 <= 0:
                         max_d10 = 3600
+                    try:
+                        prev_max = int(getattr(axis, "pos_max_d10", 3600) or 3600)
+                    except Exception:
+                        prev_max = 3600
+                    was_known = bool(getattr(self, "_max_deg_known", False))
                     axis.pos_max_d10 = max_d10
                     axis.position_wrap_360 = max_d10 <= 3600
+                    self._max_deg_known = True
+                    if (not was_known) or prev_max != max_d10:
+                        cb = getattr(self, "on_az_max_deg_changed", None)
+                        if callable(cb):
+                            try:
+                                cb()
+                            except Exception:
+                                pass
                 except Exception:
                     pass
                 try:

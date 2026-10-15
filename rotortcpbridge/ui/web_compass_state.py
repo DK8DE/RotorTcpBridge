@@ -14,9 +14,11 @@ from ..angle_utils import (
     az_pos_deg_from_d10,
     clamp_el,
     el_max_deg_from_rotor_type,
+    normalize_az_soll_display_input,
     om_beam_contributions_per_sector,
     raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
+    rotor_deg_from_display_exact,
     shortest_delta_az_rotor_deg,
     wrap_deg,
 )
@@ -132,9 +134,10 @@ def web_apply_set_az_display(mw: Any, deg: float, *, exact: bool) -> None:
     antenna_idx = max(0, min(2, int(ui.get("compass_antenna", 0))))
     dipole = mw._antenna_dipole_enabled(antenna_idx)
     cur_rotor = raw_rotor_az_deg_from_axis(getattr(mw.ctrl, "az", None))
+    max_d10 = az_max_d10_from_axis(getattr(mw.ctrl, "az", None))
     if exact:
-        display = float(deg)
-        rotor_deg = wrap_deg(display - float(off))
+        display = normalize_az_soll_display_input(float(deg), float(off), max_d10)
+        rotor_deg = rotor_deg_from_display_exact(display, float(off), max_d10)
     else:
         display = wrap_deg(deg)
         rotor_deg = rotor_az_for_display_bearing(
@@ -143,7 +146,7 @@ def web_apply_set_az_display(mw: Any, deg: float, *, exact: bool) -> None:
             cur_rotor,
             dipole=dipole,
             last_rotor_az=getattr(mw.ctrl, "az_dipole_last_rotor_az", None) if dipole else None,
-            max_deg=float(az_max_d10_from_axis(getattr(mw.ctrl, "az", None))) / 10.0,
+            max_deg=float(max_d10) / 10.0,
         )
     try:
         if dipole:
@@ -567,6 +570,8 @@ def get_web_compass_payload(mw: Any) -> dict:
             "ist_needle": ist_needle if ist_needle is not None else ist,
             "soll": soll,
             "soll_needle": soll_needle if soll_needle is not None else soll,
+            "rotor_deg": float(rotor_raw) if rotor_raw is not None else None,
+            "max_deg": float(max_d10) / 10.0,
             "moving": moving,
             "online": bool(getattr(mw.ctrl.az, "online", False)),
             "referenced": bool(getattr(mw.ctrl.az, "referenced", False)),

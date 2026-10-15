@@ -127,7 +127,10 @@ class ErrorPopupHandler:
                 else:
                     self._pending_el = False
 
-        QTimer.singleShot(0, _show_and_clear)
+        if parent is not None:
+            QTimer.singleShot(0, parent, _show_and_clear)
+        else:
+            QTimer.singleShot(0, _show_and_clear)
 
 
 class WarningPopupHandler:
@@ -235,4 +238,7 @@ class WarningPopupHandler:
                 else:
                     self._pending_el = False
 
-        QTimer.singleShot(0, _show_and_clear)
+        if parent is not None:
+            QTimer.singleShot(0, parent, _show_and_clear)
+        else:
+            QTimer.singleShot(0, _show_and_clear)

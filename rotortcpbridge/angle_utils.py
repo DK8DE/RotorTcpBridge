@@ -159,6 +159,79 @@ def az_max_d10_from_axis(az_axis) -> int:
     return m if m > 0 else 3600
 
 
+def az_extended_range_active(az_axis) -> bool:
+    """True wenn AZ-MAXDG > 360° (Overlap / 720°-Betrieb), Encoder-Typ unabhängig."""
+    return az_max_d10_from_axis(az_axis) > 3600
+
+
+def normalize_az_soll_display_input(
+    v: float, off_az: float = 0.0, max_d10: int = 3600
+) -> float:
+    """SOLL-Anzeige: bei MAXDG>360 ohne Wrap auf 0..(max+Versatz), sonst 0..360."""
+    try:
+        mx = int(max_d10)
+    except Exception:
+        mx = 3600
+    if mx <= 0:
+        mx = 3600
+    if mx > 3600:
+        max_deg = float(mx) / 10.0
+        hi = max_deg + max(0.0, float(off_az))
+        return max(0.0, min(hi, float(v)))
+    return wrap_deg(float(v))
+
+
+def rotor_deg_from_display_exact(
+    display: float, off_az: float, max_d10: int = 3600
+) -> float:
+    """Anzeige → Rotor exakt (Versatz abziehen), ohne ±360-Umschaltung (kürzester Weg)."""
+    try:
+        mx = int(max_d10)
+    except Exception:
+        mx = 3600
+    if mx <= 0:
+        mx = 3600
+    rotor = float(display) - float(off_az)
+    if mx > 3600:
+        max_deg = float(mx) / 10.0
+        if rotor < 0.0:
+            rotor += 360.0
+        return max(0.0, min(max_deg, rotor))
+    return wrap_deg(rotor)
+
+
+def favorite_rotor_az_for_store(az_axis, pos_d10: int | None = None) -> float:
+    """Rotor-Azimut für Favoriten-Speichern (ohne Wrap bei erweitertem Bereich)."""
+    mx = az_max_d10_from_axis(az_axis)
+    if pos_d10 is None:
+        try:
+            pos_d10 = int(getattr(az_axis, "pos_d10", 0) or 0)
+        except Exception:
+            pos_d10 = 0
+    return az_pos_deg_from_d10(int(pos_d10), max_d10=mx)
+
+
+def favorite_rotor_az_for_drive(stored_az: float, az_axis) -> float:
+    """Gespeicherten Favoriten-Azimut für set_az_deg aufbereiten.
+
+    Legacy-Favoriten (0…360) bleiben gewrappt; bei MAXDG>360 und gespeichertem
+    Wert >360° bleibt die Overlap-Repräsentation erhalten.
+    """
+    mx = az_max_d10_from_axis(az_axis)
+    try:
+        v = float(stored_az)
+    except Exception:
+        v = 0.0
+    if mx > 3600:
+        max_deg = float(mx) / 10.0
+        if v < 0.0:
+            v = 0.0
+        elif v > max_deg:
+            v = max_deg
+        return v
+    return wrap_deg(v)
+
+
 def az_pos_deg_from_d10(
     pos_d10: int, smooth_d10f: float | None = None, max_d10: int = 3600
 ) -> float:

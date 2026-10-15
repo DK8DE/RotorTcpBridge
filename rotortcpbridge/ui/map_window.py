@@ -35,6 +35,8 @@ from ..angle_utils import (
     az_pos_deg_from_d10,
     clamp_el,
     el_max_deg_from_rotor_type,
+    favorite_rotor_az_for_drive,
+    favorite_rotor_az_for_store,
     fmt_deg,
     raw_rotor_az_deg_from_axis,
     rotor_az_for_display_bearing,
@@ -850,7 +852,9 @@ class MapWindow(QDialog):
         data = self._cb_fav.itemData(idx)
         if not isinstance(data, dict) or "az" not in data or "el" not in data:
             return
-        rotor_az = wrap_deg(float(data["az"]))
+        rotor_az = favorite_rotor_az_for_drive(
+            float(data["az"]), getattr(self.ctrl, "az", None)
+        )
         rotor_el = self._clamp_el(float(data["el"]))
         try:
             self.ctrl.set_az_deg(rotor_az, force=True)
@@ -878,13 +882,13 @@ class MapWindow(QDialog):
             return
         if az_d10 is None:
             return
-        az_deg = float(az_d10) / 10.0
+        az_deg = favorite_rotor_az_for_store(getattr(self.ctrl, "az", None), int(az_d10))
         try:
             el_d10 = getattr(self.ctrl.el, "pos_d10", None) if hasattr(self.ctrl, "el") else None
         except Exception:
             el_d10 = None
         el_deg = self._clamp_el(float(el_d10 or 0) / 10.0)
-        fav = {"name": name[:15], "az": wrap_deg(az_deg), "el": el_deg}
+        fav = {"name": name[:15], "az": az_deg, "el": el_deg}
         if "ui" not in self.cfg:
             self.cfg["ui"] = {}
         favs = self._get_favorites()

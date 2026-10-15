@@ -58,6 +58,7 @@ _EXCLUDED_SET = frozenset(
         "CLRSTAT",
         "DELWARN",
         "JOG",
+        "SETWLAN",  # SoftAP nicht persistent / kein Backup
     }
 )
 

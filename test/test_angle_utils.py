@@ -170,6 +170,13 @@ def test_pick_nearest_and_shortest_target_extended() -> None:
     assert resolve_external_az_d10(
         3700, current_d10=500, max_d10=4300, shortest_path=True
     ) == 3700
+    # Regression: GETREF-Re-Fire ohne shortest wickelt 367°→7° (langer Rückweg)
+    assert resolve_external_az_d10(
+        3670, current_d10=3670, max_d10=7200, shortest_path=False
+    ) == 70
+    assert resolve_external_az_d10(
+        3670, current_d10=3670, max_d10=7200, shortest_path=True
+    ) == 3670
     # Genau 360° und 720° (Pst/Big RAS) beibehalten
     assert resolve_external_az_d10(
         3600, current_d10=100, max_d10=7200, shortest_path=True
@@ -287,3 +294,76 @@ def test_antenna_dipole_enabled_hw_false_keeps_profile_flag() -> None:
     assert antenna_dipole_enabled(_Az(), cfg, 1) is True
     assert antenna_dipole_enabled(_Az(), cfg, 2) is True
     assert antenna_dipole_enabled(_Az(), {"ui": {}}, 0) is False
+
+
+def test_az_extended_range_and_exact_display_helpers() -> None:
+    from rotortcpbridge.angle_utils import (
+        az_extended_range_active,
+        favorite_rotor_az_for_drive,
+        favorite_rotor_az_for_store,
+        normalize_az_soll_display_input,
+        rotor_deg_from_display_exact,
+    )
+
+    class _Az360:
+        pos_max_d10 = 3600
+        pos_d10 = 900
+
+    class _Az720:
+        pos_max_d10 = 7200
+        pos_d10 = 4300
+
+    assert az_extended_range_active(_Az360()) is False
+    assert az_extended_range_active(_Az720()) is True
+    assert az_extended_range_active(None) is False
+
+    assert normalize_az_soll_display_input(370.0, 0.0, 3600) == pytest.approx(10.0)
+    assert normalize_az_soll_display_input(430.0, 10.0, 7200) == pytest.approx(430.0)
+    assert normalize_az_soll_display_input(800.0, 0.0, 7200) == pytest.approx(720.0)
+
+    assert rotor_deg_from_display_exact(70.0, 10.0, 3600) == pytest.approx(60.0)
+    assert rotor_deg_from_display_exact(430.0, 10.0, 7200) == pytest.approx(420.0)
+    assert rotor_deg_from_display_exact(5.0, 10.0, 7200) == pytest.approx(355.0)
+
+    assert favorite_rotor_az_for_store(_Az720()) == pytest.approx(430.0)
+    assert favorite_rotor_az_for_store(_Az360()) == pytest.approx(90.0)
+    assert favorite_rotor_az_for_drive(430.0, _Az720()) == pytest.approx(430.0)
+    assert favorite_rotor_az_for_drive(430.0, _Az360()) == pytest.approx(70.0)
+    assert favorite_rotor_az_for_drive(90.0, _Az720()) == pytest.approx(90.0)
+
+
+def test_web_apply_set_az_display_exact_extended() -> None:
+    from types import SimpleNamespace
+
+    from rotortcpbridge.ui.web_compass_state import web_apply_set_az_display
+
+    class _Az:
+        pos_max_d10 = 7200
+        pos_d10 = 3550
+
+    sent: list[float] = []
+
+    class _Ctrl:
+        az = _Az()
+        az_dipole_last_rotor_az = None
+        az_dipole_display_bearing = None
+
+        def set_az_deg(self, deg: float, force: bool = True) -> None:
+            sent.append(float(deg))
+
+    mw = SimpleNamespace(
+        cfg={"ui": {"compass_antenna": 0}},
+        ctrl=_Ctrl(),
+        _web_cc_latch_az_d10=None,
+        _web_cc_latch_az_ts=0.0,
+        _get_antenna_offset_az=lambda: 10.0,
+        _antenna_dipole_enabled=lambda _i: False,
+    )
+    web_apply_set_az_display(mw, 430.0, exact=True)
+    assert sent and sent[-1] == pytest.approx(420.0)
+
+    sent.clear()
+    mw._get_antenna_offset_az = lambda: 0.0
+    web_apply_set_az_display(mw, 10.0, exact=False)
+    # Ist ~355°, Offset 0 → kürzester Weg 370° (nicht 10°)
+    assert sent and sent[-1] == pytest.approx(370.0)

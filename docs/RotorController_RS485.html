@@ -122,7 +122,7 @@
 <body>
 <div class="section" id="intro">
   <h1>Rotor‑Controller – RS485‑Anleitung &amp; Firmware‑Dokumentation (DE)</h1>
-  <p class="muted">Stand: 2026-10-03 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler &amp; Warnungen. Die <b>Befehlstabelle</b> ist mit dem RotorTcpBridge‑Katalog abgeglichen (<code>command_catalog.py</code> / Befehlsfenster). Diese Datei ist mit <code>RotorTcpBridge/Protokoll/RotorController_RS485.md</code> abgestimmt.</p>
+  <p class="muted">Stand: 2026-10-15 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler &amp; Warnungen. Die <b>Befehlstabelle</b> ist mit dem RotorTcpBridge‑Katalog abgeglichen (<code>command_catalog.py</code> / Befehlsfenster / Rotorkonfiguration). Diese Datei ist mit <code>RotorTcpBridge/docs/RotorController_RS485.md</code> abgestimmt.</p>
 </div>
 <main>
 <section class="toc" id="toc">
@@ -206,10 +206,11 @@
 <h2>2. Encoder‑Varianten </h2>
 <p>Es gibt drei Encoder‑Varianten. Die Auswahl ist über RS485 mit <b>SETENCTYPE 1/2/3</b> möglich. Bei einem Encoder‑Wechsel müssen Counts, Homing und ggf. Max‑Winkel angepasst werden.</p>
 <ul>
-  <li><b>1 = Encoder an der Motorachse (Axis)</b>: typisch ca. <b>50000 Counts pro 360°</b> (am Motor). Mechanisch oft einfacher, aber das Getriebe kann beim Richtungswechsel Spiel haben.</li>
-  <li><b>2 = Ring‑Encoder an der Ausgangswelle</b>: typisch ca. <b>160000 Counts pro 360°</b>. Sehr feine Positionsauflösung, da direkt an der Rotor‑Achse gemessen wird.</li>
-  <li><b>3 = Absolutwert‑Encoder R&amp;S</b>: liefert absolute Winkel; Homing entfällt bzw. ist anders. Nullpunkt über <b>SETENCZERO</b>. Max‑Winkel oft <b>&gt;360°</b> (z.&nbsp;B. 430) — siehe <code>SETMAXDG</code>.</li>
+  <li><b>1 = Encoder an der Motorachse (Axis)</b>: typisch ca. <b>50000 Counts pro 360°</b> (am Motor). Mechanisch oft einfacher, aber das Getriebe kann beim Richtungswechsel Spiel haben. Max‑Winkel über <code>SETMAXDG</code> bis <b>720°</b> (Overlap) möglich.</li>
+  <li><b>2 = Ring‑Encoder an der Ausgangswelle</b>: typisch ca. <b>160000 Counts pro 360°</b>. Sehr feine Positionsauflösung, da direkt an der Rotor‑Achse gemessen wird. Max‑Winkel über <code>SETMAXDG</code> bis <b>720°</b> (Overlap) möglich.</li>
+  <li><b>3 = Absolutwert‑Encoder R&amp;S</b>: liefert absolute Winkel; Homing entfällt bzw. ist anders. Nullpunkt über <b>SETENCZERO</b>. Max‑Winkel oft <b>&gt;360°</b> (z.&nbsp;B. 430…720) — siehe <code>SETMAXDG</code>.</li>
 </ul>
+<p><b>Overlap / erweiterter Azimut:</b> Bei <code>SETMAXDG</code> <b>&gt;360</b> (alle Encoder‑Typen 1/2/3, bis 720°) können Zielwinkel im Overlap‑Bereich angefahren werden (z.&nbsp;B. 370° statt 10° über den kurzen Weg). Bridge‑UI und Kompass nutzen dann den erweiterten Anzeigebereich.</p>
 <p><b>Auswirkung in der Firmware:</b> Homing‑Rampen, erwartete Counts pro Umdrehung sowie einige Schutz‑ und Auswertefunktionen verwenden die Counts‑pro‑Umdrehung‑Annahme der gewählten Variante. Daher ändert sich das Verhalten spürbar, wenn die Encoder‑Variante gewechselt wird.</p>
 <p><b>Getriebespiel‑Kompensation beim Motor‑Encoder:</b> Wenn der Encoder am Motor sitzt (Typ&nbsp;1), wird das Getriebespiel beim Homing durch die Firmware kompensiert. Dazu wird die Referenz immer mit einer definierten Anfahr‑Richtung und einer definierten Überfahr‑/Rückzugslogik angefahren, damit der Nullpunkt trotz Spiel reproduzierbar bleibt.</p>
 </section>
@@ -1049,6 +1050,16 @@
 <td><code>#20:0:ACK_SETENCZERO:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETENCZERO:REASON:CS$</code></span></td>
 <td><b><a href="#cmd-SETENCZERO">SETENCZERO</a></b><br>Absolut-Encoder Null an aktueller Position setzen (Param <code>1</code>).</td>
 </tr>
+<tr>
+<td><code>#0:20:GETWLAN:...:CS$</code></td>
+<td><code>#20:0:ACK_GETWLAN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETWLAN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETWLAN">GETWLAN</a></b><br>SoftAP-Status lesen (0 = aus, 1 = ein).</td>
+</tr>
+<tr>
+<td><code>#0:20:SETWLAN:...:CS$</code></td>
+<td><code>#20:0:ACK_SETWLAN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETWLAN:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETWLAN">SETWLAN</a></b><br>SoftAP für Web-OTA ein/aus (1/0). Nicht persistent.</td>
+</tr>
 </table>
 <div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
 </section>
@@ -1181,8 +1192,8 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <hr>
 <h4 id="cmd-SETPOSDG"><code>SETPOSDG</code></h4>
 <p><b>Was es macht:</b> Positionsfahrt in Grad starten.</p>
-<p><b>Details:</b> Parameter: Zielwinkel (z.B. 160,00).</p>
-<p><b>Gute Werte:</b> Zielwinkel in Grad, z.B. <code>160,00</code>. Bei sehr kleinen Schritten (0,01°) kann es sinnvoll sein, die Ankunftstoleranz (<code>ARRTOL</code>) etwas grösser zu wählen, damit die Regelung nicht „zittert“.</p>
+<p><b>Details:</b> Parameter: Zielwinkel in Grad (0…<code>MAXDG</code>). Bei <code>MAXDG</code>&nbsp;&gt;&nbsp;360 (Overlap, bis 720°) sind Ziele im erweiterten Bereich erlaubt (z.&nbsp;B. 370°).</p>
+<p><b>Gute Werte:</b> Zielwinkel in Grad, z.B. <code>160,00</code> oder bei Overlap <code>420,00</code>. Bei sehr kleinen Schritten (0,01°) kann es sinnvoll sein, die Ankunftstoleranz (<code>ARRTOL</code>) etwas grösser zu wählen, damit die Regelung nicht „zittert“.</p>
 <hr>
 <h4 id="cmd-SETPOSCC"><code>SETPOSCC</code></h4>
 <p><b>Was es macht:</b> Nur Anzeige-/Vorschau-Soll melden (Encoder am Display-Controller) — <b>keine</b> Positionsfahrt am Rotor.</p>
@@ -1602,7 +1613,7 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <hr>
 <h4 id="cmd-SETMAXDG"><code>SETMAXDG</code></h4>
 <p><b>Was es macht:</b> Max-Winkel setzen.</p>
-<p><b>Details:</b> Typisch 360,00. Bei Absolut‑Encoder (ENCTYPE&nbsp;3) oft <b>&gt;360</b> (z.&nbsp;B. 430).</p>
+<p><b>Details:</b> Typisch 360,00. Für Encoder‑Typen <b>1, 2 und 3</b> bis <b>720°</b> (Overlap, z.&nbsp;B. 420). Wird gespeichert (<code>amax</code>). Nach Änderung <code>GETMAXDG</code> und ggf. Parkwinkel (<code>SETHOMEPOS</code>) prüfen.</p>
 <hr>
 <h4 id="cmd-GETDGOFFSET"><code>GETDGOFFSET</code></h4>
 <p><b>Was es macht:</b> Offset (Grad) lesen.</p>
@@ -1883,6 +1894,24 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <h4 id="cmd-SETWINDCOH"><code>SETWINDCOH</code></h4>
 <p><b>Was es macht:</b> Wind: Mindest-Kohärenz (%) setzen.</p>
 <p><b>Details:</b> Typisch 50..70%.</p>
+<hr>
+<h3>WLAN / SoftAP (Web-OTA)</h3>
+<p>SoftAP am Rotor‑ESP32 für Firmware‑Update über den Browser. <b>Nur SoftAP</b> (kein STA/Client-WLAN). Nicht persistent: nach Reboot immer aus. In der Bridge unter Einstellungen → Update bzw. Rotorkonfiguration (WLAN).</p>
+<h4 id="cmd-GETWLAN"><code>GETWLAN</code></h4>
+<p><b>Was es macht:</b> SoftAP-Status lesen.</p>
+<p><b>Details:</b> Antwort <code>0</code> = SoftAP aus, <code>1</code> = SoftAP ein. Parameter typisch <code>0</code>.</p>
+<hr>
+<h4 id="cmd-SETWLAN"><code>SETWLAN</code></h4>
+<p><b>Was es macht:</b> SoftAP für Web-OTA ein- oder ausschalten.</p>
+<p><b>Parameter:</b> <code>1</code> = SoftAP ein, <code>0</code> = SoftAP aus.</p>
+<p><b>Details:</b></p>
+<ul>
+<li>Nur SoftAP, kein STA.</li>
+<li>SSID: <code>Rotor_&lt;UID&gt;</code> (SoftAP-MAC Bytes 3–5 als UID).</li>
+<li>Passwort: <code>Rotorconfig</code>.</li>
+<li>Web-UI: <code>http://192.168.4.1</code> (HTTP Basic: Benutzer <code>admin</code>, Passwort <code>Rotorconfig</code>).</li>
+<li><b>Nicht persistent</b> — nach Neustart immer aus; nicht in Backup/Restore der Bridge enthalten.</li>
+</ul>
 <hr>
 <h3>Sonstiges</h3>
 <h4 id="cmd-JOG"><code>JOG</code></h4>
@@ -2294,7 +2323,7 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <hr>
 <h3 id="var-g_axisMaxDeg01"><code>g_axisMaxDeg01</code></h3>
 <p><b>Kurz:</b> Max-Winkel (0,01°)</p>
-<p class="muted"><b>Default:</b> <code>static int32_t g_axisMaxDeg01 = 36000;</code></p>
+<p class="muted"><b>Default:</b> <code>static int32_t g_axisMaxDeg01 = 36000;</code> (360,00°). Erlaubt bis <b>72000</b> (720°) für Overlap bei Encoder Typ 1/2/3.</p>
 <p><b>Speicherung:</b> Ja (Key <code>amax</code>). Ändern über RS485: <b>SETMAXDG/GETMAXDG</b>.</p>
 <hr>
 <h3 id="var-g_dgOffsetDeg01"><code>g_dgOffsetDeg01</code></h3>

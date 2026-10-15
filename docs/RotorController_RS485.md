@@ -1,6 +1,6 @@
 # Rotor‑Controller – RS485‑Anleitung & Firmware‑Dokumentation (DE)
 
-Stand: 2026-10-03 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler & Warnungen. Die **Befehlstabelle** ist mit dem RotorTcpBridge‑Katalog abgeglichen (`command_catalog.py` / Befehlsfenster). Diese Datei ist mit `RotorTcpBridge/Protokoll/RotorController_RS485.html` abgestimmt.
+Stand: 2026-10-15 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler & Warnungen. Die **Befehlstabelle** ist mit dem RotorTcpBridge‑Katalog abgeglichen (`command_catalog.py` / Befehlsfenster / Rotorkonfiguration). Diese Datei ist mit `RotorTcpBridge/docs/RotorController_RS485.html` abgestimmt.
 
 ## Inhaltsverzeichnis {#toc}
 
@@ -106,9 +106,11 @@ Im Beispiel ist der Fehlercode `16`. Die Checksumme ist `20 + 255 + 16 = 291`. D
 
 Es gibt drei Encoder‑Varianten. Die Auswahl ist über RS485 mit **SETENCTYPE 1/2/3** möglich. Bei einem Encoder‑Wechsel müssen Counts, Homing und ggf. Max‑Winkel angepasst werden.
 
-- **1 = Encoder an der Motorachse (Axis)**: typisch ca. **50000 Counts pro 360°** (am Motor). Mechanisch oft einfacher, aber das Getriebe kann beim Richtungswechsel Spiel haben.
-- **2 = Ring‑Encoder an der Ausgangswelle**: typisch ca. **160000 Counts pro 360°**. Sehr feine Positionsauflösung, da direkt an der Rotor‑Achse gemessen wird.
-- **3 = Absolutwert‑Encoder R&S**: liefert absolute Winkel; Homing entfällt bzw. ist anders. Nullpunkt über **SETENCZERO**. Max‑Winkel oft **>360°** (z. B. 430) — siehe `SETMAXDG`.
+- **1 = Encoder an der Motorachse (Axis)**: typisch ca. **50000 Counts pro 360°** (am Motor). Mechanisch oft einfacher, aber das Getriebe kann beim Richtungswechsel Spiel haben. Max‑Winkel über `SETMAXDG` bis **720°** (Overlap) möglich.
+- **2 = Ring‑Encoder an der Ausgangswelle**: typisch ca. **160000 Counts pro 360°**. Sehr feine Positionsauflösung, da direkt an der Rotor‑Achse gemessen wird. Max‑Winkel über `SETMAXDG` bis **720°** (Overlap) möglich.
+- **3 = Absolutwert‑Encoder R&S**: liefert absolute Winkel; Homing entfällt bzw. ist anders. Nullpunkt über **SETENCZERO**. Max‑Winkel oft **>360°** (z. B. 430…720) — siehe `SETMAXDG`.
+
+**Overlap / erweiterter Azimut:** Bei `SETMAXDG` **>360** (alle Encoder‑Typen 1/2/3, bis 720°) können Zielwinkel im Overlap‑Bereich angefahren werden (z. B. 370° statt 10° über den kurzen Weg). Bridge‑UI und Kompass nutzen dann den erweiterten Anzeigebereich.
 
 **Auswirkung in der Firmware:** Homing‑Rampen, erwartete Counts pro Umdrehung sowie einige Schutz‑ und Auswertefunktionen verwenden die Counts‑pro‑Umdrehung‑Annahme der gewählten Variante. Daher ändert sich das Verhalten spürbar, wenn die Encoder‑Variante gewechselt wird.
 
@@ -286,6 +288,8 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 | `#0:20:GETENCTYPE:...:CS$` | `#20:0:ACK_GETENCTYPE:...:<CS>$` oder: `#20:0:NAK_GETENCTYPE:REASON:CS$` | **[GETENCTYPE](#cmd-GETENCTYPE)** Encoder-Variante lesen: 1 = Achse/Motor, 2 = Ring, 3 = Absolutwert R&S. |
 | `#0:20:SETENCTYPE:...:CS$` | `#20:0:ACK_SETENCTYPE:...:<CS>$` oder: `#20:0:NAK_SETENCTYPE:REASON:CS$` | **[SETENCTYPE](#cmd-SETENCTYPE)** Encoder-Variante setzen (1, 2 oder 3). Nach Wechsel Homing/Counts prüfen. |
 | `#0:20:SETENCZERO:1:CS$` | `#20:0:ACK_SETENCZERO:1:<CS>$` oder: `#20:0:NAK_SETENCZERO:REASON:CS$` | **[SETENCZERO](#cmd-SETENCZERO)** Absolut-Encoder Null an aktueller Position setzen (Param `1`). |
+| `#0:20:GETWLAN:...:CS$` | `#20:0:ACK_GETWLAN:...:<CS>$` oder: `#20:0:NAK_GETWLAN:REASON:CS$` | **[GETWLAN](#cmd-GETWLAN)** SoftAP-Status lesen (0 = aus, 1 = ein). |
+| `#0:20:SETWLAN:...:CS$` | `#20:0:ACK_SETWLAN:...:<CS>$` oder: `#20:0:NAK_SETWLAN:REASON:CS$` | **[SETWLAN](#cmd-SETWLAN)** SoftAP für Web-OTA ein/aus (1/0). Nicht persistent. |
 
 [↑ Inhaltsverzeichnis](#toc)
 
@@ -423,9 +427,9 @@ Ungültige Werte → `NAK_SETROTORTYPE`. In der Bridge‑UI unter Parameter dire
 
 **Was es macht:** Positionsfahrt in Grad starten.
 
-**Details:** Parameter: Zielwinkel (z.B. 160,00).
+**Details:** Parameter: Zielwinkel in Grad (0…`MAXDG`). Bei `MAXDG` > 360 (Overlap, bis 720°) sind Ziele im erweiterten Bereich erlaubt (z. B. 370°).
 
-**Gute Werte:** Zielwinkel in Grad, z.B. `160,00`. Bei sehr kleinen Schritten (0,01°) kann es sinnvoll sein, die Ankunftstoleranz (`ARRTOL`) etwas grösser zu wählen, damit die Regelung nicht „zittert“.
+**Gute Werte:** Zielwinkel in Grad, z.B. `160,00` oder bei Overlap `420,00`. Bei sehr kleinen Schritten (0,01°) kann es sinnvoll sein, die Ankunftstoleranz (`ARRTOL`) etwas grösser zu wählen, damit die Regelung nicht „zittert“.
 
 ---
 
@@ -1251,7 +1255,7 @@ Pro Stufe gibt es 72 Bins × 2 Richtungen → typisch 12 Blöcke à 12 Werte; f�
 
 **Was es macht:** Max-Winkel setzen.
 
-**Details:** Typisch 360,00. Bei Absolut‑Encoder (ENCTYPE 3) oft **>360** (z. B. 430).
+**Details:** Typisch 360,00. Für Encoder‑Typen **1, 2 und 3** bis **720°** (Overlap, z. B. 420). Wird gespeichert (`amax`). Nach Änderung `GETMAXDG` und ggf. Parkwinkel (`SETHOMEPOS`) prüfen.
 
 ---
 
@@ -1815,6 +1819,33 @@ Ergänzung zu Abschnitt [„Encoder-Varianten“](#encoders): Counts für Ring/M
 
 ---
 
+### WLAN / SoftAP (Web-OTA)
+
+SoftAP am Rotor‑ESP32 für Firmware‑Update über den Browser. **Nur SoftAP** (kein STA/Client-WLAN). Nicht persistent: nach Reboot immer aus. In der Bridge unter Einstellungen → Update bzw. Rotorkonfiguration (WLAN).
+
+#### `GETWLAN` {#cmd-GETWLAN}
+
+**Was es macht:** SoftAP-Status lesen.
+
+**Details:** Antwort `0` = SoftAP aus, `1` = SoftAP ein. Parameter typisch `0`.
+
+---
+
+#### `SETWLAN` {#cmd-SETWLAN}
+
+**Was es macht:** SoftAP für Web-OTA ein- oder ausschalten.
+
+**Parameter:** `1` = SoftAP ein, `0` = SoftAP aus.
+
+**Details:**
+- Nur SoftAP, kein STA.
+- SSID: `Rotor_<UID>` (SoftAP-MAC Bytes 3–5 als UID).
+- Passwort: `Rotorconfig`.
+- Web-UI: `http://192.168.4.1` (HTTP Basic: Benutzer `admin`, Passwort `Rotorconfig`).
+- **Nicht persistent** — nach Neustart immer aus; nicht in Backup/Restore der Bridge enthalten.
+
+---
+
 ### Sonstiges
 
 #### `JOG` {#cmd-JOG}
@@ -1994,7 +2025,7 @@ Hier sind die Variablen in einfachen Worten erklärt. Wenn „gut“ genannt wir
 
 **Kurz:** Max-Winkel (0,01°)
 
-**Default:** `static int32_t g_axisMaxDeg01 = 36000;`
+**Default:** `static int32_t g_axisMaxDeg01 = 36000;` (360,00°). Erlaubt bis **72000** (720°) für Overlap bei Encoder Typ 1/2/3.
 
 **Speicherung:** Ja (Key `amax`). Ändern über RS485: **SETMAXDG/GETMAXDG**.
 

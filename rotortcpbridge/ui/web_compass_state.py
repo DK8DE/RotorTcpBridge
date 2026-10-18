@@ -368,6 +368,7 @@ def get_web_compass_payload(mw: Any) -> dict:
         beam_color = "rgba(80,160,255,0.28)"
 
     hide_homing = bool(getattr(mw.ctrl, "abs_encoder_no_homing", lambda: False)())
+    enable_az = bool(getattr(mw.ctrl, "enable_az", True))
     enable_el = bool(getattr(mw.ctrl, "enable_el", False))
     try:
         el_max = float(mw._el_max_deg())
@@ -546,6 +547,7 @@ def get_web_compass_payload(mw: Any) -> dict:
         pass
 
     return {
+        "enable_az": enable_az,
         "enable_el": enable_el,
         "rig": rig,
         "ref_visible": not hide_homing,
@@ -566,36 +568,36 @@ def get_web_compass_payload(mw: Any) -> dict:
         "om_available": web_aswatch_enabled(mw),
         "labels": labels,
         "az": {
-            "ist": ist,
-            "ist_needle": ist_needle if ist_needle is not None else ist,
-            "soll": soll,
-            "soll_needle": soll_needle if soll_needle is not None else soll,
-            "rotor_deg": float(rotor_raw) if rotor_raw is not None else None,
-            "max_deg": float(max_d10) / 10.0,
-            "moving": moving,
-            "online": bool(getattr(mw.ctrl.az, "online", False)),
-            "referenced": bool(getattr(mw.ctrl.az, "referenced", False)),
-            "ref_blink": bool(getattr(mw.ctrl.az, "ref_poll_active", False)),
-            "offset_deg": float(off),
-            "dipole": bool(dipole),
-            "opening_deg": opening,
-            "beam_overlay": bool(ui.get("compass_antenna_overlay", True)),
+            "ist": ist if enable_az else None,
+            "ist_needle": (ist_needle if ist_needle is not None else ist) if enable_az else None,
+            "soll": soll if enable_az else None,
+            "soll_needle": (soll_needle if soll_needle is not None else soll) if enable_az else None,
+            "rotor_deg": float(rotor_raw) if (enable_az and rotor_raw is not None) else None,
+            "max_deg": float(max_d10) / 10.0 if enable_az else 360.0,
+            "moving": moving if enable_az else False,
+            "online": bool(getattr(mw.ctrl.az, "online", False)) if enable_az else False,
+            "referenced": bool(getattr(mw.ctrl.az, "referenced", False)) if enable_az else False,
+            "ref_blink": bool(getattr(mw.ctrl.az, "ref_poll_active", False)) if enable_az else False,
+            "offset_deg": float(off) if enable_az else 0.0,
+            "dipole": bool(dipole) if enable_az else False,
+            "opening_deg": opening if enable_az else 0.0,
+            "beam_overlay": bool(ui.get("compass_antenna_overlay", True)) if enable_az else False,
             "beam_color": beam_color,
-            "heatmap_modes": modes,
-            "bins_cw": bins_cw,
-            "bins_ccw": bins_ccw,
-            "heatmap_scale": list(az_scale) if az_scale is not None else None,
-            "om_counts": om_counts,
-            "dwell_seconds": dwell,
-            "dwell_full": dwell_full,
-            "wind_visible": bool(wind_on),
-            "wind_dir": wdir,
-            "wind_kmh": wkmh,
-            "wind_mode": mode,
-            "temp_ambient": temp_amb,
-            "temp_motor": temp_mot,
-            "dgcal": dgcal_az,
-            **_web_pwm_fields(getattr(mw.ctrl, "az", None), enabled_axis=True),
+            "heatmap_modes": modes if enable_az else [],
+            "bins_cw": bins_cw if enable_az else None,
+            "bins_ccw": bins_ccw if enable_az else None,
+            "heatmap_scale": list(az_scale) if (enable_az and az_scale is not None) else None,
+            "om_counts": om_counts if enable_az else [],
+            "dwell_seconds": dwell if enable_az else [],
+            "dwell_full": dwell_full if enable_az else False,
+            "wind_visible": bool(wind_on) if enable_az else False,
+            "wind_dir": wdir if enable_az else None,
+            "wind_kmh": wkmh if enable_az else None,
+            "wind_mode": mode if enable_az else "",
+            "temp_ambient": temp_amb if enable_az else None,
+            "temp_motor": temp_mot if enable_az else None,
+            "dgcal": dgcal_az if enable_az else None,
+            **_web_pwm_fields(getattr(mw.ctrl, "az", None), enabled_axis=enable_az),
         },
         "el": {
             "ist": el_ist,
@@ -671,6 +673,8 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
                     pass
         return True
     if act == "set_az":
+        if not bool(getattr(mw.ctrl, "enable_az", True)):
+            return True
         mw._web_scan_active = False
         deg = float(data.get("deg"))
         web_apply_set_az_display(mw, deg, exact=bool(data.get("exact")))
@@ -688,6 +692,8 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
     if act == "set_pwm":
         axis = str(data.get("axis") or "az").strip().lower()
         if axis not in ("az", "el"):
+            return True
+        if axis == "az" and not bool(getattr(mw.ctrl, "enable_az", True)):
             return True
         if axis == "el" and not bool(getattr(mw.ctrl, "enable_el", False)):
             return True
@@ -713,6 +719,8 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
             pass
         return True
     if act == "jog_az":
+        if not bool(getattr(mw.ctrl, "enable_az", True)):
+            return True
         # Taste gehalten: Browser wiederholt dir=1|2 alle ~80 ms, beim Loslassen dir=0.
         try:
             direction = int(data.get("dir", 0))
@@ -728,6 +736,8 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
             pass
         return True
     if act == "jog_el":
+        if not bool(getattr(mw.ctrl, "enable_el", False)):
+            return True
         try:
             direction = int(data.get("dir", 0))
         except (TypeError, ValueError):
@@ -738,6 +748,8 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
             pass
         return True
     if act == "stop_az":
+        if not bool(getattr(mw.ctrl, "enable_az", True)):
+            return True
         mw._web_scan_active = False
         try:
             mw.ctrl.jog_az(0)

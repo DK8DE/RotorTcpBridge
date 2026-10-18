@@ -364,7 +364,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             return False
 
     def _motion_poll_restrict_active(self, now: float, pos_fast_s: float) -> bool:
-        """True, solange nur GETPOSDG erlaubt sein soll (Fahrt/Homing/SETPOSDG-Grace)."""
+        """True, solange nur GETPOSDG(+GETMOVE) erlaubt sein soll (Fahrt/Homing/SETPOSDG-Grace)."""
         if self.cc_poll_hold_active(now):
             return True
         try:
@@ -473,6 +473,10 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 if (not bool(getattr(self, "_max_deg_requested", False))) and self.enable_az:
                     self.request_max_deg()
                     self._max_deg_requested = True
+                if not bool(getattr(self, "_arrtol_requested", False)):
+                    if self.enable_az or self.enable_el:
+                        self.request_arrtol()
+                        self._arrtol_requested = True
                 if not bool(getattr(self, "_home_pos_requested", False)):
                     if self.enable_az or self.enable_el:
                         self.request_home_pos()
@@ -487,6 +491,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             self.encoder_type_known = False
             self._encoder_type_requested = False
             self._max_deg_requested = False
+            self._arrtol_requested = False
             self._home_pos_requested = False
             self._park_pending_az = False
             self._park_pending_el = False
@@ -496,6 +501,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             try:
                 self.az.pos_max_d10 = 3600
                 self.az.position_wrap_360 = True
+                self.az.arrtol_deg = None
+                self.el.arrtol_deg = None
                 self.az.home_pos_d10 = None
             except Exception:
                 pass
@@ -1198,6 +1205,20 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self.hw.send_request(
             HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=prio)
         )
+        # GETMOVE zusammen mit GETPOSDG (Fährt-LED); bei NAK/NOSUP dauerhaft aus.
+        try:
+            if getattr(axis_state, "getmove_supported", None) is not False:
+                self.hw.send_request(
+                    HwRequest(
+                        line=build(self.master_id, dst, "GETMOVE", "0"),
+                        expect_prefix=None,
+                        timeout_s=0.8,
+                        on_done=None,
+                        priority=prio,
+                    )
+                )
+        except Exception:
+            pass
         return True
 
     def _poll_warn(self, dst: int, axis_state: AxisState, axis: str):

@@ -409,6 +409,7 @@ class MainWindow(QMainWindow):
         self._pst_serial_rows: list[tuple[QWidget, Led, QLabel]] = []
         self._pst_serial_blink: dict[str, dict] = {}
         self._last_pst_serial_vis: tuple | None = None
+        self._last_srv_rows_vis: tuple | None = None
         self._aswatch_markers_last: list = []
         self._aswatch_aircraft_last: list = []
         self._asnearest_summary_last: list = []
@@ -3860,10 +3861,7 @@ class MainWindow(QMainWindow):
         rig_ham = rig_mod and bool((rb.get("hamlib") or {}).get("enabled", False))
         try:
             self._ensure_pst_serial_rows(len(pst_serial_specs))
-            vis_key = tuple(pst_serial_specs)
-            if vis_key != getattr(self, "_last_pst_serial_vis", None):
-                self._last_pst_serial_vis = vis_key
-                QTimer.singleShot(0, self._apply_fixed_mainwindow_size)
+            self._last_pst_serial_vis = tuple(pst_serial_specs)
             self._srv_form.setRowVisible(self._srv_row_pst_w, pst_on)
             self._srv_form.setRowVisible(self._srv_row_rotctld_w, rotctld_on)
             self._srv_form.setRowVisible(self._srv_row_gs232_w, gs232_on)
@@ -3878,6 +3876,27 @@ class MainWindow(QMainWindow):
             self._srv_form.setRowVisible(self._srv_row_rig_serial_w, rig_mod)
             self._srv_form.setRowVisible(self._srv_row_rig_flrig_w, rig_flrig)
             self._srv_form.setRowVisible(self._srv_row_rig_hamlib_w, rig_ham)
+            vis_key = (
+                pst_on,
+                rotctld_on,
+                gs232_on,
+                easycomm_on,
+                dcu1_on,
+                n1mm_on,
+                map_web_on,
+                ucxlog_on,
+                pst_udp_on,
+                pst_serial_on,
+                len(pst_serial_specs),
+                aswatch_on,
+                rig_mod,
+                rig_flrig,
+                rig_ham,
+            )
+            if vis_key != getattr(self, "_last_srv_rows_vis", None):
+                self._last_srv_rows_vis = vis_key
+                # Nach Layout-Update messen (sonst sizeHint noch mit alter Zeilenhöhe)
+                QTimer.singleShot(0, self._apply_fixed_mainwindow_size)
         except Exception:
             pass
 
@@ -4062,19 +4081,51 @@ class MainWindow(QMainWindow):
             pass
 
     def _apply_fixed_mainwindow_size(self):
-        # Feste Fensterbreite (DIP) — schmales Hauptfenster; Achsen-Layout nutzt Stretch in den Wert-Spalten
+        # Feste Fensterbreite (DIP) — schmales Hauptfenster; Höhe wächst mit sichtbaren
+        # Verbindungszeilen / Achsen. setFixedSize würde sizeHint sonst auf die alte
+        # Höhe festnageln — Constraints kurz lösen, dann am Inhalt neu messen.
         width = px_to_dip(self, 365)
+        _qmax = 16777215  # QWIDGETSIZE_MAX
         try:
-            lay = self.centralWidget().layout()
-            if lay:
-                lay.invalidate()
-                lay.activate()
+            self.setMinimumSize(0, 0)
+            self.setMaximumSize(_qmax, _qmax)
         except Exception:
             pass
-        height = int(self.sizeHint().height()) + px_to_dip(self, 10)
+        try:
+            cw = self.centralWidget()
+            if cw is not None:
+                lay = cw.layout()
+                if lay is not None:
+                    lay.invalidate()
+                    lay.activate()
+                cw.updateGeometry()
+            sf = getattr(self, "_srv_form", None)
+            if sf is not None:
+                sf.invalidate()
+                sf.activate()
+            self.updateGeometry()
+        except Exception:
+            pass
+        height = 0
+        try:
+            cw = self.centralWidget()
+            if cw is not None:
+                height = max(int(cw.sizeHint().height()), int(cw.minimumSizeHint().height()))
+            mb = self.menuBar()
+            if mb is not None and mb.isVisible():
+                height += int(mb.sizeHint().height())
+            # Fallback: volles Fenster-Hint (inkl. Frame), falls Central zu klein gemeldet wird
+            win_hint = int(self.sizeHint().height())
+            if win_hint > height:
+                height = win_hint
+        except Exception:
+            height = int(self.sizeHint().height())
+        height = int(height) + px_to_dip(self, 10)
         if height < px_to_dip(self, 300):
             height = px_to_dip(self, 300)
         if self._fixed_w == width and self._fixed_h == height:
+            # Constraints wieder setzen (oben gelöst)
+            self.setFixedSize(width, height)
             return
         self._fixed_w = width
         self._fixed_h = height
@@ -5021,10 +5072,19 @@ class MainWindow(QMainWindow):
             size_changed = True
         _rb = self._active_rig_view()
         _rig_en = bool(_rb.get("enabled", False))
+        _ham_cfg = (_rb.get("hamlib") or {}) if isinstance(_rb.get("hamlib"), dict) else {}
+        _ham_ports = (
+            MainWindow._hamlib_listener_ports_sorted(_ham_cfg)
+            if _rig_en and bool(_ham_cfg.get("enabled", False))
+            else []
+        )
+        _pst_serial_n = len(getattr(self, "_last_pst_serial_vis", ()) or ())
         rig_srv_vis = (
             _rig_en,
             _rig_en and bool((_rb.get("flrig") or {}).get("enabled", False)),
             _rig_en and bool((_rb.get("hamlib") or {}).get("enabled", False)),
+            len(_ham_ports),
+            _pst_serial_n,
         )
         if getattr(self, "_last_rig_srv_vis", None) != rig_srv_vis:
             self._last_rig_srv_vis = rig_srv_vis

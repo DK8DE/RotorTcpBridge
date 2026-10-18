@@ -1,6 +1,6 @@
 # Rotor‑Controller – RS485‑Anleitung & Firmware‑Dokumentation (DE)
 
-Stand: 2026-10-15 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler & Warnungen. Die **Befehlstabelle** ist mit dem RotorTcpBridge‑Katalog abgeglichen (`command_catalog.py` / Befehlsfenster / Rotorkonfiguration). Diese Datei ist mit `RotorTcpBridge/docs/RotorController_RS485.html` abgestimmt.
+Stand: 2026-10-17 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler & Warnungen. Die **Befehlstabelle** ist mit dem RotorTcpBridge‑Katalog abgeglichen (`command_catalog.py` / Befehlsfenster / Rotorkonfiguration). Diese Datei ist mit `RotorTcpBridge/docs/RotorController_RS485.html` abgestimmt.
 
 ## Inhaltsverzeichnis {#toc}
 
@@ -104,13 +104,14 @@ Im Beispiel ist der Fehlercode `16`. Die Checksumme ist `20 + 255 + 16 = 291`. D
 
 ## 2. Encoder‑Varianten {#encoders}
 
-Es gibt drei Encoder‑Varianten. Die Auswahl ist über RS485 mit **SETENCTYPE 1/2/3** möglich. Bei einem Encoder‑Wechsel müssen Counts, Homing und ggf. Max‑Winkel angepasst werden.
+Es gibt vier Encoder‑/Winkelsensor‑Varianten. Die Auswahl ist über RS485 mit **SETENCTYPE 1/2/3/4** möglich. Bei einem Wechsel müssen Counts, Homing und ggf. Max‑Winkel / Rotortyp angepasst werden.
 
 - **1 = Encoder an der Motorachse (Axis)**: typisch ca. **50000 Counts pro 360°** (am Motor). Mechanisch oft einfacher, aber das Getriebe kann beim Richtungswechsel Spiel haben. Max‑Winkel über `SETMAXDG` bis **720°** (Overlap) möglich.
 - **2 = Ring‑Encoder an der Ausgangswelle**: typisch ca. **160000 Counts pro 360°**. Sehr feine Positionsauflösung, da direkt an der Rotor‑Achse gemessen wird. Max‑Winkel über `SETMAXDG` bis **720°** (Overlap) möglich.
 - **3 = Absolutwert‑Encoder R&S**: liefert absolute Winkel; Homing entfällt bzw. ist anders. Nullpunkt über **SETENCZERO**. Max‑Winkel oft **>360°** (z. B. 430…720) — siehe `SETMAXDG`.
+- **4 = Inklinometer (Neigungssensor)**: absoluter Winkelsensor ([Inklinometer_IIS2ICLXTR](https://github.com/DK8DE/Inklinometer_IIS2ICLXTR)) am gleichen RS485 wie der Windsensor (GPIO 8/9, Serial2), **meist für Elevation**. Bus zum Sensor: `#GETDG$` → `#ACK_GETDG,<float>$`, Baud **115200 8N1** (kein Rotor-Checksum-Frame). Wind und Inklinometer sind **gegenseitig ausschließend** (bei Typ 4 kein Wind-Task). Kein Homing; `GETREF=1` sobald der Winkel frisch/gültig ist. Position für den Master: `GETPOSDG` (intern GETDG-Polling). Default-Achse oft **0…90°** (`amax=9000`), sofern `amax` nicht gesetzt. Endschalter: `SETENDSTC:0` oder `:2` (`:1` → NAK `BADVAL`). Stall nutzt synthetische Counts (1 Count = 0,01°). Sensor-Konfiguration über Master-Befehle `SETINC*` / `GETINC*` (Werte im **NVS des Inklinometers**, nicht im Rotor-FRAM). In der Bridge: Rotorkonfiguration → **Inclinometer Config**.
 
-**Overlap / erweiterter Azimut:** Bei `SETMAXDG` **>360** (alle Encoder‑Typen 1/2/3, bis 720°) können Zielwinkel im Overlap‑Bereich angefahren werden (z. B. 370° statt 10° über den kurzen Weg). Bridge‑UI und Kompass nutzen dann den erweiterten Anzeigebereich.
+**Overlap / erweiterter Azimut:** Bei `SETMAXDG` **>360** (Encoder‑Typen 1/2/3, bis 720°) können Zielwinkel im Overlap‑Bereich angefahren werden (z. B. 370° statt 10° über den kurzen Weg). Bridge‑UI und Kompass nutzen dann den erweiterten Anzeigebereich. Typ 4 (Inklinometer) nutzt typisch 90°/180°, nicht den Azimut‑Overlap.
 
 **Auswirkung in der Firmware:** Homing‑Rampen, erwartete Counts pro Umdrehung sowie einige Schutz‑ und Auswertefunktionen verwenden die Counts‑pro‑Umdrehung‑Annahme der gewählten Variante. Daher ändert sich das Verhalten spürbar, wenn die Encoder‑Variante gewechselt wird.
 
@@ -127,6 +128,7 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 | `#0:20:NSTOP:...:CS$` | `#20:0:ACK_NSTOP:...:<CS>$` oder: `#20:0:NAK_NSTOP:REASON:CS$` | **[NSTOP](#cmd-NSTOP)** Not-Stop über RS485. |
 | `#0:20:GETREF:...:CS$` | `#20:0:ACK_GETREF:...:<CS>$` oder: `#20:0:NAK_GETREF:REASON:CS$` | **[GETREF](#cmd-GETREF)** Abfragen, ob Referenz (Homing) vorhanden ist. |
 | `#0:20:GETPOSDG:...:CS$` | `#20:0:ACK_GETPOSDG:...:<CS>$` oder: `#20:0:NAK_GETPOSDG:REASON:CS$` | **[GETPOSDG](#cmd-GETPOSDG)** Aktuelle Position in Grad (0,01°). |
+| `#0:20:GETMOVE:...:CS$` | `#20:0:ACK_GETMOVE:0|1:<CS>$` oder: `#20:0:NAK_GETMOVE:REASON:CS$` | **[GETMOVE](#cmd-GETMOVE)** Bewegungsstatus: 1 = Fahrt/JOG/Homing, 0 = Stillstand. |
 | `#0:20:GETIS:...:CS$` | `#20:0:ACK_GETIS:...:<CS>$` oder: `#20:0:NAK_GETIS:REASON:CS$` | **[GETIS](#cmd-GETIS)** Aktueller Strommesswert (mV) nach Offset-Abzug. |
 | `#0:20:GETTEMPA:...:CS$` | `#20:0:ACK_GETTEMPA:...:<CS>$` oder: `#20:0:NAK_GETTEMPA:REASON:CS$` | **[GETTEMPA](#cmd-GETTEMPA)** Umgebungstemperatur in °C. |
 | `#0:20:GETTEMPM:...:CS$` | `#20:0:ACK_GETTEMPM:...:<CS>$` oder: `#20:0:NAK_GETTEMPM:REASON:CS$` | **[GETTEMPM](#cmd-GETTEMPM)** Motortemperatur in °C. |
@@ -285,11 +287,35 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 | `#0:20:SETENCCRI:...:CS$` | `#20:0:ACK_SETENCCRI:...:<CS>$` oder: `#20:0:NAK_SETENCCRI:REASON:CS$` | **[SETENCCRI](#cmd-SETENCCRI)** Counts pro 360° Ring-Encoder setzen (typ. ~160000). |
 | `#0:20:GETENCCAX:...:CS$` | `#20:0:ACK_GETENCCAX:...:<CS>$` oder: `#20:0:NAK_GETENCCAX:REASON:CS$` | **[GETENCCAX](#cmd-GETENCCAX)** Counts pro 360° **Motor-/Achsen**-Encoder lesen. |
 | `#0:20:SETENCCAX:...:CS$` | `#20:0:ACK_SETENCCAX:...:<CS>$` oder: `#20:0:NAK_SETENCCAX:REASON:CS$` | **[SETENCCAX](#cmd-SETENCCAX)** Counts pro 360° Motor-/Achsen-Encoder setzen (typ. ~28600…50000). |
-| `#0:20:GETENCTYPE:...:CS$` | `#20:0:ACK_GETENCTYPE:...:<CS>$` oder: `#20:0:NAK_GETENCTYPE:REASON:CS$` | **[GETENCTYPE](#cmd-GETENCTYPE)** Encoder-Variante lesen: 1 = Achse/Motor, 2 = Ring, 3 = Absolutwert R&S. |
-| `#0:20:SETENCTYPE:...:CS$` | `#20:0:ACK_SETENCTYPE:...:<CS>$` oder: `#20:0:NAK_SETENCTYPE:REASON:CS$` | **[SETENCTYPE](#cmd-SETENCTYPE)** Encoder-Variante setzen (1, 2 oder 3). Nach Wechsel Homing/Counts prüfen. |
+| `#0:20:GETENCTYPE:...:CS$` | `#20:0:ACK_GETENCTYPE:...:<CS>$` oder: `#20:0:NAK_GETENCTYPE:REASON:CS$` | **[GETENCTYPE](#cmd-GETENCTYPE)** Encoder-Variante lesen: 1 = Achse/Motor, 2 = Ring, 3 = Absolutwert R&S, 4 = Inklinometer. |
+| `#0:20:SETENCTYPE:...:CS$` | `#20:0:ACK_SETENCTYPE:...:<CS>$` oder: `#20:0:NAK_SETENCTYPE:REASON:CS$` | **[SETENCTYPE](#cmd-SETENCTYPE)** Encoder-Variante setzen (1…4). Nach Wechsel Homing/Counts prüfen. |
 | `#0:20:SETENCZERO:1:CS$` | `#20:0:ACK_SETENCZERO:1:<CS>$` oder: `#20:0:NAK_SETENCZERO:REASON:CS$` | **[SETENCZERO](#cmd-SETENCZERO)** Absolut-Encoder Null an aktueller Position setzen (Param `1`). |
 | `#0:20:GETWLAN:...:CS$` | `#20:0:ACK_GETWLAN:...:<CS>$` oder: `#20:0:NAK_GETWLAN:REASON:CS$` | **[GETWLAN](#cmd-GETWLAN)** SoftAP-Status lesen (0 = aus, 1 = ein). |
 | `#0:20:SETWLAN:...:CS$` | `#20:0:ACK_SETWLAN:...:<CS>$` oder: `#20:0:NAK_SETWLAN:REASON:CS$` | **[SETWLAN](#cmd-SETWLAN)** SoftAP für Web-OTA ein/aus (1/0). Nicht persistent. |
+| `#0:20:GETINCSWAPXY:...:CS$` | `#20:0:ACK_GETINCSWAPXY:...:<CS>$` oder NAK | **[GETINCSWAPXY](#cmd-inc)** Inklinometer: X/Y-Tausch lesen (nur Typ 4). |
+| `#0:20:SETINCSWAPXY:...:CS$` | `#20:0:ACK_SETINCSWAPXY:1:<CS>$` oder NAK | **[SETINCSWAPXY](#cmd-inc)** Inklinometer: X/Y tauschen (0/1). |
+| `#0:20:GETINCINVREF:...:CS$` | `#20:0:ACK_GETINCINVREF:...:<CS>$` oder NAK | **[GETINCINVREF](#cmd-inc)** Referenzachse-Inversion lesen. |
+| `#0:20:SETINCINVREF:...:CS$` | `#20:0:ACK_SETINCINVREF:1:<CS>$` oder NAK | **[SETINCINVREF](#cmd-inc)** Referenzachse invertieren (0/1). |
+| `#0:20:GETINCINVSEN:...:CS$` | `#20:0:ACK_GETINCINVSEN:...:<CS>$` oder NAK | **[GETINCINVSEN](#cmd-inc)** Sense-Achse-Inversion lesen. |
+| `#0:20:SETINCINVSEN:...:CS$` | `#20:0:ACK_SETINCINVSEN:1:<CS>$` oder NAK | **[SETINCINVSEN](#cmd-inc)** Sense-Achse invertieren (0/1). |
+| `#0:20:GETINCINVROT:...:CS$` | `#20:0:ACK_GETINCINVROT:...:<CS>$` oder NAK | **[GETINCINVROT](#cmd-inc)** Drehrichtungs-Inversion lesen. |
+| `#0:20:SETINCINVROT:...:CS$` | `#20:0:ACK_SETINCINVROT:1:<CS>$` oder NAK | **[SETINCINVROT](#cmd-inc)** Drehrichtung umkehren (0/1). |
+| `#0:20:GETINCMOUNT:...:CS$` | `#20:0:ACK_GETINCMOUNT:...:<CS>$` oder NAK | **[GETINCMOUNT](#cmd-inc)** Montage-Drehung lesen (0/90/180/270). |
+| `#0:20:SETINCMOUNT:...:CS$` | `#20:0:ACK_SETINCMOUNT:1:<CS>$` oder NAK | **[SETINCMOUNT](#cmd-inc)** Montage-Drehung setzen. |
+| `#0:20:GETINCLIM180:...:CS$` | `#20:0:ACK_GETINCLIM180:...:<CS>$` oder NAK | **[GETINCLIM180](#cmd-inc)** Soft-Limit 0…180° lesen. |
+| `#0:20:SETINCLIM180:...:CS$` | `#20:0:ACK_SETINCLIM180:1:<CS>$` oder NAK | **[SETINCLIM180](#cmd-inc)** Soft-Limit 0…180° (0/1). |
+| `#0:20:GETINCCAL:...:CS$` | `#20:0:ACK_GETINCCAL:...:<CS>$` oder NAK | **[GETINCCAL](#cmd-inc)** Kalibrier-Offset lesen (°). |
+| `#0:20:SETINCCAL:...:CS$` | `#20:0:ACK_SETINCCAL:1:<CS>$` oder NAK | **[SETINCCAL](#cmd-inc)** Kalibrier-Offset setzen (−180…+180°). |
+| `#0:20:GETINCFS1G:...:CS$` | `#20:0:ACK_GETINCFS1G:...:<CS>$` oder NAK | **[GETINCFS1G](#cmd-inc)** Full-Scale lesen (1=±1 g, 0=±2 g). |
+| `#0:20:SETINCFS1G:...:CS$` | `#20:0:ACK_SETINCFS1G:1:<CS>$` oder NAK | **[SETINCFS1G](#cmd-inc)** Full-Scale setzen. |
+| `#0:20:GETINCDEC:...:CS$` | `#20:0:ACK_GETINCDEC:...:<CS>$` oder NAK | **[GETINCDEC](#cmd-inc)** Nachkommastellen lesen (0/1/2). |
+| `#0:20:SETINCDEC:...:CS$` | `#20:0:ACK_SETINCDEC:1:<CS>$` oder NAK | **[SETINCDEC](#cmd-inc)** Nachkommastellen setzen. |
+| `#0:20:GETINCFILT:...:CS$` | `#20:0:ACK_GETINCFILT:...:<CS>$` oder NAK | **[GETINCFILT](#cmd-inc)** EMA-Filter-Alpha lesen. |
+| `#0:20:SETINCFILT:...:CS$` | `#20:0:ACK_SETINCFILT:1:<CS>$` oder NAK | **[SETINCFILT](#cmd-inc)** EMA-Filter-Alpha setzen (0,01…1,0). |
+| `#0:20:GETINCWLAN:...:CS$` | `#20:0:ACK_GETINCWLAN:...:<CS>$` oder NAK | **[GETINCWLAN](#cmd-inc)** Inklinometer-SoftAP lesen. |
+| `#0:20:SETINCWLAN:...:CS$` | `#20:0:ACK_SETINCWLAN:1:<CS>$` oder NAK | **[SETINCWLAN](#cmd-inc)** Inklinometer-SoftAP ein/aus (nicht persistent). |
+| `#0:20:GETINCDBG:...:CS$` | `#20:0:ACK_GETINCDBG:...:<CS>$` oder NAK | **[GETINCDBG](#cmd-inc)** USB-Debug-Status lesen. |
+| `#0:20:SETINCDBG:...:CS$` | `#20:0:ACK_SETINCDBG:1:<CS>$` oder NAK | **[SETINCDBG](#cmd-inc)** USB-Debug am Sensor ein/aus. |
 
 [↑ Inhaltsverzeichnis](#toc)
 
@@ -420,6 +446,18 @@ Ungültige Werte → `NAK_SETROTORTYPE`. In der Bridge‑UI unter Parameter dire
 **Was es macht:** Aktuelle Position in Grad (0,01°).
 
 **Details:** Rückgabe ist die korrigierte Position: fester Encoder‑Offset (`SETDGOFFSET`) wird abgezogen, Korrekturwinkel (`SETDGCAL`) wird addiert/subtrahiert. Nach `SETDGCAL` die Position erneut mit `GETPOSDG` lesen.
+
+---
+
+#### `GETMOVE` {#cmd-GETMOVE}
+
+**Was es macht:** Bewegungsstatus des Rotors lesen (für Master-/UI-LEDs).
+
+**Details:**
+- `ACK_GETMOVE:1` — Positionsfahrt, JOG oder Homing aktiv
+- `ACK_GETMOVE:0` — Stillstand
+- Unabhängig von `GETHOMING` (nur Homing-Status). `GETREF` bleibt für „referenziert ja/nein“.
+- In der Bridge wird `GETMOVE` zusammen mit `GETPOSDG` gepollt und steuert die **Fährt**-LED; ohne Firmware-Unterstützung greift die bisherige Positions-Heuristik.
 
 ---
 
@@ -1255,7 +1293,7 @@ Pro Stufe gibt es 72 Bins × 2 Richtungen → typisch 12 Blöcke à 12 Werte; f�
 
 **Was es macht:** Max-Winkel setzen.
 
-**Details:** Typisch 360,00. Für Encoder‑Typen **1, 2 und 3** bis **720°** (Overlap, z. B. 420). Wird gespeichert (`amax`). Nach Änderung `GETMAXDG` und ggf. Parkwinkel (`SETHOMEPOS`) prüfen.
+**Details:** Typisch 360,00. Für Encoder‑Typen **1, 2 und 3** bis **720°** (Overlap, z. B. 420). Für Typ **4** (Inklinometer) typisch **90** oder **180**. Wird gespeichert (`amax`). Nach Änderung `GETMAXDG` und ggf. Parkwinkel (`SETHOMEPOS`) prüfen.
 
 ---
 
@@ -1605,7 +1643,7 @@ Die Stall-**Timeout**-Zeit (`GETSTALLTIMEOUT`/`SETSTALLTIMEOUT`) steht weiter un
 
 ### Encoder: Counts & Typ (RS485)
 
-Ergänzung zu Abschnitt [„Encoder-Varianten“](#encoders): Counts für Ring/Motor können hier fein eingestellt und der Typ (1/2/3) umgeschaltet werden.
+Ergänzung zu Abschnitt [„Encoder-Varianten“](#encoders): Counts für Ring/Motor können hier fein eingestellt und der Typ (1/2/3/4) umgeschaltet werden.
 
 #### `GETENCCRI` {#cmd-GETENCCRI}
 
@@ -1633,13 +1671,13 @@ Ergänzung zu Abschnitt [„Encoder-Varianten“](#encoders): Counts für Ring/M
 
 #### `GETENCTYPE` {#cmd-GETENCTYPE}
 
-**Was es macht:** Encoder-Variante lesen: `1` = Axis/Motor, `2` = Ring, `3` = Absolutwert Encoder R&S.
+**Was es macht:** Encoder-/Winkelsensor-Variante lesen: `1` = Axis/Motor, `2` = Ring, `3` = Absolutwert Encoder R&S, `4` = Inklinometer (meist Elevation, 90°/180°).
 
 ---
 
 #### `SETENCTYPE` {#cmd-SETENCTYPE}
 
-**Was es macht:** Encoder-Variante setzen (`1`, `2` oder `3`). Nach Wechsel Homing und Counts prüfen; bei Typ 3 Max‑Winkel und Nullpunkt (`SETENCZERO`) beachten.
+**Was es macht:** Encoder-/Winkelsensor-Variante setzen (`1`…`4`). Nach Wechsel Homing und Counts prüfen; bei Typ 3/4 Max‑Winkel/Rotortyp und Nullpunkt (`SETENCZERO`) beachten. Typ 4: typisch Elevation mit `SETROTORTYPE` 2 (90°) oder 3 (180°) und passendem `SETMAXDG`.
 
 ---
 
@@ -1651,7 +1689,7 @@ Ergänzung zu Abschnitt [„Encoder-Varianten“](#encoders): Counts für Ring/M
 
 **Antwort:** `#20:0:ACK_SETENCZERO:1:<CS>$`
 
-**Details:** Parameter `1` = ausführen. Vor allem bei ENCTYPE 3 (Absolutwert R&S). Danach Position mit `GETPOSDG` prüfen.
+**Details:** Parameter `1` = ausführen. Vor allem bei ENCTYPE 3 (Absolutwert R&S) und ENCTYPE 4 (Inklinometer). Danach Position mit `GETPOSDG` prüfen.
 
 ---
 
@@ -1843,6 +1881,37 @@ SoftAP am Rotor‑ESP32 für Firmware‑Update über den Browser. **Nur SoftAP**
 - Passwort: `Rotorconfig`.
 - Web-UI: `http://192.168.4.1` (HTTP Basic: Benutzer `admin`, Passwort `Rotorconfig`).
 - **Nicht persistent** — nach Neustart immer aus; nicht in Backup/Restore der Bridge enthalten.
+
+---
+
+### Inklinometer-Konfiguration (`SETINC*` / `GETINC*`) {#cmd-inc}
+
+Nur bei `SETENCTYPE:4`. Anderer Encoder-Typ → `NAK_…:ENCTYPE`. Der Rotor leitet den Befehl über Serial2 an das Inklinometer weiter und mappt die Sensor-Antwort auf das Rotor-Checksum-Frame. Werte liegen im **NVS des Inklinometers**, nicht im Rotor-FRAM.
+
+**Allgemeine Regeln**
+
+- Float-Parameter: Komma oder Punkt (`SETINCCAL:-2,50` oder `-2.50`).
+- GET-Antwort: `ACK_<CMD>:<wert>` (Dezimaltrenner Komma).
+- SET Erfolg: `ACK_<CMD>:1`.
+- Sensor lehnt ab / Bus stört: `NAK_…:ERR` bzw. `NAK_…:TIMEOUT`.
+- Unbekanntes Suffix: `NAK_…:NOSUP`. Keine Hardware: `NAK_…:NOHW`.
+
+| Befehl | Bedeutung | Werte |
+| --- | --- | --- |
+| `GETINCSWAPXY` / `SETINCSWAPXY` | Achsen X/Y tauschen | 0/1 |
+| `GETINCINVREF` / `SETINCINVREF` | Referenzachse invertieren | 0/1 |
+| `GETINCINVSEN` / `SETINCINVSEN` | Sense-Achse invertieren | 0/1 |
+| `GETINCINVROT` / `SETINCINVROT` | Drehrichtung umkehren | 0 = Uhrzeigersinn, 1 = gegen |
+| `GETINCMOUNT` / `SETINCMOUNT` | Montage-Drehung der 0°-Seite | 0 / 90 / 180 / 270 |
+| `GETINCLIM180` / `SETINCLIM180` | Soft-Limit 0…180° | 0/1 |
+| `GETINCCAL` / `SETINCCAL` | Kalibrier-Offset (°) | ca. −180…+180 |
+| `GETINCFS1G` / `SETINCFS1G` | Full-Scale IIS2ICLX | 1 = ±1 g, 0 = ±2 g |
+| `GETINCDEC` / `SETINCDEC` | Nachkommastellen am Sensor | 0 / 1 / 2 |
+| `GETINCFILT` / `SETINCFILT` | EMA-Filter-Alpha | 0,01…1,0 |
+| `GETINCWLAN` / `SETINCWLAN` | SoftAP-Web-UI des Sensors | 0/1 (nicht im NVS) |
+| `GETINCDBG` / `SETINCDBG` | USB-Debug am Sensor | 0/1 |
+
+Ruck-/Stoß-Überwachung (`SETINCSHK*` / `GETINCSHK*` / `GETINCSTL`) ist firmwareseitig vorhanden; die Bridge-UI dafür folgt später.
 
 ---
 

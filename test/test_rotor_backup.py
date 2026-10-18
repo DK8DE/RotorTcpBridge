@@ -315,6 +315,45 @@ def test_type3_skips_wind_commands_in_backup_and_restore() -> None:
     assert [e["cmd"] for e in filtered] == ["SETMAXDG"]
 
 
+def test_type4_inclinometer_backup_filter() -> None:
+    from rotortcpbridge.rotor_backup import (
+        filter_restore_entries_for_encoder,
+        is_inclinometer_set_cmd,
+        should_skip_set_for_encoder,
+    )
+
+    assert is_inclinometer_set_cmd("SETINCCAL")
+    assert should_skip_set_for_encoder("SETINCCAL", 1)
+    assert should_skip_set_for_encoder("SETINCCAL", 3)
+    assert not should_skip_set_for_encoder("SETINCCAL", 4)
+    assert should_skip_set_for_encoder("SETWINDENABLE", 4)
+
+    cfg = {
+        "rotor_bus": {
+            "master_id": 0,
+            "slave_az": 20,
+            "enable_az": True,
+            "enable_el": False,
+        },
+        "controller_hw": {"enabled": False, "cont_id": 2},
+    }
+    work4 = build_backup_work(cfg, encoder_type=4)
+    assert any(cmd == "SETINCCAL" for _, cmd, _ in work4)
+    assert not any(cmd == "SETINCWLAN" for _, cmd, _ in work4)
+    assert not any(cmd == "SETWINDENABLE" for _, cmd, _ in work4)
+
+    work1 = build_backup_work(cfg, encoder_type=1)
+    assert not any(cmd == "SETINCCAL" for _, cmd, _ in work1)
+
+    entries = [
+        {"dst": 20, "cmd": "SETMAXDG", "params": "90,00"},
+        {"dst": 20, "cmd": "SETINCCAL", "params": "-2,50"},
+        {"dst": 20, "cmd": "SETWINDENABLE", "params": "1"},
+    ]
+    filtered = filter_restore_entries_for_encoder(entries, encoder_type=4)
+    assert [e["cmd"] for e in filtered] == ["SETMAXDG", "SETINCCAL"]
+
+
 def test_xml_roundtrip(tmp_path: Path) -> None:
     path = tmp_path / "bak.xml"
     entries = [

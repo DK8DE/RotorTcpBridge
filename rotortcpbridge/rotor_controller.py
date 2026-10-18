@@ -209,11 +209,12 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.on_antenna_names_changed: Optional[Callable[[], None]] = None
         self.on_encoder_type_changed: Optional[Callable[[], None]] = None
         self.on_az_max_deg_changed: Optional[Callable[[], None]] = None
-        # GETENCTYPE (1=Motor, 2=Ring, 3=Absolut R&S) — einmal pro Verbindung
+        # GETENCTYPE (1=Motor, 2=Ring, 3=Absolut R&S, 4=Inklinometer) — einmal pro Verbindung
         self.encoder_type: Optional[int] = None
         self.encoder_type_known: bool = False
         self._encoder_type_requested: bool = False
         self._max_deg_requested: bool = False
+        self._arrtol_requested: bool = False
         self._home_pos_requested: bool = False
         # Parken wartet auf GETHOMEPOS, falls Cache noch leer
         self._park_pending_az: bool = False
@@ -459,6 +460,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._encoder_type_requested = False
         self._max_deg_requested = False
         self._max_deg_known = False
+        self._arrtol_requested = False
         self._home_pos_requested = False
         self._park_pending_az = False
         self._park_pending_el = False
@@ -473,6 +475,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         try:
             self.az.dgcal_d10 = None
             self.el.dgcal_d10 = None
+            self.az.arrtol_deg = None
+            self.el.arrtol_deg = None
             self._dgcal_last_req = {}
         except Exception:
             pass
@@ -507,6 +511,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 ax.referenced = False
                 ax.ref_status_known = False
                 ax.moving = False
+                ax.getmove_supported = None
                 ax.online = False
                 ax.last_rx_ts = 0.0
                 ax._last_sample_ts = 0.0
@@ -746,16 +751,56 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         return True
 
     def abs_encoder_no_homing(self) -> bool:
-        """Absolutwert-Encoder R&S (GETENCTYPE=3): kein manuelles Homing nötig."""
+        """Absolut-Sensor ohne Homing: Typ 3 (R&S) oder Typ 4 (Inklinometer)."""
         if not self.encoder_type_known:
             return False
         try:
-            return int(self.encoder_type) == 3
+            return int(self.encoder_type) in (3, 4)
         except (TypeError, ValueError):
             return False
 
+    def _axis_arrtol_deg(self, axis_state: AxisState) -> float:
+        """Ankunftstoleranz der Achse (GETARRTOL); Fallback 0,25° bis gelesen."""
+        try:
+            v = getattr(axis_state, "arrtol_deg", None)
+            if v is not None:
+                return max(0.0, float(v))
+        except Exception:
+            pass
+        return 0.25
+
+    def remember_arrtol_deg(self, axis: AxisState, deg: float) -> None:
+        """ARRTOL (Grad) im Achsen-Cache merken."""
+        try:
+            axis.arrtol_deg = max(0.0, min(5.0, float(deg)))
+        except Exception:
+            pass
+
+    def request_arrtol(self, *, az: bool = True, el: bool = True) -> None:
+        """Ankunftstoleranz vom Rotor lesen (GETARRTOL) für aktive Achsen."""
+        if az and self.enable_az:
+            self.hw.send_request(
+                HwRequest(
+                    line=build(self.master_id, self.slave_az, "GETARRTOL", "0"),
+                    expect_prefix=None,
+                    timeout_s=0.5,
+                    on_done=None,
+                    priority=4,
+                )
+            )
+        if el and self.enable_el:
+            self.hw.send_request(
+                HwRequest(
+                    line=build(self.master_id, self.slave_el, "GETARRTOL", "0"),
+                    expect_prefix=None,
+                    timeout_s=0.5,
+                    on_done=None,
+                    priority=4,
+                )
+            )
+
     def _axis_target_pending(self, axis_state: AxisState) -> bool:
-        """True solange Motor-Soll und Ist noch außerhalb des Ankunft-Toleranzbands liegen."""
+        """True solange Motor-Soll und Ist noch außerhalb von ARRTOL liegen."""
         try:
             ext_move = bool(getattr(axis_state, "external_panel_move_active", False))
             lst = getattr(axis_state, "last_set_sent_target_d10", None)
@@ -773,9 +818,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 tgt_d10 = int(lst)
             else:
                 tgt_d10 = int(getattr(axis_state, "target_d10", 0))
+            tol = float(self._axis_arrtol_deg(axis_state))
             if bool(getattr(axis_state, "position_wrap_360", True)):
-                return abs(float(shortest_delta_deg(pos_d10 / 10.0, tgt_d10 / 10.0))) > 0.25
-            return abs(tgt_d10 - pos_d10) > 2
+                return abs(float(shortest_delta_deg(pos_d10 / 10.0, tgt_d10 / 10.0))) > tol
+            return abs((tgt_d10 - pos_d10) / 10.0) > tol
         except Exception:
             return False
 
@@ -2228,6 +2274,22 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     pass
                 try:
                     self.request_max_deg()
+                except Exception:
+                    pass
+                return
+
+            # -------------------- Ankunftstoleranz (SETARRTOL) --------------------
+            if cmd == "SETARRTOL" and axis is not None:
+                try:
+                    p = str(params).strip().replace(" ", "").replace(",", ".")
+                    self.remember_arrtol_deg(axis, float(p))
+                except Exception:
+                    pass
+                try:
+                    self.request_arrtol(
+                        az=(axis is self.az),
+                        el=(axis is self.el),
+                    )
                 except Exception:
                     pass
                 return

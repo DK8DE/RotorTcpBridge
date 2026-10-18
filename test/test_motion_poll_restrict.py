@@ -66,6 +66,21 @@ def test_axis_target_pending_prefers_last_set_sent() -> None:
     assert c._axis_motion_by_target_gap(c.az, 100.0) is True
 
 
+def test_axis_target_pending_uses_arrtol_window() -> None:
+    """Innerhalb ARRTOL gilt angekommen — kein Dauer-„Fährt“ bei Ist≠Soll."""
+    c = _ctrl()
+    c.az.referenced = True
+    c.az.position_wrap_360 = True
+    c.az.arrtol_deg = 2.0
+    c.az.pos_d10 = 1000  # 100,0°
+    c.az.target_d10 = 1150  # 115,0° → Δ=15° > 2°
+    c.az.last_set_sent_target_d10 = 1150
+    assert c._axis_target_pending(c.az) is True
+    c.az.pos_d10 = 1135  # 113,5° → Δ=1,5° ≤ 2°
+    assert c._axis_target_pending(c.az) is False
+    assert c._axis_motion_by_target_gap(c.az, 100.0) is False
+
+
 def test_motion_poll_restrict_long_after_setpos() -> None:
     """Kein 3s-Limit mehr: auch nach langer Fahrt nur GETPOSDG."""
     c = _ctrl()

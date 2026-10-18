@@ -255,6 +255,9 @@ class AxisState:
     # True sobald ein GETREF-ACK (0 oder 1) vom aktuellen Rotor vorliegt.
     ref_status_known: bool = False
     moving: bool = False
+    # GETMOVE: None = noch nicht erkannt, True = Firmware liefert GETMOVE,
+    # False = nicht unterstützt (NAK) → Heuristik aus GETPOSDG.
+    getmove_supported: Optional[bool] = None
     error_code: int = 0
     warnings: Set[int] = field(default_factory=set)
     ref_poll_active: bool = False
@@ -275,6 +278,8 @@ class AxisState:
     position_wrap_360: bool = True
     # GETMAXDG als 0,1°-Einheiten (Default 360,0°). Bei >3600: erweiterter Bereich.
     pos_max_d10: int = 3600
+    # GETARRTOL Ankunftstoleranz in Grad. None = noch nicht vom Rotor gelesen.
+    arrtol_deg: Optional[float] = None
     # GETHOMEPOS / Parkposition (0,1°). None = noch nicht vom Rotor gelesen.
     home_pos_d10: Optional[int] = None
     _last_smooth_render_ts: float = 0.0

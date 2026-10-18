@@ -59,6 +59,8 @@ _EXCLUDED_SET = frozenset(
         "DELWARN",
         "JOG",
         "SETWLAN",  # SoftAP nicht persistent / kein Backup
+        "SETINCWLAN",  # Inklinometer-SoftAP nicht persistent
+        "SETINCDBG",  # USB-Debug nicht für Backup
     }
 )
 
@@ -110,13 +112,13 @@ def is_type3_unsupported_set_cmd(set_cmd: str) -> bool:
 
 
 def parse_encoder_type_value(params: Any) -> Optional[int]:
-    """Parst GETENCTYPE/SETENCTYPE-Parameter zu 1…3."""
+    """Parst GETENCTYPE/SETENCTYPE-Parameter zu 1…4."""
     try:
         raw = str(params or "").strip().split(";")[0].replace(",", ".")
         v = int(float(raw))
     except Exception:
         return None
-    return v if v in (1, 2, 3) else None
+    return v if v in (1, 2, 3, 4) else None
 
 
 def encoder_type_from_ctrl(ctrl: Any) -> Optional[int]:
@@ -147,13 +149,23 @@ def encoder_type_from_backup_entries(entries: list[dict]) -> Optional[int]:
     return found
 
 
+def is_inclinometer_set_cmd(set_cmd: str) -> bool:
+    """True für SETINC*-Befehle (nur Encoder-Typ 4 / Inklinometer-NVS)."""
+    return str(set_cmd or "").strip().upper().startswith("SETINC")
+
+
 def should_skip_set_for_encoder(set_cmd: str, encoder_type: Optional[int]) -> bool:
-    """Wind-/Anemo-SETs bei Absolut-Encoder Typ 3 überspringen."""
+    """Wind-/Anemo bei Typ 3/4 überspringen; SETINC* nur bei Typ 4 behalten."""
     try:
         et = int(encoder_type) if encoder_type is not None else None
     except Exception:
         et = None
-    return et == 3 and is_type3_unsupported_set_cmd(set_cmd)
+    name = str(set_cmd or "").strip().upper()
+    if et in (3, 4) and is_type3_unsupported_set_cmd(name):
+        return True
+    if is_inclinometer_set_cmd(name) and et != 4:
+        return True
+    return False
 
 
 def backupable_pairs() -> list[tuple[str, str]]:
@@ -244,7 +256,7 @@ def build_backup_work(
     """Arbeitsschritte: ``(dst, set_cmd, get_cmd)`` für Rotor + Controller.
 
     - Ohne Hardware-Controller: keine ``SETCON*`` / ``SETLSL`` (kein Zielgerät).
-    - Bei ``encoder_type == 3``: keine Wind-/Anemo-Befehle.
+    - Bei ``encoder_type`` 3 oder 4: keine Wind-/Anemo-Befehle.
     """
     work: list[tuple[int, str, str]] = []
     rotor_pairs = rotor_backupable_pairs()

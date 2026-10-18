@@ -122,7 +122,7 @@
 <body>
 <div class="section" id="intro">
   <h1>Rotor‑Controller – RS485‑Anleitung &amp; Firmware‑Dokumentation (DE)</h1>
-  <p class="muted">Stand: 2026-10-15 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler &amp; Warnungen. Die <b>Befehlstabelle</b> ist mit dem RotorTcpBridge‑Katalog abgeglichen (<code>command_catalog.py</code> / Befehlsfenster / Rotorkonfiguration). Diese Datei ist mit <code>RotorTcpBridge/docs/RotorController_RS485.md</code> abgestimmt.</p>
+  <p class="muted">Stand: 2026-10-17 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler &amp; Warnungen. Die <b>Befehlstabelle</b> ist mit dem RotorTcpBridge‑Katalog abgeglichen (<code>command_catalog.py</code> / Befehlsfenster / Rotorkonfiguration). Diese Datei ist mit <code>RotorTcpBridge/docs/RotorController_RS485.md</code> abgestimmt.</p>
 </div>
 <main>
 <section class="toc" id="toc">
@@ -204,13 +204,14 @@
 </section>
 <section class="section" id="encoders">
 <h2>2. Encoder‑Varianten </h2>
-<p>Es gibt drei Encoder‑Varianten. Die Auswahl ist über RS485 mit <b>SETENCTYPE 1/2/3</b> möglich. Bei einem Encoder‑Wechsel müssen Counts, Homing und ggf. Max‑Winkel angepasst werden.</p>
+<p>Es gibt vier Encoder‑/Winkelsensor‑Varianten. Die Auswahl ist über RS485 mit <b>SETENCTYPE 1/2/3/4</b> möglich. Bei einem Wechsel müssen Counts, Homing und ggf. Max‑Winkel / Rotortyp angepasst werden.</p>
 <ul>
   <li><b>1 = Encoder an der Motorachse (Axis)</b>: typisch ca. <b>50000 Counts pro 360°</b> (am Motor). Mechanisch oft einfacher, aber das Getriebe kann beim Richtungswechsel Spiel haben. Max‑Winkel über <code>SETMAXDG</code> bis <b>720°</b> (Overlap) möglich.</li>
   <li><b>2 = Ring‑Encoder an der Ausgangswelle</b>: typisch ca. <b>160000 Counts pro 360°</b>. Sehr feine Positionsauflösung, da direkt an der Rotor‑Achse gemessen wird. Max‑Winkel über <code>SETMAXDG</code> bis <b>720°</b> (Overlap) möglich.</li>
   <li><b>3 = Absolutwert‑Encoder R&amp;S</b>: liefert absolute Winkel; Homing entfällt bzw. ist anders. Nullpunkt über <b>SETENCZERO</b>. Max‑Winkel oft <b>&gt;360°</b> (z.&nbsp;B. 430…720) — siehe <code>SETMAXDG</code>.</li>
+  <li><b>4 = Inklinometer (Neigungssensor)</b>: absoluter Winkelsensor (<a href="https://github.com/DK8DE/Inklinometer_IIS2ICLXTR">Inklinometer_IIS2ICLXTR</a>) am gleichen RS485 wie der Windsensor (GPIO&nbsp;8/9, Serial2), <b>meist für Elevation</b>. Bus zum Sensor: <code>#GETDG$</code> → <code>#ACK_GETDG,&lt;float&gt;$</code>, Baud <b>115200&nbsp;8N1</b> (kein Rotor-Checksum-Frame). Wind und Inklinometer sind <b>gegenseitig ausschließend</b> (bei Typ&nbsp;4 kein Wind-Task). Kein Homing; <code>GETREF=1</code> sobald der Winkel frisch/gültig ist. Position für den Master: <code>GETPOSDG</code> (intern GETDG-Polling). Default-Achse oft <b>0…90°</b> (<code>amax=9000</code>). Endschalter: <code>SETENDSTC:0</code> oder <code>:2</code> (<code>:1</code> → NAK <code>BADVAL</code>). Stall nutzt synthetische Counts (1&nbsp;Count&nbsp;=&nbsp;0,01°). Sensor-Konfiguration über Master-Befehle <code>SETINC*</code> / <code>GETINC*</code> (Werte im <b>NVS des Inklinometers</b>). In der Bridge: Rotorkonfiguration → <b>Inclinometer Config</b>.</li>
 </ul>
-<p><b>Overlap / erweiterter Azimut:</b> Bei <code>SETMAXDG</code> <b>&gt;360</b> (alle Encoder‑Typen 1/2/3, bis 720°) können Zielwinkel im Overlap‑Bereich angefahren werden (z.&nbsp;B. 370° statt 10° über den kurzen Weg). Bridge‑UI und Kompass nutzen dann den erweiterten Anzeigebereich.</p>
+<p><b>Overlap / erweiterter Azimut:</b> Bei <code>SETMAXDG</code> <b>&gt;360</b> (Encoder‑Typen 1/2/3, bis 720°) können Zielwinkel im Overlap‑Bereich angefahren werden (z.&nbsp;B. 370° statt 10° über den kurzen Weg). Bridge‑UI und Kompass nutzen dann den erweiterten Anzeigebereich. Typ&nbsp;4 (Inklinometer) nutzt typisch 90°/180°, nicht den Azimut‑Overlap.</p>
 <p><b>Auswirkung in der Firmware:</b> Homing‑Rampen, erwartete Counts pro Umdrehung sowie einige Schutz‑ und Auswertefunktionen verwenden die Counts‑pro‑Umdrehung‑Annahme der gewählten Variante. Daher ändert sich das Verhalten spürbar, wenn die Encoder‑Variante gewechselt wird.</p>
 <p><b>Getriebespiel‑Kompensation beim Motor‑Encoder:</b> Wenn der Encoder am Motor sitzt (Typ&nbsp;1), wird das Getriebespiel beim Homing durch die Firmware kompensiert. Dazu wird die Referenz immer mit einer definierten Anfahr‑Richtung und einer definierten Überfahr‑/Rückzugslogik angefahren, damit der Nullpunkt trotz Spiel reproduzierbar bleibt.</p>
 </section>
@@ -244,6 +245,11 @@
 <td><code>#0:20:GETPOSDG:...:CS$</code></td>
 <td><code>#20:0:ACK_GETPOSDG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETPOSDG:REASON:CS$</code></span></td>
 <td><b><a href="#cmd-GETPOSDG">GETPOSDG</a></b><br>Aktuelle Position in Grad (0,01°).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETMOVE:...:CS$</code></td>
+<td><code>#20:0:ACK_GETMOVE:0|1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETMOVE:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETMOVE">GETMOVE</a></b><br>Bewegungsstatus: 1 = Fahrt/JOG/Homing, 0 = Stillstand.</td>
 </tr>
 <tr>
 <td><code>#0:20:GETIS:...:CS$</code></td>
@@ -1038,12 +1044,12 @@
 <tr>
 <td><code>#0:20:GETENCTYPE:...:CS$</code></td>
 <td><code>#20:0:ACK_GETENCTYPE:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETENCTYPE:REASON:CS$</code></span></td>
-<td><b><a href="#cmd-GETENCTYPE">GETENCTYPE</a></b><br>Encoder-Variante lesen: 1 = Achse/Motor, 2 = Ring, 3 = Absolutwert R&amp;S.</td>
+<td><b><a href="#cmd-GETENCTYPE">GETENCTYPE</a></b><br>Encoder-Variante lesen: 1 = Achse/Motor, 2 = Ring, 3 = Absolutwert R&amp;S, 4 = Inklinometer.</td>
 </tr>
 <tr>
 <td><code>#0:20:SETENCTYPE:...:CS$</code></td>
 <td><code>#20:0:ACK_SETENCTYPE:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETENCTYPE:REASON:CS$</code></span></td>
-<td><b><a href="#cmd-SETENCTYPE">SETENCTYPE</a></b><br>Encoder-Variante setzen (1, 2 oder 3). Nach Wechsel Homing/Counts prüfen.</td>
+<td><b><a href="#cmd-SETENCTYPE">SETENCTYPE</a></b><br>Encoder-Variante setzen (1…4). Nach Wechsel Homing/Counts prüfen.</td>
 </tr>
 <tr>
 <td><code>#0:20:SETENCZERO:1:CS$</code></td>
@@ -1059,6 +1065,11 @@
 <td><code>#0:20:SETWLAN:...:CS$</code></td>
 <td><code>#20:0:ACK_SETWLAN:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETWLAN:REASON:CS$</code></span></td>
 <td><b><a href="#cmd-SETWLAN">SETWLAN</a></b><br>SoftAP für Web-OTA ein/aus (1/0). Nicht persistent.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETINC… / GETINC…</code></td>
+<td><code>ACK_…</code> / <code>NAK_…:ENCTYPE|ERR|TIMEOUT|…</code></td>
+<td><b><a href="#cmd-inc">SETINC* / GETINC*</a></b><br>Inklinometer-Konfiguration (nur Encoder-Typ&nbsp;4; Werte im Sensor-NVS).</td>
 </tr>
 </table>
 <div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
@@ -1189,6 +1200,16 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <h4 id="cmd-GETPOSDG"><code>GETPOSDG</code></h4>
 <p><b>Was es macht:</b> Aktuelle Position in Grad (0,01°).</p>
 <p><b>Details:</b> Rückgabe ist die korrigierte Position: fester Encoder‑Offset (<code>SETDGOFFSET</code>) wird abgezogen, Korrekturwinkel (<code>SETDGCAL</code>) wird addiert/subtrahiert. Nach <code>SETDGCAL</code> die Position erneut mit <code>GETPOSDG</code> lesen.</p>
+<hr>
+<h4 id="cmd-GETMOVE"><code>GETMOVE</code></h4>
+<p><b>Was es macht:</b> Bewegungsstatus des Rotors lesen (für Master-/UI-LEDs).</p>
+<p><b>Details:</b></p>
+<ul>
+<li><code>ACK_GETMOVE:1</code> — Positionsfahrt, JOG oder Homing aktiv</li>
+<li><code>ACK_GETMOVE:0</code> — Stillstand</li>
+<li>Unabhängig von <code>GETHOMING</code> (nur Homing-Status). <code>GETREF</code> bleibt für „referenziert ja/nein“.</li>
+<li>In der Bridge wird <code>GETMOVE</code> zusammen mit <code>GETPOSDG</code> gepollt und steuert die <b>Fährt</b>-LED; ohne Firmware-Unterstützung greift die bisherige Positions-Heuristik.</li>
+</ul>
 <hr>
 <h4 id="cmd-SETPOSDG"><code>SETPOSDG</code></h4>
 <p><b>Was es macht:</b> Positionsfahrt in Grad starten.</p>
@@ -1613,7 +1634,7 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <hr>
 <h4 id="cmd-SETMAXDG"><code>SETMAXDG</code></h4>
 <p><b>Was es macht:</b> Max-Winkel setzen.</p>
-<p><b>Details:</b> Typisch 360,00. Für Encoder‑Typen <b>1, 2 und 3</b> bis <b>720°</b> (Overlap, z.&nbsp;B. 420). Wird gespeichert (<code>amax</code>). Nach Änderung <code>GETMAXDG</code> und ggf. Parkwinkel (<code>SETHOMEPOS</code>) prüfen.</p>
+<p><b>Details:</b> Typisch 360,00. Für Encoder‑Typen <b>1, 2 und 3</b> bis <b>720°</b> (Overlap, z.&nbsp;B. 420). Für Typ&nbsp;<b>4</b> (Inklinometer) typisch <b>90</b> oder <b>180</b>. Wird gespeichert (<code>amax</code>). Nach Änderung <code>GETMAXDG</code> und ggf. Parkwinkel (<code>SETHOMEPOS</code>) prüfen.</p>
 <hr>
 <h4 id="cmd-GETDGOFFSET"><code>GETDGOFFSET</code></h4>
 <p><b>Was es macht:</b> Offset (Grad) lesen.</p>
@@ -1788,7 +1809,7 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <p><b>Was es macht:</b> Zusätzliche Such-PWM für die Homing-Suchphase setzen (0…100&nbsp;%). Ergänzt die Homing-PWM in der Phase, in der der Endschalter gesucht wird.</p>
 <hr>
 <h3>Encoder: Counts &amp; Typ (RS485)</h3>
-<p>Ergänzung zu Abschnitt <a href="#encoders">„Encoder-Varianten“</a>: Counts für Ring/Motor können hier fein eingestellt und der Typ (1/2/3) umgeschaltet werden.</p>
+<p>Ergänzung zu Abschnitt <a href="#encoders">„Encoder-Varianten“</a>: Counts für Ring/Motor können hier fein eingestellt und der Typ (1/2/3/4) umgeschaltet werden.</p>
 <h4 id="cmd-GETENCCRI"><code>GETENCCRI</code></h4>
 <p><b>Was es macht:</b> Counts pro 360° für den <b>Ring</b>-Encoder lesen (Integer, typisch ca. 160000).</p>
 <hr>
@@ -1802,16 +1823,16 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <p><b>Was es macht:</b> Counts pro 360° Achsen-/Motor-Encoder setzen. Wird gespeichert.</p>
 <hr>
 <h4 id="cmd-GETENCTYPE"><code>GETENCTYPE</code></h4>
-<p><b>Was es macht:</b> Encoder-Variante lesen: <code>1</code> = Axis/Motor, <code>2</code> = Ring, <code>3</code> = Absolutwert Encoder R&amp;S.</p>
+<p><b>Was es macht:</b> Encoder-/Winkelsensor-Variante lesen: <code>1</code> = Axis/Motor, <code>2</code> = Ring, <code>3</code> = Absolutwert Encoder R&amp;S, <code>4</code> = Inklinometer (meist Elevation, 90°/180°).</p>
 <hr>
 <h4 id="cmd-SETENCTYPE"><code>SETENCTYPE</code></h4>
-<p><b>Was es macht:</b> Encoder-Variante setzen (<code>1</code>, <code>2</code> oder <code>3</code>). Nach Wechsel Homing und Counts prüfen; bei Typ&nbsp;3 Max‑Winkel und Nullpunkt (<code>SETENCZERO</code>) beachten.</p>
+<p><b>Was es macht:</b> Encoder-/Winkelsensor-Variante setzen (<code>1</code>…<code>4</code>). Nach Wechsel Homing und Counts prüfen; bei Typ&nbsp;3/4 Max‑Winkel/Rotortyp und Nullpunkt (<code>SETENCZERO</code>) beachten. Typ&nbsp;4: typisch Elevation mit <code>SETROTORTYPE</code> 2 (90°) oder 3 (180°) und passendem <code>SETMAXDG</code>.</p>
 <hr>
 <h4 id="cmd-SETENCZERO"><code>SETENCZERO</code></h4>
 <p><b>Was es macht:</b> Absolut-Encoder in der aktuellen Position auf 0 setzen.</p>
 <p><b>Telegramm:</b> <code>#0:20:SETENCZERO:1:CS$</code></p>
 <p><b>Antwort:</b> <code>#20:0:ACK_SETENCZERO:1:&lt;CS&gt;$</code></p>
-<p><b>Details:</b> Parameter <code>1</code> = ausführen. Vor allem bei ENCTYPE&nbsp;3 (Absolutwert R&amp;S). Danach Position mit <code>GETPOSDG</code> prüfen.</p>
+<p><b>Details:</b> Parameter <code>1</code> = ausführen. Vor allem bei ENCTYPE&nbsp;3 (Absolutwert R&amp;S) und ENCTYPE&nbsp;4 (Inklinometer). Danach Position mit <code>GETPOSDG</code> prüfen.</p>
 <hr>
 <h4 id="cmd-GETSTALLTIMEOUT"><code>GETSTALLTIMEOUT</code></h4>
 <p><b>Was es macht:</b> Stall-Timeout (ms) lesen.</p>
@@ -1912,6 +1933,26 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <li>Web-UI: <code>http://192.168.4.1</code> (HTTP Basic: Benutzer <code>admin</code>, Passwort <code>Rotorconfig</code>).</li>
 <li><b>Nicht persistent</b> — nach Neustart immer aus; nicht in Backup/Restore der Bridge enthalten.</li>
 </ul>
+<hr>
+<h3 id="cmd-inc">Inklinometer-Konfiguration (<code>SETINC*</code> / <code>GETINC*</code>)</h3>
+<p>Nur bei <code>SETENCTYPE:4</code>. Anderer Encoder-Typ → <code>NAK_…:ENCTYPE</code>. Der Rotor leitet den Befehl über Serial2 an das Inklinometer weiter. Werte liegen im <b>NVS des Inklinometers</b>, nicht im Rotor-FRAM.</p>
+<p><b>Allgemeine Regeln:</b> Float mit Komma oder Punkt; GET → <code>ACK_&lt;CMD&gt;:&lt;wert&gt;</code>; SET Erfolg → <code>ACK_&lt;CMD&gt;:1</code>; Fehler → <code>NAK_…:ERR</code> / <code>TIMEOUT</code> / <code>NOSUP</code> / <code>NOHW</code>.</p>
+<table>
+<tr><th>Befehl</th><th>Bedeutung</th><th>Werte</th></tr>
+<tr><td><code>GETINCSWAPXY</code> / <code>SETINCSWAPXY</code></td><td>Achsen X/Y tauschen</td><td>0/1</td></tr>
+<tr><td><code>GETINCINVREF</code> / <code>SETINCINVREF</code></td><td>Referenzachse invertieren</td><td>0/1</td></tr>
+<tr><td><code>GETINCINVSEN</code> / <code>SETINCINVSEN</code></td><td>Sense-Achse invertieren</td><td>0/1</td></tr>
+<tr><td><code>GETINCINVROT</code> / <code>SETINCINVROT</code></td><td>Drehrichtung umkehren</td><td>0 = Uhrzeigersinn, 1 = gegen</td></tr>
+<tr><td><code>GETINCMOUNT</code> / <code>SETINCMOUNT</code></td><td>Montage-Drehung der 0°-Seite</td><td>0 / 90 / 180 / 270</td></tr>
+<tr><td><code>GETINCLIM180</code> / <code>SETINCLIM180</code></td><td>Soft-Limit 0…180°</td><td>0/1</td></tr>
+<tr><td><code>GETINCCAL</code> / <code>SETINCCAL</code></td><td>Kalibrier-Offset (°)</td><td>ca. −180…+180</td></tr>
+<tr><td><code>GETINCFS1G</code> / <code>SETINCFS1G</code></td><td>Full-Scale IIS2ICLX</td><td>1 = ±1&nbsp;g, 0 = ±2&nbsp;g</td></tr>
+<tr><td><code>GETINCDEC</code> / <code>SETINCDEC</code></td><td>Nachkommastellen am Sensor</td><td>0 / 1 / 2</td></tr>
+<tr><td><code>GETINCFILT</code> / <code>SETINCFILT</code></td><td>EMA-Filter-Alpha</td><td>0,01…1,0</td></tr>
+<tr><td><code>GETINCWLAN</code> / <code>SETINCWLAN</code></td><td>SoftAP-Web-UI des Sensors</td><td>0/1 (nicht im NVS)</td></tr>
+<tr><td><code>GETINCDBG</code> / <code>SETINCDBG</code></td><td>USB-Debug am Sensor</td><td>0/1</td></tr>
+</table>
+<p class="muted">Ruck-/Stoß-Überwachung (<code>SETINCSHK*</code> / <code>GETINCSHK*</code> / <code>GETINCSTL</code>) ist firmwareseitig vorhanden; die Bridge-UI dafür folgt später.</p>
 <hr>
 <h3>Sonstiges</h3>
 <h4 id="cmd-JOG"><code>JOG</code></h4>

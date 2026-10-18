@@ -556,17 +556,6 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             except Exception:
                                 pass
 
-                        # Während aktiver Referenzfahrt darf "moving" NICHT auf False fallen,
-                        # auch wenn temporär keine sauberen Positions-Samples ankommen.
-                        # Sonst blinkt die Anzeige "Fährt" zwischen ja/nein.
-                        try:
-                            if bool(getattr(axis_state, "ref_poll_active", False)):
-                                axis_state.moving = True
-                                axis_state.stop_confirm_samples = 0
-                                return
-                        except Exception:
-                            pass
-
                         dpos = abs(int(d10) - int(prev_pos)) if had_prev_sample else 0
                         if had_prev_sample and axis_name == "AZ" and bool(
                             getattr(axis_state, "position_wrap_360", True)
@@ -582,6 +571,32 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                     )
                                 )
                             )
+
+                        # Firmware-GETMOVE steuert die Fährt-LED; GETPOSDG nur noch Position
+                        # (+ last_motion_ts für Poll-Tempo). Heuristik nur ohne GETMOVE.
+                        use_getmove = bool(
+                            getattr(axis_state, "getmove_supported", False)
+                        )
+                        if use_getmove:
+                            sample_ts = time.time()
+                            if had_prev_sample and dpos > 0:
+                                axis_state.last_motion_ts = sample_ts
+                            elif bool(getattr(axis_state, "moving", False)) and float(
+                                getattr(axis_state, "last_motion_ts", 0.0) or 0.0
+                            ) <= 0.0:
+                                axis_state.last_motion_ts = sample_ts
+                            return
+
+                        # Während aktiver Referenzfahrt darf "moving" NICHT auf False fallen,
+                        # auch wenn temporär keine sauberen Positions-Samples ankommen.
+                        # Sonst blinkt die Anzeige "Fährt" zwischen ja/nein.
+                        try:
+                            if bool(getattr(axis_state, "ref_poll_active", False)):
+                                axis_state.moving = True
+                                axis_state.stop_confirm_samples = 0
+                                return
+                        except Exception:
+                            pass
 
                         # Mit aktivem Motor-Soll: Fahrt solange Ziel≠Ist (alle Encoder).
                         # stop_confirm scheitert bei Schleichfahrt (<0,1°/Sample) → sonst Idle-Polls.
@@ -658,6 +673,52 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             else:
                                 axis_state.moving = prev_moving
                     return
+                # Bewegungsstatus (GETMOVE, parallel zu GETPOSDG)
+                if tel.cmd.startswith("ACK_GETMOVE"):
+                    axis_state.online = True
+                    axis_state.last_rx_ts = time.time()
+                    try:
+                        axis_state.getmove_supported = True
+                    except Exception:
+                        pass
+                    v = parse_int(str(tel.params or "").strip().split(";")[0])
+                    if v is None:
+                        return
+                    was_moving = bool(getattr(axis_state, "moving", False))
+                    now_moving = int(v) != 0
+                    axis_state.moving = now_moving
+                    if now_moving:
+                        axis_state.stop_confirm_samples = 0
+                        axis_state.last_motion_ts = time.time()
+                        try:
+                            axis_state.pos_settle_poll_due_ts = 0.0
+                        except Exception:
+                            pass
+                    else:
+                        if was_moving:
+                            try:
+                                self._schedule_pos_settle_poll(axis_state)
+                            except Exception:
+                                pass
+                            try:
+                                self._arm_acc_bins_after_arrival(axis_name)
+                            except Exception:
+                                pass
+                        axis_state.stop_confirm_samples = 0
+                    return
+                if tel.cmd.startswith("NAK_GETMOVE"):
+                    axis_state.online = True
+                    axis_state.last_rx_ts = time.time()
+                    reason = str(tel.params or "").strip().upper()
+                    if any(
+                        tok in reason
+                        for tok in ("NOSUP", "NOTIMPL", "UNKNOWN", "BADCMD", "NOCMD")
+                    ):
+                        try:
+                            axis_state.getmove_supported = False
+                        except Exception:
+                            pass
+                    return
                 # SETPOSDG-Bestätigung an beliebigen Master (SRC = unser Rotor).
                 # Firmware liefert oft den Zielwinkel (#20:7:ACK_SETPOSDG:323,28:…$) —
                 # dann Soll übernehmen und mitlaufen, auch wenn das SETPOSDG selbst
@@ -716,11 +777,23 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                         )
                                 except Exception:
                                     pass
-                                axis_state.moving = True
+                                # ACK_SETPOSDG:1 = Befehl angenommen (Fahrt startet) —
+                                # nicht als „noch aktiv“ werten, wenn Ist schon im ARRTOL-Fenster.
                                 try:
-                                    axis_state.pos_settle_poll_due_ts = 0.0
+                                    still_pending = bool(
+                                        self._axis_target_pending(axis_state)
+                                    )
                                 except Exception:
-                                    pass
+                                    still_pending = True
+                                if still_pending:
+                                    axis_state.moving = True
+                                    try:
+                                        axis_state.pos_settle_poll_due_ts = 0.0
+                                    except Exception:
+                                        pass
+                                else:
+                                    axis_state.moving = False
+                                    axis_state.stop_confirm_samples = 0
                     except Exception:
                         pass
                     axis_state.last_rx_ts = time.time()
@@ -775,8 +848,10 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     if v == 1:
                         axis_state.referenced = True
                         axis_state.ref_poll_active = False
-                        # Homing beendet (oder war bereits fertig)
-                        axis_state.moving = False
+                        # Homing beendet (oder war bereits fertig).
+                        # Mit GETMOVE steuert die Firmware die Fährt-LED.
+                        if not bool(getattr(axis_state, "getmove_supported", False)):
+                            axis_state.moving = False
                         # Nach Homing-Ende genau einmal Position nachziehen.
                         if was_ref_active or (not was_referenced):
                             try:
@@ -814,8 +889,10 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     else:
                         # Noch nicht referenziert -> Homing läuft weiter
                         axis_state.referenced = False
-                        # Nur während aktiver Referenzfahrt "Fährt" setzen
-                        if axis_state.ref_poll_active:
+                        # Nur während aktiver Referenzfahrt "Fährt" setzen (ohne GETMOVE)
+                        if axis_state.ref_poll_active and not bool(
+                            getattr(axis_state, "getmove_supported", False)
+                        ):
                             axis_state.moving = True
                     return
                 if tel.cmd.startswith("NAK_GETREF") or tel.cmd.startswith("NAK_REF"):
@@ -880,7 +957,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             self.drive_ready()
                         except Exception:
                             pass
-                        if new_type == 3:
+                        if new_type in (3, 4):
                             try:
                                 self._apply_abs_encoder_referenced()
                             except Exception:
@@ -967,6 +1044,34 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                     cb()
                                 except Exception:
                                     pass
+                    return
+                # Ankunftstoleranz (GETARRTOL / SETARRTOL) — Grad
+                if tel.cmd.startswith("ACK_GETARRTOL") or tel.cmd.startswith("ACK_SETARRTOL"):
+                    v = parse_float(tel.params.strip())
+                    if v is not None:
+                        try:
+                            self.remember_arrtol_deg(axis_state, float(v))
+                        except Exception:
+                            pass
+                        # Nach Ankunftstoleranz-Update: ggf. „Fährt“ sofort zurücknehmen
+                        try:
+                            if (
+                                getattr(axis_state, "last_set_sent_target_d10", None)
+                                is not None
+                                and (not self._axis_target_pending(axis_state))
+                            ):
+                                axis_state.moving = False
+                                axis_state.stop_confirm_samples = 0
+                        except Exception:
+                            pass
+                    elif tel.cmd.startswith("ACK_SETARRTOL"):
+                        try:
+                            self.request_arrtol(
+                                az=(axis_name == "AZ"),
+                                el=(axis_name == "EL"),
+                            )
+                        except Exception:
+                            pass
                     return
                 # Hom-/Parkwinkel (GETHOMEPOS) — Wire: Grad; intern 0,1°
                 if tel.cmd.startswith("ACK_GETHOMEPOS"):

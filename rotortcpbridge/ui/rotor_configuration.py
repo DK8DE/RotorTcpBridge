@@ -48,7 +48,23 @@ from ..backup import backups_dir
 
 _CMD_RE = re.compile(r"^[A-Z0-9_]+$")
 # Nicht im oberen CMD-Dropdown: nur über dedizierte UI (z. B. Broadcast-Ziel 255).
-_HIDE_FROM_MANUAL_CMD_COMBO = frozenset({"SETROTORID"})
+_HIDE_FROM_MANUAL_CMD_COMBO = frozenset(
+    {
+        "SETROTORID",
+        "SETINCSWAPXY",
+        "SETINCINVREF",
+        "SETINCINVSEN",
+        "SETINCINVROT",
+        "SETINCMOUNT",
+        "SETINCLIM180",
+        "SETINCCAL",
+        "SETINCFS1G",
+        "SETINCDEC",
+        "SETINCFILT",
+        "SETINCWLAN",
+        "SETINCDBG",
+    }
+)
 _SET_TO_GET_SPECIAL_MAP = {
     "SETSWAPTEMP": "GETSWAPTMP",
     "SETHOMERETURN": "GETHOMRETURN",
@@ -70,6 +86,7 @@ _BLOCK1_DEFS = [
     ("cmd.label_max_motor_temp", "SETTEMPM", "GETTEMPMW"),
     ("cmd.label_swap_temp", "SETSWAPTEMP", "GETSWAPTMP"),
     ("cmd.label_ramp", "SETRAMP", "GETRAMP"),
+    ("cmd.label_arrtol", "SETARRTOL", "GETARRTOL"),
     ("cmd.label_pos_timeout", "SETPOSTIMEOUT", "GETPOSTIMEOUT"),
     ("cmd.label_homing_timeout", "SETHOMETIMEOUT", "GETHOMETIMEOUT"),
     ("cmd.label_home_pos", "SETHOMEPOS", "GETHOMEPOS"),
@@ -79,6 +96,7 @@ _BLOCK1_DEFS = [
 
 # Block 2
 _BLOCK2_DEFS = [
+    ("cmd.label_end_switches", "SETENDSTC", "GETENDSTC"),
     ("cmd.label_home_return", "SETHOMERETURN", "GETHOMRETURN"),
     ("cmd.label_homing_pwm", "SETHOMEPWM", "GETHOMEPWM"),
     ("cmd.label_homing_seek_pwm", "SETHOMESEEKPPWM", "GETHOMESEEKPPWM"),
@@ -108,7 +126,7 @@ def _BLOCK2():
 _PARAM_SPEC = {
     "SETID": (1, 254, "ID", False, False),
     "SETROTORTYPE": (1, 3, "", False, False),
-    "SETENCTYPE": (1, 3, "", False, False),
+    "SETENCTYPE": (1, 4, "", False, False),
     "SETENCCRI": (None, None, "Cnt.", False, False),
     "SETENCCAX": (None, None, "Cnt.", False, False),
     "SETWINDENABLE": (0, 1, "", False, False),
@@ -116,8 +134,10 @@ _PARAM_SPEC = {
     "SETTEMPM": (0, 90, "°C", False, False),
     "SETSWAPTEMP": (0, 1, "", False, False),
     "SETRAMP": (0, 60, "°", False, False),
+    "SETARRTOL": (0, 5, "°", False, False),
     "SETPOSTIMEOUT": (1, 600, "s", False, True),
     "SETHOMETIMEOUT": (1, 600, "s", False, True),
+    "SETENDSTC": (0, 2, "", False, False),
     "SETHOMERETURN": (0, 1, "", False, False),
     "SETHOMEPWM": (0, 100, "%", False, False),
     "SETHOMESEEKPPWM": (0, 100, "%", False, False),
@@ -154,9 +174,11 @@ _INTEGER_PERCENT_SET_CMDS = frozenset(
 _FLOAT_01_SET_CMDS = frozenset({"SETHOMEBLSCALE"})
 # SET mit Dezimal-Winkel (Nachkommastellen behalten).
 _FLOAT_ANGLE_SET_CMDS = frozenset({"SETDGCAL", "SETHOMEPOS", "SETMAXDG"})
+# Ankunftstoleranz u. ä. mit bis zu 2 Nachkommastellen
+_FLOAT_PREC2_SET_CMDS = frozenset({"SETARRTOL"})
 
 # Spezielle Steuerelemente statt freier Zahleneingabe
-_PARAM_COMBO_SET_CMDS = frozenset({"SETROTORTYPE", "SETENCTYPE"})
+_PARAM_COMBO_SET_CMDS = frozenset({"SETROTORTYPE", "SETENCTYPE", "SETENDSTC"})
 _PARAM_CHECK_SET_CMDS = frozenset(
     {"SETWINDENABLE", "SETSWAPTEMP", "SETHOMERETURN", "SETWLAN"}
 )
@@ -172,6 +194,12 @@ _PARAM_COMBO_OPTIONS: dict[str, tuple[tuple[int, str], ...]] = {
         (1, "cmd.opt_enc_type_1"),
         (2, "cmd.opt_enc_type_2"),
         (3, "cmd.opt_enc_type_3"),
+        (4, "cmd.opt_enc_type_4"),
+    ),
+    "SETENDSTC": (
+        (0, "cmd.opt_endstc_0"),
+        (1, "cmd.opt_endstc_1"),
+        (2, "cmd.opt_endstc_2"),
     ),
 }
 
@@ -483,14 +511,27 @@ class CommandButtonsWindow(QDialog):
         self.btn_set_rotor_id.setAutoDefault(False)
         self.btn_set_rotor_id.setDefault(False)
         self.btn_set_rotor_id.setToolTip(format_tooltip(t("cmd.tooltip_setrotorid_new")))
+        self.btn_inclinometer_config = QPushButton(t("inc.btn_open"))
+        self.btn_inclinometer_config.setAutoDefault(False)
+        self.btn_inclinometer_config.setDefault(False)
+        self.btn_inclinometer_config.setToolTip(format_tooltip(t("inc.tooltip_open")))
+        self.btn_inclinometer_config.setVisible(False)
+        self._inclinometer_win: Optional[QDialog] = None
         row_setrid.addWidget(lbl_new_id)
         row_setrid.addWidget(self.ed_set_rotor_id)
         row_setrid.addWidget(self.btn_set_rotor_id)
+        row_setrid.addWidget(self.btn_inclinometer_config)
         row_setrid.addStretch(1)
         root.addLayout(row_setrid)
 
         self.btn_set_rotor_id.clicked.connect(self._on_set_rotor_id_broadcast_clicked)
         self.ed_set_rotor_id.returnPressed.connect(self._on_set_rotor_id_broadcast_clicked)
+        self.btn_inclinometer_config.clicked.connect(self._on_inclinometer_config_clicked)
+
+        ed_enc, _ = self._param_rows.get("GETENCTYPE", (None, None))
+        if isinstance(ed_enc, QComboBox):
+            ed_enc.currentIndexChanged.connect(self._update_inclinometer_btn)
+        self._update_inclinometer_btn()
 
         self.btn_backup.clicked.connect(self._on_backup_clicked)
         self.btn_restore.clicked.connect(self._on_restore_clicked)
@@ -784,6 +825,15 @@ class CommandButtonsWindow(QDialog):
                         self.ctrl.request_max_deg()
                     except Exception:
                         pass
+                if cmd == "SETARRTOL" and hasattr(self.ctrl, "request_arrtol"):
+                    try:
+                        dst_i = int(dst)
+                        self.ctrl.request_arrtol(
+                            az=(dst_i == int(getattr(self.ctrl, "slave_az", -1))),
+                            el=(dst_i == int(getattr(self.ctrl, "slave_el", -1))),
+                        )
+                    except Exception:
+                        pass
                 if cmd == "SETID":
                     try:
                         nid = int(float(str(params).replace(",", ".")))
@@ -846,7 +896,12 @@ class CommandButtonsWindow(QDialog):
 
         if set_cmd in _PARAM_COMBO_SET_CMDS:
             ed: QWidget = QComboBox()
-            ed.setFixedWidth(_PARAM_COMBO_WIDTH)
+            combo_w = _PARAM_COMBO_WIDTH
+            if set_cmd == "SETENDSTC":
+                combo_w = max(combo_w, 110)
+            elif set_cmd == "SETENCTYPE":
+                combo_w = max(combo_w, 120)
+            ed.setFixedWidth(combo_w)
             for val, key in _PARAM_COMBO_OPTIONS.get(set_cmd, ()):
                 ed.addItem(t(key), int(val))
             unit_txt = ""
@@ -1442,6 +1497,21 @@ class CommandButtonsWindow(QDialog):
                 self.lbl_hint.setText(t("cmd.hint_enter"))
         finally:
             self._block_auto_send = False
+        if cmd == "GETARRTOL" and hasattr(self.ctrl, "remember_arrtol_deg"):
+            try:
+                v = float(str(params).strip().replace(",", ".").split(";")[0])
+                dst = int(self._current_dst())
+                ax = None
+                if dst == int(getattr(self.ctrl, "slave_az", -1)):
+                    ax = getattr(self.ctrl, "az", None)
+                elif dst == int(getattr(self.ctrl, "slave_el", -1)):
+                    ax = getattr(self.ctrl, "el", None)
+                if ax is not None:
+                    self.ctrl.remember_arrtol_deg(ax, v)
+            except Exception:
+                pass
+        if cmd == "GETENCTYPE":
+            self._update_inclinometer_btn()
         self._update_frame()
 
     def _rotor_angle_from_ui(self) -> float | None:
@@ -1492,7 +1562,11 @@ class CommandButtonsWindow(QDialog):
             xf = float(str(raw).strip().replace(",", "."))
         except (ValueError, TypeError):
             return (None, f"Ungültige Zahl: {raw}")
-        if cmd in _FLOAT_01_SET_CMDS or cmd in _FLOAT_ANGLE_SET_CMDS:
+        if (
+            cmd in _FLOAT_01_SET_CMDS
+            or cmd in _FLOAT_ANGLE_SET_CMDS
+            or cmd in _FLOAT_PREC2_SET_CMDS
+        ):
             lo = float(min_v) if min_v is not None else (-360.0 if cmd in _FLOAT_ANGLE_SET_CMDS else 0.0)
             hi = float(max_v) if max_v is not None else (360.0 if cmd in _FLOAT_ANGLE_SET_CMDS else 1.0)
             if xf < lo - 1e-9 or xf > hi + 1e-9:
@@ -1510,6 +1584,11 @@ class CommandButtonsWindow(QDialog):
                     )
             if cmd in _FLOAT_ANGLE_SET_CMDS:
                 txt = f"{xf:.1f}".rstrip("0").rstrip(".")
+                if not txt or txt == "-0":
+                    txt = "0"
+                return (txt.replace(".", ","), None)
+            if cmd in _FLOAT_PREC2_SET_CMDS:
+                txt = f"{xf:.2f}".rstrip("0").rstrip(".")
                 if not txt or txt == "-0":
                     txt = "0"
                 return (txt.replace(".", ","), None)
@@ -1691,6 +1770,46 @@ class CommandButtonsWindow(QDialog):
                 self.lbl_hint.setText(t("cmd.hint_sent_params", cmd=cmd, params=params))
             else:
                 self.lbl_hint.setText(t("cmd.hint_sent", cmd=cmd))
+            if cmd == "SETENCTYPE":
+                self._update_inclinometer_btn()
+
+    def _encoder_type_from_ui(self) -> Optional[int]:
+        """Aktuell angezeigter Encoder-Typ aus dem Combo (1…4), sonst None."""
+        ed, _ = self._param_rows.get("GETENCTYPE", (None, None))
+        if not isinstance(ed, QComboBox):
+            return None
+        try:
+            v = int(ed.currentData())
+        except (TypeError, ValueError):
+            return None
+        return v if v in (1, 2, 3, 4) else None
+
+    def _update_inclinometer_btn(self) -> None:
+        """Button „Inclinometer Config“ nur bei Encoder-Typ 4 anzeigen."""
+        btn = getattr(self, "btn_inclinometer_config", None)
+        if btn is None:
+            return
+        btn.setVisible(self._encoder_type_from_ui() == 4)
+
+    def _on_inclinometer_config_clicked(self) -> None:
+        from .inclinometer_config_window import InclinometerConfigWindow
+
+        win = getattr(self, "_inclinometer_win", None)
+        if win is None:
+            win = InclinometerConfigWindow(
+                self,
+                ctrl=self.ctrl,
+                get_dst=self._current_dst,
+            )
+            self._inclinometer_win = win
+        else:
+            try:
+                win.ctrl = self.ctrl
+            except Exception:
+                pass
+        win.show()
+        win.raise_()
+        win.activateWindow()
 
     def _on_backup_clicked(self) -> None:
         if self._xfer_in_progress():
@@ -1891,8 +2010,12 @@ class CommandButtonsWindow(QDialog):
             return
         live_et = self._resolve_encoder_type_for_xfer()
         bak_et = encoder_type_from_backup_entries(entries or [])
-        # Typ 3 live oder im Backup → Wind-/Anemo-SETs nicht wiederherstellen
-        enc_type = 3 if (live_et == 3 or bak_et == 3) else (live_et if live_et is not None else bak_et)
+        # Typ 3/4 live oder im Backup → Wind-/Anemo-SETs nicht wiederherstellen
+        enc_type = (
+            3
+            if (live_et in (3, 4) or bak_et in (3, 4))
+            else (live_et if live_et is not None else bak_et)
+        )
         filtered = filter_restore_entries_for_encoder(
             entries or [],
             encoder_type=enc_type,

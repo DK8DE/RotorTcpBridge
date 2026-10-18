@@ -1899,11 +1899,14 @@ class SettingsWindow(QDialog):
         self.chk_enable_el.installEventFilter(self)
         self.chk_enable_az.stateChanged.connect(self._update_antenna_visibility)
         self.chk_enable_el.stateChanged.connect(self._update_antenna_visibility)
+        self.chk_enable_az.stateChanged.connect(lambda _s: self._sync_update_tab_axes_visibility())
+        self.chk_enable_el.stateChanged.connect(lambda _s: self._sync_update_tab_axes_visibility())
         self.chk_enable_az.stateChanged.connect(lambda _s: self._update_enc_zero_button_ui())
         self.chk_enable_az.stateChanged.connect(lambda _s: self._update_park_home_visibility())
         self.chk_enable_el.stateChanged.connect(self._shortcuts_tab.refresh_el_visibility)
         self.chk_enable_el.stateChanged.connect(lambda _s: self._update_park_home_visibility())
         self._update_antenna_visibility()
+        self._sync_update_tab_axes_visibility()
         self._update_park_home_visibility()
         self._fill_park_home_from_cache()
 
@@ -3337,68 +3340,112 @@ class SettingsWindow(QDialog):
             QTimer.singleShot(0, self._shortcuts_tab.refresh_antenna_shortcut_row_labels)
             QTimer.singleShot(400, self._shortcuts_tab.refresh_antenna_shortcut_row_labels)
         if row == getattr(self, "_tab_update_index", -1):
+            self._sync_update_tab_axes_visibility()
             QTimer.singleShot(0, self._refresh_softap_status)
             if not self._softap_poll_timer.isActive():
                 self._softap_poll_timer.start()
         else:
             self._softap_poll_timer.stop()
 
-    def _az_slave_dst_for_softap(self) -> int:
+    def _softap_axis_enabled(self, axis: str) -> bool:
+        ax = str(axis or "").strip().lower()
         try:
-            dst = int(self.sp_slave_az.value())
+            if ax == "az":
+                return bool(self.chk_enable_az.isChecked())
+            if ax == "el":
+                return bool(self.chk_enable_el.isChecked())
         except Exception:
-            dst = int(getattr(self.ctrl, "slave_az", 0) or 0)
+            pass
+        if ax == "az":
+            return bool(getattr(self.ctrl, "enable_az", True))
+        if ax == "el":
+            return bool(getattr(self.ctrl, "enable_el", False))
+        return False
+
+    def _sync_update_tab_axes_visibility(self) -> None:
+        tab = getattr(self, "_update_tab", None)
+        if tab is None or not hasattr(tab, "set_axes_visible"):
+            return
+        tab.set_axes_visible(
+            az_on=self._softap_axis_enabled("az"),
+            el_on=self._softap_axis_enabled("el"),
+        )
+
+    def _slave_dst_for_softap(self, axis: str) -> int:
+        ax = str(axis or "").strip().lower()
+        try:
+            if ax == "el":
+                dst = int(self.sp_slave_el.value())
+            else:
+                dst = int(self.sp_slave_az.value())
+        except Exception:
+            if ax == "el":
+                dst = int(getattr(self.ctrl, "slave_el", 0) or 0)
+            else:
+                dst = int(getattr(self.ctrl, "slave_az", 0) or 0)
         return dst if dst > 0 else 0
 
     def _refresh_softap_status(self) -> None:
-        """GETWLAN → LED/Checkbox im Update-Tab."""
+        """GETWLAN → LED/Checkbox je sichtbarer Achse im Update-Tab."""
         tab = getattr(self, "_update_tab", None)
         if tab is None:
             return
+        self._sync_update_tab_axes_visibility()
+        axes = [a for a in ("az", "el") if self._softap_axis_enabled(a)]
+        if not axes:
+            return
         if not bool(getattr(self.hw, "is_connected", lambda: False)()):
-            tab.set_softap_active(False)
-            tab.set_status(t("settings.update_status_offline"))
+            for a in axes:
+                tab.set_softap_active(a, False)
+                tab.set_status(a, t("settings.update_status_offline"))
             return
         if not hasattr(self.ctrl, "sync_ui_command_response"):
-            tab.set_status(t("settings.update_status_error"))
+            for a in axes:
+                tab.set_status(a, t("settings.update_status_error"))
             return
-        dst = self._az_slave_dst_for_softap()
-        if dst <= 0:
-            tab.set_status(t("settings.update_status_error"))
-            return
-        r = self.ctrl.sync_ui_command_response(
-            dst, "GETWLAN", "0", "ACK_GETWLAN", timeout_s=1.2
-        )
-        if not _sync_got_ack_value(r):
-            tab.set_softap_active(False)
-            tab.set_status(t("settings.update_status_error"))
-            return
-        try:
-            on = int(float(str(r).strip().split(";")[0].replace(",", "."))) != 0
-        except Exception:
-            on = False
-        tab.set_softap_active(on)
-        tab.set_status(
-            t("settings.update_status_on") if on else t("settings.update_status_off")
-        )
+        for a in axes:
+            dst = self._slave_dst_for_softap(a)
+            if dst <= 0:
+                tab.set_softap_active(a, False)
+                tab.set_status(a, t("settings.update_status_error"))
+                continue
+            r = self.ctrl.sync_ui_command_response(
+                dst, "GETWLAN", "0", "ACK_GETWLAN", timeout_s=1.2
+            )
+            if not _sync_got_ack_value(r):
+                tab.set_softap_active(a, False)
+                tab.set_status(a, t("settings.update_status_error"))
+                continue
+            try:
+                on = int(float(str(r).strip().split(";")[0].replace(",", "."))) != 0
+            except Exception:
+                on = False
+            tab.set_softap_active(a, on)
+            tab.set_status(
+                a,
+                t("settings.update_status_on") if on else t("settings.update_status_off"),
+            )
 
-    def _on_softap_toggled(self, want_on: bool) -> None:
-        """SETWLAN:1/0 am AZ-Slave; SoftAP ist nicht persistent."""
+    def _on_softap_toggled(self, axis: str, want_on: bool) -> None:
+        """SETWLAN:1/0 am AZ- oder EL-Slave; SoftAP ist nicht persistent."""
         tab = getattr(self, "_update_tab", None)
         if tab is None:
             return
+        ax = str(axis or "").strip().lower()
+        if ax not in ("az", "el") or not self._softap_axis_enabled(ax):
+            return
         if not bool(getattr(self.hw, "is_connected", lambda: False)()):
-            tab.set_softap_active(False)
-            tab.set_status(t("settings.update_status_offline"))
+            tab.set_softap_active(ax, False)
+            tab.set_status(ax, t("settings.update_status_offline"))
             return
         if not hasattr(self.ctrl, "sync_ui_command_response"):
-            tab.set_status(t("settings.update_status_error"))
+            tab.set_status(ax, t("settings.update_status_error"))
             return
-        dst = self._az_slave_dst_for_softap()
+        dst = self._slave_dst_for_softap(ax)
         if dst <= 0:
-            tab.set_status(t("settings.update_status_error"))
+            tab.set_status(ax, t("settings.update_status_error"))
             return
-        tab.set_status(t("settings.update_status_saving"))
+        tab.set_status(ax, t("settings.update_status_saving"))
         QApplication.processEvents()
         r = self.ctrl.sync_ui_command_response(
             dst,
@@ -3408,7 +3455,7 @@ class SettingsWindow(QDialog):
             timeout_s=2.0,
         )
         if not _sync_got_ack_value(r):
-            tab.set_status(t("settings.update_status_error"))
+            tab.set_status(ax, t("settings.update_status_error"))
             QTimer.singleShot(0, self._refresh_softap_status)
             return
         QTimer.singleShot(0, self._refresh_softap_status)

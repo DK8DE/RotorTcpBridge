@@ -61,6 +61,21 @@ SPECS_DATA: list[dict] = [
         "help_text_en": "Current position in degrees (0.01°). Return value is always the offset-corrected position.",
     },
     {
+        "name": "GETMOVE",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Bewegungsstatus lesen. 1 = Positionsfahrt, JOG oder Homing aktiv; "
+            "0 = Stillstand. Unabhängig von GETHOMING (nur Homing). "
+            "In der Bridge zusammen mit GETPOSDG gepollt (Fährt-LED)."
+        ),
+        "help_text_en": (
+            "Read motion status. 1 = position move, JOG or homing active; "
+            "0 = standstill. Independent of GETHOMING (homing only). "
+            "Polled with GETPOSDG in the bridge (moving LED)."
+        ),
+    },
+    {
         "name": "GETIS",
         "kind": "none",
         "params_literal": "0",
@@ -666,8 +681,8 @@ SPECS_DATA: list[dict] = [
         "decimals": 2,
         "step": 0.01,
         "default": 360.0,
-        "help_text": "Max-Winkel setzen. Typisch 360,00; Encoder Typ 1/2/3 bis 720° (Overlap, z. B. 420).",
-        "help_text_en": "Set maximum angle. Typically 360.00; encoder types 1/2/3 up to 720° (overlap, e.g. 420).",
+        "help_text": "Max-Winkel setzen. Typisch 360,00; Encoder Typ 1/2/3 bis 720° (Overlap, z. B. 420). Typ 4 (Inklinometer): typisch 90 oder 180.",
+        "help_text_en": "Set maximum angle. Typically 360.00; encoder types 1/2/3 up to 720° (overlap, e.g. 420). Type 4 (inclinometer): typically 90 or 180.",
     },
     {
         "name": "GETMAXDG",
@@ -1449,19 +1464,33 @@ SPECS_DATA: list[dict] = [
         "name": "SETENCTYPE",
         "kind": "int",
         "min_value": 1.0,
-        "max_value": 3.0,
+        "max_value": 4.0,
         "decimals": 0,
         "step": 1.0,
         "default": 1.0,
-        "help_text": "Encoder-Variante setzen. 1 = Axis/Motor, 2 = Ring Encoder, 3 = Absolutwert Encoder R&S. Nach Wechsel Counts/Homing prüfen.",
-        "help_text_en": "Set encoder variant. 1 = Axis/Motor, 2 = Ring Encoder, 3 = Absolute Encoder R&S. Check counts/homing after change.",
+        "help_text": (
+            "Encoder-/Winkelsensor-Variante setzen. 1 = Axis/Motor, 2 = Ring Encoder, "
+            "3 = Absolutwert Encoder R&S, 4 = Inklinometer (meist Elevation, 90° oder 180° "
+            "über SETROTORTYPE/SETMAXDG). Nach Wechsel Counts/Homing prüfen."
+        ),
+        "help_text_en": (
+            "Set encoder/angle sensor variant. 1 = Axis/Motor, 2 = Ring Encoder, "
+            "3 = Absolute Encoder R&S, 4 = inclinometer (mostly elevation, 90° or 180° "
+            "via SETROTORTYPE/SETMAXDG). Check counts/homing after change."
+        ),
     },
     {
         "name": "GETENCTYPE",
         "kind": "none",
         "params_literal": "0",
-        "help_text": "Encoder-Variante lesen. 1 = Axis/Motor, 2 = Ring Encoder, 3 = Absolutwert Encoder R&S.",
-        "help_text_en": "Read encoder variant. 1 = Axis/Motor, 2 = Ring Encoder, 3 = Absolute Encoder R&S.",
+        "help_text": (
+            "Encoder-/Winkelsensor-Variante lesen. 1 = Axis/Motor, 2 = Ring Encoder, "
+            "3 = Absolutwert Encoder R&S, 4 = Inklinometer (meist Elevation, 90°/180°)."
+        ),
+        "help_text_en": (
+            "Read encoder/angle sensor variant. 1 = Axis/Motor, 2 = Ring Encoder, "
+            "3 = Absolute Encoder R&S, 4 = inclinometer (mostly elevation, 90°/180°)."
+        ),
     },
     {
         "name": "SETENCZERO",
@@ -1471,8 +1500,14 @@ SPECS_DATA: list[dict] = [
         "decimals": 0,
         "step": 1.0,
         "default": 1.0,
-        "help_text": "Encoder in der aktuellen Position auf 0 setzen (Absolut-Encoder). Parameter 1 = ausführen.",
-        "help_text_en": "Set encoder zero at current position (absolute encoder). Parameter 1 = execute.",
+        "help_text": (
+            "Encoder/Sensor in der aktuellen Position auf 0 setzen "
+            "(Absolut-Encoder Typ 3 / Inklinometer Typ 4). Parameter 1 = ausführen."
+        ),
+        "help_text_en": (
+            "Set encoder/sensor zero at current position "
+            "(absolute encoder type 3 / inclinometer type 4). Parameter 1 = execute."
+        ),
     },
     # Controller-Oberfläche (HW-Display / Tasten)
     {
@@ -1736,6 +1771,315 @@ SPECS_DATA: list[dict] = [
         "params_literal": "0",
         "help_text": "SoftAP-Status lesen. 0 = aus, 1 = ein.",
         "help_text_en": "Read SoftAP status. 0 = off, 1 = on.",
+    },
+    {
+        "name": "SETENDSTC",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 2.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 1.0,
+        "help_text": (
+            "Anzahl Endschalter setzen. 0 = keiner, 1 = ein Endschalter, "
+            "2 = zwei Endschalter."
+        ),
+        "help_text_en": (
+            "Set number of end switches. 0 = none, 1 = one end switch, "
+            "2 = two end switches."
+        ),
+    },
+    {
+        "name": "GETENDSTC",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Anzahl Endschalter lesen. 0 = keiner, 1 = ein Endschalter, "
+            "2 = zwei Endschalter."
+        ),
+        "help_text_en": (
+            "Read number of end switches. 0 = none, 1 = one end switch, "
+            "2 = two end switches."
+        ),
+    },
+    # --- Inklinometer (nur SETENCTYPE:4; Werte im Sensor-NVS) ---
+    {
+        "name": "SETINCSWAPXY",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Inklinometer: Achsen X/Y tauschen (0/1). Nur bei Encoder-Typ 4. "
+            "Persistiert im Inklinometer-NVS."
+        ),
+        "help_text_en": (
+            "Inclinometer: swap X/Y axes (0/1). Only with encoder type 4. "
+            "Stored in inclinometer NVS."
+        ),
+    },
+    {
+        "name": "GETINCSWAPXY",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: Achsen-Tausch X/Y lesen (0/1). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read X/Y axis swap (0/1). Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCINVREF",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Inklinometer: Referenzachse invertieren (0/1). Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: invert reference axis (0/1). Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCINVREF",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: Referenzachsen-Inversion lesen (0/1). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read reference-axis inversion (0/1). Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCINVSEN",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Inklinometer: Sense-Achse invertieren (0/1). Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: invert sense axis (0/1). Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCINVSEN",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: Sense-Achsen-Inversion lesen (0/1). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read sense-axis inversion (0/1). Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCINVROT",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Inklinometer: Drehrichtung umkehren (0 = Uhrzeigersinn, 1 = gegen). "
+            "Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: reverse rotation sense (0 = clockwise, 1 = counter-clockwise). "
+            "Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCINVROT",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: Drehrichtungs-Inversion lesen (0/1). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read rotation inversion (0/1). Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCMOUNT",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 270.0,
+        "decimals": 0,
+        "step": 90.0,
+        "default": 0.0,
+        "help_text": (
+            "Inklinometer: Montage-Drehung der 0°-Seite (0/90/180/270°). "
+            "Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: mount rotation of the 0° side (0/90/180/270°). "
+            "Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCMOUNT",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: Montage-Drehung lesen (0/90/180/270°). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read mount rotation (0/90/180/270°). Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCLIM180",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Inklinometer: Soft-Limit 0…180° (0 = aus, 1 = ein). Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: soft limit 0…180° (0 = off, 1 = on). Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCLIM180",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: Soft-Limit 0…180° lesen (0/1). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read soft limit 0…180° (0/1). Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCCAL",
+        "kind": "float",
+        "min_value": -180.0,
+        "max_value": 180.0,
+        "decimals": 2,
+        "step": 0.1,
+        "default": 0.0,
+        "help_text": (
+            "Inklinometer: Kalibrier-Offset in Grad (−180…+180). "
+            "Persistiert im Inklinometer-NVS. Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: calibration offset in degrees (−180…+180). "
+            "Stored in inclinometer NVS. Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCCAL",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: Kalibrier-Offset lesen (°). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read calibration offset (°). Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCFS1G",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 1.0,
+        "help_text": (
+            "Inklinometer: Full-Scale IIS2ICLX (1 = ±1 g, 0 = ±2 g). Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: IIS2ICLX full-scale (1 = ±1 g, 0 = ±2 g). Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCFS1G",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: Full-Scale lesen (1 = ±1 g, 0 = ±2 g). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read full-scale (1 = ±1 g, 0 = ±2 g). Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCDEC",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 2.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 2.0,
+        "help_text": (
+            "Inklinometer: Nachkommastellen der Elevation am Sensor (0/1/2). "
+            "Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: decimal places for elevation at the sensor (0/1/2). "
+            "Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCDEC",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: Nachkommastellen lesen (0/1/2). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read decimal places (0/1/2). Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCFILT",
+        "kind": "float",
+        "min_value": 0.01,
+        "max_value": 1.0,
+        "decimals": 2,
+        "step": 0.01,
+        "default": 0.35,
+        "help_text": (
+            "Inklinometer: EMA-Filter-Alpha (0,01…1,0; größer = schneller). "
+            "Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: EMA filter alpha (0.01…1.0; larger = faster). "
+            "Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCFILT",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: EMA-Filter-Alpha lesen. Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read EMA filter alpha. Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCWLAN",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Inklinometer: SoftAP-Web-UI ein/aus (0/1). Nicht im Sensor-NVS; "
+            "nach Sensor-Neustart aus. Unabhängig von Rotor-SETWLAN. Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: SoftAP web UI on/off (0/1). Not in sensor NVS; "
+            "off after sensor reboot. Independent of rotor SETWLAN. Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCWLAN",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: SoftAP-Status lesen (0/1). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read SoftAP status (0/1). Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCDBG",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Inklinometer: USB-Debug-Ausgabe am Sensor ein/aus (0/1). Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: USB debug output on the sensor on/off (0/1). Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCDBG",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: USB-Debug-Status lesen (0/1). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read USB debug status (0/1). Only with encoder type 4.",
     },
 ]
 

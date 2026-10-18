@@ -128,7 +128,8 @@ __WEB_SERIAL_JS__
         if (busIds) {
           WS.setIds({
             pc_id: busIds.pc_id, master_id: busIds.master_id, cont_id: busIds.cont_id,
-            az_id: busIds.az_id, el_id: busIds.el_id, enable_el: !!d.enable_el
+            az_id: busIds.az_id, el_id: busIds.el_id,
+            enable_az: d.enable_az !== false, enable_el: !!d.enable_el
           });
         }
       }).catch(function() {});

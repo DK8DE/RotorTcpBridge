@@ -59,6 +59,16 @@ def build_compass_html(params: dict) -> str:
     #azBlock {{ flex:1.25 1 0; min-height:0; height:100%; }}
     #elBlock {{ flex:1 1 0; display:none; }}
     body.el-on #elBlock {{ display:flex; }}
+    /* Nur EL: AZ-Kompass/Steuerung aus, linke Chrome (Loc/Profil) behalten */
+    body.az-off #azBlock > .canvasCol,
+    body.az-off #azRight,
+    body.az-off #azLeftBottom {{ display:none !important; }}
+    body.az-off #azLeftTop .card:nth-child(1),
+    body.az-off #azLeftTop .card:nth-child(2),
+    body.az-off #azLeftTop .card:nth-child(5) {{ display:none !important; }}
+    body.az-off #azBlock {{ flex:0 0 170px; max-width:200px; height:auto; }}
+    body.az-off.el-on #elBlock {{ flex:1 1 auto; min-width:0; }}
+    body.az-off:not(.el-on) #azBlock {{ flex:1 1 auto; max-width:none; }}
     #azLeftCol {{
       flex:0 0 158px; width:158px; min-width:140px; max-width:180px;
       display:flex; flex-direction:column; gap:6px; overflow:auto; min-height:0;
@@ -198,6 +208,9 @@ def build_compass_html(params: dict) -> str:
       #azBlock {{
         display:flex; flex-direction:column; flex-wrap:nowrap; overflow:visible;
       }}
+      body.az-off #azBlock {{
+        flex:0 0 auto; max-width:none; width:100%; height:auto;
+      }}
       #azLeftCol {{
         display:contents; width:auto; max-width:none; flex:none; overflow:visible;
       }}
@@ -221,6 +234,8 @@ def build_compass_html(params: dict) -> str:
       }}
       .canvasWrap {{ min-height:42vh; }}
       #elBlock {{ flex-direction:column; }}
+      body.az-off.el-on #elBlock .canvasCol {{ min-height:48vh; }}
+      body.az-off.el-on #elBlock .canvasWrap {{ min-height:48vh; }}
       #elBlock .canvasCol {{ flex:0 0 auto; width:100%; min-height:32vh; }}
       #elBlock .canvasWrap {{ min-height:32vh; }}
       #elRight {{
@@ -229,7 +244,7 @@ def build_compass_html(params: dict) -> str:
       }}
       #elRight .card {{ flex:1 1 150px; min-width:140px; }}
     }}
-    body.embed #btnBack {{ display:none !important; }}
+    body.embed #btnBack, body.embed #btnBackEl {{ display:none !important; }}
     body.embed #lblWebSerial, body.embed #webSerialHttpsBanner, body.embed #btnWebSerial,
     body.embed #webSerialHttpsLink, body.embed #webSerialStatus, body.embed #webSerialHint {{ display:none !important; }}
   </style>
@@ -408,6 +423,7 @@ def build_compass_html(params: dict) -> str:
             <button type="button" id="btnStopEl">STOP EL</button>
             <button type="button" id="btnRefEl">EL Homing</button>
             <label class="chk"><input type="checkbox" id="chkHeatElStrom" /> <span id="lblHeatElStrom">Strom</span></label>
+            <a href="/map" id="btnBackEl" style="display:none;">Zur Karte</a>
           </div>
         </aside>
       </div>
@@ -834,7 +850,7 @@ def build_compass_html(params: dict) -> str:
     }}
     function drawAz() {{
       const canvas = document.getElementById('azCanvas');
-      if (!canvas) return;
+      if (!canvas || state.enable_az === false) return;
       const parent = canvas.parentElement;
       const dpr = window.devicePixelRatio || 1;
       const w = Math.max(100, parent.clientWidth);
@@ -951,15 +967,15 @@ def build_compass_html(params: dict) -> str:
       if (az.soll != null) {{
         const sollDraw = azSollNeedle(az);
         if (sollDraw != null) {{
-          drawArrow(ctx, cx, cy, r*0.82, sollDraw, '#e74c3c', 7);
-          if (az.dipole) drawDashedArrow(ctx, cx, cy, r*0.78, wrapDeg(sollDraw+180), '#e74c3c', 3);
+          drawArrow(ctx, cx, cy, r*0.82, sollDraw, '#e74c3c', 9);
+          if (az.dipole) drawDashedArrow(ctx, cx, cy, r*0.78, wrapDeg(sollDraw+180), '#e74c3c', 5);
         }}
       }}
       if (az.ist != null) {{
         const istDraw = azIstNeedle(az);
         if (istDraw != null) {{
-          drawArrow(ctx, cx, cy, r*0.72, istDraw, '#2ecc40', 7);
-          if (az.dipole) drawDashedArrow(ctx, cx, cy, r*0.68, wrapDeg(istDraw+180), '#2ecc40', 3);
+          drawArrow(ctx, cx, cy, r*0.72, istDraw, '#2ecc40', 9);
+          if (az.dipole) drawDashedArrow(ctx, cx, cy, r*0.68, wrapDeg(istDraw+180), '#2ecc40', 5);
         }}
       }}
       if (az.wind_visible && az.wind_dir != null) {{
@@ -1065,7 +1081,7 @@ def build_compass_html(params: dict) -> str:
         const tip = elXY(cx, cy, r * 0.78, deg);
         ctx.strokeStyle = color;
         ctx.fillStyle = color;
-        ctx.lineWidth = 4;
+        ctx.lineWidth = 6;
         ctx.beginPath();
         ctx.moveTo(cx, cy);
         ctx.lineTo(tip.x, tip.y);
@@ -1098,6 +1114,7 @@ def build_compass_html(params: dict) -> str:
       const set = function(id, v) {{ const el=document.getElementById(id); if (el && v) el.textContent = v; }};
       const setPh = function(id, v) {{ const el=document.getElementById(id); if (el && v) el.placeholder = v; }};
       set('btnBack', L.back_to_map || 'Zur Karte');
+      set('btnBackEl', L.back_to_map || 'Zur Karte');
       set('lblSoll', L.soll || 'Soll');
       set('lblIst', L.ist || 'Ist');
       set('lblIstRev', L.ist_reverse || 'Ist Reverse');
@@ -1197,6 +1214,11 @@ def build_compass_html(params: dict) -> str:
       labels = (s.labels) || labels;
       applyLabels();
       document.body.classList.toggle('el-on', !!s.enable_el);
+      document.body.classList.toggle('az-off', s.enable_az === false);
+      const btnBackEl = document.getElementById('btnBackEl');
+      if (btnBackEl && !document.body.classList.contains('embed')) {{
+        btnBackEl.style.display = (s.enable_az === false) ? '' : 'none';
+      }}
       const az = s.az || {{}};
       const el = s.el || {{}};
       const istEl = document.getElementById('azIst');
@@ -1706,6 +1728,7 @@ def build_compass_html(params: dict) -> str:
           cont_id: bus.cont_id,
           az_id: bus.az_id,
           el_id: bus.el_id,
+          enable_az: s ? s.enable_az !== false : true,
           enable_el: !!(s && s.enable_el)
         }};
       }}

@@ -94,12 +94,19 @@ class WeatherThresholdsTab(QWidget):
         self._sync_wind_section_from_checkbox()
 
     def set_wind_enable_available(self, available: bool) -> None:
-        """Bei Encoder-Typ 3 (Absolut) Windmesser am Rotor nicht sinnvoll."""
-        self.chk_wind_enable.setEnabled(bool(available))
-        if not available:
+        """Windmesser/Windwarnungen nur bei Encoder-Typ 1/2 sinnvoll."""
+        on = bool(available)
+        self.chk_wind_enable.setEnabled(on)
+        self._gb_wind_enable.setVisible(on)
+        if not on:
             self.set_wind_enable_checked(False)
+            self.set_wind_section_visible(False)
         else:
             self._sync_wind_section_from_checkbox()
+
+    def set_wind_activation_visible(self, visible: bool) -> None:
+        """Gruppe „Windmesser aktivieren“ ein-/ausblenden (Zustand der Checkbox bleibt erhalten)."""
+        self._gb_wind_enable.setVisible(bool(visible))
 
     def set_wind_section_visible(self, visible: bool) -> None:
         """Warn-Schwellen Wind: sichtbar und bedienbar nur bei aktivierter Checkbox."""

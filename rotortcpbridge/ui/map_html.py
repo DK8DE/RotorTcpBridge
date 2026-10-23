@@ -891,7 +891,12 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       _webSetLed(document.getElementById('webLedOnline'), !!st.online, false);
       _webSetLed(document.getElementById('webLedRef'), !!st.referenced, !!st.ref_blink);
       const refWrap = document.getElementById('webRefWrap');
-      if (refWrap) refWrap.style.display = flags.ref_visible === false ? 'none' : '';
+      if (refWrap) {{
+        const statusVis = (flags.ref_status_visible !== undefined)
+          ? flags.ref_status_visible !== false
+          : flags.ref_visible !== false;
+        refWrap.style.display = statusVis ? '' : 'none';
+      }}
       setTxt('webTempMotor', (Lbl.temp_motor || 'Motor') + ': ' + (st.temp_motor || '–'));
       setTxt('webTempAmbient', (Lbl.temp_ambient || 'Air') + ': ' + (st.temp_ambient || '–'));
       const chkHover = document.getElementById('webChkHover');

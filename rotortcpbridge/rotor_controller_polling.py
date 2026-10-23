@@ -399,8 +399,17 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             hw_on = bool(self.hw.is_connected())
         except Exception:
             hw_on = False
+        el_on = hw_on
+        el_hw = getattr(self, "el_hw", None)
+        if el_hw is not None:
+            try:
+                el_on = bool(el_hw.is_connected())
+            except Exception:
+                el_on = False
+        # Dual-IP: Polling laufen lassen, solange mindestens ein Achsen-Link steht
+        link_on = bool(hw_on or (self.enable_el and el_on))
 
-        if hw_on:
+        if link_on:
             try:
                 self._tick_jog_hold(now)  # type: ignore[attr-defined]
             except Exception:
@@ -408,7 +417,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
         # Wenn die Hardware-Verbindung gerade (wieder) da ist: Timer zurücksetzen,
         # damit beim ersten Mal alle Werte sofort abgefragt werden (Startup/Recover).
-        if hw_on and (not self._hw_prev_connected):
+        if link_on and (not self._hw_prev_connected):
             self._startup_burst_until = float(now) + 3.0
             self._last_poll = 0.0
             self._last_warn = 0.0
@@ -439,7 +448,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             # Position + PWM + MINPWM + REF + Warn + Temp (Fehler: Broadcast ERR, kein GETERR)
             # GETWINDENABLE wird vom Idle-Polling-Block übernommen (Inflight-Guard verhindert Doppelabfrage)
             try:
-                if self.enable_az:
+                if self.enable_az and hw_on:
                     self._poll_pos(self.slave_az, self.az, "AZ", now, expected_period_s=pos_fast_s)
                     self._poll_pwm(self.slave_az, self.az, "AZ")
                     self._poll_minpwm(self.slave_az, self.az, "AZ")
@@ -448,7 +457,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     self._poll_idle_telemetry(self.slave_az, self.az, "AZ")
                     if not self.abs_encoder_no_homing():
                         self._poll_idle_wind(self.slave_az, self.az, "AZ")
-                if self.enable_el:
+                if self.enable_el and el_on:
                     self._poll_pos(self.slave_el, self.el, "EL", now, expected_period_s=pos_fast_s)
                     self._poll_pwm(self.slave_el, self.el, "EL")
                     self._poll_minpwm(self.slave_el, self.el, "EL")
@@ -470,6 +479,11 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 if (not bool(getattr(self, "_encoder_type_requested", False))) and self.enable_az:
                     self.request_encoder_type()
                     self._encoder_type_requested = True
+                if (not bool(getattr(self, "_endstc_requested", False))) and (
+                    self.enable_az or self.enable_el
+                ):
+                    self.request_endstc()
+                    self._endstc_requested = True
                 if (not bool(getattr(self, "_max_deg_requested", False))) and self.enable_az:
                     self.request_max_deg()
                     self._max_deg_requested = True
@@ -486,10 +500,11 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     self._el_rotor_type_requested = True
             except Exception:
                 pass
-        if (not hw_on) and self._hw_prev_connected:
+        if (not link_on) and self._hw_prev_connected:
             self.encoder_type = None
             self.encoder_type_known = False
             self._encoder_type_requested = False
+            self._endstc_requested = False
             self._max_deg_requested = False
             self._arrtol_requested = False
             self._home_pos_requested = False
@@ -504,6 +519,10 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 self.az.arrtol_deg = None
                 self.el.arrtol_deg = None
                 self.az.home_pos_d10 = None
+                self.az.endstc = None
+                self.az.endstc_known = False
+                self.el.endstc = None
+                self.el.endstc_known = False
             except Exception:
                 pass
             try:
@@ -520,13 +539,19 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     cb()
                 except Exception:
                     pass
+            cb_es = getattr(self, "on_endstc_changed", None)
+            if callable(cb_es):
+                try:
+                    cb_es()
+                except Exception:
+                    pass
             cb_rt = getattr(self, "on_rotor_type_changed", None)
             if callable(cb_rt):
                 try:
                     cb_rt()
                 except Exception:
                     pass
-        self._hw_prev_connected = hw_on
+        self._hw_prev_connected = link_on
 
         # Auch ohne Connect-Kante (Profilwechsel bei bestehendem Link): GETANTOFF nachholen.
         if hw_on and self.enable_az and not bool(getattr(self, "_antenna_bootstrap_requested", False)):
@@ -580,7 +605,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             # Harte Vorgabe: während Fahrt / Mitlauf nur Positions-/Fehlerpfad; Strom-/Statistikketten sofort stoppen.
             self._abort_acc_bins_fetch_only()
 
-        if hw_on and (not cc_hold) and (not foreign_yield):
+        if link_on and (not cc_hold) and (not foreign_yield):
             # Inflight-Sperren nach Request-Timeout freigeben (verhindert dauerhaftes Blockieren).
             if self._wind_enable_inflight and (
                 (now - self._wind_enable_sent_ts) > 1.5
@@ -924,7 +949,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             if tel and not tel.ok:
                 self.log.write("WARN", f"{cmd} -> CS falsch: {tel}")
 
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(line=line, expect_prefix=expect, timeout_s=0.8, on_done=done, priority=prio)
         )
 
@@ -1043,7 +1068,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             if tel and tel.cmd.startswith("NAK_SETPOSDG"):
                 self.log.write("WARN", f"{axis} SETPOSDG NAK: {tel.params}")
 
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix="ACK_SETPOSDG",
@@ -1202,13 +1227,13 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             pass
         axis_state.pos_poll_inflight = True
         axis_state.pos_poll_sent_ts = now
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=prio)
         )
         # GETMOVE zusammen mit GETPOSDG (Fährt-LED); bei NAK/NOSUP dauerhaft aus.
         try:
             if getattr(axis_state, "getmove_supported", None) is not False:
-                self.hw.send_request(
+                self._send_hw_request(
                     HwRequest(
                         line=build(self.master_id, dst, "GETMOVE", "0"),
                         expect_prefix=None,
@@ -1226,7 +1251,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         # Daher: ohne expect_prefix senden (kein "pending"), Antworten kommen asynchron rein
         # und werden in _on_async_tel verarbeitet.
         line = build(self.master_id, dst, "GETWARN", "0")
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5)
         )
 
@@ -1237,14 +1262,14 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         # WICHTIG: GETREF darf die restlichen Polls (Pos/Err/Warn/Telemetrie) nicht blockieren.
         # Daher ohne pending senden; Antwort wird in _on_async_tel verarbeitet.
         line = build(self.master_id, dst, "GETREF", "0")
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=2)
         )
 
     def _poll_telemetry(self, dst: int, axis_state: AxisState, axis: str):
         # Telemetrie ist niedrige Priorität; außerdem ohne pending (siehe _poll_warn),
         # Verarbeitung erfolgt in _on_async_tel.
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, dst, "GETTEMPA", "0"),
                 expect_prefix=None,
@@ -1253,7 +1278,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 priority=6,
             )
         )
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, dst, "GETTEMPM", "0"),
                 expect_prefix=None,
@@ -1270,7 +1295,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
         Während der Fahrt bewusst NICHT pollen, um die Positionsanzeige nicht auszubremsen.
         """
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, dst, "GETTEMPA", "0"),
                 expect_prefix=None,
@@ -1279,7 +1304,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 priority=6,
             )
         )
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, dst, "GETTEMPM", "0"),
                 expect_prefix=None,
@@ -1299,7 +1324,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             return
         self._wind_speed_inflight = True
         self._wind_speed_sent_ts = time.time()
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, dst, "GETANEMO", "0"),
                 expect_prefix=None,
@@ -1318,7 +1343,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             return
         self._wind_dir_inflight = True
         self._wind_dir_sent_ts = time.time()
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, dst, "GETWINDDIR", "0"),
                 expect_prefix=None,
@@ -1337,7 +1362,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             return
         self._wind_beaufort_inflight = True
         self._wind_beaufort_sent_ts = time.time()
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, dst, "GETBEAUFORT", "0"),
                 expect_prefix=None,
@@ -1363,7 +1388,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._last_wind_enable_poll = (
             time.time()
         )  # muss time.time() sein – tick nutzt time.time() als 'now'
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, dst, "GETWINDENABLE", "0"),
                 expect_prefix=None,
@@ -1375,7 +1400,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
     def _poll_pwm(self, dst: int, axis_state: AxisState, axis: str):
         """PWM-Status abfragen (immer nur alle ~2s)."""
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, dst, "GETPWM", "0"),
                 expect_prefix=None,
@@ -1387,7 +1412,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
     def _poll_minpwm(self, dst: int, axis_state: AxisState, axis: str):
         """MINPWM abfragen (Untergrenze für PWM)."""
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, dst, "GETMINPWM", "0"),
                 expect_prefix=None,
@@ -1399,7 +1424,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
     def _poll_cal_state(self, dst: int, axis_state: AxisState, priority: int = 5) -> None:
         """GETCALSTATE abfragen (state;progress;stage). state: 0=IDLE,1=RUNNING,2=DONE,3=ABORT."""
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, dst, "GETCALSTATE", "0"),
                 expect_prefix=None,
@@ -1911,7 +1936,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             ctrl._send_next_cal_block(dst, axis_state, idx + 1)
 
         prio = getattr(self, "_cal_bins_priority_az", 3)
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix="ACK_GETCALBINS",
@@ -1979,7 +2004,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             ctrl._send_next_cal_block_el(dst, axis_state, idx + 1)
 
         prio = getattr(self, "_cal_bins_priority_el", 3)
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix="ACK_GETCALBINS",
@@ -2053,7 +2078,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             ctrl._send_next_live_block(dst, axis_state, idx + 1)
 
         prio = getattr(self, "_live_bins_priority_az", 3)
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix="ACK_GETLIVEBINS",
@@ -2124,7 +2149,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             ctrl._send_next_live_block_el(dst, axis_state, idx + 1)
 
         prio = getattr(self, "_live_bins_priority_el", 3)
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix="ACK_GETLIVEBINS",
@@ -2219,7 +2244,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         # Prio 6: hinter GETREF(2) / viele Polls — weniger „Überholen“ in der TX-Queue während der Kette.
         prio = 6
         self._acc_bins_last_tx_ts_az = time.time()
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix="ACK_GETACCBINS",
@@ -2310,7 +2335,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
         prio = 6
         self._acc_bins_last_tx_ts_el = time.time()
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix="ACK_GETACCBINS",

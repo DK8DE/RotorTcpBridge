@@ -1113,16 +1113,18 @@ class MapWindow(QDialog):
         return
 
     def update_homing_buttons_visibility(self) -> None:
-        """Absolut-Encoder (Typ 3): AZ-Homing-Button und Home-Status ausblenden."""
-        hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        """AZ-Homing-Taste: Absolut-Encoder oder keine Endanschläge ausblenden."""
+        abs_hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        fn = getattr(self.ctrl, "homing_button_hidden_for_axis", None)
+        hide_btn = bool(fn("az")) if callable(fn) else abs_hide
         try:
-            self._btn_ref_az.setVisible(not hide)
+            self._btn_ref_az.setVisible(not hide_btn)
         except Exception:
             pass
         for w in (getattr(self, "_led_ref", None), getattr(self, "_lbl_ref", None)):
             if w is not None:
                 try:
-                    w.setVisible(not hide)
+                    w.setVisible(not abs_hide)
                 except Exception:
                     pass
 
@@ -1591,9 +1593,11 @@ class MapWindow(QDialog):
     def _refresh_map(self) -> None:
         """Beam-Daten aktualisieren ohne Karten-Zoom/Zentrum zu ändern.
         Azimuth wird geglättet für flüssige Bewegung ohne Ruckeln."""
-        hide_homing = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
-        if hide_homing != getattr(self, "_homing_ui_hidden_for_abs_enc", False):
-            self._homing_ui_hidden_for_abs_enc = hide_homing
+        abs_hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        fn = getattr(self.ctrl, "homing_button_hidden_for_axis", None)
+        hide_key = (abs_hide, bool(fn("az")) if callable(fn) else abs_hide)
+        if hide_key != getattr(self, "_homing_ui_hidden_for_abs_enc", None):
+            self._homing_ui_hidden_for_abs_enc = hide_key
             self.update_homing_buttons_visibility()
         try:
             hold = bool(self.ctrl.drive_sync_hold_active()) or bool(self.ctrl.is_any_axis_moving())
@@ -1823,7 +1827,9 @@ class MapWindow(QDialog):
                 temp_ambient = f"{float(ta):.1f} °C" if ta is not None else "–"
             except Exception:
                 pass
-        hide_homing = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        abs_hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        fn = getattr(self.ctrl, "homing_button_hidden_for_axis", None)
+        hide_ref_btn = bool(fn("az")) if callable(fn) else abs_hide
         return {
             "labels": {
                 "ist_prefix": t("compass.ist_prefix"),
@@ -1889,7 +1895,8 @@ class MapWindow(QDialog):
                 "hover": bool(ui.get("map_hover_preview", True)),
                 "satellite": bool(getattr(self, "_map_satellite", False)),
                 "locator": bool(ui.get("map_locator_overlay", False)),
-                "ref_visible": not hide_homing,
+                "ref_visible": not hide_ref_btn,
+                "ref_status_visible": not abs_hide,
             },
             "status": {
                 "ist": ist_txt,

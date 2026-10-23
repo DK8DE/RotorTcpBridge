@@ -63,7 +63,6 @@ from ..app_icon import get_app_icon
 from ..command_catalog import command_specs, format_cmd_tooltip
 from ..ports import list_serial_port_entries
 from ..i18n import format_tooltip_html, load_lang, t, tt
-from ..geo_utils import maidenhead_to_lat_lon
 from ..net_utils import ipv4_subnet_broadcast_default
 from ..rotor_controller import SYNC_UI_NAK_PREFIX
 from ..rig_bridge.manager import RigBridgeManager
@@ -73,6 +72,14 @@ from .settings_shortcuts_tab import ShortcutsTab
 from .settings_weather_tab import WeatherThresholdsTab
 from .settings_update_tab import UpdateTab
 from .settings_network_tab import NetworkModulesTab
+from .antenna_names_panel import (
+    ANTENNA_NAME_MAX_LEN,
+    ANTENNA_NAME_VALIDATOR_PATTERN,
+    sanitize_antenna_name,
+)
+from .location_panel import LocationPanel
+from .settings_controller_tab import ControllerHwTab
+from .rotor_link_panel import RotorLinkPanel
 from .led_widget import Led
 from .ui_utils import px_to_dip
 
@@ -132,6 +139,7 @@ class SettingsWindow(QDialog):
         map_webserver=None,
         switch_profile_cb=None,
         profiles_changed_cb=None,
+        open_commissioning_cb=None,
         controller_remote_proxy=None,
         ctrl_hw=None,
         parent=None,
@@ -159,6 +167,7 @@ class SettingsWindow(QDialog):
         self.rebuild_ui_cb = rebuild_ui_cb
         self._switch_profile_cb = switch_profile_cb
         self._profiles_changed_cb = profiles_changed_cb
+        self._open_commissioning_cb = open_commissioning_cb
         self._map_window = map_window
         self.pst_serial = pst_serial
         self._antenna_giveup_done = False
@@ -183,7 +192,13 @@ class SettingsWindow(QDialog):
         gb_master_rotor = QGroupBox(t("settings.group_master_rotor_ids"))
         form_master_rotor = QFormLayout(gb_master_rotor)
         gb_bus_connection = QGroupBox(t("settings.group_bus_connection"))
-        form_bus_connection = QFormLayout(gb_bus_connection)
+        _vl_bus_connection = QVBoxLayout(gb_bus_connection)
+        _vl_bus_connection.setContentsMargins(
+            px_to_dip(self, 8),
+            px_to_dip(self, 8),
+            px_to_dip(self, 8),
+            px_to_dip(self, 8),
+        )
         gb_axes = QGroupBox(t("settings.group_axes"))
         form_axes = QFormLayout(gb_axes)
         gb_ui = QWidget()
@@ -271,63 +286,18 @@ class SettingsWindow(QDialog):
         self._pst_tcp_status_timer.setInterval(500)
         self._pst_tcp_status_timer.timeout.connect(self._tick_emulation_status)
 
-        self.cb_hw_mode = QComboBox()
-        self.cb_hw_mode.addItem("TCP", "tcp")
-        self.cb_hw_mode.addItem("UDP", "udp")
-        self.cb_hw_mode.addItem("COM", "com")
-        _mode_cfg = str(cfg["hardware_link"]["mode"]).strip().lower() or "tcp"
-        _mi = self.cb_hw_mode.findData(_mode_cfg)
-        self.cb_hw_mode.setCurrentIndex(_mi if _mi >= 0 else 0)
-        self.ed_hw_ip = QLineEdit(cfg["hardware_link"]["tcp_ip"])
-        self.ed_hw_ip.setMinimumWidth(_conn_ip_w)
-        self.sp_hw_port = QSpinBox()
-        self.sp_hw_port.setRange(1, 65535)
-        self.sp_hw_port.setValue(int(cfg["hardware_link"]["tcp_port"]))
-        self.sp_hw_udp_bind_port = QSpinBox()
-        self.sp_hw_udp_bind_port.setRange(0, 65535)
-        self.sp_hw_udp_bind_port.setValue(int(cfg["hardware_link"].get("udp_bind_port", 0)))
-
-        self.cb_hw_com = QComboBox()
-        self.btn_com_refresh = QPushButton("↻")
-        self.btn_com_refresh.setFixedWidth(30)
-        com_row = QHBoxLayout()
-        com_row.addWidget(self.cb_hw_com, 1)
-        com_row.addWidget(self.btn_com_refresh)
-        com_row_widget = QWidget()
-        com_row_widget.setLayout(com_row)
-
-        self.cb_hw_mode.setToolTip(tt("settings.hw_mode_tooltip"))
-        self.ed_hw_ip.setToolTip(tt("settings.hw_ip_tooltip"))
-        self.sp_hw_port.setToolTip(tt("settings.hw_port_tooltip"))
-        self.cb_hw_com.setToolTip(tt("settings.hw_com_tooltip"))
-        self.btn_com_refresh.setToolTip(tt("settings.btn_com_refresh_tooltip"))
-        self.sp_hw_udp_bind_port.setToolTip(tt("settings.hw_udp_bind_port_tooltip"))
-
-        form_bus_connection.addRow(t("settings.hw_mode"), self.cb_hw_mode)
-        form_bus_connection.addRow(t("settings.hw_ip"), self.ed_hw_ip)
-        form_bus_connection.addRow(t("settings.hw_port"), self.sp_hw_port)
-        form_bus_connection.addRow(t("settings.hw_udp_bind_port"), self.sp_hw_udp_bind_port)
-        form_bus_connection.addRow(t("settings.hw_com"), com_row_widget)
-
-        def _sync_bus_mode_rows() -> None:
-            mode = str(self.cb_hw_mode.currentData() or "tcp").strip().lower()
-            show_tcp = mode in ("tcp", "udp")
-            show_com = mode == "com"
-            show_udp = mode == "udp"
-            for field, show in (
-                (self.ed_hw_ip, show_tcp),
-                (self.sp_hw_port, show_tcp),
-                (self.sp_hw_udp_bind_port, show_udp),
-                (com_row_widget, show_com),
-            ):
-                field.setVisible(show)
-                lbl = form_bus_connection.labelForField(field)
-                if lbl is not None:
-                    lbl.setVisible(show)
-
-        self._sync_bus_mode_rows = _sync_bus_mode_rows
-        self.cb_hw_mode.currentIndexChanged.connect(lambda _i: _sync_bus_mode_rows())
-        _sync_bus_mode_rows()
+        self._rotor_link_panel = RotorLinkPanel(
+            cfg, self, ip_min_width=_conn_ip_w
+        )
+        _vl_bus_connection.addWidget(self._rotor_link_panel)
+        # Aliase für bestehenden Settings-Code
+        self.cb_hw_mode = self._rotor_link_panel.cb_hw_mode
+        self.ed_hw_ip = self._rotor_link_panel.ed_hw_ip
+        self.sp_hw_port = self._rotor_link_panel.sp_hw_port
+        self.sp_hw_udp_bind_port = self._rotor_link_panel.sp_hw_udp_bind_port
+        self.cb_hw_com = self._rotor_link_panel.cb_hw_com
+        self.btn_com_refresh = self._rotor_link_panel.btn_com_refresh
+        self._sync_bus_mode_rows = self._rotor_link_panel.sync_mode_rows
 
         self.chk_enable_az = QCheckBox(t("settings.chk_enable_az"))
         self.chk_enable_el = QCheckBox(t("settings.chk_enable_el"))
@@ -351,26 +321,8 @@ class SettingsWindow(QDialog):
         _lay_enable_az.addWidget(self.btn_set_enc_zero_az, 0)
         form_axes.addRow(_row_enable_az)
 
-        self.cb_el_rotor_type = QComboBox()
-        self.cb_el_rotor_type.setToolTip(tt("settings.el_rotor_type_tooltip"))
-        for _val, _key in (
-            (1, "cmd.opt_rotor_type_1"),
-            (2, "cmd.opt_rotor_type_2"),
-            (3, "cmd.opt_rotor_type_3"),
-        ):
-            self.cb_el_rotor_type.addItem(t(_key), int(_val))
-        self.cb_el_rotor_type.setMinimumWidth(px_to_dip(self, 130))
-        _row_enable_el = QWidget()
-        _lay_enable_el = QHBoxLayout(_row_enable_el)
-        _lay_enable_el.setContentsMargins(0, 0, 0, 0)
-        _lay_enable_el.setSpacing(8)
-        _lay_enable_el.addWidget(self.chk_enable_el, 1)
-        _lay_enable_el.addWidget(self.cb_el_rotor_type, 0)
-        form_axes.addRow(_row_enable_el)
-        self._sync_el_rotor_type_combo_from_ctrl()
-        self.cb_el_rotor_type.currentIndexChanged.connect(self._on_el_rotor_type_combo_changed)
-        self.chk_enable_el.stateChanged.connect(lambda _s: self._update_el_rotor_type_combo_enabled())
-        self._update_el_rotor_type_combo_enabled()
+        form_axes.addRow(self.chk_enable_el)
+        self.chk_enable_el.stateChanged.connect(lambda _s: self._on_enable_el_changed_for_rotor_type())
 
         self.chk_force_dark_mode = QCheckBox(t("settings.chk_dark_mode"))
         self.chk_force_dark_mode.setChecked(bool(cfg.get("ui", {}).get("force_dark_mode", True)))
@@ -1140,183 +1092,21 @@ class SettingsWindow(QDialog):
         while len(_antenna_names_cfg) < 3:
             _antenna_names_cfg.append(f"Antenne {len(_antenna_names_cfg) + 1}")
 
-        pg_controller = QWidget()
-        vl_ctrl = QVBoxLayout(pg_controller)
-        _ctrl_pad = px_to_dip(self, 5)
-        vl_ctrl.setContentsMargins(_ctrl_pad, _ctrl_pad, _ctrl_pad, _ctrl_pad)
-        vl_ctrl.setSpacing(10)
-        self._lbl_controller_intro = QLabel(t("settings.controller_intro"))
-        self._lbl_controller_intro.setWordWrap(True)
-        vl_ctrl.addWidget(self._lbl_controller_intro)
-        self.chk_hw_controller_enabled = QCheckBox(t("settings.controller_hw_enable"))
-        self.chk_hw_controller_enabled.setChecked(bool(_chw.get("enabled", True)))
-        self.chk_hw_controller_enabled.setToolTip(tt("settings.controller_hw_enable_tooltip"))
-        self.chk_hw_controller_enabled.toggled.connect(self._on_hw_controller_toggled)
-        vl_ctrl.addWidget(self.chk_hw_controller_enabled)
-        self.chk_cont_usb_remote = QCheckBox(t("settings.controller_usb_remote"))
-        self.chk_cont_usb_remote.setChecked(bool(_chw.get("usb_remote", False)))
-        self.chk_cont_usb_remote.setToolTip(tt("settings.controller_usb_remote_tooltip"))
-        self.chk_cont_usb_remote.toggled.connect(self._on_cont_usb_remote_toggled)
-        vl_ctrl.addWidget(self.chk_cont_usb_remote)
-        self.chk_cont_web = QCheckBox(t("settings.controller_web"))
-        try:
-            _web_on = int(_chw.get("link_mode", 0)) == 2
-        except (TypeError, ValueError):
-            _web_on = False
-        if _web_on:
-            self.chk_cont_usb_remote.blockSignals(True)
-            self.chk_cont_usb_remote.setChecked(False)
-            self.chk_cont_usb_remote.blockSignals(False)
-        self.chk_cont_web.setChecked(_web_on)
-        self.chk_cont_web.setToolTip(tt("settings.controller_web_tooltip"))
-        self.chk_cont_web.toggled.connect(self._on_cont_web_toggled)
-        vl_ctrl.addWidget(self.chk_cont_web)
-        _clink = cfg.get("controller_link") if isinstance(cfg.get("controller_link"), dict) else {}
-        self._row_cont_usb_port = QWidget()
-        _lay_usb = QHBoxLayout(self._row_cont_usb_port)
-        _lay_usb.setContentsMargins(0, 0, 0, 0)
-        _lay_usb.setSpacing(px_to_dip(self, 8))
-        self.cb_cont_usb_com = QComboBox()
-        self.cb_cont_usb_com.setToolTip(tt("settings.controller_usb_port_tooltip"))
-        _lay_usb.addWidget(self.cb_cont_usb_com, 1)
-        self.btn_cont_usb_refresh = QPushButton("↻")
-        self.btn_cont_usb_refresh.setFixedWidth(30)
-        self.btn_cont_usb_refresh.setToolTip(tt("settings.btn_com_refresh_tooltip"))
-        self.btn_cont_usb_refresh.clicked.connect(
-            lambda: self._refresh_com_ports_into(
-                self.cb_cont_usb_com,
-                select=str((_clink or {}).get("com_port", "") or ""),
-            )
+        # Gemeinsames Controller-Widget (auch Inbetriebnahme-Wizard)
+        self._controller_tab = ControllerHwTab(cfg, self)
+        self._controller_tab.install_aliases_on(self)
+        self._controller_tab.enabled_toggled.connect(self._on_hw_controller_toggled)
+        self._controller_tab.usb_remote_toggled.connect(self._on_cont_usb_remote_toggled)
+        self._controller_tab.web_toggled.connect(self._on_cont_web_toggled)
+        self._controller_tab.setconidf_requested.connect(self._on_broadcast_setconidf)
+        self._controller_tab.brightness_released.connect(
+            lambda _v: self._on_conled_brightness_released()
         )
-        _lay_usb.addWidget(self.btn_cont_usb_refresh, 0)
-        vl_ctrl.addWidget(self._row_cont_usb_port)
-        self.gb_controller = QGroupBox(t("settings.controller_group"))
-        fl_ctrl = QFormLayout(self.gb_controller)
-        self.sp_controller_id = QSpinBox()
-        self.sp_controller_id.setRange(0, 245)
-        try:
-            self.sp_controller_id.setValue(int(_chw.get("cont_id", 2)))
-        except (TypeError, ValueError):
-            self.sp_controller_id.setValue(2)
-        self.sp_controller_id.setToolTip(tt("settings.controller_id_tooltip"))
-        _row_cont_id = QWidget()
-        _lay_cont_id = QHBoxLayout(_row_cont_id)
-        _lay_cont_id.setContentsMargins(0, 0, 0, 0)
-        _lay_cont_id.setSpacing(px_to_dip(self, 8))
-        _lay_cont_id.addWidget(self.sp_controller_id, 0)
-        self.btn_setconidf = QPushButton(t("settings.controller_btn_setconidf"))
-        self.btn_setconidf.setAutoDefault(False)
-        self.btn_setconidf.setDefault(False)
-        self.btn_setconidf.setToolTip(tt("settings.controller_setconidf_tooltip"))
-        self.btn_setconidf.clicked.connect(self._on_broadcast_setconidf)
-        _lay_cont_id.addWidget(self.btn_setconidf, 0)
-        self._lbl_controller_led = QLabel()
-        self._lbl_controller_led.setObjectName("controllerReadLed")
-        self._lbl_controller_led.setToolTip(tt("settings.controller_led_tooltip"))
-        _led = px_to_dip(self, 12)
-        self._lbl_controller_led.setFixedSize(_led, _led)
-        self._set_controller_led_ok(False)
-        _lay_cont_id.addWidget(self._lbl_controller_led, 0, Qt.AlignmentFlag.AlignVCenter)
-        self._lbl_controller_wait = QLabel(t("settings.controller_wait"))
-        self._lbl_controller_wait.setVisible(False)
-        self._lbl_controller_wait.setToolTip(tt("settings.controller_wait_tooltip"))
-        _lay_cont_id.addWidget(self._lbl_controller_wait, 0, Qt.AlignmentFlag.AlignVCenter)
-        _lay_cont_id.addStretch(1)
-        fl_ctrl.addRow(t("settings.controller_id"), _row_cont_id)
-        self.sp_cont_az_rotor_id = QSpinBox()
-        self.sp_cont_az_rotor_id.setRange(0, 254)
-        try:
-            self.sp_cont_az_rotor_id.setValue(
-                max(0, min(254, int(_chw.get("az_rotor_id", 20))))
-            )
-        except (TypeError, ValueError):
-            self.sp_cont_az_rotor_id.setValue(20)
-        self.sp_cont_az_rotor_id.setToolTip(tt("settings.controller_az_rotor_id_tooltip"))
-        self._lbl_cont_az_rotor_id = QLabel(t("settings.controller_az_rotor_id"))
-        fl_ctrl.addRow(self._lbl_cont_az_rotor_id, self.sp_cont_az_rotor_id)
-        self.sp_cont_el_rotor_id = QSpinBox()
-        self.sp_cont_el_rotor_id.setRange(0, 254)
-        try:
-            self.sp_cont_el_rotor_id.setValue(
-                max(0, min(254, int(_chw.get("el_rotor_id", 0))))
-            )
-        except (TypeError, ValueError):
-            self.sp_cont_el_rotor_id.setValue(0)
-        self.sp_cont_el_rotor_id.setToolTip(tt("settings.controller_el_rotor_id_tooltip"))
-        self._lbl_cont_el_rotor_id = QLabel(t("settings.controller_el_rotor_id"))
-        fl_ctrl.addRow(self._lbl_cont_el_rotor_id, self.sp_cont_el_rotor_id)
-        self.sp_cont_pwm_slow = QSpinBox()
-        self.sp_cont_pwm_slow.setRange(0, 100)
-        try:
-            self.sp_cont_pwm_slow.setValue(int(_chw.get("slow_pwm", 30)))
-        except (TypeError, ValueError):
-            self.sp_cont_pwm_slow.setValue(30)
-        self.sp_cont_pwm_slow.setToolTip(tt("settings.controller_pwm_tooltip"))
-        self.sp_cont_pwm_fast = QSpinBox()
-        self.sp_cont_pwm_fast.setRange(0, 100)
-        try:
-            self.sp_cont_pwm_fast.setValue(int(_chw.get("fast_pwm", 80)))
-        except (TypeError, ValueError):
-            self.sp_cont_pwm_fast.setValue(80)
-        self.sp_cont_pwm_fast.setToolTip(tt("settings.controller_pwm_tooltip"))
-        fl_ctrl.addRow(t("settings.controller_pwm_slow"), self.sp_cont_pwm_slow)
-        fl_ctrl.addRow(t("settings.controller_pwm_fast"), self.sp_cont_pwm_fast)
-        self.chk_cont_wind_anemo = QCheckBox(t("settings.controller_wind_anemo"))
-        self.chk_cont_wind_anemo.setChecked(bool(_chw.get("wind_anemometer", False)))
-        self.chk_cont_wind_anemo.setToolTip(tt("settings.controller_wind_anemo_tooltip"))
         self.chk_cont_wind_anemo.toggled.connect(self._update_wind_dir_display_row_visibility)
-        fl_ctrl.addRow(self.chk_cont_wind_anemo)
-        self.cb_cont_encoder_delta = QComboBox()
-        self.cb_cont_encoder_delta.addItem(t("settings.controller_encoder_delta_0_1"), 1)
-        self.cb_cont_encoder_delta.addItem(t("settings.controller_encoder_delta_1"), 10)
-        try:
-            _ed = int(_chw.get("encoder_delta", 10))
-        except (TypeError, ValueError):
-            _ed = 10
-        if _ed not in (1, 10):
-            _ed = 10
-        self.cb_cont_encoder_delta.setCurrentIndex(0 if _ed == 1 else 1)
-        self.cb_cont_encoder_delta.setToolTip(tt("settings.controller_encoder_delta_tooltip"))
-        fl_ctrl.addRow(t("settings.controller_encoder_delta"), self.cb_cont_encoder_delta)
-        self.sp_cont_beep_freq = QSpinBox()
-        self.sp_cont_beep_freq.setRange(200, 4000)
-        try:
-            self.sp_cont_beep_freq.setValue(
-                max(200, min(4000, int(_chw.get("speaker_freq_hz", 1000))))
-            )
-        except (TypeError, ValueError):
-            self.sp_cont_beep_freq.setValue(1000)
-        self.sp_cont_beep_freq.setToolTip(tt("settings.controller_beep_freq_tooltip"))
-        self.sp_cont_beep_vol = QSpinBox()
-        self.sp_cont_beep_vol.setRange(0, 50)
-        try:
-            self.sp_cont_beep_vol.setValue(max(0, min(50, int(_chw.get("speaker_volume", 50)))))
-        except (TypeError, ValueError):
-            self.sp_cont_beep_vol.setValue(50)
-        self.sp_cont_beep_vol.setToolTip(tt("settings.controller_beep_volume_tooltip"))
-        fl_ctrl.addRow(t("settings.controller_beep_freq"), self.sp_cont_beep_freq)
-        fl_ctrl.addRow(t("settings.controller_beep_volume"), self.sp_cont_beep_vol)
-        _w_conled = QWidget()
-        _hl_conled = QHBoxLayout(_w_conled)
-        _hl_conled.setContentsMargins(0, 0, 0, 0)
-        self.sl_cont_display_brightness = QSlider(Qt.Orientation.Horizontal)
-        self.sl_cont_display_brightness.setRange(0, 100)
-        try:
-            _db = int(_chw.get("display_brightness_pct", 100))
-        except (TypeError, ValueError):
-            _db = 100
-        self.sl_cont_display_brightness.setValue(max(0, min(100, _db)))
-        self.sl_cont_display_brightness.setToolTip(tt("settings.controller_display_brightness_tooltip"))
-        self.lbl_cont_display_brightness = QLabel()
-        self.lbl_cont_display_brightness.setMinimumWidth(40)
-        self._update_conled_brightness_label()
-        self.sl_cont_display_brightness.valueChanged.connect(self._on_conled_brightness_value_changed)
-        self.sl_cont_display_brightness.sliderReleased.connect(self._on_conled_brightness_released)
-        _hl_conled.addWidget(self.sl_cont_display_brightness, 1)
-        _hl_conled.addWidget(self.lbl_cont_display_brightness)
-        fl_ctrl.addRow(t("settings.controller_display_brightness"), _w_conled)
-        vl_ctrl.addWidget(self.gb_controller)
-        vl_ctrl.addStretch(1)
+        self.sl_cont_display_brightness.valueChanged.connect(
+            self._on_conled_brightness_value_changed
+        )
+        pg_controller = self._controller_tab
         self._apply_controller_enabled_ui()
 
         self.cb_wind_dir_display = QComboBox()
@@ -1376,39 +1166,9 @@ class SettingsWindow(QDialog):
         self._park_home_suppress = False
         form_ui.addRow(gb_park)
 
-        gb_location = QGroupBox(t("settings.group_location"))
-        fl_location = QFormLayout(gb_location)
-        self.ed_location_lat = QDoubleSpinBox()
-        self.ed_location_lat.setRange(-90.0, 90.0)
-        self.ed_location_lat.setDecimals(6)
-        self.ed_location_lat.setValue(float(cfg.get("ui", {}).get("location_lat", 49.502651)))
-        self.ed_location_lat.setSuffix("°")
-        self.ed_location_lat.setToolTip(tt("settings.location_lat_tooltip"))
-        fl_location.addRow(t("settings.location_lat"), self.ed_location_lat)
-        self.ed_location_lon = QDoubleSpinBox()
-        self.ed_location_lon.setRange(-180.0, 180.0)
-        self.ed_location_lon.setDecimals(6)
-        self.ed_location_lon.setValue(float(cfg.get("ui", {}).get("location_lon", 8.375019)))
-        self.ed_location_lon.setSuffix("°")
-        self.ed_location_lon.setToolTip(tt("settings.location_lon_tooltip"))
-        fl_location.addRow(t("settings.location_lon"), self.ed_location_lon)
-        _row_locator = QWidget()
-        _lay_locator = QHBoxLayout(_row_locator)
-        _lay_locator.setContentsMargins(0, 0, 0, 0)
-        _lay_locator.setSpacing(px_to_dip(self, 8))
-        self.ed_location_locator = QLineEdit(str(cfg.get("ui", {}).get("location_locator", "") or ""))
-        self.ed_location_locator.setMaxLength(10)
-        self.ed_location_locator.setPlaceholderText("JO31jg")
-        self.ed_location_locator.setToolTip(tt("settings.location_locator_tooltip"))
-        _lay_locator.addWidget(self.ed_location_locator, 1)
-        self.btn_locator_apply_coords = QPushButton(t("settings.btn_locator_apply_coords"))
-        self.btn_locator_apply_coords.setAutoDefault(False)
-        self.btn_locator_apply_coords.setDefault(False)
-        self.btn_locator_apply_coords.setToolTip(tt("settings.btn_locator_apply_coords_tooltip"))
-        self.btn_locator_apply_coords.clicked.connect(self._on_locator_apply_coords)
-        _lay_locator.addWidget(self.btn_locator_apply_coords, 0)
-        fl_location.addRow(t("settings.location_locator"), _row_locator)
-        form_ui.addRow(gb_location)
+        self._location_panel = LocationPanel(cfg, self)
+        self._location_panel.install_aliases_on(self)
+        form_ui.addRow(self._location_panel)
         # --- Linke Spalte: Verbindung ---
         antenna_names = _antenna_names_cfg
 
@@ -1426,9 +1186,11 @@ class SettingsWindow(QDialog):
             _f.setBold(True)
             lbl_title.setFont(_f)
             name_ed = QLineEdit(self._sanitize_controller_name(name_text))
-            name_ed.setMaxLength(9)
+            name_ed.setMaxLength(ANTENNA_NAME_MAX_LEN)
             name_ed.setValidator(
-                QRegularExpressionValidator(QRegularExpression(r"[^#:$]*"))
+                QRegularExpressionValidator(
+                    QRegularExpression(ANTENNA_NAME_VALIDATOR_PATTERN)
+                )
             )
             name_ed.setMinimumWidth(120)
             sp_off.setRange(0, 360)
@@ -1551,13 +1313,14 @@ class SettingsWindow(QDialog):
         form_az_misc.setHorizontalSpacing(10)
         form_az_misc.setVerticalSpacing(8)
         self.sp_antenna_height = QDoubleSpinBox()
-        self.sp_antenna_height.setRange(0.0, 500.0)
+        self.sp_antenna_height.setRange(0.0, 9999.0)
         self.sp_antenna_height.setDecimals(1)
         self.sp_antenna_height.setSingleStep(0.5)
         self.sp_antenna_height.setValue(float(cfg.get("ui", {}).get("antenna_height_m", 0.0)))
         self.sp_antenna_height.setSuffix(" m")
         self.sp_antenna_height.setToolTip(tt("settings.antenna_height_tooltip"))
         form_az_misc.addRow(t("settings.antenna_height"), self.sp_antenna_height)
+        self._snapshot_mast_height: float | None = None
         self.chk_cont_antenna_realign = QCheckBox(t("settings.antenna_realign_on_switch"))
         self.chk_cont_antenna_realign.setChecked(bool(_chw.get("antenna_realign_on_switch", False)))
         self.chk_cont_antenna_realign.setToolTip(tt("settings.antenna_realign_on_switch_tooltip"))
@@ -1817,6 +1580,13 @@ class SettingsWindow(QDialog):
         self._settings_stack.addWidget(_scroll_page(self._update_tab))
         self._network_tab = NetworkModulesTab(self.cfg, self)
         self._network_tab.save_requested.connect(self._on_network_modules_save_requested)
+        self._network_tab.apply_to_link_requested.connect(self._on_network_apply_to_link)
+        self._network_tab.apply_axis_link_requested.connect(self._on_network_apply_axis_link)
+        self.chk_enable_az.stateChanged.connect(lambda _s: self._sync_network_dual_axis_apply())
+        self.chk_enable_el.stateChanged.connect(lambda _s: self._sync_network_dual_axis_apply())
+        self.chk_enable_el.stateChanged.connect(lambda _s: self._sync_link_el_fields())
+        self._sync_network_dual_axis_apply()
+        self._sync_link_el_fields()
         gb_network = QGroupBox(t("settings.tab_network"))
         _vl_network = QVBoxLayout(gb_network)
         _vl_network.setContentsMargins(
@@ -1938,7 +1708,9 @@ class SettingsWindow(QDialog):
         self._hw_link_timer.setInterval(500)
         self._hw_link_timer.timeout.connect(self._tick_hw_link_state)
 
-        self.btn_com_refresh.clicked.connect(self._refresh_com_ports)
+        self.btn_com_refresh.clicked.connect(
+            lambda: self._refresh_com_ports(force=True)
+        )
         self._refresh_com_ports(select=cfg["hardware_link"].get("com_port", ""))
         try:
             self._refresh_com_ports_into(
@@ -2022,7 +1794,7 @@ class SettingsWindow(QDialog):
         self._update_antenna_offset_enabled()
         self.update_encoder_dependent_ui()
         self._update_status_on_open()
-        self._sync_el_rotor_type_combo_from_ctrl()
+        self._refresh_el_rotor_type_from_bus()
         self._request_antenna_offsets_if_needed()
         self._antenna_refresh_timer.start()
         self._antenna_request_timer.start()
@@ -2704,6 +2476,67 @@ class SettingsWindow(QDialog):
         except Exception as exc:
             self.logbuf.write("WARN", f"Netzwerk-Module: Sofort-Speichern fehlgeschlagen: {exc}")
 
+    def _on_network_apply_to_link(self, host: str, port: int) -> None:
+        """LAN-Modul → Felder Rotorverbindung (TCP IP/Port)."""
+        panel = getattr(self, "_rotor_link_panel", None)
+        if panel is not None:
+            panel.set_tcp_endpoint(host, port)
+            return
+        host = str(host or "").strip()
+        try:
+            port_i = int(port)
+        except Exception:
+            port_i = 8886
+        if not host:
+            return
+        idx = self.cb_hw_mode.findData("tcp")
+        if idx >= 0:
+            self.cb_hw_mode.setCurrentIndex(idx)
+        self.ed_hw_ip.setText(host)
+        self.sp_hw_port.setValue(max(1, min(65535, port_i)))
+        try:
+            self._sync_bus_mode_rows()
+        except Exception:
+            pass
+
+    def _on_network_apply_axis_link(self, host: str, port: int, axis: str) -> None:
+        """LAN-Modul → TCP für eine Achse (Endpunkt bereits in cfg.ui.setup_axis_endpoints)."""
+        panel = getattr(self, "_rotor_link_panel", None)
+        if panel is not None:
+            panel.set_tcp_endpoint(host, port, axis=str(axis or "az"))
+            try:
+                panel.apply_to_cfg(self.cfg)
+            except Exception:
+                pass
+        else:
+            self._on_network_apply_to_link(host, port)
+        try:
+            self.save_cfg_cb(self.cfg)
+        except Exception:
+            pass
+
+    def _sync_network_dual_axis_apply(self) -> None:
+        """Netzwerk-Tab: Übernehmen AZ/EL wenn beide Achsen aktiv."""
+        tab = getattr(self, "_network_tab", None)
+        if tab is None or not hasattr(tab, "set_dual_axis_apply"):
+            return
+        try:
+            tab.set_dual_axis_apply(
+                enable_az=bool(self.chk_enable_az.isChecked()),
+                enable_el=bool(self.chk_enable_el.isChecked()),
+            )
+        except Exception:
+            pass
+
+    def _sync_link_el_fields(self) -> None:
+        panel = getattr(self, "_rotor_link_panel", None)
+        if panel is None or not hasattr(panel, "set_el_endpoint_visible"):
+            return
+        try:
+            panel.set_el_endpoint_visible(bool(self.chk_enable_el.isChecked()))
+        except Exception:
+            pass
+
     def _apply_pst_emulation_live_from_ui(self) -> None:
         """Checkboxen + Felder → Config speichern; SPID-TCP und UDP-PST sofort starten/stoppen (gegenseitig exklusiv)."""
         if self.chk_pst_enabled.isChecked() and self.chk_udp_pst.isChecked():
@@ -2837,6 +2670,26 @@ class SettingsWindow(QDialog):
             self.ctrl.request_antenna_ranges()
         if hasattr(self.ctrl, "request_antenna_names"):
             self.ctrl.request_antenna_names()
+        if hasattr(self.ctrl, "request_mast_height"):
+            self.ctrl.request_mast_height()
+
+    def _set_mast_height_and_wait(self, value_m: float) -> bool:
+        """SETMASTHEIGHT senden und auf ACK warten."""
+        result: list[bool | None] = [None]
+        event_loop = QEventLoop(self)
+
+        def on_done(ok: bool):
+            result[0] = ok
+            QMetaObject.invokeMethod(event_loop, b"quit", Qt.ConnectionType.QueuedConnection)
+
+        safety_timer = QTimer(self)
+        safety_timer.setSingleShot(True)
+        safety_timer.timeout.connect(event_loop.quit)
+        safety_timer.start(2500)
+        self.ctrl.set_mast_height(float(value_m), on_done=on_done)
+        event_loop.exec()
+        safety_timer.stop()
+        return result[0] is True
 
     def _set_antenna_offset_and_wait(self, axis: str, slot: int, value_deg: float) -> bool:
         """SETANTOFF senden und auf ACK warten. Gibt True nur bei gültigem ACK zurück."""
@@ -2940,6 +2793,22 @@ class SettingsWindow(QDialog):
         self._lbl_profiles_intro = QLabel(t("settings.profiles_intro"))
         self._lbl_profiles_intro.setWordWrap(True)
         vl.addWidget(self._lbl_profiles_intro)
+
+        gb_setup = QGroupBox(t("settings.group_commissioning"))
+        self._gb_commissioning = gb_setup
+        setup_lay = QVBoxLayout(gb_setup)
+        self._lbl_commissioning_intro = QLabel(t("settings.commissioning_intro"))
+        self._lbl_commissioning_intro.setWordWrap(True)
+        setup_lay.addWidget(self._lbl_commissioning_intro)
+        row_setup = QHBoxLayout()
+        self.btn_commissioning = QPushButton(t("main.btn_commissioning"))
+        self.btn_commissioning.setToolTip(tt("settings.commissioning_btn_tooltip"))
+        self.btn_commissioning.clicked.connect(self._on_open_commissioning)
+        row_setup.addWidget(self.btn_commissioning)
+        row_setup.addStretch(1)
+        setup_lay.addLayout(row_setup)
+        vl.addWidget(gb_setup)
+
         gb = QGroupBox(t("settings.group_rotor_profile"))
         self._gb_rotor_profile = gb
         form = QVBoxLayout(gb)
@@ -2987,6 +2856,15 @@ class SettingsWindow(QDialog):
         vl.addStretch(1)
         self.refresh_profiles_list()
         return page
+
+    def _on_open_commissioning(self) -> None:
+        """Öffnet denselben Inbetriebnahme-Assistenten wie Aktionen → Inbetriebnahme."""
+        cb = getattr(self, "_open_commissioning_cb", None)
+        if callable(cb):
+            try:
+                cb()
+            except Exception:
+                pass
 
     def refresh_profiles_list(self) -> None:
         """Profil-Liste und Aktiv-Label aus dem Index neu aufbauen."""
@@ -3321,6 +3199,24 @@ class SettingsWindow(QDialog):
         if row < 0 or row >= self._settings_stack.count():
             return
         self._settings_stack.setCurrentIndex(row)
+
+    def open_settings_tab(self, which: str) -> None:
+        """Öffentliche Navigation: ``connections`` | ``controller`` | ``protocols`` | …"""
+        key = str(which or "").strip().lower()
+        idx_map = {
+            "profiles": getattr(self, "_tab_profiles_index", 0),
+            "connections": getattr(self, "_tab_connections_index", 2),
+            "protocols": 3,  # settings.tab_rotor_emulation
+            "controller": getattr(self, "_tab_controller_index", 6),
+        }
+        row = int(idx_map.get(key, getattr(self, "_tab_connections_index", 2)))
+        try:
+            self._settings_nav.setCurrentRow(row)
+        except Exception:
+            self._settings_stack.setCurrentIndex(row)
+        self.show()
+        self.raise_()
+        self.activateWindow()
         if row == getattr(self, "_tab_profiles_index", -1):
             self.refresh_profiles_list()
         if row == getattr(self, "_tab_connections_index", -1):
@@ -3941,8 +3837,19 @@ class SettingsWindow(QDialog):
             tab = getattr(self, "_weather_tab", None)
             if tab is None:
                 return
-            # Encoder Typ 3: kein Windmesser am Rotor (wie Controller-Anemo)
-            available = not self._rotor_has_abs_encoder_type3()
+            # Wind nur Encoder-Typ 1/2; bei unbekanntem Typ: Typ 3/4 ausschließen
+            available = True
+            try:
+                from ..rotor_setup_steps import wind_alerts_allowed
+
+                enc = getattr(self.ctrl, "encoder_type", None)
+                known = bool(getattr(self.ctrl, "encoder_type_known", False))
+                if known:
+                    available = wind_alerts_allowed(enc)
+                else:
+                    available = not self._rotor_has_abs_encoder_type3()
+            except Exception:
+                available = not self._rotor_has_abs_encoder_type3()
             if hasattr(tab, "set_wind_enable_available"):
                 tab.set_wind_enable_available(available)
             # Bereich „Wind“ folgt nur der Checkbox (nicht dem aktuellen Rotor-Status)
@@ -4605,6 +4512,7 @@ class SettingsWindow(QDialog):
             self._antenna_display_name(1),
             self._antenna_display_name(2),
         ]
+        self._snapshot_mast_height = float(self.sp_antenna_height.value())
 
     def _antenna_value_changed(self, old_val, new_val) -> bool:
         """True nur wenn Baseline bekannt und Wert wirklich abweicht (sonst kein NVS-Write)."""
@@ -4625,6 +4533,8 @@ class SettingsWindow(QDialog):
             + self._antenna_angle_spinboxes_az
             + self._antenna_range_spinboxes_az
             + self._antenna_dipole_checkboxes_az
+        ) or (
+            hasattr(self, "sp_antenna_height") and self.sp_antenna_height.hasFocus()
         ):
             return
         all_loaded = True
@@ -4731,6 +4641,18 @@ class SettingsWindow(QDialog):
                         self._set_antenna_names_led_ok(True)
                     else:
                         self._set_antenna_names_led_ok(False)
+                # Masthöhe (GETMASTHEIGHT) — optional, blockiert nicht den Antennen-Refresh
+                mh = getattr(az, "mast_height_m", None)
+                if mh is not None:
+                    try:
+                        mh_f = max(0.0, min(9999.0, float(mh)))
+                        self.sp_antenna_height.blockSignals(True)
+                        self.sp_antenna_height.setValue(mh_f)
+                        self.sp_antenna_height.blockSignals(False)
+                        self._snapshot_mast_height = mh_f
+                        self.cfg.setdefault("ui", {})["antenna_height_m"] = mh_f
+                    except (TypeError, ValueError):
+                        pass
                 self._snapshot_antoff = snap_antoff
                 self._snapshot_angle = snap_angle
                 self._snapshot_antdp = snap_antdp
@@ -4748,31 +4670,18 @@ class SettingsWindow(QDialog):
 
     def _on_locator_apply_coords(self) -> None:
         """Maidenhead-Locator → Zellenmitte in die Koordinatenfelder übernehmen (offline)."""
-        s = "".join(str(self.ed_location_locator.text() or "").strip().upper().split())
-        if not s:
-            QMessageBox.information(
-                self,
-                t("settings.title"),
-                t("settings.locator_empty"),
-            )
+        panel = getattr(self, "_location_panel", None)
+        if panel is not None:
+            panel.apply_locator_to_coords()
             return
-        ll = maidenhead_to_lat_lon(s)
-        if ll is None:
-            QMessageBox.warning(
-                self,
-                t("settings.title"),
-                t("settings.locator_invalid"),
-            )
-            return
-        self.ed_location_locator.setText(s)
-        self.ed_location_lat.setValue(ll[0])
-        self.ed_location_lon.setValue(ll[1])
 
-    def _refresh_com_ports(self, select: str = ""):
+    def _refresh_com_ports(self, select: str = "", *, force: bool = False):
         """Befuellt die COM-Port-Auswahl der Busverbindung."""
-        self._refresh_com_ports_into(self.cb_hw_com, select=select)
+        self._refresh_com_ports_into(self.cb_hw_com, select=select, force=force)
 
-    def _refresh_com_ports_into(self, combo: QComboBox, select: str = ""):
+    def _refresh_com_ports_into(
+        self, combo: QComboBox, select: str = "", *, force: bool = False
+    ):
         """Befuellt eine COM-Port-ComboBox.
 
         Im Dropdown erscheint ``COMn — <Geraetebeschreibung>`` (soweit die
@@ -4780,7 +4689,7 @@ class SettingsWindow(QDialog):
         ``COMn``-String wird als ``userData`` hinterlegt, damit beim Speichern
         immer nur der Port-Name in die Config geschrieben wird.
         """
-        entries = list_serial_port_entries()
+        entries = list_serial_port_entries(force=force)
         current = (
             select
             or str(combo.currentData() or "").strip()
@@ -4910,94 +4819,42 @@ class SettingsWindow(QDialog):
         self.sp_slave_el.setValue(_cl(rb.get("slave_el")))
         self.chk_enable_az.setChecked(bool(rb.get("enable_az", True)))
         self.chk_enable_el.setChecked(bool(rb.get("enable_el", False)))
-        self._sync_el_rotor_type_combo_from_ctrl()
 
     def _el_rotor_type_from_ui(self) -> int:
+        """EL-Rotortyp (1/2/3) aus Controller oder Config — für Speichern."""
         try:
-            v = int(self.cb_el_rotor_type.currentData())
+            if bool(getattr(self.ctrl, "el_rotor_type_known", False)):
+                v = int(getattr(self.ctrl, "el_rotor_type", None) or 0)
+                if v in (1, 2, 3):
+                    return v
+        except (TypeError, ValueError):
+            pass
+        try:
+            v = int((self.cfg.get("rotor_bus") or {}).get("el_rotor_type", 2))
         except (TypeError, ValueError):
             v = 2
         return v if v in (1, 2, 3) else 2
 
-    def _update_el_rotor_type_combo_enabled(self) -> None:
-        on = bool(self.chk_enable_el.isChecked())
-        self.cb_el_rotor_type.setEnabled(on)
+    def _on_enable_el_changed_for_rotor_type(self) -> None:
+        if bool(self.chk_enable_el.isChecked()):
+            self._refresh_el_rotor_type_from_bus()
 
     def sync_el_rotor_type_display(self) -> None:
-        """Von außen (GETROTORTYPE): Dropdown an Controller-Stand anpassen."""
-        self._sync_el_rotor_type_combo_from_ctrl()
+        """Hook für GETROTORTYPE (Kompass/Karte aktualisieren die GUI selbst)."""
+        return
 
-    def _sync_el_rotor_type_combo_from_ctrl(self) -> None:
-        """Rotortyp-Dropdown aus Controller oder Config setzen (ohne SET auszulösen)."""
-        typ = None
-        try:
-            if bool(getattr(self.ctrl, "el_rotor_type_known", False)):
-                typ = int(getattr(self.ctrl, "el_rotor_type", None) or 0)
-        except (TypeError, ValueError):
-            typ = None
-        if typ not in (1, 2, 3):
-            try:
-                typ = int((self.cfg.get("rotor_bus") or {}).get("el_rotor_type", 2))
-            except (TypeError, ValueError):
-                typ = 2
-        if typ not in (1, 2, 3):
-            typ = 2
-        self.cb_el_rotor_type.blockSignals(True)
-        try:
-            idx = self.cb_el_rotor_type.findData(int(typ))
-            if idx >= 0:
-                self.cb_el_rotor_type.setCurrentIndex(idx)
-        finally:
-            self.cb_el_rotor_type.blockSignals(False)
-        self._update_el_rotor_type_combo_enabled()
-
-    def _on_el_rotor_type_combo_changed(self, _index: int = 0) -> None:
-        """Dropdown: GUI sofort umstellen und SETROTORTYPE an EL-Slave senden."""
-        if not self.chk_enable_el.isChecked():
-            return
-        typ = self._el_rotor_type_from_ui()
-        try:
-            self.cfg.setdefault("rotor_bus", {})["el_rotor_type"] = int(typ)
-        except Exception:
-            pass
-        if hasattr(self.ctrl, "apply_el_rotor_type_from_value"):
-            try:
-                self.ctrl.apply_el_rotor_type_from_value(
-                    typ,
-                    dst=int(self.sp_slave_el.value()),
-                    reread=False,
-                )
-            except Exception:
-                pass
-        try:
-            dst = int(self.sp_slave_el.value())
-        except Exception:
-            dst = int(getattr(self.ctrl, "slave_el", 0) or 0)
-        if dst <= 0:
+    def _refresh_el_rotor_type_from_bus(self) -> None:
+        """GETROTORTYPE am EL-Slave anstoßen (GUI folgt über on_rotor_type_changed)."""
+        if not bool(self.chk_enable_el.isChecked()):
             return
         if not bool(getattr(self.hw, "is_connected", lambda: False)()):
             return
-
-        def _done(tel, err):
-            if err or tel is None:
-                return
-            val = str(getattr(tel, "params", "") or typ)
-            if hasattr(self.ctrl, "apply_el_rotor_type_from_value"):
-                try:
-                    self.ctrl.apply_el_rotor_type_from_value(val, dst=dst, reread=True)
-                except Exception:
-                    pass
-
+        if not hasattr(self.ctrl, "request_el_rotor_type"):
+            return
         try:
-            self.ctrl.send_ui_command(
-                dst,
-                "SETROTORTYPE",
-                str(int(typ)),
-                expect_prefix="ACK_SETROTORTYPE",
-                timeout_s=1.0,
-                priority=0,
-                on_done=_done,
-            )
+            self.ctrl._el_rotor_type_requested = False
+            self.ctrl.request_el_rotor_type()
+            self.ctrl._el_rotor_type_requested = True
         except Exception:
             pass
 
@@ -5047,15 +4904,19 @@ class SettingsWindow(QDialog):
         self.cfg["rotor_bus"]["enable_el"] = bool(self.chk_enable_el.isChecked())
         self.cfg["rotor_bus"]["el_rotor_type"] = int(self._el_rotor_type_from_ui())
 
-        self.cfg["hardware_link"]["mode"] = str(
-            self.cb_hw_mode.currentData() or self.cb_hw_mode.currentText()
-        ).strip().lower()
-        self.cfg["hardware_link"]["tcp_ip"] = self.ed_hw_ip.text().strip()
-        self.cfg["hardware_link"]["tcp_port"] = int(self.sp_hw_port.value())
-        self.cfg["hardware_link"]["udp_bind_port"] = int(self.sp_hw_udp_bind_port.value())
-        self.cfg["hardware_link"]["com_port"] = str(
-            self.cb_hw_com.currentData() or self.cb_hw_com.currentText()
-        ).strip()
+        panel = getattr(self, "_rotor_link_panel", None)
+        if panel is not None:
+            panel.apply_to_cfg(self.cfg)
+        else:
+            self.cfg["hardware_link"]["mode"] = str(
+                self.cb_hw_mode.currentData() or self.cb_hw_mode.currentText()
+            ).strip().lower()
+            self.cfg["hardware_link"]["tcp_ip"] = self.ed_hw_ip.text().strip()
+            self.cfg["hardware_link"]["tcp_port"] = int(self.sp_hw_port.value())
+            self.cfg["hardware_link"]["udp_bind_port"] = int(self.sp_hw_udp_bind_port.value())
+            self.cfg["hardware_link"]["com_port"] = str(
+                self.cb_hw_com.currentData() or self.cb_hw_com.currentText()
+            ).strip()
         self.cfg.setdefault("ui", {})["wind_dir_display"] = str(
             self.cb_wind_dir_display.currentData() or "to"
         )
@@ -5107,11 +4968,15 @@ class SettingsWindow(QDialog):
         new_lang = str(self.cb_language.currentData() or "de")
         lang_changed = self.cfg.get("ui", {}).get("language", "de") != new_lang
         self.cfg.setdefault("ui", {})["language"] = new_lang
-        self.cfg.setdefault("ui", {})["location_lat"] = float(self.ed_location_lat.value())
-        self.cfg.setdefault("ui", {})["location_lon"] = float(self.ed_location_lon.value())
-        self.cfg.setdefault("ui", {})["location_locator"] = str(
-            self.ed_location_locator.text() or ""
-        ).strip()
+        panel_loc = getattr(self, "_location_panel", None)
+        if panel_loc is not None:
+            panel_loc.apply_to_cfg(self.cfg)
+        else:
+            self.cfg.setdefault("ui", {})["location_lat"] = float(self.ed_location_lat.value())
+            self.cfg.setdefault("ui", {})["location_lon"] = float(self.ed_location_lon.value())
+            self.cfg.setdefault("ui", {})["location_locator"] = str(
+                self.ed_location_locator.text() or ""
+            ).strip()
         self.cfg.setdefault("ui", {})["antenna_height_m"] = float(self.sp_antenna_height.value())
         # Mit AZ: Namen aus den Feldern (werden auch per SETANTNAME geschrieben).
         # Nur EL: Felder sind ausgeblendet — bestehende Config behalten bzw. normalisieren.
@@ -5259,8 +5124,8 @@ class SettingsWindow(QDialog):
         cl.setdefault("tcp_port", 8886)
         cl.setdefault("udp_bind_port", 0)
 
-        # AZ-Versatz, Öffnungswinkel, Dipol, Reichweite und Namen in den Rotor schreiben
-        # (SETANTOFF1–3, SETANGLE1–3, SETANTDP1–3, SETANTDIS1–3, SETANTNAME1–3).
+        # AZ-Versatz, Öffnungswinkel, Dipol, Reichweite, Namen und Masthöhe in den Rotor schreiben
+        # (SETANTOFF/SETANGLE/SETANTDP/SETANTDIS/SETANTNAME/SETMASTHEIGHT).
         # Nur übertragen wenn Wert sich gegenüber dem Snapshot tatsächlich geändert hat.
         # Kein Write wenn Baseline fehlt (None) — schützt NVS vor Blind-Schreiben.
         snapshot_antoff = list(getattr(self, "_snapshot_antoff", [None, None, None]))
@@ -5268,6 +5133,7 @@ class SettingsWindow(QDialog):
         snapshot_antdp = list(getattr(self, "_snapshot_antdp", [None, None, None]))
         snapshot_range = list(getattr(self, "_snapshot_range", [None, None, None]))
         snapshot_antname = list(getattr(self, "_snapshot_antname", [None, None, None]))
+        snapshot_mast = getattr(self, "_snapshot_mast_height", None)
         wrote_antenna_hw = False
         if self.hw.is_connected() and hasattr(self.ctrl, "set_antenna_offset"):
             all_ok = True
@@ -5362,11 +5228,26 @@ class SettingsWindow(QDialog):
                                 setattr(az, f"antname{slot}", new_name)
                             except Exception:
                                 pass
+                # Masthöhe (SETMASTHEIGHT)
+                new_mast = float(self.sp_antenna_height.value())
+                if snapshot_mast is None or abs(float(snapshot_mast) - new_mast) >= 0.05:
+                    # None = noch nie vom Rotor gelesen → trotzdem schreiben wenn Wert > 0
+                    # oder Snapshot bekannt und geändert
+                    do_mast = snapshot_mast is not None or new_mast > 0.0
+                    if do_mast and hasattr(self.ctrl, "set_mast_height"):
+                        wrote_antenna_hw = True
+                        self.lbl_status.setText(t("settings.status_mast_saving"))
+                        QApplication.processEvents()
+                        if self._set_mast_height_and_wait(new_mast):
+                            snapshot_mast = new_mast
+                        else:
+                            all_ok = False
             self._snapshot_antoff = list(snapshot_antoff)
             self._snapshot_angle = list(snapshot_angle)
             self._snapshot_antdp = list(snapshot_antdp)
             self._snapshot_range = list(snapshot_range)
             self._snapshot_antname = list(snapshot_antname)
+            self._snapshot_mast_height = snapshot_mast
             if wrote_antenna_hw:
                 self.lbl_status.setText(
                     t("settings.status_az_saved") if all_ok else t("settings.status_az_error")
@@ -5478,9 +5359,7 @@ class SettingsWindow(QDialog):
 
     @staticmethod
     def _sanitize_controller_name(s: str) -> str:
-        bad = "#:$"
-        t = (s or "").strip()
-        return "".join(c for c in t[:9] if c not in bad)[:9]
+        return sanitize_antenna_name(s)
 
     def _rotor_has_abs_encoder_type3(self) -> bool:
         """Absolut-Encoder am Rotor (GETENCTYPE=3): kein Anemometer an der Achse."""
@@ -6022,15 +5901,19 @@ class SettingsWindow(QDialog):
 
     def _set_controller_wait_visible(self, visible: bool) -> None:
         """„Warten“ neben der LED nur während laufender Bus-Abfrage."""
+        tab = getattr(self, "_controller_tab", None)
+        if tab is not None:
+            tab.set_wait_visible(visible)
+            return
         if not hasattr(self, "_lbl_controller_wait"):
             return
         self._lbl_controller_wait.setVisible(bool(visible))
 
     def _set_controller_led_ok(self, ok: bool) -> None:
         """LED neben „ID setzen“: grün = alle Controller-Werte vom Bus gelesen, sonst rot."""
+        self._controller_led_ok = bool(ok)
         if not hasattr(self, "_lbl_controller_led"):
             return
-        self._controller_led_ok = bool(ok)
         d = px_to_dip(self, 6)
         s = px_to_dip(self, 12)
         if ok:

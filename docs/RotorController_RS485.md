@@ -1,6 +1,6 @@
 # Rotor‑Controller – RS485‑Anleitung & Firmware‑Dokumentation (DE)
 
-Stand: 2026-10-17 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler & Warnungen. Die **Befehlstabelle** ist mit dem RotorTcpBridge‑Katalog abgeglichen (`command_catalog.py` / Befehlsfenster / Rotorkonfiguration). Diese Datei ist mit `RotorTcpBridge/docs/RotorController_RS485.html` abgestimmt.
+Stand: 2026-10-19 • Rotor-Firmware ab 1.9.4 (Setup-Modus, `SETPOSHERE`, `SETENCCOUNT`) • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler & Warnungen. Die **Befehlstabelle** ist mit dem RotorTcpBridge‑Katalog abgeglichen (`command_catalog.py` / Befehlsfenster / Rotorkonfiguration). Diese Datei ist mit `RotorTcpBridge/docs/RotorController_RS485.html` abgestimmt.
 
 ## Inhaltsverzeichnis {#toc}
 
@@ -14,7 +14,7 @@ Stand: 2026-10-17 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/
 - [7. Kalibrierung/Lastprofil/Temperatur – Tuning‑Anleitung](#tuning)
 - [8. Warnungen](#warns)
 - [9. Fehler](#errors)
-- [10. Hinweise](#notes)
+- [10. Hinweise](#notes) (inkl. Inbetriebnahme-Wizard)
 
 ## 1. RS485‑Protokoll {#protocol}
 
@@ -218,7 +218,13 @@ Spalte 1 zeigt ein Beispiel vom Master zum Slave. Spalte 2 zeigt die typische An
 | `#0:20:DELWARN:...:CS$` | `#20:0:ACK_DELWARN:...:<CS>$` oder: `#20:0:NAK_DELWARN:REASON:CS$` | **[DELWARN](#cmd-DELWARN)** Warnungen löschen. |
 | `#0:20:GETERR:...:CS$` optional, nicht mehr für zyklisches Polling empfohlen | `#20:0:ACK_ERR:0:<CS>$` oder: `#20:0:NAK_GETERR:REASON:CS$` | **[GETERR](#cmd-GETERR)** Aktuellen Fehlercode manuell abfragen (Fehlerfluss läuft primär über asynchrones `ERR`). |
 | `#0:20:SETREF:...:CS$` | `#20:0:ACK_SETREF:...:<CS>$` oder: `#20:0:NAK_SETREF:REASON:CS$` | **[SETREF](#cmd-SETREF)** Homing starten und Fehler quittieren. |
-| `#0:20:JOG:...:CS$` | `#20:0:ACK_JOG:...:<CS>$` oder: `#20:0:NAK_JOG:REASON:CS$` | **[JOG](#cmd-JOG)** Manuelles Verfahren (aktuell deaktiviert). |
+| `#0:20:JOG:...:CS$` | `#20:0:ACK_JOG:...:<CS>$` oder: `#20:0:NAK_JOG:REASON:CS$` | **[JOG](#cmd-JOG)** Manuelles Verfahren: `1` = Richtung Amin („minus“), `2` = Richtung Amax, `0` = Stopp mit Rampe. Ohne Setup-Modus an Achsgrenzen/Referenz gebunden. |
+| `#0:20:SETSETUP:1:CS$` | `#20:0:ACK_SETSETUP:1:<CS>$` oder: `#20:0:NAK_SETSETUP:REASON:CS$` | **[SETSETUP](#cmd-SETSETUP)** Setup-Modus an (`1`) / aus (`0`): freie Fahrt zum Einmessen (JOG ohne Amin/Amax, ohne Referenz, Stall aus). |
+| `#0:20:GETSETUP:0:CS$` | `#20:0:ACK_GETSETUP:0|1:<CS>$` oder: `#20:0:NAK_GETSETUP:REASON:CS$` | **[GETSETUP](#cmd-GETSETUP)** Setup-Modus lesen (0 = aus, 1 = an). |
+| `#0:20:SETSRVJOG:...:CS$` | `#20:0:ACK_SETSRVJOG:...:<CS>$` oder: `#20:0:NAK_SETSRVJOG:REASON:CS$` | **[SETSRVJOG](#cmd-SETSRVJOG)** Service-JOG nur bei unreferenziert/Stall, **ohne** freie Grenzen (zum Einmessen über/unter Amin/Amax stattdessen `SETSETUP`). |
+| `#0:20:GETENCCOUNT:0:CS$` | `#20:0:ACK_GETENCCOUNT:<COUNTS>:<CS>$` oder: `#20:0:NAK_GETENCCOUNT:REASON:CS$` | **[GETENCCOUNT](#cmd-GETENCCOUNT)** Aktueller Encoder-Zählerstand (Counts, ganzzahlig) — zum Einmessen der Counts pro 360°. |
+| `#0:20:SETPOSHERE:<DEG>:CS$` | `#20:0:ACK_SETPOSHERE:<DEG>:<CS>$` oder: `#20:0:NAK_SETPOSHERE:REASON:CS$` | **[SETPOSHERE](#cmd-SETPOSHERE)** Aktuelle Position als Winkel `<DEG>` setzen (ohne Fahrt), z. B. `0,00` an der mechanischen Null. |
+| `#0:20:SETENCCOUNT:<COUNTS>:CS$` | `#20:0:ACK_SETENCCOUNT:<COUNTS>:<CS>$` oder: `#20:0:NAK_SETENCCOUNT:REASON:CS$` | **[SETENCCOUNT](#cmd-SETENCCOUNT)** Encoder-Zählerstand live setzen und in FRAM-POS speichern (Typ 1/2; Typ 3: Turn+Pos, max. 2×CPR; Typ 4: NAK). ACK liefert den gesetzten Wert. |
 | `#0:20:SETPOSDG:...:CS$` | `#20:0:ACK_SETPOSDG:...:<CS>$` oder: `#20:0:NAK_SETPOSDG:REASON:CS$` | **[SETPOSDG](#cmd-SETPOSDG)** Positionsfahrt in Grad starten. |
 | `#2:1:SETPOSCC:<deg>;<rotor_id>:CS$` | (kein Slave-Pflicht-ACK; optional NAK je nach Gerät) | **[SETPOSCC](#cmd-SETPOSCC)** Encoder-Vorschau-Soll (Display-Controller): Payload ist `<deg>;<rotor_id>`, kein Fahrauftrag. Auf USB mitgespiegelt — PC kann den Sollzeiger des richtigen Rotors vor SETPOSDG nachführen. |
 | `#0:20:GETID:...:CS$` | `#20:0:ACK_GETID:...:<CS>$` oder: `#20:0:NAK_GETID:REASON:CS$` | **[GETID](#cmd-GETID)** Slave-ID lesen. |
@@ -437,6 +443,8 @@ Ungültige Werte → `NAK_SETROTORTYPE`. In der Bridge‑UI unter Parameter dire
 
 **Details:** SETREF:0 = nur Fehler quittieren. SETREF:1 = Homing starten (Standard).
 
+**Ohne Endschalter (`SETENDSTC:0`) im Setup-Modus:** `SETREF:1` setzt die Counts an der aktuellen Position auf `0` (mechanische Null) und markiert den Rotor als referenziert. Voraussetzung: Counts pro 360° (`SETENCCAX` bzw. `SETENCCRI`) sind vorher gesetzt, sonst `NAK_SETREF:BADCPR`. Siehe [Ablauf Einmessen ohne Endschalter](#setup-einmessen).
+
 **Hinweis:** Nach einem Fehler (ERR) muss `SETREF` gesendet werden, damit der Fehler quittiert wird. Warnungen werden nicht dadurch gelöscht (nur `DELWARN`).
 
 ---
@@ -445,7 +453,7 @@ Ungültige Werte → `NAK_SETROTORTYPE`. In der Bridge‑UI unter Parameter dire
 
 **Was es macht:** Aktuelle Position in Grad (0,01°).
 
-**Details:** Rückgabe ist die korrigierte Position: fester Encoder‑Offset (`SETDGOFFSET`) wird abgezogen, Korrekturwinkel (`SETDGCAL`) wird addiert/subtrahiert. Nach `SETDGCAL` die Position erneut mit `GETPOSDG` lesen.
+**Details:** Rückgabe ist die korrigierte Position: fester Encoder‑Offset (`SETDGOFFSET`) wird abgezogen, Korrekturwinkel (`SETDGCAL`) wird addiert/subtrahiert. Nach `SETDGCAL` die Position erneut mit `GETPOSDG` lesen. Im [Setup-Modus](#cmd-SETSETUP) (`SETSETUP:1`) liefert `GETPOSDG` den **Rohwinkel** (auch negativ bzw. über Max, auch ohne Referenz).
 
 ---
 
@@ -1277,7 +1285,7 @@ Pro Stufe gibt es 72 Bins × 2 Richtungen → typisch 12 Blöcke à 12 Werte; f�
 
 **Was es macht:** Min-Winkel setzen.
 
-**Details:** Typisch 0,00.
+**Details:** Typisch 0,00. Beim Einmessen ohne Endschalter (siehe [Ablauf](#setup-einmessen)) wird der Wert nach der CPR-Änderung zusammen mit `SETMAXDG` gesetzt.
 
 ---
 
@@ -1293,7 +1301,7 @@ Pro Stufe gibt es 72 Bins × 2 Richtungen → typisch 12 Blöcke à 12 Werte; f�
 
 **Was es macht:** Max-Winkel setzen.
 
-**Details:** Typisch 360,00. Für Encoder‑Typen **1, 2 und 3** bis **720°** (Overlap, z. B. 420). Für Typ **4** (Inklinometer) typisch **90** oder **180**. Wird gespeichert (`amax`). Nach Änderung `GETMAXDG` und ggf. Parkwinkel (`SETHOMEPOS`) prüfen.
+**Details:** Typisch 360,00. Für Encoder‑Typen **1, 2 und 3** bis **720°** (Overlap, z. B. 420). Für Typ **4** (Inklinometer) typisch **90** oder **180**. Wird gespeichert (`amax`). Nach Änderung `GETMAXDG` und ggf. Parkwinkel (`SETHOMEPOS`) prüfen. Beim Einmessen ohne Endschalter zunächst `SETMAXDG:360,00` (oder das mechanische Max) setzen, siehe [Ablauf](#setup-einmessen).
 
 ---
 
@@ -1655,6 +1663,8 @@ Ergänzung zu Abschnitt [„Encoder-Varianten“](#encoders): Counts für Ring/M
 
 **Was es macht:** Counts pro 360° Ring-Encoder setzen. Wird gespeichert.
 
+**Details:** Eine Änderung des Werts löst einen Neustart des Rotors aus (Setup-Modus und Referenz sind danach weg). Wert beim Einmessen aus `GETENCCOUNT` an der mechanischen Max-Stellung (Null = 0): Die Counts gelten für den Bereich `0° … SETMAXDG` (bei `SETMAXDG:360,00` = Counts pro 360°, bei `SETMAXDG:180,00` = Counts für 180°), siehe [Ablauf Einmessen ohne Endschalter](#setup-einmessen).
+
 ---
 
 #### `GETENCCAX` {#cmd-GETENCCAX}
@@ -1666,6 +1676,8 @@ Ergänzung zu Abschnitt [„Encoder-Varianten“](#encoders): Counts für Ring/M
 #### `SETENCCAX` {#cmd-SETENCCAX}
 
 **Was es macht:** Counts pro 360° Achsen-/Motor-Encoder setzen. Wird gespeichert.
+
+**Details:** Eine Änderung des Werts löst einen Neustart des Rotors aus (Setup-Modus und Referenz sind danach weg). Wert beim Einmessen aus `GETENCCOUNT` an der mechanischen Max-Stellung (Null = 0): Die Counts gelten für den Bereich `0° … SETMAXDG` (bei `SETMAXDG:360,00` = Counts pro 360°, bei `SETMAXDG:180,00` = Counts für 180°), siehe [Ablauf Einmessen ohne Endschalter](#setup-einmessen).
 
 ---
 
@@ -1919,9 +1931,113 @@ Ruck-/Stoß-Überwachung (`SETINCSHK*` / `GETINCSHK*` / `GETINCSTL`) ist firmwar
 
 #### `JOG` {#cmd-JOG}
 
-**Was es macht:** Manuelles Verfahren (aktuell deaktiviert).
+**Was es macht:** Manuelles Verfahren des Rotors (Taste halten = fahren).
 
-**Details:** Gibt NAK\_JOG:DISABLED.
+| Param | Richtung |
+|-------|----------|
+| `JOG:1` | Richtung Amin („minus“) |
+| `JOG:2` | Richtung Amax |
+| `JOG:0` | Stopp mit Rampe |
+
+**Details:** Normalerweise sind die Achsgrenzen (Amin/Amax) wirksam. Zum Einmessen **unter Amin bzw. über Amax** den [Setup-Modus](#cmd-SETSETUP) (`SETSETUP:1`) verwenden. `SETSRVJOG` gilt nur für unreferenziert/Stall und gibt **keine** freien Grenzen frei.
+
+---
+
+#### `SETSETUP` {#cmd-SETSETUP}
+
+**Was es macht:** Setup-Modus („Service“) ein- oder ausschalten — freie Fahrt zum Einmessen des Rotors.
+
+**Telegramm:** `#0:20:SETSETUP:1:CS$` (an) bzw. `#0:20:SETSETUP:0:CS$` (aus)
+
+**Antwort:** `#20:0:ACK_SETSETUP:1:<CS>$`
+
+| Befehl | Wirkung |
+|--------|---------|
+| `SETSETUP:1` | Setup an: JOG **ohne** Amin/Amax (auch negativ bzw. über Max), **ohne** Referenz, Stall-Erkennung aus; `GETPOSDG` liefert den **Rohwinkel**. |
+| `SETSETUP:0` | Setup aus: laufendes JOG stoppt, Achsgrenzen für JOG wieder aktiv, Stall wieder normal. |
+
+**Hinweise:**
+- Im Setup-Modus sind Achsgrenzen und Stall-Überwachung **außer Kraft** — vorsichtig fahren, Mechanik beobachten, nur kurz im Setup bleiben.
+- Die Grenzen sind wieder aktiv, sobald `GETSETUP` den Wert `0` liefert: nach `SETSETUP:0`, nach einem Reboot oder bei Ende des SoftAP (`SETWLAN:0`).
+
+---
+
+#### `GETSETUP` {#cmd-GETSETUP}
+
+**Was es macht:** Setup-Modus lesen.
+
+**Telegramm:** `#0:20:GETSETUP:0:CS$`
+
+**Antwort:** `#20:0:ACK_GETSETUP:<0|1>:<CS>$` — `0` = aus (Grenzen aktiv), `1` = an (freie Fahrt).
+
+---
+
+#### `SETSRVJOG` {#cmd-SETSRVJOG}
+
+**Was es macht:** Service-JOG für den Fall „unreferenziert“ bzw. „Stall“.
+
+**Details:** Anders als `SETSETUP` bleiben die Achsgrenzen (Amin/Amax) in Kraft. Für das Einmessen **unter Amin oder über Amax** immer `SETSETUP` verwenden.
+
+---
+
+#### `GETENCCOUNT` {#cmd-GETENCCOUNT}
+
+**Was es macht:** Aktuellen Encoder-Zählerstand lesen (Counts, ganzzahlig, auch negativ).
+
+**Telegramm:** `#0:20:GETENCCOUNT:0:CS$`
+
+**Antwort:** `#20:0:ACK_GETENCCOUNT:<COUNTS>:<CS>$`
+
+**Details:** Zum Einmessen der Counts pro 360° (`SETENCCAX` bei Typ 1 / `SETENCCRI` bei Typ 2): Nach `SETREF:1` an der mechanischen Null ist der Zählerstand `0`; an der mechanischen Max-Stellung (`SETMAXDG`) sind die gelesenen Counts direkt der Wert für `SETENCCAX` / `SETENCCRI` — es wird nicht auf 360° hochgerechnet.
+
+---
+
+#### `SETPOSHERE` {#cmd-SETPOSHERE}
+
+**Was es macht:** Die aktuelle mechanische Position als Winkel `<DEG>` übernehmen (ohne Fahrt), z. B. `SETPOSHERE:0,00` an der mechanischen Null.
+
+**Telegramm:** `#0:20:SETPOSHERE:0,00:CS$`
+
+**Antwort:** `#20:0:ACK_SETPOSHERE:<DEG>:<CS>$` oder `#20:0:NAK_SETPOSHERE:REASON:CS$`
+
+**Details:** Gedacht für das Einmessen im Setup-Modus (`SETSETUP:1`, Firmware ab 1.9.4). Als Ersatz für die Null kann auch `SETENCCOUNT:0` verwendet werden. Kontrolle danach: `GETPOSDG` ≈ gesetzter Winkel. Die Counts pro 360° (`SETENCCAX` / `SETENCCRI`) sollten vorher gesetzt sein.
+
+---
+
+#### `SETENCCOUNT` {#cmd-SETENCCOUNT}
+
+**Was es macht:** Encoder-Zählerstand (Counts) live auf einen beliebigen Wert setzen und in FRAM-POS speichern.
+
+**Telegramm:** `#0:20:SETENCCOUNT:<COUNTS>:CS$`
+
+**Antwort:** `#20:0:ACK_SETENCCOUNT:<COUNTS>:<CS>$` — der ACK liefert den tatsächlich gesetzten Wert.
+
+**Details:**
+
+- **Typ 1/2:** Counts werden direkt gesetzt (ganzzahlig, auch negativ oder große Werte, z. B. `500000`).
+- **Typ 3:** Turn + Pos; maximal 2×CPR.
+- **Typ 4:** `NAK_SETENCCOUNT` (nicht unterstützt).
+- Gegenstück zum Lesen: [`GETENCCOUNT`](#cmd-GETENCCOUNT). Anders als `SETREF:1` (Counts = 0 an der Referenzstelle) lässt sich der Zählerstand hier frei vorgeben, z. B. um einen Offset einzustellen oder die Position nach einem Tausch des Encoders zu übernehmen.
+- Der Wert wird sofort in FRAM-POS gesichert und bleibt nach einem Neustart erhalten.
+
+---
+
+#### Ablauf Einmessen ohne Endschalter {#setup-einmessen}
+
+Für Rotoren mit Encoder-Typ 1/2 ohne Endschalter (Rotor-Firmware ab 1.9.4):
+
+1. `SETENDSTC:0`, `SETMAXDG:360,00` (oder das mechanische Max)
+2. `SETSETUP:1` — freie Fahrt (Grenzen und Stall aus)
+3. `JOG:1` / `JOG:2` → mechanische Null anfahren → `JOG:0` → `SETPOSHERE:0,00` (oder `SETENCCOUNT:0`)
+4. `JOG` zum mechanischen Max → `GETENCCOUNT` → Wert als Counts für den Bereich 0° … `SETMAXDG` (kein Hochrechnen auf 360°: bei `SETMAXDG:180,00` gelten die Counts für 180°):
+   - Typ 1: `SETENCCAX:<counts>`
+   - Typ 2: `SETENCCRI:<counts>`
+5. Nochmals Null anfahren → `SETPOSHERE:0,00` (Kontrolle: `GETPOSDG` ≈ 0)
+6. `SETSETUP:0` — Grenzen wieder an
+
+Hinweis: Eine CPR-Änderung löst einen Neustart des Rotors aus; der Setup-Modus ist danach aus und muss für Schritt 5 erneut mit `SETSETUP:1` gestartet werden.
+
+Die Bridge führt diese Schritte unter **Aktionen → Inbetriebnahme → Encoder-Kalibrierung** geführt aus (Schritte 1–5 mit Fahrtasten, Winkeleingabe und Kontrolle).
 
 ---
 
@@ -2653,5 +2769,9 @@ Für den Master sind besonders diese Befehle relevant:
 - `GETWINDDIROF`/`SETWINDDIROF` = optionaler Richtungs-Offset
 
 Wichtig: `GETWIND` ist davon getrennt. Dieser Befehl liefert eine **Wind-Schätzung aus dem Motorlastprofil** und nicht die direkt gemessenen Werte des RS485-Sensors.
+
+### 10.3 Inbetriebnahme-Wizard (RotorTcpBridge)
+
+Die Desktop-App führt unter **Aktionen → Inbetriebnahme** durch Profilwahl, Rotorverbindung, Encoder-Typ (`SETENCTYPE`/`GETENCTYPE`), Fahrparameter, Endschalter, optional Wetter (Typ 1/2), Temperatur-Zuordnung, typabhängige Kalibrierung/Referenz (ohne Endschalter geführtes Einmessen mit `SETSETUP`/`JOG`/`SETPOSHERE`/`GETENCCOUNT`/`SETENCCAX|CRI`/`SETMAXDG`; sonst `SETREF`/`SETENCZERO`/`SETINC*`), Prüffahrt (`SETPOSDG`/`GETMOVE`) sowie Antennennamen und Protokoll-Dienste. Die Befehle entsprechen der Tabelle in diesem Dokument; Feintuning bleibt in Rotor-Konfiguration / Einstellungen.
 
 [↑ Inhaltsverzeichnis](#toc)

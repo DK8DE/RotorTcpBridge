@@ -38,7 +38,7 @@ def _make_stat_row(
         l.setContentsMargins(10, 10, 10, 10)
         l.addWidget(QLabel(lbl), alignment=Qt.AlignmentFlag.AlignCenter)
         w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        w.setMinimumSize(120, 120)
+        # Mindestgröße kommt vom StatisticCompassWidget (EL 180° → ~2:1)
         l.addWidget(w, 1)  # stretch=1, füllt verfügbaren Platz
         row.addWidget(box, 1)
     return row

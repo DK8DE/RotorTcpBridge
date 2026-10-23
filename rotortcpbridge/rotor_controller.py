@@ -80,6 +80,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         setposcc_controller_src_id: int = 0,
     ):
         self.hw = hw
+        self.el_hw: Optional[HardwareClient] = None  # zweiter TCP-Link bei getrennter EL-IP
         self.ctrl_hw: Optional[HardwareClient] = None
         self.usb_remote: bool = False
         self._controller_cont_id: int = 0
@@ -198,6 +199,9 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         # Kompass-Manual-Eingabe: PST-SET für 10s ignorieren, damit nicht überschrieben wird
         self._compass_manual_az_ts: float = 0.0
         self._compass_manual_el_ts: float = 0.0
+        # Letzter JOG-NAK (Grund, Zeitstempel) und Log-Drosselung
+        self._jog_last_nak: Optional[tuple[str, float]] = None
+        self._jog_nak_log_ts: float = 0.0
         # Dipol: angezeigte Soll-Peilung (≠ Rotor+Versatz bei Gegenkeule); von Kompass/Shortcuts gesetzt.
         self.az_dipole_display_bearing: Optional[float] = None
         # Dipol: zuletzt angefahrene Rotorstellung (Keulen-Kontinuität bei Hotkeys).
@@ -208,11 +212,14 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.on_antenna_dipoles_changed: Optional[Callable[[], None]] = None
         self.on_antenna_names_changed: Optional[Callable[[], None]] = None
         self.on_encoder_type_changed: Optional[Callable[[], None]] = None
+        self.on_endstc_changed: Optional[Callable[[], None]] = None
         self.on_az_max_deg_changed: Optional[Callable[[], None]] = None
         # GETENCTYPE (1=Motor, 2=Ring, 3=Absolut R&S, 4=Inklinometer) — einmal pro Verbindung
         self.encoder_type: Optional[int] = None
         self.encoder_type_known: bool = False
         self._encoder_type_requested: bool = False
+        # GETENDSTC je Achse — einmal pro Verbindung (Homing nur bei Endschaltern)
+        self._endstc_requested: bool = False
         self._max_deg_requested: bool = False
         self._arrtol_requested: bool = False
         self._home_pos_requested: bool = False
@@ -272,6 +279,59 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         except Exception:
             pass
 
+    def set_el_link(self, hw: Optional[HardwareClient]) -> None:
+        """Zweiter HardwareClient für EL bei getrennter TCP/UDP-IP."""
+        prev = getattr(self, "el_hw", None)
+        if prev is not None and prev is not hw:
+            try:
+                prev.on_async_telegram = None
+            except Exception:
+                pass
+        self.el_hw = hw
+        if hw is None:
+            return
+        try:
+            hw.on_async_telegram = self._on_async_tel
+        except Exception:
+            pass
+        try:
+            hw.set_expected_response_dst(int(self.master_id))
+        except Exception:
+            pass
+
+    def _dst_from_hw_line(self, line: str) -> int:
+        try:
+            from .rs485_protocol import parse as _parse
+
+            t = _parse(str(line or ""))
+            if t is not None:
+                return int(t.dst)
+        except Exception:
+            pass
+        return int(self.slave_az)
+
+    def _send_hw_request(self, req: HwRequest) -> None:
+        """Request an den passenden Link (AZ/EL/Controller) routen."""
+        dst = self._dst_from_hw_line(getattr(req, "line", "") or "")
+        self._hw_for_dst(dst).send_request(req)
+
+    def _send_hw_line_fire_and_forget(self, line: str) -> None:
+        dst = self._dst_from_hw_line(line)
+        hw = self._hw_for_dst(dst)
+        hw.send_line_fire_and_forget(line)
+        # Dual-IP: Bus-Broadcasts auch auf den zweiten Link
+        el = getattr(self, "el_hw", None)
+        if (
+            el is not None
+            and el is not hw
+            and dst == int(BROADCAST_DST)
+            and not (self.usb_remote and self.ctrl_hw is not None)
+        ):
+            try:
+                el.send_line_fire_and_forget(line)
+            except Exception:
+                pass
+
     @staticmethod
     def _normalize_master_id_list(ids: Optional[list]) -> list[int]:
         if not ids:
@@ -292,6 +352,18 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         enable_az: bool = True,
         enable_el: bool = True,
     ):
+        # Abgeschaltete Achse nie auf dieselbe ID wie die aktive legen (Antworten würden
+        # sonst der falschen Achse zugeordnet).
+        from .app_config import dedupe_disabled_axis_id
+
+        _rb = {
+            "slave_az": slave_az,
+            "slave_el": slave_el,
+            "enable_az": enable_az,
+            "enable_el": enable_el,
+        }
+        if dedupe_disabled_axis_id(_rb):
+            slave_az, slave_el = int(_rb["slave_az"]), int(_rb["slave_el"])
         ids_changed = (
             int(self.master_id) != int(master_id)
             or int(self.slave_az) != int(slave_az)
@@ -304,6 +376,12 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.enable_el = bool(enable_el)
         try:
             self.hw.set_expected_response_dst(int(self.master_id))
+        except Exception:
+            pass
+        try:
+            el_hw = getattr(self, "el_hw", None)
+            if el_hw is not None:
+                el_hw.set_expected_response_dst(int(self.master_id))
         except Exception:
             pass
         try:
@@ -335,7 +413,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             pass
 
     def _hw_for_dst(self, dst: int) -> HardwareClient:
-        """SETCON*/GETCON* an den Controller: bei Remote-USB über USB-Link."""
+        """Link-Routing: Remote-USB für Controller; Dual-IP → EL an el_hw."""
         try:
             d = int(dst)
         except Exception:
@@ -349,6 +427,13 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             )
         ):
             return self.ctrl_hw
+        el = getattr(self, "el_hw", None)
+        if el is not None and self.enable_el:
+            try:
+                if d == int(self.slave_el):
+                    return el
+            except Exception:
+                pass
         return self.hw
 
     def on_controller_link_telegram(self, tel: Telegram) -> None:
@@ -458,6 +543,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.encoder_type = None
         self.encoder_type_known = False
         self._encoder_type_requested = False
+        self._endstc_requested = False
         self._max_deg_requested = False
         self._max_deg_known = False
         self._arrtol_requested = False
@@ -477,6 +563,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             self.el.dgcal_d10 = None
             self.az.arrtol_deg = None
             self.el.arrtol_deg = None
+            self.az.endstc = None
+            self.az.endstc_known = False
+            self.el.endstc = None
+            self.el.endstc_known = False
             self._dgcal_last_req = {}
         except Exception:
             pass
@@ -493,6 +583,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             self.az.antname1 = None
             self.az.antname2 = None
             self.az.antname3 = None
+            self.az.mast_height_m = None
         except Exception:
             pass
         try:
@@ -529,6 +620,12 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         if callable(cb):
             try:
                 cb()
+            except Exception:
+                pass
+        cb_es = getattr(self, "on_endstc_changed", None)
+        if callable(cb_es):
+            try:
+                cb_es()
             except Exception:
                 pass
         cb_rt = getattr(self, "on_rotor_type_changed", None)
@@ -754,10 +851,29 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """Absolut-Sensor ohne Homing: Typ 3 (R&S) oder Typ 4 (Inklinometer)."""
         if not self.encoder_type_known:
             return False
+        et = self.encoder_type
+        if et is None:
+            return False
         try:
-            return int(self.encoder_type) in (3, 4)
+            return int(et) in (3, 4)
         except (TypeError, ValueError):
             return False
+
+    def _axis_has_endstops(self, axis_state: AxisState) -> bool:
+        """True wenn Endschalter vorhanden oder noch unbekannt (optimistic bis GETENDSTC)."""
+        if not bool(getattr(axis_state, "endstc_known", False)):
+            return True
+        try:
+            return int(getattr(axis_state, "endstc", 0) or 0) > 0
+        except (TypeError, ValueError):
+            return True
+
+    def homing_button_hidden_for_axis(self, axis: str) -> bool:
+        """Homing-Taste ausblenden: Absolut-Encoder oder keine Endanschläge (GETENDSTC=0)."""
+        if self.abs_encoder_no_homing():
+            return True
+        ax = self.az if str(axis or "").strip().lower() == "az" else self.el
+        return not self._axis_has_endstops(ax)
 
     def _axis_arrtol_deg(self, axis_state: AxisState) -> float:
         """Ankunftstoleranz der Achse (GETARRTOL); Fallback 0,25° bis gelesen."""
@@ -779,7 +895,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
     def request_arrtol(self, *, az: bool = True, el: bool = True) -> None:
         """Ankunftstoleranz vom Rotor lesen (GETARRTOL) für aktive Achsen."""
         if az and self.enable_az:
-            self.hw.send_request(
+            self._send_hw_request(
                 HwRequest(
                     line=build(self.master_id, self.slave_az, "GETARRTOL", "0"),
                     expect_prefix=None,
@@ -789,7 +905,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 )
             )
         if el and self.enable_el:
-            self.hw.send_request(
+            self._send_hw_request(
                 HwRequest(
                     line=build(self.master_id, self.slave_el, "GETARRTOL", "0"),
                     expect_prefix=None,
@@ -875,7 +991,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """Encoder-Variante vom Rotor lesen (GETENCTYPE, nur AZ-Slave)."""
         if not self.enable_az:
             return
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, self.slave_az, "GETENCTYPE", "0"),
                 expect_prefix=None,
@@ -885,11 +1001,34 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             )
         )
 
+    def request_endstc(self, *, az: bool = True, el: bool = True) -> None:
+        """Endschalter-Anzahl je Achse lesen (GETENDSTC) — Homing nur bei >0."""
+        if az and self.enable_az:
+            self._send_hw_request(
+                HwRequest(
+                    line=build(self.master_id, self.slave_az, "GETENDSTC", "0"),
+                    expect_prefix=None,
+                    timeout_s=0.5,
+                    on_done=None,
+                    priority=4,
+                )
+            )
+        if el and self.enable_el:
+            self._send_hw_request(
+                HwRequest(
+                    line=build(self.master_id, self.slave_el, "GETENDSTC", "0"),
+                    expect_prefix=None,
+                    timeout_s=0.5,
+                    on_done=None,
+                    priority=4,
+                )
+            )
+
     def request_el_rotor_type(self) -> None:
         """Rotortyp vom EL-Slave lesen (GETROTORTYPE → 90°/180°-Darstellung)."""
         if not self.enable_el:
             return
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, self.slave_el, "GETROTORTYPE", "0"),
                 expect_prefix=None,
@@ -936,13 +1075,16 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.el_rotor_type = new_type
         self.el_rotor_type_known = True
         try:
-            self.el.pos_max_d10 = 1800 if new_type == 3 else 900
+            from .angle_utils import el_pos_max_d10_from_rotor_type
+
+            self.el.pos_max_d10 = el_pos_max_d10_from_rotor_type(new_type)
         except Exception:
             pass
-        # Nach SET immer UI refreshen (auch wenn Wert gleich), damit Kompass/Karte stimmen
-        if callable(getattr(self, "on_rotor_type_changed", None)):
+        # Nach SET/GET immer UI refreshen (auch wenn Wert gleich), damit Kompass/Karte stimmen
+        cb = self.on_rotor_type_changed
+        if cb is not None:
             try:
-                self.on_rotor_type_changed()
+                cb()
             except Exception:
                 pass
         if reread:
@@ -957,7 +1099,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """Max-Winkel vom Rotor lesen (GETMAXDG, nur AZ-Slave)."""
         if not self.enable_az:
             return
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, self.slave_az, "GETMAXDG", "0"),
                 expect_prefix=None,
@@ -970,7 +1112,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
     def request_home_pos(self, *, az: bool = True, el: bool = True) -> None:
         """Park-/Hom-Winkel vom Rotor lesen (GETHOMEPOS) für aktive Achsen."""
         if az and self.enable_az:
-            self.hw.send_request(
+            self._send_hw_request(
                 HwRequest(
                     line=build(self.master_id, self.slave_az, "GETHOMEPOS", "0"),
                     expect_prefix=None,
@@ -980,7 +1122,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 )
             )
         if el and self.enable_el:
-            self.hw.send_request(
+            self._send_hw_request(
                 HwRequest(
                     line=build(self.master_id, self.slave_el, "GETHOMEPOS", "0"),
                     expect_prefix=None,
@@ -1207,7 +1349,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """AZ-Antennenversätze vom Rotor lesen (GETANTOFF1–3). EL-Versatz entfällt."""
         if self.enable_az:
             for cmd in ("GETANTOFF1", "GETANTOFF2", "GETANTOFF3"):
-                self.hw.send_request(
+                self._send_hw_request(
                     HwRequest(
                         line=build(self.master_id, self.slave_az, cmd, "0"),
                         expect_prefix=None,
@@ -1221,7 +1363,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """AZ-Antennen-Öffnungswinkel vom Rotor lesen (GETANGLE1–3)."""
         if self.enable_az:
             for cmd in ("GETANGLE1", "GETANGLE2", "GETANGLE3"):
-                self.hw.send_request(
+                self._send_hw_request(
                     HwRequest(
                         line=build(self.master_id, self.slave_az, cmd, "0"),
                         expect_prefix=None,
@@ -1235,7 +1377,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """AZ-Antennen-Dipolflags vom Rotor lesen (GETANTDP1–3)."""
         if self.enable_az:
             for cmd in ("GETANTDP1", "GETANTDP2", "GETANTDP3"):
-                self.hw.send_request(
+                self._send_hw_request(
                     HwRequest(
                         line=build(self.master_id, self.slave_az, cmd, "0"),
                         expect_prefix=None,
@@ -1249,7 +1391,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """AZ-Antennen-Reichweiten vom Rotor lesen (GETANTDIS1–3)."""
         if self.enable_az:
             for cmd in ("GETANTDIS1", "GETANTDIS2", "GETANTDIS3"):
-                self.hw.send_request(
+                self._send_hw_request(
                     HwRequest(
                         line=build(self.master_id, self.slave_az, cmd, "0"),
                         expect_prefix=None,
@@ -1263,7 +1405,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """AZ-Antennen-Anzeigenamen vom Rotor lesen (GETANTNAME1–3)."""
         if self.enable_az:
             for cmd in ("GETANTNAME1", "GETANTNAME2", "GETANTNAME3"):
-                self.hw.send_request(
+                self._send_hw_request(
                     HwRequest(
                         line=build(self.master_id, self.slave_az, cmd, "0"),
                         expect_prefix=None,
@@ -1272,6 +1414,71 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         priority=4,
                     )
                 )
+
+    def request_mast_height(self) -> None:
+        """Masthöhe vom AZ-Rotor lesen (GETMASTHEIGHT)."""
+        if not self.enable_az:
+            return
+        self._send_hw_request(
+            HwRequest(
+                line=build(self.master_id, self.slave_az, "GETMASTHEIGHT", "0"),
+                expect_prefix=None,
+                timeout_s=0.5,
+                on_done=None,
+                priority=4,
+            )
+        )
+
+    def set_mast_height(
+        self,
+        value_m: float,
+        on_done: Optional[Callable[[bool], None]] = None,
+    ) -> None:
+        """Masthöhe schreiben (SETMASTHEIGHT). on_done(success) nach ACK/NAK/Timeout."""
+        if not self.enable_az:
+            if on_done:
+                on_done(False)
+            return
+        try:
+            v_f = max(0.0, min(9999.0, float(value_m)))
+        except (TypeError, ValueError):
+            if on_done:
+                on_done(False)
+            return
+        param = f"{v_f:.1f}".replace(".", ",")
+        expect = "ACK_SETMASTHEIGHT"
+        line = build(self.master_id, self.slave_az, "SETMASTHEIGHT", param)
+
+        def done(tel: Optional[Telegram], err: Optional[str]):
+            ok = False
+            if err:
+                self.log.write("WARN", f"SETMASTHEIGHT -> keine Antwort ({err})")
+            elif tel and str(tel.cmd or "").upper().startswith("ACK_SETMASTHEIGHT"):
+                ok = True
+                try:
+                    self.az.mast_height_m = float(v_f)
+                except Exception:
+                    pass
+            else:
+                if tel:
+                    self.log.write(
+                        "WARN",
+                        f"SETMASTHEIGHT -> NAK oder ungültige Antwort: {tel.cmd}",
+                    )
+                else:
+                    self.log.write("WARN", "SETMASTHEIGHT -> keine gültige ACK-Antwort")
+            if on_done:
+                on_done(ok)
+
+        self._send_hw_request(
+            HwRequest(
+                line=line,
+                expect_prefix=expect,
+                timeout_s=1.2,
+                on_done=done,
+                priority=2,
+            )
+        )
 
     def request_antenna_selection(self) -> None:
         """Aktuelle Antennenauswahl vom AZ-Rotor lesen (GETASELECT).
@@ -1287,7 +1494,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return
         if dst < 1 or dst > 254:
             return
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=build(int(self.master_id), dst, "GETASELECT", "0"),
                 expect_prefix=None,
@@ -1351,7 +1558,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             if on_done:
                 on_done(ok)
 
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix=expect,
@@ -1414,7 +1621,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             if on_done:
                 on_done(ok)
 
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix=expect,
@@ -1478,7 +1685,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             if on_done:
                 on_done(ok)
 
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix=expect,
@@ -1537,7 +1744,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             if on_done:
                 on_done(ok)
 
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix=expect,
@@ -1680,7 +1887,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return
         line = build(int(self.master_id), dst, "SETASELECT", str(n))
         # Direkt senden: Worker blockiert die Queue bei ausstehendem Poll-ACK
-        self.hw.send_line_fire_and_forget(line)
+        self._send_hw_line_fire_and_forget(line)
 
     def note_setposcc_bus_activity(self) -> None:
         """SETPOSCC auf dem Bus (Encoder-Drehen): Bridge-Polling pausieren bis SETPOSDG.
@@ -2131,12 +2338,14 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             # Achse anhand der konfigurierten IDs oder ``;Rotor-ID`` (USB an Bridge)
             axis = None
             axis_dst = self._axis_dst_for_ui_command(int(dst), str(cmd), str(params or ""))
+            if axis_dst is None:
+                return
             if axis_dst == int(self.slave_az):
                 axis = self.az
-                dst = int(axis_dst)
+                dst = axis_dst
             elif axis_dst == int(self.slave_el):
                 axis = self.el
-                dst = int(axis_dst)
+                dst = axis_dst
             else:
                 return
 
@@ -2876,7 +3085,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         pass
 
         try:
-            self.hw.send_request(
+            self._send_hw_request(
                 HwRequest(
                     line=line,
                     expect_prefix="ACK_JOG",
@@ -2944,6 +3153,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """
         if self.abs_encoder_no_homing():
             return
+        if start_homing and not self._axis_has_endstops(self.az):
+            return
         if not self.enable_az:
             return
         v = "1" if start_homing else "0"
@@ -2990,7 +3201,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     except Exception:
                         pass
 
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix="ACK_SETREF",
@@ -3008,8 +3219,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         """
         if self.abs_encoder_no_homing():
             return
+        if start_homing and not self._axis_has_endstops(self.el):
+            return
         if not self.enable_el:
-                return
+            return
         v = "1" if start_homing else "0"
         try:
             self.el.compass_target_d10 = None
@@ -3054,7 +3267,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     except Exception:
                         pass
 
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix="ACK_SETREF",
@@ -3096,7 +3309,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     f"{label} SETENCZERO -> NAK/unbekannte Antwort: {tel.cmd if tel else 'None'}",
                 )
 
-        self.hw.send_request(
+        self._send_hw_request(
             HwRequest(
                 line=line,
                 expect_prefix="ACK_SETENCZERO",

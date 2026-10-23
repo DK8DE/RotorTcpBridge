@@ -245,6 +245,15 @@ def web_serial_js() -> str:
             cache: 'no-store'
           });
           const data = await res.json();
+          if (data && data.force_disconnect) {
+            // Profilwechsel: Desktop übernimmt den Controller (PC-USB) — Port freigeben.
+            lastError = '';
+            relayOk = false;
+            relayBusy = false;
+            emitStatus();
+            disconnect().catch(function() {});
+            return;
+          }
           if (!data || !data.ok) {
             relayOk = false;
             relayFailCount++;

@@ -10,6 +10,12 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
 from .app_config import load_config, save_config
+from .axis_link import (
+    dual_axis_tcp_active,
+    ensure_setup_axis_endpoints,
+    link_cfg_for_axis,
+    sync_hardware_link_from_az,
+)
 
 from .ui.map_tiles import install_rotortiles_handler
 from .ui.wheel_guard import install_wheel_guard
@@ -122,8 +128,14 @@ def main():
     log = LogBuffer()
     rig_bridge_manager = RigBridgeManager(cfg.get("rig_bridge", {}), log.write)
 
+    ensure_setup_axis_endpoints(cfg)
     hw = HardwareClient(cfg["hardware_link"], log)
     hw.start()
+
+    el_hw: HardwareClient | None = None
+    if dual_axis_tcp_active(cfg):
+        el_hw = HardwareClient(link_cfg_for_axis(cfg, "el"), log)
+        el_hw.start()
 
     ctrl_hw = HardwareClient(cfg.get("controller_link") or {}, log)
 
@@ -142,6 +154,8 @@ def main():
         ),
         setposcc_controller_src_id=int(chw.get("cont_id", 2) or 0),
     )
+    if el_hw is not None:
+        ctrl.set_el_link(el_hw)
     ctrl.update_polling(cfg.get("polling_ms", {}))
 
     remote_proxy = ControllerRemoteUsbProxy(hw, ctrl_hw, ctrl, log)
@@ -284,10 +298,47 @@ def main():
         port=int(ui_cfg.get("pst_target_push_port", 12000)),
     )
 
+    def _sync_el_hw(new_cfg: dict) -> None:
+        """Zweiten TCP-Client für EL anlegen/aktualisieren/stoppen."""
+        nonlocal el_hw
+        ensure_setup_axis_endpoints(new_cfg)
+        # Falls main_window schon einen el_hw gesetzt hat: denselben weiterverwenden
+        live = getattr(ctrl, "el_hw", None)
+        if live is not None and el_hw is None:
+            el_hw = live
+        want_dual = dual_axis_tcp_active(new_cfg)
+        if want_dual:
+            el_cfg = link_cfg_for_axis(new_cfg, "el")
+            if el_hw is None:
+                el_hw = HardwareClient(el_cfg, log)
+                el_hw.start()
+                ctrl.set_el_link(el_hw)
+            else:
+                el_hw.update_cfg(el_cfg)
+                ctrl.set_el_link(el_hw)
+        else:
+            if el_hw is not None:
+                try:
+                    el_hw.stop()
+                except Exception:
+                    pass
+                el_hw = None
+            ctrl.set_el_link(None)
+        try:
+            remote_proxy.refresh_rotor_hooks()
+        except Exception:
+            pass
+
     def save_cfg_cb(new_cfg):
+        ensure_setup_axis_endpoints(new_cfg)
+        sync_hardware_link_from_az(new_cfg)
         save_config(new_cfg)
         ctrl.update_polling(new_cfg.get("polling_ms", {}))
-        hw.update_cfg(new_cfg["hardware_link"])
+        hw.update_cfg(link_cfg_for_axis(new_cfg, "az") if dual_axis_tcp_active(new_cfg) else new_cfg["hardware_link"])
+        try:
+            _sync_el_hw(new_cfg)
+        except Exception as exc:
+            log.write("WARN", f"EL-Hardware-Link update: {exc}")
         try:
             remote_proxy.update_cfg(new_cfg)
             want = ControllerRemoteUsbProxy.want_remote(new_cfg)
@@ -297,6 +348,8 @@ def main():
                     name="remote-usb-cfg",
                     daemon=True,
                 ).start()
+            else:
+                remote_proxy.refresh_rotor_hooks()
         except Exception as exc:
             log.write("WARN", f"Controller Remote USB update: {exc}")
         log.write("INFO", "Config gespeichert")
@@ -364,6 +417,11 @@ def main():
         pass
     try:
         ctrl_hw.stop()
+    except Exception:
+        pass
+    try:
+        if el_hw is not None:
+            el_hw.stop()
     except Exception:
         pass
     try:

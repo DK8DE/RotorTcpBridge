@@ -92,12 +92,17 @@ class ElevationCompassWidget(QWidget):
         return float(self._max_deg)
 
     def set_max_deg(self, max_deg: float) -> None:
-        """90 = Viertelkreis, 180 = Halbkreis (GETROTORTYPE 2 bzw. 3)."""
+        """90 = Viertelkreis, 180 = Halbkreis, 360 = Vollkreis (GETROTORTYPE 2/3/1)."""
         try:
             mx = float(max_deg)
         except Exception:
             mx = 90.0
-        mx = 180.0 if mx >= 180.0 else 90.0
+        if mx >= 359.5:
+            mx = 360.0
+        elif mx >= 180.0:
+            mx = 180.0
+        else:
+            mx = 90.0
         if abs(mx - self._max_deg) < 0.1:
             return
         self._max_deg = mx
@@ -105,7 +110,7 @@ class ElevationCompassWidget(QWidget):
             self._current_deg = clamp_el(self._current_deg, mx)
         if self._target_deg is not None:
             self._target_deg = clamp_el(self._target_deg, mx)
-        # 36 Firmware-Bins bleiben; nur die Darstellung (90°/180°) ändert sich
+        # 36 Firmware-Bins bleiben; nur die Darstellung (90°/180°/360°) ändert sich
         self.update()
 
     def set_top_center_widget(self, widget: Optional[QWidget]) -> None:
@@ -289,7 +294,12 @@ class ElevationCompassWidget(QWidget):
         inner_h = float(h - 2 * margin)
 
         label_pad = 0.10
-        if self._max_deg >= 180.0:
+        if self._max_deg >= 360.0:
+            # Vollkreis (GETROTORTYPE 1)
+            r = min(inner_w, inner_h) * 0.42
+            cx = w / 2.0
+            cy = h / 2.0
+        elif self._max_deg >= 180.0:
             # Halbkreis: Breite 2r, Höhe r
             r = min(inner_w / 2.0, inner_h) * 0.82
             label_pad_px = r * label_pad
@@ -330,10 +340,12 @@ class ElevationCompassWidget(QWidget):
         if dist < inner or dist > outer:
             return super().mousePressEvent(event)
 
-        # Math: 0°=rechts → EL: 0°=links, 90°=oben, 180°=rechts
+        # Math: 0°=rechts → EL: 0°=links, 90°=oben, 180°=rechts (, 270° unten bei 360°)
         rad = math.atan2(dy, dx)
         math_deg = math.degrees(rad)
-        if math_deg < 0.0:
+        if self._max_deg >= 360.0:
+            deg = (180.0 - math_deg) % 360.0
+        elif math_deg < 0.0:
             # Unter dem Horizont → auf nächsten Endpunkt abbilden
             deg = 0.0 if dx < 0.0 else float(self._max_deg)
         else:
@@ -367,7 +379,11 @@ class ElevationCompassWidget(QWidget):
             painter.drawArc(arc_rect, 180 * 16, -arc_span * 16)
             x0, y0 = self._el_xy(cx, cy, r, 0.0)
             painter.drawLine(QPointF(cx, cy), QPointF(x0, y0))  # 0° links
-            if arc_span >= 180:
+            if arc_span >= 360:
+                for a in (90.0, 180.0, 270.0):
+                    xa, ya = self._el_xy(cx, cy, r, a)
+                    painter.drawLine(QPointF(cx, cy), QPointF(xa, ya))
+            elif arc_span >= 180:
                 x180, y180 = self._el_xy(cx, cy, r, 180.0)
                 painter.drawLine(QPointF(cx, cy), QPointF(x180, y180))  # 180° rechts
             else:

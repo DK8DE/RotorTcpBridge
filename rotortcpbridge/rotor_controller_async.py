@@ -336,7 +336,9 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
         try:
             axis_state: AxisState | None = None
             axis_name = None
-            if tel.src == self.slave_az:
+            if tel.src == self.slave_az and (
+                tel.src != self.slave_el or bool(getattr(self, "enable_az", True))
+            ):
                 axis_state = self.az
                 axis_name = "AZ"
             elif tel.src == self.slave_el:
@@ -973,6 +975,22 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             except Exception:
                                 pass
                     return
+                # Endschalter (GETENDSTC) — Homing-UI nur bei >0
+                if tel.cmd.startswith("ACK_GETENDSTC"):
+                    v = parse_int(tel.params.strip())
+                    if v is not None:
+                        new_v = max(0, min(2, int(v)))
+                        changed = (not bool(getattr(axis_state, "endstc_known", False))) or (
+                            int(getattr(axis_state, "endstc", -1) or -1) != new_v
+                        )
+                        axis_state.endstc = new_v
+                        axis_state.endstc_known = True
+                        if changed and callable(getattr(self, "on_endstc_changed", None)):
+                            try:
+                                self.on_endstc_changed()
+                            except Exception:
+                                pass
+                    return
                 # Rotortyp (GETROTORTYPE am EL-Slave): 2=90°, 3=180°
                 if axis_name == "EL" and tel.cmd.startswith("ACK_GETROTORTYPE"):
                     v = parse_int(tel.params.strip())
@@ -986,8 +1004,10 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         self.el_rotor_type = new_type
                         self.el_rotor_type_known = True
                         try:
-                            # Soft-Clamp / Glättung: 90° bzw. 180° in 0,1°-Einheiten
-                            self.el.pos_max_d10 = 1800 if new_type == 3 else 900
+                            from .angle_utils import el_pos_max_d10_from_rotor_type
+
+                            # Soft-Clamp / Glättung: 90°/180°/360° in 0,1°-Einheiten
+                            self.el.pos_max_d10 = el_pos_max_d10_from_rotor_type(new_type)
                         except Exception:
                             pass
                         if changed and callable(self.on_rotor_type_changed):
@@ -1209,6 +1229,12 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                     v = parse_int(tel.params.strip())
                     if v is not None:
                         axis_state.antdis3 = max(0, min(99999, int(v)))
+                    return
+                # Masthöhe (GETMASTHEIGHT) — am AZ-Rotor
+                if tel.cmd.startswith("ACK_GETMASTHEIGHT"):
+                    v = parse_float(tel.params.strip())
+                    if v is not None:
+                        axis_state.mast_height_m = max(0.0, min(9999.0, float(v)))
                     return
                 if tel.cmd.startswith("ACK_GETANEMO") or tel.cmd.startswith("ACK_ANEMO"):
                     v = parse_float_any(tel.params)

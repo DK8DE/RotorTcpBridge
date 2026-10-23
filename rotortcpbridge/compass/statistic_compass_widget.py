@@ -449,15 +449,25 @@ class StatisticCompassWidget(QWidget):
         self._elevation: bool = bool(elevation)
         self._el_max_deg: float = EL_ARC_DEG
         self._heatmap_scale: Optional[HeatmapScale] = None
-        self.setMinimumSize(120, 120)  # Skalierbar, vernünftige Mindestgröße
+        self._apply_el_size_policy()
+
+    def _apply_el_size_policy(self) -> None:
+        """Mindestgröße/Hint: 180°-Halbkreis braucht ~2:1, sonst wird er platt."""
+        if self._elevation and self._el_max_deg >= 180.0:
+            self.setMinimumSize(160, 90)
+        else:
+            self.setMinimumSize(120, 120)
 
     def sizeHint(self) -> QSize:
-        return QSize(200, 200)  # Sinnvolle Standardgröße für Layout
+        if self._elevation and self._el_max_deg >= 180.0:
+            return QSize(280, 150)
+        return QSize(200, 200)
 
     def set_elevation(self, on: bool) -> None:
         """Viertel-/Halbkreis-Modus (EL) ein/aus."""
         if self._elevation != on:
             self._elevation = bool(on)
+            self._apply_el_size_policy()
             self.update()
 
     def set_el_max_deg(self, max_deg: float) -> None:
@@ -470,6 +480,8 @@ class StatisticCompassWidget(QWidget):
         if abs(mx - self._el_max_deg) < 0.1:
             return
         self._el_max_deg = mx
+        self._apply_el_size_policy()
+        self.updateGeometry()
         self.update()
 
     def set_bins(self, cw: Optional[List[int]], ccw: Optional[List[int]]) -> None:
@@ -502,22 +514,32 @@ class StatisticCompassWidget(QWidget):
         self.update()
 
     def _geom(self) -> tuple[float, float, float]:
-        """(cx, cy, r) – 15px Rand. Bei EL 90°: unten rechts; bei 180°: unten mittig."""
+        """(cx, cy, r) – 15px Rand. Bei EL 90°: unten rechts; bei 180°: unten mittig.
+
+        180°-Halbkreis braucht Breite ``2*r`` und Höhe ``r``. Ohne diese Begrenzung
+        (früher ``min(w,h)/2 * EL_SCALE``) wird der Bogen zu groß und wirkt flach/breit.
+        """
         rect = self.rect().adjusted(15, 15, -15, -15)
-        r_base = float(min(rect.width(), rect.height())) / 2.0
+        w = max(1.0, float(rect.width()))
+        h = max(1.0, float(rect.height()))
         if self._elevation:
-            r = r_base * EL_SCALE
             if self._el_max_deg >= 180.0:
+                # Halbkreis vollständig im Rechteck: r ≤ W/2 und r ≤ H
+                r = min(w / 2.0, h) * 0.98
                 cx = float(rect.center().x())
                 cy = float(rect.bottom())
             else:
-                # 0° links / 90° oben → Anker unten rechts
+                # Viertelkreis: Anker unten rechts, mit EL_SCALE etwas größer
+                r_base = min(w, h) / 2.0
+                r = r_base * EL_SCALE
+                # Nicht über die verfügbare Breite/Höhe hinaus (von der Ecke aus)
+                r = min(r, w * 0.98, h * 0.98)
                 cx = float(rect.right())
                 cy = float(rect.bottom())
         else:
             cx = float(rect.center().x())
             cy = float(rect.center().y())
-            r = r_base
+            r = min(w, h) / 2.0
         return cx, cy, r
 
     def paintEvent(self, _event):

@@ -257,6 +257,20 @@ class MainWindow(QMainWindow):
         l.addWidget(led)
         return w
 
+    def _apply_hw_led_grace(
+        self, led: Led, connected: bool, since_attr: str, now: float
+    ) -> None:
+        """LED grün bei Link; nach Trennung noch kurz grün (3 s), dann rot."""
+        if connected:
+            setattr(self, since_attr, None)
+            led.set_state(True)
+            return
+        since = getattr(self, since_attr, None)
+        if since is None:
+            setattr(self, since_attr, now)
+            since = now
+        led.set_state((now - float(since)) < 3.0)
+
     def _ensure_rig_hamlib_extra_rows(self, n_extra: int) -> None:
         """Zusätzliche Hamlib-Zeilen (ab dem 2. konfigurierten Port)."""
         lay = getattr(self, "_lay_hamlib_stack", None)
@@ -372,6 +386,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self._hw_off_since: float | None = None
+        self._hw_el_off_since: float | None = None
         self._last_title: str = ""
         self._ucxlog_blink_phase = 0
         self._ucxlog_blink_active = False
@@ -431,6 +446,9 @@ class MainWindow(QMainWindow):
         self._act_commands = QAction(t("main.btn_commands"), self)
         self._act_commands.triggered.connect(self._open_commands)
         self._menu_setup.addAction(self._act_commands)
+        self._act_commissioning = QAction(t("main.btn_commissioning"), self)
+        self._act_commissioning.triggered.connect(self._open_commissioning)
+        self._menu_setup.addAction(self._act_commissioning)
         self._act_statistics = QAction(t("main.menu_statistics"), self)
         self._act_statistics.triggered.connect(self._open_statistics)
         self._menu_setup.addAction(self._act_statistics)
@@ -515,11 +533,9 @@ class MainWindow(QMainWindow):
         self.btn_open_compass = QPushButton(t("main.btn_compass"))
         self.btn_open_map = QPushButton(t("main.btn_map"))
         self.btn_park = QPushButton(t("main.btn_park"))
-        self.btn_ref = QPushButton(t("main.btn_ref"))
         top.addWidget(self.btn_open_compass, 1)
         top.addWidget(self.btn_open_map, 1)
         top.addWidget(self.btn_park, 1)
-        top.addWidget(self.btn_ref, 1)
 
         # Funkgeraet-Zeile: Frequenz + Name des aktiven Rig-Profils (nur Anzeige).
         # Welches Profil aktiv ist, wird in den Einstellungen (Rig-Bridge) gesetzt.
@@ -600,6 +616,7 @@ class MainWindow(QMainWindow):
         self.led_rig_flrig = Led(led_d, self)
         self.led_rig_hamlib = Led(led_d, self)
         self.led_hw = Led(led_d, self)
+        self.led_hw_el = Led(led_d, self)
 
         self.lbl_pst = QLabel("")
         self.lbl_pst.setAlignment(
@@ -641,12 +658,36 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         self.lbl_hw.setWordWrap(False)
+        self.lbl_hw_el = QLabel("")
+        self.lbl_hw_el.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.lbl_hw_el.setWordWrap(False)
+        self._lbl_hw_az_tag = QLabel("AZ")
+        self._lbl_hw_az_tag.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._lbl_hw_el_tag = QLabel("EL")
+        self._lbl_hw_el_tag.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
 
         hw_row = QHBoxLayout()
         hw_row.setContentsMargins(0, 0, 0, 0)
         hw_row.setSpacing(px_to_dip(self, 6))
-        hw_row.addWidget(self._srv_led_wrap(self.led_hw))
+        self._hw_led_az_wrap = self._srv_led_wrap(self.led_hw)
+        self._hw_led_el_wrap = self._srv_led_wrap(self.led_hw_el)
+        hw_row.addWidget(self._hw_led_az_wrap)
+        hw_row.addWidget(self._lbl_hw_az_tag)
         hw_row.addWidget(self.lbl_hw, 1)
+        hw_row.addWidget(self._hw_led_el_wrap)
+        hw_row.addWidget(self._lbl_hw_el_tag)
+        hw_row.addWidget(self.lbl_hw_el, 1)
+        # EL-LED/Text nur bei Dual-IP sichtbar
+        self._hw_led_el_wrap.setVisible(False)
+        self._lbl_hw_el_tag.setVisible(False)
+        self.lbl_hw_el.setVisible(False)
+        self._lbl_hw_az_tag.setVisible(False)
         hw_row_w = QWidget()
         hw_row_w.setLayout(hw_row)
         srv_form.addRow(t("main.srv_hw_label"), hw_row_w)
@@ -860,7 +901,6 @@ class MainWindow(QMainWindow):
         self.az_fields = _make_axis_panel(self.gb_az, "az", self.ctrl)
         self.el_fields = _make_axis_panel(self.gb_el, "el", self.ctrl)
 
-        self.btn_ref.clicked.connect(lambda: self.ctrl.reference_all(True))
         self.btn_park.clicked.connect(self._on_park_clicked)
         try:
             self.btn_park.setToolTip(tt("main.btn_park_tooltip"))
@@ -869,9 +909,10 @@ class MainWindow(QMainWindow):
 
         # Referenzierungs-Fehler-Callback: Controller ruft dies aus Hintergrundthread auf
         self.ctrl.on_ref_start_failed = self._on_ref_start_failed
-        self._homing_ui_hidden_for_abs_enc = False
+        self._homing_ui_hidden_key = None
         self._encoder_type_changed_ui.connect(self._on_encoder_type_changed_ui)
         self.ctrl.on_encoder_type_changed = self._on_encoder_type_changed
+        self.ctrl.on_endstc_changed = self._on_encoder_type_changed
         self._az_max_deg_changed_ui.connect(self._on_az_max_deg_changed_ui)
         self.ctrl.on_az_max_deg_changed = self._on_az_max_deg_changed
         self._rotor_type_changed_ui.connect(self._on_rotor_type_changed_ui)
@@ -971,6 +1012,7 @@ class MainWindow(QMainWindow):
             map_webserver=self._map_webserver,
             switch_profile_cb=self._switch_rotor_profile,
             profiles_changed_cb=self._refresh_profile_menu,
+            open_commissioning_cb=self._open_commissioning,
             controller_remote_proxy=self._controller_remote_proxy,
             ctrl_hw=self.ctrl_hw,
             parent=None,
@@ -1923,6 +1965,20 @@ class MainWindow(QMainWindow):
             pass
         return None
 
+    @staticmethod
+    def _controller_link_mode_from_chw(chw: object) -> int:
+        """0=RS485, 1=PC-USB, 2=WEB — aus controller_hw eines Profils."""
+        ch = chw if isinstance(chw, dict) else {}
+        try:
+            lm = int(ch.get("link_mode", -1))
+        except (TypeError, ValueError):
+            lm = -1
+        if lm in (0, 1, 2):
+            return lm
+        if bool(ch.get("usb_remote", False)):
+            return 1
+        return 0
+
     def _keep_browser_relay_link(self, relay) -> None:
         """Config des Relays nachziehen und Controller-Link auf den Browser belassen."""
         if relay is None:
@@ -1936,6 +1992,63 @@ class MainWindow(QMainWindow):
                 self.ctrl.set_controller_link(relay.ctrl_hw, True)
         except Exception as e:
             self._log_exception("browser relay set_controller_link", e)
+
+    def _release_browser_controller_for_desktop(
+        self, *, target_link_mode: int, timeout_s: float = 2.5
+    ) -> None:
+        """WEB-Relay verlassen: SETLINKMODE am Display, Browser trennt Web Serial, Relay aus.
+
+        Danach ist der COM-Port frei für den Desktop-Proxy (PC-USB) bzw. RS485.
+        """
+        import time
+
+        relay = self._active_browser_relay()
+        if relay is None:
+            return
+        # Noch über den Browser: Ziel-Modus am Controller setzen (NVS), ACK auf altem Pfad.
+        try:
+            chw = self.cfg.get("controller_hw") if isinstance(self.cfg.get("controller_hw"), dict) else {}
+            dst = int(chw.get("cont_id", 2) or 2)
+            mode = int(target_link_mode)
+            if dst > 0 and mode in (0, 1, 2) and hasattr(self.ctrl, "sync_ui_command_response"):
+                self._keep_browser_relay_link(relay)
+                self.ctrl.sync_ui_command_response(
+                    dst,
+                    "SETLINKMODE",
+                    str(mode),
+                    "ACK_SETLINKMODE",
+                    timeout_s=1.5,
+                )
+        except Exception as e:
+            self._log_exception("_release_browser_controller_for_desktop SETLINKMODE", e)
+        try:
+            if hasattr(relay, "request_force_disconnect"):
+                relay.request_force_disconnect()
+        except Exception as e:
+            self._log_exception("_release_browser_controller_for_desktop force_disconnect", e)
+        deadline = time.time() + max(0.5, float(timeout_s))
+        while time.time() < deadline:
+            if self._active_browser_relay() is None:
+                break
+            try:
+                from PySide6.QtWidgets import QApplication
+
+                app = QApplication.instance()
+                if app is not None:
+                    app.processEvents()
+            except Exception:
+                pass
+            time.sleep(0.08)
+        still = self._active_browser_relay()
+        if still is not None:
+            try:
+                still.detach()
+            except Exception as e:
+                self._log_exception("_release_browser_controller_for_desktop detach", e)
+        try:
+            self.ctrl.set_controller_link(getattr(self, "ctrl_hw", None), False)
+        except Exception:
+            pass
 
     def _push_web_display_rotor_ids(self) -> None:
         """Display (Web Serial) auf die Rotor-Slave-IDs des aktiven Profils stellen.
@@ -2007,22 +2120,36 @@ class MainWindow(QMainWindow):
         except Exception:
             return False
 
-    def _switch_rotor_profile(self, profile_id: str) -> None:
-        """Aktives Profil speichern, neues laden, HW/Server anwenden, Bus-Caches neu lesen."""
+    def _reload_active_profile(self) -> None:
+        """Aktives Profil komplett neu anwenden (z. B. nach Ende des Inbetriebnahme-Wizards)."""
+        from ..profile_store import get_active_profile_id
+
+        self._switch_rotor_profile(str(get_active_profile_id() or ""), defer_heavy=True, force=True)
+
+    def _switch_rotor_profile(
+        self, profile_id: str, *, defer_heavy: bool = False, force: bool = False
+    ) -> None:
+        """Aktives Profil speichern, neues laden, HW/Server anwenden, Bus-Caches neu lesen.
+
+        ``defer_heavy=True`` (Inbetriebnahme-Wizard): Config/HW sofort, Settings-Rebuild
+        und Server-Restarts erst nach dem Event-Loop-Tick — UI bleibt responsiv.
+        ``force=True``: auch bei bereits aktivem Profil neu laden und alles anwenden.
+        """
         from ..i18n import load_lang
         from ..profile_store import get_active_profile_id, save_active_config, switch_profile
 
         pid = str(profile_id or "").strip()
         if not pid:
             return
-        if pid == get_active_profile_id():
+        if pid == get_active_profile_id() and not force:
             self._refresh_profile_menu()
-            sw = getattr(self, "_settings_win", None)
-            if sw is not None and hasattr(sw, "refresh_profiles_list"):
-                try:
-                    sw.refresh_profiles_list()
-                except Exception:
-                    pass
+            if not defer_heavy:
+                sw = getattr(self, "_settings_win", None)
+                if sw is not None and hasattr(sw, "refresh_profiles_list"):
+                    try:
+                        sw.refresh_profiles_list()
+                    except Exception:
+                        pass
             return
 
         if self._profile_switch_blocked_by_motion(pid):
@@ -2053,28 +2180,47 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._log_exception("_switch_rotor_profile update_polling", e)
         try:
-            self.hw.update_cfg(self.cfg.get("hardware_link") or {})
-        except Exception as e:
-            self._log_exception("_switch_rotor_profile hw.update_cfg", e)
-        try:
+            from ..axis_link import (
+                dual_axis_tcp_active,
+                ensure_setup_axis_endpoints,
+                link_cfg_for_axis,
+                sync_hardware_link_from_az,
+            )
+            from ..hardware_client import HardwareClient
+
+            ensure_setup_axis_endpoints(self.cfg)
+            sync_hardware_link_from_az(self.cfg)
+            az_cfg = link_cfg_for_axis(self.cfg, "az")
+            self.hw.update_cfg(az_cfg if dual_axis_tcp_active(self.cfg) else (self.cfg.get("hardware_link") or {}))
+            want_dual = dual_axis_tcp_active(self.cfg)
+            el_hw = getattr(self.ctrl, "el_hw", None)
+            if want_dual:
+                el_cfg = link_cfg_for_axis(self.cfg, "el")
+                if el_hw is None:
+                    el_hw = HardwareClient(el_cfg, self.logbuf)
+                    el_hw.start()
+                    self.ctrl.set_el_link(el_hw)
+                else:
+                    el_hw.update_cfg(el_cfg)
+                    self.ctrl.set_el_link(el_hw)
+            elif el_hw is not None:
+                try:
+                    el_hw.stop()
+                except Exception:
+                    pass
+                self.ctrl.set_el_link(None)
             proxy = getattr(self, "_controller_remote_proxy", None)
-            if proxy is not None:
-                from ..controller_remote_usb import ControllerRemoteUsbProxy
-
-                proxy.update_cfg(self.cfg)
-                want = ControllerRemoteUsbProxy.want_remote(self.cfg)
-                # Display hängt am Browser (Web Serial): lokalen COM-Proxy nicht starten.
-                web_relay_on = self._active_browser_relay() is not None
-                if bool(proxy.is_active()) != want and not (want and web_relay_on):
-                    import threading
-
-                    threading.Thread(
-                        target=lambda: proxy.apply_mode(want, timeout_s=8.0),
-                        name="remote-usb-profile",
-                        daemon=True,
-                    ).start()
+            if proxy is not None and hasattr(proxy, "refresh_rotor_hooks"):
+                try:
+                    proxy.refresh_rotor_hooks()
+                except Exception:
+                    pass
         except Exception as e:
-            self._log_exception("_switch_rotor_profile remote_proxy.update_cfg", e)
+            self._log_exception("_switch_rotor_profile el_hw", e)
+        try:
+            self._apply_controller_link_after_profile_switch(old_chw)
+        except Exception as e:
+            self._log_exception("_switch_rotor_profile controller_link", e)
 
         try:
             from ..rotor_backup import apply_live_ids_from_cfg
@@ -2094,8 +2240,10 @@ class MainWindow(QMainWindow):
             except Exception as e2:
                 self._log_exception("_switch_rotor_profile update_ids", e2)
 
-        # Display per Web Serial: Relay-Config (cont_id …) und Link auf das neue Profil mitnehmen.
-        self._keep_browser_relay_link(self._active_browser_relay())
+        # Nur wenn neues Profil weiterhin WEB nutzt: Relay behalten.
+        new_lm = self._controller_link_mode_from_chw(self.cfg.get("controller_hw"))
+        if new_lm == 2:
+            self._keep_browser_relay_link(self._active_browser_relay())
 
         try:
             if hasattr(self.ctrl, "reset_bus_discovery_state"):
@@ -2110,8 +2258,32 @@ class MainWindow(QMainWindow):
         except Exception:
             settings_was_visible = False
 
-        # Einstellungen sofort neu aufbauen — nicht hinter Bus-Timeouts (SETCON*/Wait).
         self._refresh_profile_menu()
+
+        if defer_heavy:
+            # Wizard: sofort zurückkehren; Rest im nächsten Event-Loop-Tick.
+            QTimer.singleShot(
+                0,
+                lambda ol=old_lang, oc=dict(old_chw), vis=settings_was_visible: self._switch_rotor_profile_heavy_tail(
+                    ol, oc, settings_was_visible=vis
+                ),
+            )
+            return
+
+        self._switch_rotor_profile_heavy_tail(
+            old_lang, old_chw, settings_was_visible=settings_was_visible
+        )
+
+    def _switch_rotor_profile_heavy_tail(
+        self,
+        old_lang: str,
+        old_chw: dict,
+        *,
+        settings_was_visible: bool = False,
+    ) -> None:
+        """Settings-Rebuild, Server-Restarts und UI nach Profilwechsel."""
+        from ..i18n import load_lang
+
         try:
             self._rebuild_settings_win()
             if settings_was_visible:
@@ -2125,7 +2297,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._log_exception("_switch_rotor_profile antenna_combo", e)
 
-        old_chw_copy = dict(old_chw)
+        old_chw_copy = dict(old_chw) if isinstance(old_chw, dict) else {}
         QTimer.singleShot(
             0, lambda: self._finish_profile_switch_hardware(old_chw_copy)
         )
@@ -2248,23 +2420,86 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _apply_controller_link_after_profile_switch(self, old_chw: dict) -> None:
+        """Controller-Link nach Profilwechsel: WEB↔PC-USB↔RS485 sauber umhängen."""
+        import threading
+
+        from ..controller_remote_usb import ControllerRemoteUsbProxy
+
+        new_chw = (
+            self.cfg.get("controller_hw")
+            if isinstance(self.cfg.get("controller_hw"), dict)
+            else {}
+        )
+        old_lm = self._controller_link_mode_from_chw(old_chw)
+        new_lm = self._controller_link_mode_from_chw(new_chw)
+        proxy = getattr(self, "_controller_remote_proxy", None)
+        if proxy is not None:
+            try:
+                proxy.update_cfg(self.cfg)
+            except Exception as e:
+                self._log_exception("_apply_controller_link_after_profile_switch update_cfg", e)
+
+        # WEB verlassen → Browser muss den USB-Port freigeben, sonst blockiert COM.
+        if self._active_browser_relay() is not None and new_lm != 2:
+            self._release_browser_controller_for_desktop(target_link_mode=new_lm)
+
+        want = ControllerRemoteUsbProxy.want_remote(self.cfg) and new_lm == 1
+        web_relay_on = self._active_browser_relay() is not None
+        if proxy is None:
+            return
+        try:
+            active = bool(proxy.is_active())
+        except Exception:
+            active = False
+        # WEB-Profil: lokalen COM-Proxy nicht starten (Browser hält den Port).
+        if new_lm == 2:
+            if active:
+                threading.Thread(
+                    target=lambda: proxy.stop(send_remote_off=False),
+                    name="remote-usb-leave-for-web",
+                    daemon=True,
+                ).start()
+            return
+        if active == want:
+            return
+        if want and web_relay_on:
+            # Sollte nach Release nicht mehr vorkommen — defensiv.
+            return
+        threading.Thread(
+            target=lambda: proxy.apply_mode(want, timeout_s=8.0),
+            name="remote-usb-profile",
+            daemon=True,
+        ).start()
+        if old_lm != new_lm:
+            try:
+                self.logbuf.write(
+                    "INFO",
+                    f"Controller-Link Profilwechsel: {old_lm} → {new_lm}",
+                )
+            except Exception:
+                pass
+
     def _finish_profile_switch_hardware(self, old_chw: dict) -> None:
         """SETCON*/Antennen nach Profilwechsel — nach dem UI-Rebuild, damit Einstellungen nicht einfrieren."""
         try:
             from ..rotor_backup import push_controller_hw_diff
 
+            new_chw = self.cfg.get("controller_hw") if isinstance(self.cfg.get("controller_hw"), dict) else {}
+            new_lm = self._controller_link_mode_from_chw(new_chw)
             relay = self._active_browser_relay()
-            self._keep_browser_relay_link(relay)
+            if new_lm == 2:
+                self._keep_browser_relay_link(relay)
             connected = self._wait_hw_connected_for_profile_push(timeout_s=4.0)
             relay = self._active_browser_relay()
-            self._keep_browser_relay_link(relay)
+            if new_lm == 2:
+                self._keep_browser_relay_link(relay)
             enc3 = False
             try:
                 fn = getattr(self.ctrl, "abs_encoder_no_homing", None)
                 enc3 = bool(fn()) if callable(fn) else False
             except Exception:
                 enc3 = False
-            new_chw = self.cfg.get("controller_hw") if isinstance(self.cfg.get("controller_hw"), dict) else {}
             ok_push = push_controller_hw_diff(
                 self.ctrl,
                 old_chw=old_chw,
@@ -2272,10 +2507,25 @@ class MainWindow(QMainWindow):
                 connected=connected,
                 encoder_type3=enc3,
                 force=True,
-                skip_remote=(relay is not None) or int(new_chw.get("link_mode", 0) or 0) == 2,
+                skip_remote=(relay is not None) or new_lm == 2,
             )
-            self._keep_browser_relay_link(self._active_browser_relay())
-            self._push_web_display_rotor_ids()
+            # SETLINKMODE an Controllerspiegeln (falls Push über USB/COM lief)
+            if connected and new_lm in (0, 1, 2) and not ((relay is not None) or new_lm == 2):
+                try:
+                    dst = int(new_chw.get("cont_id", 2) or 2)
+                    if dst > 0 and hasattr(self.ctrl, "sync_ui_command_response"):
+                        self.ctrl.sync_ui_command_response(
+                            dst,
+                            "SETLINKMODE",
+                            str(int(new_lm)),
+                            "ACK_SETLINKMODE",
+                            timeout_s=1.5,
+                        )
+                except Exception as e:
+                    self._log_exception("_finish_profile_switch_hardware SETLINKMODE", e)
+            if new_lm == 2:
+                self._keep_browser_relay_link(self._active_browser_relay())
+                self._push_web_display_rotor_ids()
             if not connected:
                 self.logbuf.write("WARN", t("main.profile_controller_push_offline"))
             elif not ok_push:
@@ -2302,6 +2552,8 @@ class MainWindow(QMainWindow):
         self._menu_setup.setTitle(t("main.menu_setup"))
         self._act_settings.setText(t("main.btn_settings"))
         self._act_commands.setText(t("main.btn_commands"))
+        if getattr(self, "_act_commissioning", None) is not None:
+            self._act_commissioning.setText(t("main.btn_commissioning"))
         self._act_statistics.setText(t("main.menu_statistics"))
         self._act_delwarn.setText(t("main.menu_delwarn"))
         self._menu_profile.setTitle(t("main.menu_profile"))
@@ -2348,7 +2600,6 @@ class MainWindow(QMainWindow):
             self.btn_park.setToolTip(tt("main.btn_park_tooltip"))
         except Exception:
             pass
-        self.btn_ref.setText(t("main.btn_ref"))
         try:
             self.gb_control.setTitle(t("main.group_control"))
         except Exception:
@@ -2582,6 +2833,7 @@ class MainWindow(QMainWindow):
                 map_webserver=self._map_webserver,
                 switch_profile_cb=self._switch_rotor_profile,
                 profiles_changed_cb=self._refresh_profile_menu,
+                open_commissioning_cb=self._open_commissioning,
                 controller_remote_proxy=self._controller_remote_proxy,
                 ctrl_hw=self.ctrl_hw,
                 parent=None,
@@ -3690,6 +3942,58 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _open_commissioning(self) -> None:
+        """Aktionen → Inbetriebnahme."""
+        if not bool(getattr(self._act_commissioning, "isEnabled", lambda: True)()):
+            return
+        from .rotor_setup_wizard import CommissioningWizard
+
+        def _open_tab(which: str) -> None:
+            sw = getattr(self, "_settings_win", None)
+            if sw is not None and hasattr(sw, "open_settings_tab"):
+                sw.open_settings_tab(which)
+
+        def _apply_services() -> None:
+            for key in ("pst_tcp", "pst_udp", "rotctld", "gs232", "n1mm", "map_web"):
+                try:
+                    self._apply_protocol_toggle(key)
+                except Exception:
+                    pass
+            try:
+                self._apply_line_proto_servers_from_cfg()
+            except Exception:
+                pass
+
+        def _switch_for_wizard(pid: str) -> None:
+            # Schweren Settings-/Server-Teil verzögern, damit „Weiter“ sofort geht.
+            self._switch_rotor_profile(pid, defer_heavy=True)
+
+        wiz = getattr(self, "_commissioning_wiz", None)
+        if wiz is None:
+            wiz = CommissioningWizard(
+                self,
+                ctrl=self.ctrl,
+                cfg=self.cfg,
+                save_cfg_cb=self.save_cfg_cb,
+                switch_profile_cb=_switch_for_wizard,
+                open_settings_tab_cb=_open_tab,
+                apply_services_cb=_apply_services,
+                get_cfg=lambda: self.cfg,
+                controller_remote_proxy=getattr(self, "_controller_remote_proxy", None),
+            )
+            wiz.reload_profile_cb = self._reload_active_profile
+            self._commissioning_wiz = wiz
+        else:
+            wiz.ctrl = self.ctrl
+            wiz.cfg = self.cfg
+            wiz.switch_profile_cb = _switch_for_wizard
+            wiz.reload_profile_cb = self._reload_active_profile
+            wiz.controller_remote_proxy = getattr(self, "_controller_remote_proxy", None)
+        wiz.restart()
+        wiz.show()
+        wiz.raise_()
+        wiz.activateWindow()
+
     def _open_statistics(self):
         if not bool(getattr(self._act_statistics, "isEnabled", lambda: True)()):
             return
@@ -3712,7 +4016,12 @@ class MainWindow(QMainWindow):
             return
         self._actions_locked_while_moving = moving
         enabled = not moving
-        for act_name in ("_act_settings", "_act_commands", "_act_statistics"):
+        for act_name in (
+            "_act_settings",
+            "_act_commands",
+            "_act_commissioning",
+            "_act_statistics",
+        ):
             try:
                 act = getattr(self, act_name, None)
                 if act is not None:
@@ -3962,11 +4271,18 @@ class MainWindow(QMainWindow):
             tel = getattr(self.ctrl.az, "telemetry", None)
         except Exception:
             tel = None
-        if tel is None:
+        try:
+            tel_el = getattr(self.ctrl.el, "telemetry", None)
+        except Exception:
+            tel_el = None
+        if tel is None and tel_el is None:
             return
 
         if bool(wa.get("temp_alert_enabled", False)):
-            ta = getattr(tel, "temp_ambient_c", None)
+            # Außentemperatur: AZ bevorzugt, sonst EL (z. B. Profil nur mit EL-Rotor).
+            ta = getattr(tel, "temp_ambient_c", None) if tel is not None else None
+            if ta is None and tel_el is not None:
+                ta = getattr(tel_el, "temp_ambient_c", None)
             if ta is not None:
                 try:
                     tmin = float(wa.get("temp_min_c", -15.0))
@@ -4247,6 +4563,14 @@ class MainWindow(QMainWindow):
 
     def _on_rotor_type_changed_ui(self) -> None:
         """UI-Thread: Elevations-Kompass an Rotortyp anpassen."""
+        # Letzten GETROTORTYPE-Wert im Profil merken (Offline-Start / Anzeige).
+        try:
+            if bool(getattr(self.ctrl, "el_rotor_type_known", False)):
+                typ = int(getattr(self.ctrl, "el_rotor_type", None) or 0)
+                if typ in (1, 2, 3):
+                    self.cfg.setdefault("rotor_bus", {})["el_rotor_type"] = typ
+        except Exception:
+            pass
         cw = getattr(self, "_compass_win", None)
         if cw is not None and hasattr(cw, "update_el_rotor_type_display"):
             try:
@@ -4290,16 +4614,25 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _homing_visibility_key(self) -> tuple:
+        """(abs_no_homing, hide_az_btn, hide_el_btn) — für Tick-Vergleich nach GETENDSTC."""
+        ctrl = self.ctrl
+        abs_hide = bool(getattr(ctrl, "abs_encoder_no_homing", lambda: False)())
+        fn = getattr(ctrl, "homing_button_hidden_for_axis", None)
+        if callable(fn):
+            hide_az = bool(fn("az"))
+            hide_el = bool(fn("el"))
+        else:
+            hide_az = hide_el = abs_hide
+        return (abs_hide, hide_az, hide_el)
+
     def _update_homing_buttons_visibility(self) -> None:
-        hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
-        try:
-            self.btn_ref.setVisible(not hide)
-        except Exception:
-            pass
+        abs_hide, _hide_az, _hide_el = self._homing_visibility_key()
+        # Main-GUI: keine Homing-Taste; Home-Status-LED nur bei Absolut-Encoder aus.
         for fields in (getattr(self, "az_fields", None), getattr(self, "el_fields", None)):
             if fields is not None:
                 try:
-                    update_axis_homing_visibility(fields, hide)
+                    update_axis_homing_visibility(fields, abs_hide)
                 except Exception:
                     pass
         cw = getattr(self, "_compass_win", None)
@@ -4543,9 +4876,9 @@ class MainWindow(QMainWindow):
 
         self.ctrl.tick_polling()
 
-        hide_homing = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
-        if hide_homing != getattr(self, "_homing_ui_hidden_for_abs_enc", False):
-            self._homing_ui_hidden_for_abs_enc = hide_homing
+        hide_key = self._homing_visibility_key()
+        if hide_key != getattr(self, "_homing_ui_hidden_key", None):
+            self._homing_ui_hidden_key = hide_key
             self._update_homing_buttons_visibility()
 
         pst_on = bool(self.pst.running)
@@ -4942,18 +5275,27 @@ class MainWindow(QMainWindow):
                 self._rig_freq_poll_timer.stop()
                 self._apply_fixed_mainwindow_size()
 
+        el_hw = getattr(self.ctrl, "el_hw", None)
+        el_on = False
+        try:
+            dual_hw = bool(el_hw is not None)
+            if dual_hw:
+                el_on = bool(el_hw.is_connected())
+        except Exception:
+            dual_hw = bool(el_hw is not None)
+            el_on = False
         try:
             now = float(_time.time())
-            if hw_on:
-                self._hw_off_since = None
-                self.led_hw.set_state(True)
+            self._apply_hw_led_grace(self.led_hw, hw_on, "_hw_off_since", now)
+            if dual_hw:
+                self._apply_hw_led_grace(self.led_hw_el, el_on, "_hw_el_off_since", now)
             else:
-                if self._hw_off_since is None:
-                    self._hw_off_since = now
-                self.led_hw.set_state((now - float(self._hw_off_since)) < 3.0)
+                self._hw_el_off_since = None
+                self.led_hw_el.set_state(False)
         except Exception as e:
             self._log_exception("_tick led_hw / HW-Timeout-Anzeige", e)
             self.led_hw.set_state(hw_on)
+            self.led_hw_el.set_state(el_on if dual_hw else False)
 
         ps = self.cfg.get("pst_server", {}) or {}
         _h = str(getattr(self.pst, "host", None) or ps.get("listen_host", "0.0.0.0") or "0.0.0.0").strip()
@@ -5024,21 +5366,50 @@ class MainWindow(QMainWindow):
         mode = str(hl.get("mode", "tcp") or "tcp").strip().lower()
         ip = str(hl.get("tcp_ip", "") or "")
         port = str(hl.get("tcp_port", "") or "")
+        dual_ips = False
+        az_detail = ""
+        el_detail = ""
         if mode in ("tcp", "udp"):
-            detail = f"{ip}:{port}"
+            try:
+                from ..axis_link import axis_endpoint_from_cfg, dual_axis_tcp_active
+
+                az_h, az_p = axis_endpoint_from_cfg(self.cfg, "az")
+                az_detail = f"{az_h or ip}:{az_p or port}"
+                dual_ips = bool(dual_axis_tcp_active(self.cfg) and el_hw is not None)
+                if dual_ips:
+                    el_h, el_p = axis_endpoint_from_cfg(self.cfg, "el")
+                    el_detail = f"{el_h}:{el_p}"
+            except Exception:
+                az_detail = f"{ip}:{port}"
+                dual_ips = False
             com_disp = ""
         else:
             com_disp = normalize_com_port(str(hl.get("com_port", "") or "")).upper()
-            detail = com_disp
-        if hw_on and pst_on:
-            if mode in ("tcp", "udp"):
-                self.lbl_hw.setText(f"{ip}:{port}")
-            else:
-                self.lbl_hw.setText(com_disp)
-        elif hw_on:
-            self.lbl_hw.setText(detail)
+            az_detail = com_disp
+            dual_ips = False
+
+        # Dual-IP: AZ- und EL-LED/Text getrennt; sonst eine Zeile wie bisher
+        show_dual = bool(dual_ips)
+        try:
+            self._lbl_hw_az_tag.setVisible(show_dual)
+            self._hw_led_el_wrap.setVisible(show_dual)
+            self._lbl_hw_el_tag.setVisible(show_dual)
+            self.lbl_hw_el.setVisible(show_dual)
+        except Exception:
+            pass
+
+        def _hw_text(connected: bool, endpoint: str) -> str:
+            if connected:
+                return endpoint
+            return f"{t('main.hw_disconnected')}  {endpoint}"
+
+        if show_dual:
+            self.lbl_hw.setText(_hw_text(hw_on, az_detail))
+            self.lbl_hw_el.setText(_hw_text(el_on, el_detail))
         else:
-            self.lbl_hw.setText(f"{t('main.hw_disconnected')}  {detail}")
+            self.lbl_hw_el.setText("")
+            detail = az_detail if mode in ("tcp", "udp") else com_disp
+            self.lbl_hw.setText(_hw_text(hw_on, detail))
 
         try:
             self._lbl_srv_ucxlog_suffix.setText(

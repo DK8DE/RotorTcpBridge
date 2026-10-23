@@ -985,13 +985,17 @@ def build_compass_html(params: dict) -> str:
       }}
     }}
     function elGeom(w, h, maxDeg) {{
-      // Wie Desktop ElevationWidget._geom: 90° Viertelkreis (Anker unten rechts), 180° Halbkreis
+      // Wie Desktop: 90° Viertel, 180° Halb, 360° Vollkreis (GETROTORTYPE 2/3/1)
       const margin = Math.max(48, Math.min(w, h) * 0.10);
       const innerW = w - 2 * margin;
       const innerH = h - 2 * margin;
       const labelPad = 0.10;
       let cx, cy, r;
-      if (maxDeg >= 180) {{
+      if (maxDeg >= 360) {{
+        r = Math.min(innerW, innerH) * 0.42;
+        cx = w / 2;
+        cy = h / 2;
+      }} else if (maxDeg >= 180) {{
         r = Math.min(innerW / 2, innerH) * 0.82;
         const pad = r * labelPad;
         const bboxH = r + pad;
@@ -1232,7 +1236,13 @@ def build_compass_html(params: dict) -> str:
         if (rev && az.ist != null) rev.textContent = fmt(wrapDeg(az.ist+180));
       }}
       const ed = document.getElementById('edAzSoll');
-      if (ed && !sollInputBusy(ed)) ed.value = (az.soll != null) ? fmt(az.soll) : '';
+      if (ed) {{
+        // MAXDG>360 (Typ 1/2/3): SOLL-Eingabe bis Rotor-MAXDG (Overlap), sonst 360
+        const azMax = Number(az.max_deg || 360);
+        ed.min = '0';
+        ed.max = String(azMax > 360 ? azMax : 360);
+        if (!sollInputBusy(ed)) ed.value = (az.soll != null) ? fmt(az.soll) : '';
+      }}
       setLed(document.getElementById('ledMoving'), !!az.moving, false);
       setLed(document.getElementById('ledOnline'), !!az.online, false);
       setLed(document.getElementById('ledRef'), !!az.referenced, !!az.ref_blink);
@@ -1247,10 +1257,16 @@ def build_compass_html(params: dict) -> str:
           if (rig.show) fitRigQrg();
         }}
       }}
+      const refStatusVis = (s.ref_status_visible !== undefined)
+        ? s.ref_status_visible !== false
+        : s.ref_visible !== false;
+      const refAzVis = (s.ref_az_visible !== undefined)
+        ? s.ref_az_visible !== false
+        : s.ref_visible !== false;
       const refWrap = document.getElementById('refWrap');
-      if (refWrap) refWrap.style.display = s.ref_visible === false ? 'none' : '';
+      if (refWrap) refWrap.style.display = refStatusVis ? '' : 'none';
       const btnRef = document.getElementById('btnRefAz');
-      if (btnRef) btnRef.style.display = s.ref_visible === false ? 'none' : '';
+      if (btnRef) btnRef.style.display = refAzVis ? '' : 'none';
       applyPwmSlider('az', az, 'slPwmAz', 'slPwmAzVal');
       // antenna
       const ant = document.getElementById('selAnt');
@@ -1343,14 +1359,25 @@ def build_compass_html(params: dict) -> str:
         const esd = document.getElementById('elSollDisp');
         if (esd) esd.textContent = fmt(el.soll);
         const ee = document.getElementById('edElSoll');
-        if (ee && !sollInputBusy(ee)) ee.value = (el.soll != null) ? fmt(el.soll) : '';
+        if (ee) {{
+          const elMax = Number(el.max_deg || 90);
+          ee.min = '0';
+          ee.max = String(elMax > 0 ? elMax : 90);
+          if (!sollInputBusy(ee)) ee.value = (el.soll != null) ? fmt(el.soll) : '';
+        }}
         setLed(document.getElementById('ledElMoving'), !!el.moving, false);
         setLed(document.getElementById('ledElOnline'), !!el.online, false);
         setLed(document.getElementById('ledElRef'), !!el.referenced, !!el.ref_blink);
+        const refElStatusVis = (s.ref_status_visible !== undefined)
+          ? s.ref_status_visible !== false
+          : s.ref_visible !== false;
+        const refElVis = (s.ref_el_visible !== undefined)
+          ? s.ref_el_visible !== false
+          : s.ref_visible !== false;
         const elRefWrap = document.getElementById('elRefWrap');
-        if (elRefWrap) elRefWrap.style.display = s.ref_visible === false ? 'none' : '';
+        if (elRefWrap) elRefWrap.style.display = refElStatusVis ? '' : 'none';
         const er = document.getElementById('btnRefEl');
-        if (er) er.style.display = s.ref_visible === false ? 'none' : '';
+        if (er) er.style.display = refElVis ? '' : 'none';
         const he = document.getElementById('chkHeatElStrom');
         if (he && document.activeElement !== he) he.checked = (el.heatmap_mode || '') === 'strom';
         applyPwmSlider('el', el, 'slPwmEl', 'slPwmElVal');

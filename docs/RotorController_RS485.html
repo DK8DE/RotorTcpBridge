@@ -122,7 +122,7 @@
 <body>
 <div class="section" id="intro">
   <h1>Rotor‑Controller – RS485‑Anleitung &amp; Firmware‑Dokumentation (DE)</h1>
-  <p class="muted">Stand: 2026-10-17 • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler &amp; Warnungen. Die <b>Befehlstabelle</b> ist mit dem RotorTcpBridge‑Katalog abgeglichen (<code>command_catalog.py</code> / Befehlsfenster / Rotorkonfiguration). Diese Datei ist mit <code>RotorTcpBridge/docs/RotorController_RS485.md</code> abgestimmt.</p>
+  <p class="muted">Stand: 2026-10-19 • Rotor-Firmware ab 1.9.4 (Setup-Modus, <code>SETPOSHERE</code>, <code>SETENCCOUNT</code>) • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler &amp; Warnungen. Die <b>Befehlstabelle</b> ist mit dem RotorTcpBridge‑Katalog abgeglichen (<code>command_catalog.py</code> / Befehlsfenster / Rotorkonfiguration). Diese Datei ist mit <code>RotorTcpBridge/docs/RotorController_RS485.md</code> abgestimmt.</p>
 </div>
 <main>
 <section class="toc" id="toc">
@@ -699,7 +699,37 @@
 <tr>
 <td><code>#0:20:JOG:...:CS$</code></td>
 <td><code>#20:0:ACK_JOG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_JOG:REASON:CS$</code></span></td>
-<td><b><a href="#cmd-JOG">JOG</a></b><br>Manuelles Verfahren (aktuell deaktiviert).</td>
+<td><b><a href="#cmd-JOG">JOG</a></b><br>Manuelles Verfahren: <code>1</code> = Richtung Amin („minus“), <code>2</code> = Richtung Amax, <code>0</code> = Stopp mit Rampe. Ohne Setup-Modus an Achsgrenzen/Referenz gebunden.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETSETUP:1:CS$</code></td>
+<td><code>#20:0:ACK_SETSETUP:1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETSETUP:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETSETUP">SETSETUP</a></b><br>Setup-Modus an (<code>1</code>) / aus (<code>0</code>): freie Fahrt zum Einmessen (JOG ohne Amin/Amax, ohne Referenz, Stall aus).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETSETUP:0:CS$</code></td>
+<td><code>#20:0:ACK_GETSETUP:0|1:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETSETUP:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETSETUP">GETSETUP</a></b><br>Setup-Modus lesen (0 = aus, 1 = an).</td>
+</tr>
+<tr>
+<td><code>#0:20:SETSRVJOG:...:CS$</code></td>
+<td><code>#20:0:ACK_SETSRVJOG:...:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETSRVJOG:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETSRVJOG">SETSRVJOG</a></b><br>Service-JOG nur bei unreferenziert/Stall, <b>ohne</b> freie Grenzen (zum Einmessen über/unter Amin/Amax stattdessen <code>SETSETUP</code>).</td>
+</tr>
+<tr>
+<td><code>#0:20:GETENCCOUNT:0:CS$</code></td>
+<td><code>#20:0:ACK_GETENCCOUNT:&lt;COUNTS&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_GETENCCOUNT:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-GETENCCOUNT">GETENCCOUNT</a></b><br>Aktueller Encoder-Zählerstand (Counts, ganzzahlig) — zum Einmessen der Counts pro 360°.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETPOSHERE:&lt;DEG&gt;:CS$</code></td>
+<td><code>#20:0:ACK_SETPOSHERE:&lt;DEG&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETPOSHERE:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETPOSHERE">SETPOSHERE</a></b><br>Aktuelle Position als Winkel <code>&lt;DEG&gt;</code> setzen (ohne Fahrt), z.&nbsp;B. <code>0,00</code> an der mechanischen Null.</td>
+</tr>
+<tr>
+<td><code>#0:20:SETENCCOUNT:&lt;COUNTS&gt;:CS$</code></td>
+<td><code>#20:0:ACK_SETENCCOUNT:&lt;COUNTS&gt;:&lt;CS&gt;$</code><br><span class="muted">oder: <code>#20:0:NAK_SETENCCOUNT:REASON:CS$</code></span></td>
+<td><b><a href="#cmd-SETENCCOUNT">SETENCCOUNT</a></b><br>Encoder-Zählerstand live setzen und in FRAM-POS speichern (Typ&nbsp;1/2; Typ&nbsp;3: Turn+Pos, max. 2×CPR; Typ&nbsp;4: NAK). ACK liefert den gesetzten Wert.</td>
 </tr>
 <tr>
 <td><code>#0:20:SETPOSDG:...:CS$</code></td>
@@ -1195,11 +1225,12 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <h4 id="cmd-SETREF"><code>SETREF</code></h4>
 <p><b>Was es macht:</b> Homing starten und Fehler quittieren.</p>
 <p><b>Details:</b> SETREF:0 = nur Fehler quittieren. SETREF:1 = Homing starten (Standard).</p>
+<p><b>Ohne Endschalter (<code>SETENDSTC:0</code>) im Setup-Modus:</b> <code>SETREF:1</code> setzt die Counts an der aktuellen Position auf <code>0</code> (mechanische Null) und markiert den Rotor als referenziert. Voraussetzung: Counts pro 360° (<code>SETENCCAX</code> bzw. <code>SETENCCRI</code>) sind vorher gesetzt, sonst <code>NAK_SETREF:BADCPR</code>. Siehe <a href="#setup-einmessen">Ablauf Einmessen ohne Endschalter</a>.</p>
 <p><b>Hinweis:</b> Nach einem Fehler (ERR) muss <code>SETREF</code> gesendet werden, damit der Fehler quittiert wird. Warnungen werden nicht dadurch gelöscht (nur <code>DELWARN</code>).</p>
 <hr>
 <h4 id="cmd-GETPOSDG"><code>GETPOSDG</code></h4>
 <p><b>Was es macht:</b> Aktuelle Position in Grad (0,01°).</p>
-<p><b>Details:</b> Rückgabe ist die korrigierte Position: fester Encoder‑Offset (<code>SETDGOFFSET</code>) wird abgezogen, Korrekturwinkel (<code>SETDGCAL</code>) wird addiert/subtrahiert. Nach <code>SETDGCAL</code> die Position erneut mit <code>GETPOSDG</code> lesen.</p>
+<p><b>Details:</b> Rückgabe ist die korrigierte Position: fester Encoder‑Offset (<code>SETDGOFFSET</code>) wird abgezogen, Korrekturwinkel (<code>SETDGCAL</code>) wird addiert/subtrahiert. Nach <code>SETDGCAL</code> die Position erneut mit <code>GETPOSDG</code> lesen. Im <a href="#cmd-SETSETUP">Setup-Modus</a> (<code>SETSETUP:1</code>) liefert <code>GETPOSDG</code> den <b>Rohwinkel</b> (auch negativ bzw. über Max, auch ohne Referenz).</p>
 <hr>
 <h4 id="cmd-GETMOVE"><code>GETMOVE</code></h4>
 <p><b>Was es macht:</b> Bewegungsstatus des Rotors lesen (für Master-/UI-LEDs).</p>
@@ -1626,7 +1657,7 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <hr>
 <h4 id="cmd-SETBEGINDG"><code>SETBEGINDG</code></h4>
 <p><b>Was es macht:</b> Min-Winkel setzen.</p>
-<p><b>Details:</b> Typisch 0,00.</p>
+<p><b>Details:</b> Typisch 0,00. Beim Einmessen ohne Endschalter (siehe <a href="#setup-einmessen">Ablauf</a>) wird der Wert nach der CPR-Änderung zusammen mit <code>SETMAXDG</code> gesetzt.</p>
 <hr>
 <h4 id="cmd-GETMAXDG"><code>GETMAXDG</code></h4>
 <p><b>Was es macht:</b> Max-Winkel lesen.</p>
@@ -1634,7 +1665,7 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <hr>
 <h4 id="cmd-SETMAXDG"><code>SETMAXDG</code></h4>
 <p><b>Was es macht:</b> Max-Winkel setzen.</p>
-<p><b>Details:</b> Typisch 360,00. Für Encoder‑Typen <b>1, 2 und 3</b> bis <b>720°</b> (Overlap, z.&nbsp;B. 420). Für Typ&nbsp;<b>4</b> (Inklinometer) typisch <b>90</b> oder <b>180</b>. Wird gespeichert (<code>amax</code>). Nach Änderung <code>GETMAXDG</code> und ggf. Parkwinkel (<code>SETHOMEPOS</code>) prüfen.</p>
+<p><b>Details:</b> Typisch 360,00. Für Encoder‑Typen <b>1, 2 und 3</b> bis <b>720°</b> (Overlap, z.&nbsp;B. 420). Für Typ&nbsp;<b>4</b> (Inklinometer) typisch <b>90</b> oder <b>180</b>. Wird gespeichert (<code>amax</code>). Nach Änderung <code>GETMAXDG</code> und ggf. Parkwinkel (<code>SETHOMEPOS</code>) prüfen. Beim Einmessen ohne Endschalter zunächst <code>SETMAXDG:360,00</code> (oder das mechanische Max) setzen, siehe <a href="#setup-einmessen">Ablauf</a>.</p>
 <hr>
 <h4 id="cmd-GETDGOFFSET"><code>GETDGOFFSET</code></h4>
 <p><b>Was es macht:</b> Offset (Grad) lesen.</p>
@@ -1815,12 +1846,14 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <hr>
 <h4 id="cmd-SETENCCRI"><code>SETENCCRI</code></h4>
 <p><b>Was es macht:</b> Counts pro 360° Ring-Encoder setzen. Wird gespeichert.</p>
+<p><b>Details:</b> Eine Änderung des Werts löst einen Neustart des Rotors aus (Setup-Modus und Referenz sind danach weg). Wert beim Einmessen aus <code>GETENCCOUNT</code> an der mechanischen Max-Stellung (Null = 0): Die Counts gelten für den Bereich <code>0° … SETMAXDG</code> (bei <code>SETMAXDG:360,00</code> = Counts pro 360°, bei <code>SETMAXDG:180,00</code> = Counts für 180°), siehe <a href="#setup-einmessen">Ablauf Einmessen ohne Endschalter</a>.</p>
 <hr>
 <h4 id="cmd-GETENCCAX"><code>GETENCCAX</code></h4>
 <p><b>Was es macht:</b> Counts pro 360° für den <b>Achsen-/Motor</b>-Encoder lesen (Integer, typisch im Zehntausender-Bereich).</p>
 <hr>
 <h4 id="cmd-SETENCCAX"><code>SETENCCAX</code></h4>
 <p><b>Was es macht:</b> Counts pro 360° Achsen-/Motor-Encoder setzen. Wird gespeichert.</p>
+<p><b>Details:</b> Eine Änderung des Werts löst einen Neustart des Rotors aus (Setup-Modus und Referenz sind danach weg). Wert beim Einmessen aus <code>GETENCCOUNT</code> an der mechanischen Max-Stellung (Null = 0): Die Counts gelten für den Bereich <code>0° … SETMAXDG</code> (bei <code>SETMAXDG:360,00</code> = Counts pro 360°, bei <code>SETMAXDG:180,00</code> = Counts für 180°), siehe <a href="#setup-einmessen">Ablauf Einmessen ohne Endschalter</a>.</p>
 <hr>
 <h4 id="cmd-GETENCTYPE"><code>GETENCTYPE</code></h4>
 <p><b>Was es macht:</b> Encoder-/Winkelsensor-Variante lesen: <code>1</code> = Axis/Motor, <code>2</code> = Ring, <code>3</code> = Absolutwert Encoder R&amp;S, <code>4</code> = Inklinometer (meist Elevation, 90°/180°).</p>
@@ -1956,8 +1989,74 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <hr>
 <h3>Sonstiges</h3>
 <h4 id="cmd-JOG"><code>JOG</code></h4>
-<p><b>Was es macht:</b> Manuelles Verfahren (aktuell deaktiviert).</p>
-<p><b>Details:</b> Gibt NAK_JOG:DISABLED.</p>
+<p><b>Was es macht:</b> Manuelles Verfahren des Rotors (Taste halten = fahren).</p>
+<table>
+<tr><th>Param</th><th>Richtung</th></tr>
+<tr><td><code>JOG:1</code></td><td>Richtung Amin („minus“)</td></tr>
+<tr><td><code>JOG:2</code></td><td>Richtung Amax</td></tr>
+<tr><td><code>JOG:0</code></td><td>Stopp mit Rampe</td></tr>
+</table>
+<p><b>Details:</b> Normalerweise sind die Achsgrenzen (Amin/Amax) wirksam. Zum Einmessen <b>unter Amin bzw. über Amax</b> den <a href="#cmd-SETSETUP">Setup-Modus</a> (<code>SETSETUP:1</code>) verwenden. <code>SETSRVJOG</code> gilt nur für unreferenziert/Stall und gibt <b>keine</b> freien Grenzen frei.</p>
+<hr>
+<h4 id="cmd-SETSETUP"><code>SETSETUP</code></h4>
+<p><b>Was es macht:</b> Setup-Modus („Service“) ein- oder ausschalten — freie Fahrt zum Einmessen des Rotors.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETSETUP:1:CS$</code> (an) bzw. <code>#0:20:SETSETUP:0:CS$</code> (aus)</p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETSETUP:1:&lt;CS&gt;$</code></p>
+<table>
+<tr><th>Befehl</th><th>Wirkung</th></tr>
+<tr><td><code>SETSETUP:1</code></td><td>Setup an: JOG <b>ohne</b> Amin/Amax (auch negativ bzw. über Max), <b>ohne</b> Referenz, Stall-Erkennung aus; <code>GETPOSDG</code> liefert den <b>Rohwinkel</b>.</td></tr>
+<tr><td><code>SETSETUP:0</code></td><td>Setup aus: laufendes JOG stoppt, Achsgrenzen für JOG wieder aktiv, Stall wieder normal.</td></tr>
+</table>
+<div class="warn"><b>Hinweis:</b> Im Setup-Modus sind Achsgrenzen und Stall-Überwachung <b>außer Kraft</b> — vorsichtig fahren, Mechanik beobachten, nur kurz im Setup bleiben. Die Grenzen sind wieder aktiv, sobald <code>GETSETUP</code> den Wert <code>0</code> liefert: nach <code>SETSETUP:0</code>, nach einem Reboot oder bei Ende des SoftAP (<code>SETWLAN:0</code>).</div>
+<hr>
+<h4 id="cmd-GETSETUP"><code>GETSETUP</code></h4>
+<p><b>Was es macht:</b> Setup-Modus lesen.</p>
+<p><b>Telegramm:</b> <code>#0:20:GETSETUP:0:CS$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETSETUP:&lt;0|1&gt;:&lt;CS&gt;$</code> — <code>0</code> = aus (Grenzen aktiv), <code>1</code> = an (freie Fahrt).</p>
+<hr>
+<h4 id="cmd-SETSRVJOG"><code>SETSRVJOG</code></h4>
+<p><b>Was es macht:</b> Service-JOG für den Fall „unreferenziert“ bzw. „Stall“.</p>
+<p><b>Details:</b> Anders als <code>SETSETUP</code> bleiben die Achsgrenzen (Amin/Amax) in Kraft. Für das Einmessen <b>unter Amin oder über Amax</b> immer <code>SETSETUP</code> verwenden.</p>
+<hr>
+<h4 id="cmd-GETENCCOUNT"><code>GETENCCOUNT</code></h4>
+<p><b>Was es macht:</b> Aktuellen Encoder-Zählerstand lesen (Counts, ganzzahlig, auch negativ).</p>
+<p><b>Telegramm:</b> <code>#0:20:GETENCCOUNT:0:CS$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_GETENCCOUNT:&lt;COUNTS&gt;:&lt;CS&gt;$</code></p>
+<p><b>Details:</b> Zum Einmessen der Counts pro 360° (<code>SETENCCAX</code> bei Typ&nbsp;1 / <code>SETENCCRI</code> bei Typ&nbsp;2): Nach <code>SETREF:1</code> an der mechanischen Null ist der Zählerstand <code>0</code>; an der mechanischen Max-Stellung (<code>SETMAXDG</code>) sind die gelesenen Counts direkt der Wert für <code>SETENCCAX</code> / <code>SETENCCRI</code> — es wird nicht auf 360° hochgerechnet.</p>
+<hr>
+<h4 id="cmd-SETPOSHERE"><code>SETPOSHERE</code></h4>
+<p><b>Was es macht:</b> Die aktuelle mechanische Position als Winkel <code>&lt;DEG&gt;</code> übernehmen (ohne Fahrt), z.&nbsp;B. <code>SETPOSHERE:0,00</code> an der mechanischen Null.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETPOSHERE:0,00:CS$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETPOSHERE:&lt;DEG&gt;:&lt;CS&gt;$</code> oder <code>#20:0:NAK_SETPOSHERE:REASON:CS$</code></p>
+<p><b>Details:</b> Gedacht für das Einmessen im Setup-Modus (<code>SETSETUP:1</code>, Firmware ab 1.9.4). Als Ersatz für die Null kann auch <code>SETENCCOUNT:0</code> verwendet werden. Kontrolle danach: <code>GETPOSDG</code> ≈ gesetzter Winkel. Die Counts pro 360° (<code>SETENCCAX</code> / <code>SETENCCRI</code>) sollten vorher gesetzt sein.</p>
+<hr>
+<h4 id="cmd-SETENCCOUNT"><code>SETENCCOUNT</code></h4>
+<p><b>Was es macht:</b> Encoder-Zählerstand (Counts) live auf einen beliebigen Wert setzen und in FRAM-POS speichern.</p>
+<p><b>Telegramm:</b> <code>#0:20:SETENCCOUNT:&lt;COUNTS&gt;:CS$</code></p>
+<p><b>Antwort:</b> <code>#20:0:ACK_SETENCCOUNT:&lt;COUNTS&gt;:&lt;CS&gt;$</code> — der ACK liefert den tatsächlich gesetzten Wert.</p>
+<p><b>Details:</b></p>
+<ul>
+<li><b>Typ&nbsp;1/2:</b> Counts werden direkt gesetzt (ganzzahlig, auch negativ oder große Werte, z.&nbsp;B. <code>500000</code>).</li>
+<li><b>Typ&nbsp;3:</b> Turn + Pos; maximal 2×CPR.</li>
+<li><b>Typ&nbsp;4:</b> <code>NAK_SETENCCOUNT</code> (nicht unterstützt).</li>
+<li>Gegenstück zum Lesen: <a href="#cmd-GETENCCOUNT"><code>GETENCCOUNT</code></a>. Anders als <code>SETREF:1</code> (Counts = 0 an der Referenzstelle) lässt sich der Zählerstand hier frei vorgeben, z.&nbsp;B. um einen Offset einzustellen oder die Position nach einem Tausch des Encoders zu übernehmen.</li>
+<li>Der Wert wird sofort in FRAM-POS gesichert und bleibt nach einem Neustart erhalten.</li>
+</ul>
+<hr>
+<h4 id="setup-einmessen">Ablauf Einmessen ohne Endschalter</h4>
+<p>Für Rotoren mit Encoder-Typ 1/2 ohne Endschalter (Rotor-Firmware ab 1.9.4):</p>
+<ol>
+<li><code>SETENDSTC:0</code>, <code>SETMAXDG:360,00</code> (oder das mechanische Max)</li>
+<li><code>SETSETUP:1</code> — freie Fahrt (Grenzen und Stall aus)</li>
+<li><code>JOG:1</code> / <code>JOG:2</code> → mechanische Null anfahren → <code>JOG:0</code> → <code>SETPOSHERE:0,00</code> (oder <code>SETENCCOUNT:0</code>)</li>
+<li><code>JOG</code> zum mechanischen Max → <code>GETENCCOUNT</code> → Wert als Counts für den Bereich 0° … <code>SETMAXDG</code> (kein Hochrechnen auf 360°: bei <code>SETMAXDG:180,00</code> gelten die Counts für 180°):<ul>
+<li>Typ&nbsp;1: <code>SETENCCAX:&lt;counts&gt;</code></li>
+<li>Typ&nbsp;2: <code>SETENCCRI:&lt;counts&gt;</code></li></ul></li>
+<li>Nochmals Null anfahren → <code>SETPOSHERE:0,00</code> (Kontrolle: <code>GETPOSDG</code> ≈ 0)</li>
+<li><code>SETSETUP:0</code> — Grenzen wieder an</li>
+</ol>
+<p>Hinweis: Eine CPR-Änderung löst einen Neustart des Rotors aus; der Setup-Modus ist danach aus und muss für Schritt&nbsp;5 erneut mit <code>SETSETUP:1</code> gestartet werden.</p>
+<p>Die Bridge führt diese Schritte unter <b>Aktionen → Inbetriebnahme → Encoder-Kalibrierung</b> geführt aus (Schritte 1–5 mit Fahrtasten, Winkeleingabe und Kontrolle).</p>
 <hr>
 <h3>Weitere</h3>
 <h4 id="cmd-GETHANDSPEED"><code>GETHANDSPEED</code></h4>
@@ -2677,6 +2776,8 @@ Ungültige Werte → <code>NAK_SETROTORTYPE</code>. In der Bridge‑UI unter Par
 <li><code>GETWINDDIROF</code>/<code>SETWINDDIROF</code> = optionaler Richtungs-Offset</li>
 </ul>
 <p>Wichtig: <code>GETWIND</code> ist davon getrennt. Dieser Befehl liefert eine <b>Wind-Schätzung aus dem Motorlastprofil</b> und nicht die direkt gemessenen Werte des RS485-Sensors.</p>
+<h3>10.3 Inbetriebnahme-Wizard (RotorTcpBridge)</h3>
+<p>Die Desktop-App führt unter <b>Aktionen → Inbetriebnahme</b> durch Profilwahl, Rotorverbindung, Encoder-Typ (<code>SETENCTYPE</code>/<code>GETENCTYPE</code>), Fahrparameter, Endschalter, optional Wetter (Typ&nbsp;1/2), Temperatur-Zuordnung, typabhängige Kalibrierung/Referenz (ohne Endschalter geführtes Einmessen mit <code>SETSETUP</code>/<code>JOG</code>/<code>SETPOSHERE</code>/<code>GETENCCOUNT</code>/<code>SETENCCAX|CRI</code>/<code>SETMAXDG</code>; sonst <code>SETREF</code>/<code>SETENCZERO</code>/<code>SETINC*</code>), Prüffahrt (<code>SETPOSDG</code>/<code>GETMOVE</code>) sowie Antennennamen und Protokoll-Dienste. Die Befehle entsprechen der Tabelle in diesem Dokument; Feintuning bleibt in Rotor-Konfiguration / Einstellungen.</p>
 <div class="toplink"><a href="#toc">↑ Inhaltsverzeichnis</a></div>
 </section>
 </main>

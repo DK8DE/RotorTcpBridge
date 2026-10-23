@@ -185,8 +185,8 @@ def _clamp_smooth_d10f(axis: "AxisState", value: float) -> float:
     # AZ mit erweitertem Bereich: pos_max_d10 > 3600.
     if mx > 3600:
         return max(0.0, min(float(mx), float(value)))
-    # EL / Nicht-Wrap: pos_max_d10 900 (90°) oder 1800 (180°); Default 3600 → 90°.
-    el_limit = float(mx) if 0 < mx <= 1800 else 900.0
+    # EL / Nicht-Wrap: 900 (90°), 1800 (180°) oder 3600 (360°); sonst Fallback 90°.
+    el_limit = float(mx) if 0 < mx <= 3600 else 900.0
     return max(0.0, min(el_limit, float(value)))
 
 
@@ -254,6 +254,9 @@ class AxisState:
     referenced: bool = False
     # True sobald ein GETREF-ACK (0 oder 1) vom aktuellen Rotor vorliegt.
     ref_status_known: bool = False
+    # GETENDSTC: 0 = keine Endschalter (kein Homing), 1/2 = Endschalter vorhanden.
+    endstc: Optional[int] = None
+    endstc_known: bool = False
     moving: bool = False
     # GETMOVE: None = noch nicht erkannt, True = Firmware liefert GETMOVE,
     # False = nicht unterstützt (NAK) → Heuristik aus GETPOSDG.
@@ -353,6 +356,8 @@ class AxisState:
     antname1: Optional[str] = None
     antname2: Optional[str] = None
     antname3: Optional[str] = None
+    # Masthöhe in Metern (GETMASTHEIGHT / SETMASTHEIGHT), 0…9999
+    mast_height_m: Optional[float] = None
 
     def clear_getposdg_jump_reject(self) -> None:
         self.pos_reject_streak = 0

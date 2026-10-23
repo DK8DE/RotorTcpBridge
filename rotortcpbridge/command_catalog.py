@@ -574,10 +574,116 @@ SPECS_DATA: list[dict] = [
     },
     {
         "name": "JOG",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 2.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Manuelles Verfahren: 1 = Richtung Amin („minus“), 2 = Richtung Amax, "
+            "0 = Stopp mit Rampe. Unter Amin / über Amax nur im Setup-Modus (SETSETUP:1)."
+        ),
+        "help_text_en": (
+            "Manual movement: 1 = towards Amin (\"minus\"), 2 = towards Amax, "
+            "0 = ramped stop. Below Amin / above Amax only in setup mode (SETSETUP:1)."
+        ),
+    },
+    {
+        "name": "SETSETUP",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 1.0,
+        "help_text": (
+            "Setup-Modus: 1 = an (JOG ohne Amin/Amax, auch negativ/über Max, ohne Referenz, "
+            "Stall aus; GETPOSDG = Rohwinkel), 0 = aus (JOG-Stopp, Achsgrenzen und Stall wieder aktiv)."
+        ),
+        "help_text_en": (
+            "Setup mode: 1 = on (JOG without Amin/Amax, also negative/above max, without reference, "
+            "stall off; GETPOSDG = raw angle), 0 = off (JOG stops, axis limits and stall active again)."
+        ),
+    },
+    {
+        "name": "GETSETUP",
         "kind": "none",
         "params_literal": "0",
-        "help_text": "Manuelles Verfahren (aktuell deaktiviert).",
-        "help_text_en": "Manual movement (currently disabled).",
+        "help_text": (
+            "Setup-Modus lesen. 0 = aus (Grenzen aktiv), 1 = an (freie Fahrt). "
+            "Grenzen sind wieder aktiv, sobald GETSETUP = 0 (nach SETSETUP:0, Reboot oder SoftAP-Ende)."
+        ),
+        "help_text_en": (
+            "Read setup mode. 0 = off (limits active), 1 = on (free movement). "
+            "Limits are active again as soon as GETSETUP = 0 (after SETSETUP:0, reboot or SoftAP end)."
+        ),
+    },
+    {
+        "name": "SETSRVJOG",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 2.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Service-JOG nur bei unreferenziert/Stall, ohne freie Grenzen. "
+            "Zum Einmessen unter/über Amin/Amax immer SETSETUP verwenden."
+        ),
+        "help_text_en": (
+            "Service JOG only when unreferenced/stalled, without free limits. "
+            "For calibrating below/above Amin/Amax always use SETSETUP."
+        ),
+    },
+    {
+        "name": "SETPOSHERE",
+        "kind": "float",
+        "min_value": -720.0,
+        "max_value": 720.0,
+        "decimals": 2,
+        "step": 0.01,
+        "default": 0.0,
+        "help_text": (
+            "Aktuelle Position als Winkel setzen (ohne Fahrt), z. B. SETPOSHERE:0,00 an der "
+            "mechanischen Null. Ersatz: SETENCCOUNT:0. Danach GETPOSDG ≈ Soll."
+        ),
+        "help_text_en": (
+            "Set the current position as the given angle (no movement), e.g. SETPOSHERE:0,00 at the "
+            "mechanical zero. Alternative: SETENCCOUNT:0. Then GETPOSDG ≈ target."
+        ),
+    },
+    {
+        "name": "SETENCCOUNT",
+        "kind": "int",
+        "min_value": -1000000000.0,
+        "max_value": 1000000000.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Encoder-Zählerstand (Counts) live auf einen beliebigen Wert setzen und in FRAM-POS "
+            "speichern (Typ 1/2; Typ 3: Turn+Pos, max. 2×CPR; Typ 4: NAK). "
+            "ACK liefert den gesetzten Wert."
+        ),
+        "help_text_en": (
+            "Set the encoder count live to any value and store it in FRAM-POS "
+            "(type 1/2; type 3: turn+pos, max. 2×CPR; type 4: NAK). "
+            "The ACK returns the value that was set."
+        ),
+    },
+    {
+        "name": "GETENCCOUNT",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Aktuellen Encoder-Zählerstand (Counts) lesen. Zum Einmessen (SETENCCAX / SETENCCRI): "
+            "Counts an der mechanischen Max-Stellung (Null = 0) = Wert für den Bereich 0° … SETMAXDG."
+        ),
+        "help_text_en": (
+            "Read current encoder count. For calibration (SETENCCAX / SETENCCRI): "
+            "count at the mechanical max position (zero = 0) = value for the range 0° … SETMAXDG."
+        ),
     },
     {
         "name": "SETPOSDG",
@@ -930,6 +1036,24 @@ SPECS_DATA: list[dict] = [
         "params_literal": "0",
         "help_text": "Anzeigename Antenne 3 vom Rotor lesen.",
         "help_text_en": "Read antenna 3 display name from the rotor.",
+    },
+    {
+        "name": "SETMASTHEIGHT",
+        "kind": "float",
+        "min_value": 0.0,
+        "max_value": 9999.0,
+        "decimals": 1,
+        "step": 0.5,
+        "default": 0.0,
+        "help_text": "Masthöhe in Metern im Rotor speichern (0…9999, NVS).",
+        "help_text_en": "Store mast height in meters in the rotor (0…9999, NVS).",
+    },
+    {
+        "name": "GETMASTHEIGHT",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Masthöhe in Metern vom Rotor lesen (0…9999).",
+        "help_text_en": "Read mast height in meters from the rotor (0…9999).",
     },
     {
         "name": "SETANTDP1",

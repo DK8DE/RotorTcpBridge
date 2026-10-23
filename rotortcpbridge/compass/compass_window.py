@@ -143,7 +143,7 @@ class CompassWindow(QDialog):
     sig_dgcal_set_done = Signal(str, bool, str, float)  # axis, ok, err, value
 
     _MIN_WIDTH = 870
-    _MIN_HEIGHT = 780
+    _MIN_HEIGHT = 870
     _VAL_COLOR_SOLL = "#ff6b6b"
     _VAL_COLOR_IST = "#5ee07a"
     _VAL_COLOR_IST_REVERSE = "#da9a5c"
@@ -2493,17 +2493,23 @@ class CompassWindow(QDialog):
             pass
 
     def update_homing_buttons_visibility(self) -> None:
-        """Absolut-Encoder (Typ 3): AZ/EL-Homing-Buttons und Home-Status ausblenden."""
-        hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        """Homing-Tasten: Absolut-Encoder oder keine Endanschläge ausblenden.
+
+        Home-Status-Zeile nur bei Absolut-Encoder aus (dort immer „referenziert“).
+        """
+        abs_hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        fn = getattr(self.ctrl, "homing_button_hidden_for_axis", None)
+        hide_az = bool(fn("az")) if callable(fn) else abs_hide
+        hide_el = bool(fn("el")) if callable(fn) else abs_hide
         try:
-            self.btn_ref_az.setVisible(not hide)
-            self.btn_ref_el.setVisible(not hide)
+            self.btn_ref_az.setVisible(not hide_az)
+            self.btn_ref_el.setVisible(not hide_el)
         except Exception:
             pass
         for row in (getattr(self, "_top_ref_row", None), getattr(self, "_top_el_ref_row", None)):
             if row is not None:
                 try:
-                    row.setVisible(not hide)
+                    row.setVisible(not abs_hide)
                 except Exception:
                     pass
 
@@ -2638,9 +2644,15 @@ class CompassWindow(QDialog):
 
     @Slot()
     def _tick(self) -> None:
-        hide_homing = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
-        if hide_homing != getattr(self, "_homing_ui_hidden_for_abs_enc", False):
-            self._homing_ui_hidden_for_abs_enc = hide_homing
+        abs_hide = bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)())
+        fn = getattr(self.ctrl, "homing_button_hidden_for_axis", None)
+        hide_key = (
+            abs_hide,
+            bool(fn("az")) if callable(fn) else abs_hide,
+            bool(fn("el")) if callable(fn) else abs_hide,
+        )
+        if hide_key != getattr(self, "_homing_ui_hidden_for_abs_enc", None):
+            self._homing_ui_hidden_for_abs_enc = hide_key
             self.update_homing_buttons_visibility()
         self.refresh_visibility()
         if self._profile_switch_locked() != getattr(self, "_profile_ui_hold_last", None):

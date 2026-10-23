@@ -107,6 +107,9 @@ class _FakeCtrl:
         if cmd.startswith("GET"):
             key = "SET" + cmd[3:]
             if key not in self.stored:
+                # Probe GETCONTID: Link gilt als erreichbar, wenn Controllerspeicher da ist
+                if cmd == "GETCONTID":
+                    return str(self.stored.get("SETCONTID", 2))
                 return None
             return str(self.stored[key])
         self.writes.append((cmd, params))

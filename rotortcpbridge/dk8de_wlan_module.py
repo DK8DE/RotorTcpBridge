@@ -498,13 +498,16 @@ def _local_ipv4_subnets() -> List[ipaddress.IPv4Network]:
     for ip in _dk8de_local_ipv4_addrs():
         try:
             addr = ipaddress.ip_address(ip)
-            if addr.is_link_local:
+            if not isinstance(addr, ipaddress.IPv4Address) or addr.is_link_local:
                 continue
-            net = ipaddress.ip_network(f"{ip}/24", strict=False)
-            nets[str(net)] = net
+            net = ipaddress.IPv4Network(f"{ip}/24", strict=False)
+            if isinstance(net, ipaddress.IPv4Network):
+                nets[str(net)] = net
         except ValueError:
             continue
-    nets.setdefault("192.168.4.0/24", ipaddress.ip_network("192.168.4.0/24"))
+    fallback = ipaddress.IPv4Network("192.168.4.0/24")
+    if isinstance(fallback, ipaddress.IPv4Network):
+        nets.setdefault("192.168.4.0/24", fallback)
     return list(nets.values())
 
 

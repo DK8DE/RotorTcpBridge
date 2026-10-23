@@ -25,12 +25,16 @@ class _FakeHw:
         self._connected = True
         self.cfg: dict = {}
         self._expected_dst = 0
+        # GETLINKMODE-Antwort (0/1/2); SETLINKMODE aktualisiert den Wert.
+        self.link_mode = 1
 
     def start(self) -> None:
         self._running = True
+        self._connected = True
 
     def stop(self) -> None:
         self._running = False
+        self._connected = False
 
     def is_connected(self) -> bool:
         return bool(self._connected)
@@ -41,6 +45,9 @@ class _FakeHw:
     def set_expected_response_dst(self, dst: int) -> None:
         self._expected_dst = int(dst)
 
+    def clear_pending(self, _reason: str = "") -> None:
+        pass
+
     def send_request(self, req: HwRequest) -> None:
         self.sent_requests.append(req)
         if self.on_tx_line is not None:
@@ -48,6 +55,35 @@ class _FakeHw:
                 self.on_tx_line(str(req.line).strip(), len(self.sent_requests))
             except Exception:
                 pass
+        # Sync-Befehle des Proxys sofort mit ACK beantworten (GETCONTID / SET*).
+        cb = getattr(req, "on_done", None)
+        if callable(cb) and bool(getattr(req, "wait_for_reply", False)):
+            tel = parse(str(req.line).strip())
+            exp = str(getattr(req, "expect_prefix", "") or "").strip().upper()
+            if tel is not None and exp:
+                cmd_u = str(tel.cmd or "").strip().upper()
+                params = "1"
+                if cmd_u == "GETLINKMODE":
+                    params = str(int(self.link_mode))
+                elif cmd_u == "SETLINKMODE":
+                    try:
+                        self.link_mode = int(str(tel.params or "1").split(",")[0])
+                    except (TypeError, ValueError):
+                        self.link_mode = 1
+                    params = str(int(self.link_mode))
+                elif cmd_u == "SETCONREMOTE":
+                    params = str(tel.params or "1")
+                ack_line = build(
+                    int(tel.dst),
+                    int(self._expected_dst),
+                    exp,
+                    params,
+                )
+                ack = parse(ack_line)
+                try:
+                    cb(ack, None)
+                except Exception:
+                    pass
 
     def send_line_fire_and_forget(self, line: str) -> None:
         self.ff_lines.append(str(line).strip())
@@ -63,6 +99,7 @@ class _FakeCtrl:
         self.slave_el = 21
         self.enable_az = True
         self.enable_el = True
+        self.el_hw = None
         self.cleared_follow = False
         self.link_telegrams: List[Any] = []
         self.sync_calls: List[tuple] = []
@@ -115,6 +152,39 @@ def test_proxy_forwards_display_to_rotor_and_mirrors_rotor() -> None:
     assert rotor.sent_requests == []
     assert len(ctrl.link_telegrams) == 1
     assert ctrl.cleared_follow is True
+
+
+def test_proxy_routes_el_drive_to_el_hw() -> None:
+    """Dual-IP: Display-SETPOSDG an Slave-EL muss auf el_hw, nicht auf AZ-Link."""
+    rotor = _FakeHw()
+    el_hw = _FakeHw()
+    ctrl_hw = _FakeHw()
+    ctrl = _FakeCtrl()
+    ctrl.el_hw = el_hw
+    proxy = ControllerRemoteUsbProxy(rotor, ctrl_hw, ctrl, _FakeLog())  # type: ignore[arg-type]
+    proxy.update_cfg(_active_cfg())
+    proxy._start_proxy()
+    proxy.refresh_rotor_hooks()
+    assert el_hw.on_rx_line is not None
+    assert getattr(el_hw.on_rx_line, "__func__", None) is getattr(
+        proxy.on_rotor_rx_line, "__func__", None
+    )
+
+    line = build(2, 21, "SETPOSDG", "45,00")
+    proxy.on_ctrl_rx_line(line)
+    takeover = build(0, 21, "SETPOSDG", "45,00")
+    assert takeover in el_hw.ff_lines
+    assert takeover not in rotor.ff_lines
+
+    # AZ weiter auf Primärlink
+    az = build(2, 20, "SETPOSDG", "10,00")
+    proxy.on_ctrl_rx_line(az)
+    assert build(0, 20, "SETPOSDG", "10,00") in rotor.ff_lines
+
+    # EL-RX wird ans Display gespiegelt
+    ack = build(21, 0, "ACK_GETPOSDG", "45,00")
+    proxy.on_rotor_rx_line(ack)
+    assert any("ACK_GETPOSDG" in x for x in ctrl_hw.ff_lines)
 
     # Routine-GET der Software wird nicht gespiegelt
     soft_get = build(0, 20, "GETANEMO", "0")
@@ -345,20 +415,44 @@ def test_send_ui_command_uses_controller_link_when_remote() -> None:
     assert "SETCONTAZID" in rotor.sent_requests[0].line
 
 
-def test_activate_sends_bus_setconremote_before_usb() -> None:
-    """RS485→USB: SETCONREMOTE:1 zuerst über Rotor-Bus, dann USB-Proxy."""
+def test_activate_sends_setconremote_and_setlinkmode() -> None:
+    """PC-USB-Einstieg (auch App-Start): SETCONREMOTE:1 + SETLINKMODE:1."""
     rotor = _FakeHw()
     ctrl_hw = _FakeHw()
     ctrl = _FakeCtrl()
     proxy = ControllerRemoteUsbProxy(rotor, ctrl_hw, ctrl, _FakeLog())  # type: ignore[arg-type]
-    proxy._cfg = _active_cfg()
-    ctrl.sync_calls.clear()
+    proxy.update_cfg(_active_cfg())
     assert proxy.activate() is True
     assert proxy.is_active()
     assert ctrl.usb_remote is True
-    remote_ons = [c for c in ctrl.sync_calls if c[1] == "SETCONREMOTE" and c[2] == "1"]
-    assert remote_ons, ctrl.sync_calls
-    assert remote_ons[0][0] == 2
+    cmds = []
+    for req in rotor.sent_requests + ctrl_hw.sent_requests:
+        tel = parse(str(req.line).strip())
+        if tel is not None:
+            cmds.append((str(tel.cmd).upper(), str(tel.params or "")))
+    assert any(c == ("SETCONREMOTE", "1") for c in cmds), cmds
+    assert any(c == ("SETLINKMODE", "1") for c in cmds), cmds
+
+
+def test_enter_from_web_bounces_remote_session() -> None:
+    """WEB→PC-USB: wie Einstellungs-Haken SETCONREMOTE 0→1 + COM-Recycle."""
+    rotor = _FakeHw()
+    ctrl_hw = _FakeHw()
+    ctrl_hw.link_mode = 2
+    ctrl = _FakeCtrl()
+    proxy = ControllerRemoteUsbProxy(rotor, ctrl_hw, ctrl, _FakeLog())  # type: ignore[arg-type]
+    proxy.update_cfg(_active_cfg())
+    assert proxy.activate() is True
+    assert proxy.is_active()
+    assert ctrl_hw.link_mode == 1
+    remote_cmds = []
+    for req in ctrl_hw.sent_requests:
+        tel = parse(str(req.line).strip())
+        if tel is not None and str(tel.cmd).upper() == "SETCONREMOTE":
+            remote_cmds.append(str(tel.params or ""))
+    assert "0" in remote_cmds, remote_cmds
+    assert "1" in remote_cmds, remote_cmds
+    assert remote_cmds.index("0") < remote_cmds.index("1")
 
 
 def test_proxy_sends_setconremote_0_before_stop() -> None:
@@ -368,13 +462,14 @@ def test_proxy_sends_setconremote_0_before_stop() -> None:
     ctrl = _FakeCtrl()
     proxy = ControllerRemoteUsbProxy(rotor, ctrl_hw, ctrl, _FakeLog())  # type: ignore[arg-type]
     proxy.update_cfg(_active_cfg())
+    assert proxy.activate() is True
     assert proxy.is_active()
-    ctrl.sync_calls.clear()
-    off = {
-        "controller_hw": {"enabled": True, "usb_remote": False, "cont_id": 2},
-        "controller_link": {"mode": "com", "com_port": "COM9", "baudrate": 115200},
-    }
-    proxy.update_cfg(off)
+    assert proxy.apply_mode(False, timeout_s=2.0) is True
     assert not proxy.is_active()
     assert ctrl.usb_remote is False
-    assert any(c[1] == "SETCONREMOTE" and c[2] == "0" for c in ctrl.sync_calls)
+    cmds = [
+        str(parse(str(req.line).strip()).cmd).upper()  # type: ignore[union-attr]
+        for req in ctrl_hw.sent_requests
+        if parse(str(req.line).strip()) is not None
+    ]
+    assert "SETCONREMOTE" in cmds

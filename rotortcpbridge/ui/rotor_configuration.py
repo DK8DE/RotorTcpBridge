@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..axis_link import ensure_axis_tcp_link
 from ..rs485_protocol import BROADCAST_DST, build
 from ..command_catalog import command_specs, format_cmd_tooltip
 from ..app_icon import get_app_icon
@@ -1245,6 +1246,28 @@ class CommandButtonsWindow(QDialog):
             self._slave_renumber_old_snap = int(old_dst)
         except Exception:
             self._slave_renumber_old_snap = None
+
+        # Broadcast muss über die IP der gewählten Achse gehen (setup_axis_endpoints).
+        axis = "az"
+        keys = self._rotor_bus_keys_with_slave_id(int(old_dst)) if old_dst else set()
+        if not keys:
+            keys = self._rotor_bus_keys_for_dst_combo_row(self._id_change_combo_index)
+        if "slave_el" in keys and "slave_az" not in keys:
+            axis = "el"
+        ok_link, link_detail = ensure_axis_tcp_link(
+            self.ctrl,
+            self.cfg,
+            axis,
+            save_cfg_cb=self.save_cfg_cb,
+            timeout_s=5.0,
+        )
+        if not ok_link:
+            QMessageBox.warning(
+                self,
+                t("cmd.btn_set_rotor_id"),
+                t("cmd.msgbox_setrotorid_link_fail", detail=link_detail, axis=axis.upper()),
+            )
+            return
 
         self._set_rotor_id_broadcast_inflight = True
         self.btn_set_rotor_id.setEnabled(False)

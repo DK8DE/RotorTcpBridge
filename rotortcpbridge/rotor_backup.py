@@ -78,6 +78,7 @@ _SET_TO_GET_SPECIAL = {
     "SETANGLE1": "GETANGLE1",
     "SETANGLE2": "GETANGLE2",
     "SETANGLE3": "GETANGLE3",
+    "SETMASTHEIGHT": "GETMASTHEIGHT",
 }
 
 # Display-/Hardware-Controller (nicht Rotor-Slave)
@@ -482,6 +483,9 @@ def push_controller_rotor_ids(ctrl: Any, cfg: Optional[Dict[str, Any]]) -> bool:
 
     Wird für Controller im Modus WEB gebraucht: der Display spricht über den Browser
     direkt den Rotor an — hat das Profil eine andere Slave-ID, antwortet sonst niemand.
+
+    Ohne erreichbaren Controller-Link (GETCONTID-Probe) sofort False — kein langes
+    Blockieren der UI bei offline/WEB ohne Relay.
     """
     if not hasattr(ctrl, "sync_ui_command_response"):
         return True
@@ -491,13 +495,29 @@ def push_controller_rotor_ids(ctrl: Any, cfg: Optional[Dict[str, Any]]) -> bool:
         return True
     from .rotor_controller import SYNC_UI_NAK_PREFIX
 
+    # Probe: Controller erreichbar? (Timeout etwas großzügiger — Bus/USB kann busy sein)
+    try:
+        probe = ctrl.sync_ui_command_response(
+            dst, "GETCONTID", "0", "ACK_GETCONTID", timeout_s=1.5
+        )
+    except Exception:
+        return False
+    if probe is None or str(probe).startswith(SYNC_UI_NAK_PREFIX):
+        return False
+
     ok_all = True
     for key, cmd in (("az_rotor_id", "SETCONTAZID"), ("el_rotor_id", "SETCONTELID")):
         want = int(ids[key])
         cur = read_controller_int(ctrl, dst, cmd)
         if cur is not None and int(cur) == want:
             continue
-        r = ctrl.sync_ui_command_response(dst, cmd, str(want), "ACK_" + cmd, timeout_s=1.5)
+        try:
+            r = ctrl.sync_ui_command_response(
+                dst, cmd, str(want), "ACK_" + cmd, timeout_s=1.5
+            )
+        except Exception:
+            ok_all = False
+            continue
         if r is None or str(r).startswith(SYNC_UI_NAK_PREFIX):
             ok_all = False
     return ok_all

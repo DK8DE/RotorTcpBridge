@@ -140,6 +140,8 @@ class BrowserBusRelay(ControllerRemoteUsbProxy):
         self._watch: Optional[threading.Thread] = None
         # Wird nach jedem (Neu-)Attach aufgerufen (Browser verbindet sich).
         self.on_attached: Optional[Callable[[], None]] = None
+        # Profilwechsel WEB→PC-USB/RS485: Browser soll Web Serial freigeben.
+        self._force_disconnect = False
 
     # --- Display-Seite ---------------------------------------------------------
 
@@ -211,6 +213,20 @@ class BrowserBusRelay(ControllerRemoteUsbProxy):
             except Exception:
                 pass
 
+    def request_force_disconnect(self) -> None:
+        """Browser beim nächsten /api/bus-Tick zum Web-Serial-Trennen auffordern."""
+        self._force_disconnect = True
+        try:
+            self.log.write("INFO", "Browser-Bus-Relay: Web Serial freigeben (Profilwechsel)")
+        except Exception:
+            pass
+
+    def consume_force_disconnect(self) -> bool:
+        if not self._force_disconnect:
+            return False
+        self._force_disconnect = False
+        return True
+
     def _watch_loop(self) -> None:
         while self._active:
             time.sleep(0.3)
@@ -229,6 +245,16 @@ class BrowserBusRelay(ControllerRemoteUsbProxy):
         if payload.get("disconnect"):
             self.detach()
             return {"ok": True, "active": False, "rx": [], "seq": self._seq}
+
+        if self.consume_force_disconnect():
+            self.detach()
+            return {
+                "ok": True,
+                "active": False,
+                "force_disconnect": True,
+                "rx": [],
+                "seq": self._seq,
+            }
 
         desktop = self._desktop_getter() if callable(self._desktop_getter) else None
         try:

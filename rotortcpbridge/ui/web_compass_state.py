@@ -85,9 +85,20 @@ def web_tick_scan(mw: Any) -> None:
 
 def web_effective_az_target_d10(mw: Any) -> int:
     """Effektives AZ-Soll für Web (SETPOSCC bevorzugt, mit Latch gegen Flackern)."""
-    axis = getattr(getattr(mw, "ctrl", None), "az", None)
+    return _web_effective_target_d10(mw, "az")
+
+
+def web_effective_el_target_d10(mw: Any) -> int:
+    """Effektives EL-Soll für Web (SETPOSCC vom Controller bevorzugt, mit Latch)."""
+    return _web_effective_target_d10(mw, "el")
+
+
+def _web_effective_target_d10(mw: Any, which: str) -> int:
+    axis = getattr(getattr(mw, "ctrl", None), which, None)
     if axis is None:
         return 0
+    latch_attr = f"_web_cc_latch_{which}_d10"
+    latch_ts_attr = f"_web_cc_latch_{which}_ts"
     now = time.time()
     try:
         cc = getattr(axis, "compass_target_d10", None)
@@ -98,17 +109,17 @@ def web_effective_az_target_d10(mw: Any) -> int:
     except Exception:
         moving = False
     if cc is not None:
-        mw._web_cc_latch_az_d10 = int(cc)
-        mw._web_cc_latch_az_ts = now
+        setattr(mw, latch_attr, int(cc))
+        setattr(mw, latch_ts_attr, now)
         return int(cc)
-    latch = getattr(mw, "_web_cc_latch_az_d10", None)
+    latch = getattr(mw, latch_attr, None)
     if latch is not None:
         try:
             td = int(getattr(axis, "target_d10", 0))
         except Exception:
             td = 0
         try:
-            latch_ts = float(getattr(mw, "_web_cc_latch_az_ts", 0.0) or 0.0)
+            latch_ts = float(getattr(mw, latch_ts_attr, 0.0) or 0.0)
         except Exception:
             latch_ts = 0.0
         hold = False
@@ -120,8 +131,8 @@ def web_effective_az_target_d10(mw: Any) -> int:
         caught_up = abs(td - int(latch)) <= 2
         if moving or hold or (recent and not caught_up):
             return int(latch)
-        mw._web_cc_latch_az_d10 = None
-        mw._web_cc_latch_az_ts = 0.0
+        setattr(mw, latch_attr, None)
+        setattr(mw, latch_ts_attr, 0.0)
     try:
         return int(getattr(axis, "target_d10", 0))
     except Exception:
@@ -367,7 +378,14 @@ def get_web_compass_payload(mw: Any) -> dict:
     except Exception:
         beam_color = "rgba(80,160,255,0.28)"
 
-    hide_homing = bool(getattr(mw.ctrl, "abs_encoder_no_homing", lambda: False)())
+    abs_hide_homing = bool(getattr(mw.ctrl, "abs_encoder_no_homing", lambda: False)())
+    _homing_btn_fn = getattr(mw.ctrl, "homing_button_hidden_for_axis", None)
+    hide_ref_az = (
+        bool(_homing_btn_fn("az")) if callable(_homing_btn_fn) else abs_hide_homing
+    )
+    hide_ref_el = (
+        bool(_homing_btn_fn("el")) if callable(_homing_btn_fn) else abs_hide_homing
+    )
     enable_az = bool(getattr(mw.ctrl, "enable_az", True))
     enable_el = bool(getattr(mw.ctrl, "enable_el", False))
     try:
@@ -388,7 +406,8 @@ def get_web_compass_payload(mw: Any) -> dict:
             except Exception:
                 el_ist = None
         try:
-            el_soll = clamp_el(float(getattr(mw.ctrl.el, "target_d10", 0)) / 10.0, el_max)
+            # SETPOSCC vom Controller (Encoder/Kompass-Klick) bevorzugen — wie im Desktop-Kompass.
+            el_soll = clamp_el(float(web_effective_el_target_d10(mw)) / 10.0, el_max)
         except Exception:
             el_soll = None
 
@@ -550,7 +569,10 @@ def get_web_compass_payload(mw: Any) -> dict:
         "enable_az": enable_az,
         "enable_el": enable_el,
         "rig": rig,
-        "ref_visible": not hide_homing,
+        "ref_visible": not (hide_ref_az and hide_ref_el),
+        "ref_az_visible": not hide_ref_az,
+        "ref_el_visible": not hide_ref_el,
+        "ref_status_visible": not abs_hide_homing,
         "drive_sync": bool(drive_sync),
         "profile_locked": bool(drive_sync) or profile_moving,
         "bus": {
@@ -687,6 +709,8 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
             max_deg = float(mw._el_max_deg())
         except Exception:
             max_deg = 90.0
+        mw._web_cc_latch_el_d10 = None
+        mw._web_cc_latch_el_ts = 0.0
         mw.ctrl.set_el_deg(clamp_el(deg, max_deg), force=True)
         return True
     if act == "set_pwm":
@@ -742,6 +766,9 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
             direction = int(data.get("dir", 0))
         except (TypeError, ValueError):
             direction = 0
+        if direction in (1, 2):
+            mw._web_cc_latch_el_d10 = None
+            mw._web_cc_latch_el_ts = 0.0
         try:
             mw.ctrl.jog_el(direction)
         except Exception:

@@ -17,7 +17,7 @@ def wrap_deg(v: float) -> float:
 
 
 def clamp_el(deg: float, max_deg: float = 90.0) -> float:
-    """EL-Winkel auf 0..max_deg begrenzen (90° oder 180° je nach Rotortyp)."""
+    """EL-Winkel auf 0..max_deg begrenzen (90° / 180° / 360° je nach Rotortyp)."""
     try:
         v = float(deg)
     except Exception:
@@ -28,8 +28,8 @@ def clamp_el(deg: float, max_deg: float = 90.0) -> float:
         mx = 90.0
     if mx < 90.0:
         mx = 90.0
-    if mx > 180.0:
-        mx = 180.0
+    if mx > 360.0:
+        mx = 360.0
     if v < 0.0:
         v = 0.0
     if v > mx:
@@ -38,13 +38,23 @@ def clamp_el(deg: float, max_deg: float = 90.0) -> float:
 
 
 def el_max_deg_from_rotor_type(rotor_type: int | None) -> float:
-    """Maximaler Elevationswinkel aus GETROTORTYPE: 3 → 180°, sonst 90°."""
+    """Maximaler Elevationswinkel aus GETROTORTYPE: 1→360°, 2→90°, 3→180°."""
+    if rotor_type is None:
+        return 90.0
     try:
-        if int(rotor_type) == 3:
-            return 180.0
-    except Exception:
-        pass
+        rt = int(rotor_type)
+    except (TypeError, ValueError):
+        return 90.0
+    if rt == 1:
+        return 360.0
+    if rt == 3:
+        return 180.0
     return 90.0
+
+
+def el_pos_max_d10_from_rotor_type(rotor_type: int | None) -> int:
+    """pos_max_d10 (0,1°) aus GETROTORTYPE: 1→3600, 2→900, 3→1800."""
+    return int(round(el_max_deg_from_rotor_type(rotor_type) * 10.0))
 
 
 def compute_dgcal_deg(

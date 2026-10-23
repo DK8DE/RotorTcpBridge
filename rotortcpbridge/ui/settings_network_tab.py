@@ -80,26 +80,56 @@ _READ_UNREACHABLE = "UNREACHABLE"
 class _BusyProgressMixin:
     """Modales Wartefenster mit unbestimmtem Balken (Suche / Schreiben)."""
 
+    def _busy_progress_parent(self) -> Optional[QWidget]:
+        """Nächstes sichtbares Top-Level (Wizard/Settings), nicht nur MainWindow."""
+        if not isinstance(self, QWidget):
+            return None
+        w: Optional[QWidget] = self
+        while w is not None:
+            try:
+                if w.isWindow() and (w.isVisible() or w is self.window()):
+                    return w
+            except RuntimeError:
+                break
+            try:
+                w = w.parentWidget()
+            except RuntimeError:
+                break
+        try:
+            return self.window()
+        except RuntimeError:
+            return None
+
     def _show_busy_progress(self, title: str, label: str) -> None:
         self._close_busy_progress()
-        parent_win = self.window() if isinstance(self, QWidget) else None
+        parent_win = self._busy_progress_parent()
         dlg = QProgressDialog(label, "", 0, 0, parent_win)
         dlg.setWindowTitle(title)
         dlg.setCancelButton(None)
-        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
         dlg.setMinimumDuration(0)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.show()
         QApplication.processEvents()
         self._busy_progress = dlg
 
     def _close_busy_progress(self) -> None:
         dlg = getattr(self, "_busy_progress", None)
-        if dlg is not None:
-            try:
-                dlg.close()
-            except RuntimeError:
-                pass
-            self._busy_progress = None
+        self._busy_progress = None
+        if dlg is None:
+            return
+        try:
+            dlg.hide()
+        except RuntimeError:
+            pass
+        try:
+            dlg.close()
+        except RuntimeError:
+            pass
+        try:
+            dlg.deleteLater()
+        except RuntimeError:
+            pass
 
 
 class _WaitHostWorker(QThread):
@@ -1656,6 +1686,10 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
     # sich veraendert hat und sofort persistiert werden soll (ohne dass der
     # Nutzer extra auf den globalen "Speichern"-Button klicken muss).
     save_requested = Signal()
+    # IP + Datenport des gewählten Moduls → Rotorverbindung (Wizard/Settings).
+    apply_to_link_requested = Signal(str, int)
+    # Wie apply_to_link, mit Achse ``"az"`` | ``"el"`` (Inbetriebnahme).
+    apply_axis_link_requested = Signal(str, int, str)
 
     def __init__(self, cfg: dict, parent=None):
         super().__init__(parent)
@@ -1692,6 +1726,8 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self._probe_busy = False
         self._probe_gen = 0
         self._leds: List[Led] = []
+        # Im Wizard: showEvent ohne modalen Busy-Dialog (Parent oft MainWindow).
+        self._quiet_on_show = False
         self._build_ui()
         self.load_from_cfg()
         self._status_timer = QTimer(self)
@@ -1872,9 +1908,23 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self._btn_web = QPushButton(t("settings.network_btn_web"))
         self._btn_web.setToolTip(tt("settings.network_btn_web_tooltip"))
         self._btn_web.clicked.connect(self._on_web)
+        self._btn_apply_link = QPushButton(t("settings.network_btn_apply_link"))
+        self._btn_apply_link.setToolTip(tt("settings.network_btn_apply_link_tooltip"))
+        self._btn_apply_link.clicked.connect(self._on_apply_to_link)
+        self._btn_apply_az = QPushButton(t("settings.network_btn_apply_az"))
+        self._btn_apply_az.setToolTip(tt("settings.network_btn_apply_az_tooltip"))
+        self._btn_apply_az.clicked.connect(lambda: self._on_apply_axis_link("az"))
+        self._btn_apply_az.setVisible(False)
+        self._btn_apply_el = QPushButton(t("settings.network_btn_apply_el"))
+        self._btn_apply_el.setToolTip(tt("settings.network_btn_apply_el_tooltip"))
+        self._btn_apply_el.clicked.connect(lambda: self._on_apply_axis_link("el"))
+        self._btn_apply_el.setVisible(False)
         act_row1.addWidget(self._btn_read)
         act_row1.addWidget(self._btn_write)
         act_row1.addWidget(self._btn_web)
+        act_row1.addWidget(self._btn_apply_link)
+        act_row1.addWidget(self._btn_apply_az)
+        act_row1.addWidget(self._btn_apply_el)
         act_row1.addStretch(1)
         act.addLayout(act_row1)
 
@@ -1915,15 +1965,31 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
     # ----------------------------------------------------------- show/hide
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
-        self.on_tab_shown()
+        self.on_tab_shown(quiet=bool(getattr(self, "_quiet_on_show", False)))
 
-    def on_tab_shown(self) -> None:
-        """Beim Anzeigen des Tabs: Erreichbarkeit pruefen (Busy nur beim ersten Mal)."""
+    def stop_background_activity(self) -> None:
+        """Timer/Busy-Dialog stoppen (Wizard-Seite verlassen, COM-Modus, Abbruch)."""
+        try:
+            self._status_timer.stop()
+        except Exception:
+            pass
+        self._probe_busy = False
+        self._close_busy_progress()
+
+    def on_tab_shown(self, *, quiet: bool = False) -> None:
+        """Beim Anzeigen des Tabs: Erreichbarkeit pruefen (Busy nur beim ersten Mal).
+
+        ``quiet=True``: kein modaler Progress-Dialog (z. B. eingebettet im Wizard).
+        """
         if not self._status_timer.isActive():
             self._status_timer.start()
         if not self._modules:
             return
         if self._probe_busy and getattr(self, "_busy_progress", None) is not None:
+            return
+        if quiet:
+            self._status_known = True
+            QTimer.singleShot(0, self._tick_probe)
             return
         if not self._status_known:
             self._start_probe_with_busy()
@@ -2150,6 +2216,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
             self._btn_read,
             self._btn_write,
             self._btn_web,
+            self._btn_apply_link,
             self._btn_stats,
             self._btn_remove,
         )
@@ -2370,6 +2437,84 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
             return
         url = f"http://{m.host.strip()}:{int(m.web_port)}/"
         QDesktopServices.openUrl(QUrl(url))
+
+    def set_dual_axis_apply(self, *, enable_az: bool, enable_el: bool) -> None:
+        """Wizard: „Übernehmen AZ/EL“ statt eines generischen Übernehmen."""
+        dual = bool(enable_az or enable_el)
+        self._btn_apply_link.setVisible(not dual)
+        self._btn_apply_az.setVisible(bool(enable_az) and dual)
+        self._btn_apply_el.setVisible(bool(enable_el) and dual)
+
+    def _persist_axis_endpoint(self, axis: str, host: str, port: int) -> None:
+        """Merkt Host/Port je Achse — SETROTORID-Broadcast nutzt genau diese IP."""
+        cfg = self._cfg if isinstance(self._cfg, dict) else {}
+        ui = cfg.setdefault("ui", {})
+        if not isinstance(ui, dict):
+            cfg["ui"] = {}
+            ui = cfg["ui"]
+        eps = ui.setdefault("setup_axis_endpoints", {})
+        if not isinstance(eps, dict):
+            eps = {}
+            ui["setup_axis_endpoints"] = eps
+        eps[str(axis)] = {"host": str(host or "").strip(), "port": int(port)}
+
+    def _emit_apply_link(self, host: str, port: int, axis: str | None = None) -> None:
+        host = str(host or "").strip()
+        port = max(1, min(65535, int(port)))
+        if axis in ("az", "el"):
+            self._persist_axis_endpoint(axis, host, port)
+            self.apply_axis_link_requested.emit(host, port, axis)
+            self._lbl_status.setText(
+                t(
+                    "settings.network_apply_axis_done",
+                    axis=axis.upper(),
+                    host=host,
+                    port=port,
+                )
+            )
+        else:
+            # Generisches Übernehmen: als AZ-Endpunkt (und EL, falls schon gesetzt gleich halten)
+            self._persist_axis_endpoint("az", host, port)
+            eps = (self._cfg.get("ui") or {}).get("setup_axis_endpoints") or {}
+            el = eps.get("el") if isinstance(eps, dict) else None
+            if not (isinstance(el, dict) and str(el.get("host") or "").strip()):
+                self._persist_axis_endpoint("el", host, port)
+            self.apply_to_link_requested.emit(host, port)
+            self._lbl_status.setText(
+                t("settings.network_apply_link_done", host=host, port=port)
+            )
+
+    def _on_apply_to_link(self) -> None:
+        """Gewähltes Modul → IP/Port der Rotorverbindung (TCP)."""
+        self._apply_form_to_current()
+        m = self._current()
+        if m is None or not str(m.host or "").strip():
+            QMessageBox.information(
+                self, t("settings.network_tab"), t("settings.network_need_host")
+            )
+            return
+        host = str(m.host or "").strip()
+        try:
+            port = int(m.at_port or 8886)
+        except Exception:
+            port = 8886
+        self._emit_apply_link(host, port, None)
+
+    def _on_apply_axis_link(self, axis: str) -> None:
+        """Gewähltes Modul → IP/Port für AZ- oder EL-Rotor (Wizard)."""
+        self._apply_form_to_current()
+        m = self._current()
+        if m is None or not str(m.host or "").strip():
+            QMessageBox.information(
+                self, t("settings.network_tab"), t("settings.network_need_host")
+            )
+            return
+        host = str(m.host or "").strip()
+        try:
+            port = int(m.at_port or 8886)
+        except Exception:
+            port = 8886
+        self._emit_apply_link(host, port, str(axis or "az"))
 
     def _on_read(self) -> None:
         self._start_read(interactive=True)
@@ -3002,6 +3147,9 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self._btn_write.setToolTip(tt("settings.network_btn_write_tooltip"))
         self._btn_web.setText(t("settings.network_btn_web"))
         self._btn_web.setToolTip(tt("settings.network_btn_web_tooltip"))
+        if getattr(self, "_btn_apply_link", None) is not None:
+            self._btn_apply_link.setText(t("settings.network_btn_apply_link"))
+            self._btn_apply_link.setToolTip(tt("settings.network_btn_apply_link_tooltip"))
         self._btn_stats.setText(t("settings.network_btn_stats"))
         self._btn_stats.setToolTip(tt("settings.network_btn_stats_tooltip"))
         self._lbl_vendor.setText(t("settings.network_vendor"))

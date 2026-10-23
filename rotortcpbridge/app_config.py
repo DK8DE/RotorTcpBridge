@@ -282,6 +282,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "location_lat": 49.502651,
         "location_lon": 8.375019,
         "location_locator": "",
+        # Masthöhe über Boden (m) — Cache für Karte/Höhenprofil; Quelle: Rotor GETMASTHEIGHT
+        "antenna_height_m": 0.0,
         # Offline-Karte: True = lokale Tiles aus KartenLight-/KartenDark-Ordner verwenden
         "map_offline": False,
         # Amateurfunk-Locator: True = Maidenhead-Grid als Overlay einblenden
@@ -434,6 +436,36 @@ def normalized_antenna_names(
     return out
 
 
+def free_axis_id(taken: int) -> int:
+    """Bus-ID für eine abgeschaltete Achse, die nicht mit ``taken`` kollidiert."""
+    for cand in (21, 20, 22):
+        if cand != int(taken):
+            return cand
+    return 22
+
+
+def dedupe_disabled_axis_id(rb: Dict[str, Any]) -> bool:
+    """Abgeschaltete Achse darf nicht dieselbe Bus-ID wie die aktive Achse haben.
+
+    Sonst ordnet die App Antworten von dieser ID der (abgeschalteten) Achse zu und die
+    aktive Achse bleibt ohne Daten. Rückgabe True, wenn ``rb`` geändert wurde.
+    """
+    try:
+        az = int(rb.get("slave_az", 20))
+        el = int(rb.get("slave_el", 21))
+    except (TypeError, ValueError):
+        return False
+    en_az = bool(rb.get("enable_az", True))
+    en_el = bool(rb.get("enable_el", True))
+    if az != el or en_az == en_el:
+        return False
+    if not en_az:
+        rb["slave_az"] = free_axis_id(el)
+    else:
+        rb["slave_el"] = free_axis_id(az)
+    return True
+
+
 def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Migrationen + Merge mit DEFAULT_CONFIG. ``cfg``=None → frische Defaults (Erstinstallation)."""
     if cfg is None:
@@ -454,10 +486,14 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
     if "pst_server" in cfg and isinstance(cfg["pst_server"], dict):
         ps = cfg["pst_server"]
         if "listen_port" in ps and ("listen_port_az" not in ps or "listen_port_el" not in ps):
-            try:
-                base_port = int(ps.get("listen_port"))
-            except Exception:
+            raw_port = ps.get("listen_port")
+            if raw_port is None:
                 base_port = 4001
+            else:
+                try:
+                    base_port = int(raw_port)
+                except (TypeError, ValueError):
+                    base_port = 4001
             ps.setdefault("listen_port_az", base_port)
             ps.setdefault("listen_port_el", base_port + 1)
             ps.pop("listen_port", None)
@@ -521,6 +557,7 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
         rb.setdefault("enable_az", True)
         rb.setdefault("enable_el", True)
         rb.setdefault("el_rotor_type", 2)
+        dedupe_disabled_axis_id(rb)
 
     # Migration: Controller AZ/EL-Rotor-IDs (SETCONTAZID / SETCONTELID)
     if isinstance(cfg.get("controller_hw"), dict) or isinstance(cfg.get("rotor_bus"), dict):
@@ -528,7 +565,8 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
         if not isinstance(chw_m, dict):
             chw_m = {}
             cfg["controller_hw"] = chw_m
-        rb_m = cfg.get("rotor_bus") if isinstance(cfg.get("rotor_bus"), dict) else {}
+        _rb = cfg.get("rotor_bus")
+        rb_m: dict = _rb if isinstance(_rb, dict) else {}
         if "az_rotor_id" not in chw_m:
             try:
                 saz = int(rb_m.get("slave_az", 20))
@@ -582,6 +620,14 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
     # Antennen-Namen: immer 3 Einträge (ohne AZ nur Config/Defaults, kein GETANTNAME).
     if "ui" in cfg and isinstance(cfg["ui"], dict):
         cfg["ui"]["antenna_names"] = normalized_antenna_names(cfg)
+
+    # AZ/EL-TCP-Endpunkte aus hardware_link ableiten (falls noch nicht gesetzt).
+    try:
+        from .axis_link import ensure_setup_axis_endpoints
+
+        ensure_setup_axis_endpoints(cfg)
+    except Exception:
+        pass
 
     # Migration: rig_bridge flach → {rigs: [...], active_rig_id}.
     # Alte Konfigurationen hatten com_port/rig_brand/... direkt unterhalb

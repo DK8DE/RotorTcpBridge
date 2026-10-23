@@ -90,12 +90,17 @@ class ControllerRemoteUsbProxy:
         self._dedup: Deque[Tuple[str, float]] = deque(maxlen=96)
         self._dedup_s = 1.5
         self._cfg: dict = {}
+        # Display „PC online“ halten (Firmware: ≤4,5 s USB-Stille → „Warten auf PC“).
+        self._keepalive_stop = threading.Event()
+        self._keepalive_thread: Optional[threading.Thread] = None
+        self._keepalive_s = 1.8
 
     def is_active(self) -> bool:
         return bool(self._active)
 
     def _cont_id(self) -> int:
-        chw = self._cfg.get("controller_hw") if isinstance(self._cfg.get("controller_hw"), dict) else {}
+        _chw = self._cfg.get("controller_hw")
+        chw: dict = _chw if isinstance(_chw, dict) else {}
         try:
             return max(0, min(254, int(chw.get("cont_id", 2) or 2)))
         except Exception:
@@ -103,13 +108,15 @@ class ControllerRemoteUsbProxy:
 
     @staticmethod
     def want_remote(cfg: dict) -> bool:
-        chw = cfg.get("controller_hw") if isinstance(cfg.get("controller_hw"), dict) else {}
+        _chw = cfg.get("controller_hw")
+        chw: dict = _chw if isinstance(_chw, dict) else {}
         return bool(chw.get("enabled", True)) and bool(chw.get("usb_remote", False))
 
     def update_cfg(self, cfg: dict) -> None:
         """Nur Config + COM-Link — kein Mode-Wechsel."""
         self._cfg = dict(cfg or {})
-        cl = self._cfg.get("controller_link") if isinstance(self._cfg.get("controller_link"), dict) else {}
+        _cl = self._cfg.get("controller_link")
+        cl: dict = _cl if isinstance(_cl, dict) else {}
         if isinstance(cl, dict) and "no_rx_timeout_s" not in cl:
             cl = dict(cl)
             cl["no_rx_timeout_s"] = 0
@@ -180,19 +187,87 @@ class ControllerRemoteUsbProxy:
 
     def _enter_remote(self, timeout_s: float) -> bool:
         if self._active and self._probe(self.ctrl_hw, timeout_s=0.6):
+            prev = self._getlinkmode(self.ctrl_hw)
+            if prev == 2:
+                # WEB→PC-USB braucht denselben Bounce wie der Einstellungs-Haken.
+                return self._enter_remote_from_web(timeout_s)
+            self._ensure_pc_usb_link_mode()
+            self._start_keepalive()
             return True
 
         self._start_proxy()
-        if not self._wait_hw_connected(self.ctrl_hw, min(4.0, timeout_s)):
+        # PC-USB braucht den Controller-COM — Bus-SETLINKMODE allein „stellt um“ ohne Verbindung.
+        usb_up = self._ensure_usb_open(timeout_s=min(6.0, max(3.0, float(timeout_s))))
+        if not usb_up:
             try:
                 self.log.write("WARN", "Remote USB: Controller-COM nicht bereit")
             except Exception:
                 pass
+            return False
 
         try:
             self.ctrl_hw.clear_pending("enter_remote")
         except Exception:
             pass
+
+        try:
+            self.ctrl.set_controller_link(self.ctrl_hw, True)
+        except Exception:
+            pass
+
+        prev_lm = self._getlinkmode(self.ctrl_hw)
+        if prev_lm == 2:
+            # WEB: remote_usb war schon 1 — nur SETLINKMODE lässt Display auf
+            # „Initialisiere“ hängen. Wie Haken aus/an: Session neu aufsetzen.
+            return self._enter_remote_from_web(timeout_s)
+
+        return self._finish_enter_pc_usb(timeout_s, bounced=False)
+
+    def _enter_remote_from_web(self, timeout_s: float) -> bool:
+        """WEB→PC-USB: SETCONREMOTE 0→1 + COM neu öffnen (wie Einstellungen-Haken)."""
+        self._stop_keepalive()
+        try:
+            self.log.write("INFO", "Remote USB: WEB→PC-USB Session-Bounce")
+        except Exception:
+            pass
+        try:
+            self.ctrl.set_controller_link(self.ctrl_hw, True)
+        except Exception:
+            pass
+        try:
+            self.ctrl_hw.clear_pending("web_bounce")
+        except Exception:
+            pass
+        # remote_usb aus → UART wieder RS485, link_mode=0 (Firmware).
+        self._setconremote(self.ctrl_hw, 0, via="USB")
+        time.sleep(0.45)
+        if not self._recycle_usb_port(timeout_s=min(5.0, max(3.0, float(timeout_s)))):
+            try:
+                self.log.write("WARN", "Remote USB: COM-Recycle nach WEB fehlgeschlagen")
+            except Exception:
+                pass
+            return False
+        try:
+            self.ctrl.set_controller_link(self.ctrl_hw, True)
+        except Exception:
+            pass
+        return self._finish_enter_pc_usb(timeout_s, bounced=True)
+
+    def _finish_enter_pc_usb(self, timeout_s: float, *, bounced: bool) -> bool:
+        """SETCONREMOTE:1 + SETLINKMODE:1, Probe, Keepalive."""
+        try:
+            self.ctrl_hw.clear_pending("enter_pc_usb")
+        except Exception:
+            pass
+        try:
+            self.ctrl.set_controller_link(self.ctrl_hw, True)
+        except Exception:
+            pass
+
+        usb_ok = self._setconremote(self.ctrl_hw, 1, via="USB")
+        if not usb_ok:
+            time.sleep(0.25)
+            usb_ok = self._setconremote(self.ctrl_hw, 1, via="USB")
 
         bus_ok = False
         try:
@@ -201,31 +276,41 @@ class ControllerRemoteUsbProxy:
         except Exception:
             bus_ok = False
 
-        try:
-            self.ctrl.set_controller_link(self.ctrl_hw, True)
-        except Exception:
-            pass
+        link_ok = self._ensure_pc_usb_link_mode()
 
-        usb_ok = self._setconremote(self.ctrl_hw, 1, via="USB")
-        if not bus_ok and not usb_ok:
-            time.sleep(0.25)
-            usb_ok = self._setconremote(self.ctrl_hw, 1, via="USB")
-
-        # Controller speichert + legt RS485-TX hochohmig — kurz warten, dann USB-Probe.
-        time.sleep(0.35)
-        ready = self.wait_ready(remote=True, timeout_s=max(2.0, float(timeout_s) - 1.0))
+        # Nach Remote-Ein / Bounce: Relink → „Initialisiere“; kurz Settling.
+        time.sleep(0.55 if bounced else 0.4)
+        ready = self.wait_ready(
+            remote=True, timeout_s=max(2.5, float(timeout_s) - 1.0)
+        )
+        if not ready and (link_ok or usb_ok):
+            time.sleep(0.45)
+            ready = self.wait_ready(remote=True, timeout_s=2.5)
         try:
             self.log.write(
                 "INFO" if ready else "WARN",
-                f"Remote USB enter: bus={bus_ok} usb={usb_ok} ready={ready}",
+                f"Remote USB enter: bounced={bounced} bus={bus_ok} usb={usb_ok} "
+                f"link={link_ok} ready={ready}",
             )
         except Exception:
             pass
-        if not ready:
-            # Proxy bleibt aktiv (USB lauscht), damit Relink nachziehen kann —
-            # aber Aufrufer sieht False und schreibt keine SETs.
-            pass
+        self._start_keepalive()
         return bool(ready)
+
+    def _recycle_usb_port(self, timeout_s: float = 5.0) -> bool:
+        """COM schließen/öffnen — CDC nach Controller-Reset / WEB-Session sonst tot."""
+        try:
+            self.ctrl_hw.stop()
+        except Exception:
+            pass
+        time.sleep(0.4)
+        # Proxy-Hooks bleiben; start() erzeugt neue Worker-Threads.
+        try:
+            self.ctrl_hw.on_rx_line = self.on_ctrl_rx_line
+            self.ctrl_hw.on_tx_line = None
+        except Exception:
+            pass
+        return self._ensure_usb_open(timeout_s=timeout_s)
 
     def _leave_remote(self, timeout_s: float) -> bool:
         # Schon Bus und Proxy aus: nur kurz Bus prüfen.
@@ -335,6 +420,114 @@ class ControllerRemoteUsbProxy:
             pass
         return bool(ok)
 
+    def _setlinkmode(self, hw: HardwareClient, value: int, *, via: str) -> bool:
+        """0=RS485, 1=PC-USB, 2=WEB — Display-Link-Modus + NVS."""
+        mode = int(value)
+        if mode not in (0, 1, 2):
+            return False
+        r = self._sync_cmd(
+            hw,
+            self._cont_id(),
+            "SETLINKMODE",
+            str(mode),
+            "ACK_SETLINKMODE",
+            1.5,
+            clear_pending=False,
+        )
+        ok = r is not None and not str(r).startswith("NAK")
+        try:
+            self.log.write(
+                "INFO" if ok else "WARN",
+                f"SETLINKMODE:{mode} ({via}) → {'OK' if ok else repr(r)}",
+            )
+        except Exception:
+            pass
+        return bool(ok)
+
+    def _getlinkmode(self, hw: HardwareClient) -> Optional[int]:
+        """Aktueller Link-Modus am Controller oder None bei Timeout/NAK."""
+        r = self._sync_cmd(
+            hw,
+            self._cont_id(),
+            "GETLINKMODE",
+            "0",
+            "ACK_GETLINKMODE",
+            1.0,
+            clear_pending=False,
+        )
+        if r is None or str(r).startswith("NAK"):
+            return None
+        try:
+            # ACK-Params können "2" oder "2,00" sein
+            raw = str(r).replace(",", ".").strip().split(";")[0]
+            v = int(float(raw))
+        except (TypeError, ValueError):
+            return None
+        return v if v in (0, 1, 2) else None
+
+    def _ensure_pc_usb_link_mode(self) -> bool:
+        """Profil PC-USB: SETLINKMODE:1 nur über USB (Controller ggf. noch auf WEB).
+
+        Kein Bus-Fallback: sonst wechselt die Anzeige auf PC-USB ohne USB-Session
+        („umgestellt, aber nicht verbunden“).
+        """
+        try:
+            self.ctrl.set_controller_link(self.ctrl_hw, True)
+        except Exception:
+            pass
+        return self._setlinkmode(self.ctrl_hw, 1, via="USB")
+
+    def _keepalive_ping(self) -> None:
+        """Kurzer USB-Frame, damit die Firmware „PC online“ hält."""
+        if not self._active:
+            return
+        try:
+            if not bool(self.ctrl_hw.is_connected()):
+                return
+        except Exception:
+            return
+        try:
+            mid = int(getattr(self.ctrl, "master_id", 0) or 0)
+        except Exception:
+            mid = 0
+        if mid < 0:
+            mid = 0
+        try:
+            line = build(int(mid), int(self._cont_id()), "GETLINKMODE", "0")
+            self.ctrl_hw.send_line_fire_and_forget(line)
+        except Exception:
+            pass
+
+    def _keepalive_loop(self) -> None:
+        while not self._keepalive_stop.wait(self._keepalive_s):
+            if not self._active:
+                continue
+            try:
+                self._keepalive_ping()
+            except Exception:
+                pass
+
+    def _start_keepalive(self) -> None:
+        if self._keepalive_thread is not None and self._keepalive_thread.is_alive():
+            return
+        self._keepalive_stop.clear()
+        self._keepalive_thread = threading.Thread(
+            target=self._keepalive_loop,
+            name="remote-usb-keepalive",
+            daemon=True,
+        )
+        self._keepalive_thread.start()
+
+    def _stop_keepalive(self) -> None:
+        self._keepalive_stop.set()
+        t = self._keepalive_thread
+        self._keepalive_thread = None
+        if t is not None and t.is_alive() and t is not threading.current_thread():
+            try:
+                t.join(timeout=0.5)
+            except Exception:
+                pass
+
     def _sync_cmd(
         self,
         hw: HardwareClient,
@@ -351,8 +544,15 @@ class ControllerRemoteUsbProxy:
             mid = int(getattr(self.ctrl, "master_id", 0) or 0)
         except Exception:
             mid = 0
-        if mid <= 0:
-            mid = 2
+        if mid < 0:
+            mid = 0
+        # SRC muss der erwarteten Antwort-DST des HardwareClient entsprechen. Früher wurde bei
+        # master_id=0 SRC=2 (= Controller-ID) gesendet → Antwort "#2:2:ACK…" wurde verworfen
+        # (DST 2 != erwartet 0) → Probe/SETCONREMOTE liefen ins Timeout.
+        try:
+            hw.set_expected_response_dst(int(mid))
+        except Exception:
+            pass
         line = build(int(mid), int(dst), str(cmd), str(params or "0"))
         done = threading.Event()
         box: list = [None]
@@ -417,7 +617,8 @@ class ControllerRemoteUsbProxy:
             return False
 
     def _ensure_usb_open(self, timeout_s: float = 4.0) -> bool:
-        cl = self._cfg.get("controller_link") if isinstance(self._cfg.get("controller_link"), dict) else {}
+        _cl = self._cfg.get("controller_link")
+        cl: dict = _cl if isinstance(_cl, dict) else {}
         if cl:
             try:
                 self.ctrl_hw.update_cfg(cl)
@@ -429,6 +630,63 @@ class ControllerRemoteUsbProxy:
         except Exception:
             return False
         return self._wait_hw_connected(self.ctrl_hw, timeout_s)
+
+    def _el_rotor_hw(self) -> Optional[HardwareClient]:
+        """Zweiter Rotor-TCP-Link (EL), falls Dual-IP aktiv."""
+        el = getattr(self.ctrl, "el_hw", None)
+        if el is None or el is self.rotor_hw:
+            return None
+        return el
+
+    def _attach_rotor_hooks(self) -> None:
+        """RX/TX-Hooks auf AZ- und ggf. EL-Rotor-Link (Display-Spiegelung)."""
+        self.rotor_hw.on_rx_line = self.on_rotor_rx_line
+        self.rotor_hw.on_tx_line = self.on_rotor_tx_line
+        el = self._el_rotor_hw()
+        if el is not None:
+            el.on_rx_line = self.on_rotor_rx_line
+            el.on_tx_line = self.on_rotor_tx_line
+
+    def _detach_rotor_hooks(self) -> None:
+        if self.rotor_hw.on_rx_line is self.on_rotor_rx_line:
+            self.rotor_hw.on_rx_line = None
+        if self.rotor_hw.on_tx_line is self.on_rotor_tx_line:
+            self.rotor_hw.on_tx_line = None
+        el = self._el_rotor_hw()
+        if el is not None:
+            if el.on_rx_line is self.on_rotor_rx_line:
+                el.on_rx_line = None
+            if el.on_tx_line is self.on_rotor_tx_line:
+                el.on_tx_line = None
+
+    def refresh_rotor_hooks(self) -> None:
+        """Nach Anlegen/Wechsel von el_hw Hooks neu setzen (Dual-IP)."""
+        if not self._active:
+            return
+        self._attach_rotor_hooks()
+
+    def _rotor_hw_for_dst(self, dst: int) -> HardwareClient:
+        """Display→Rotor: EL-Slave an el_hw, sonst AZ-Primärlink."""
+        el = self._el_rotor_hw()
+        if el is not None:
+            try:
+                sel = self._slave_el()
+                if sel > 0 and int(dst) == int(sel):
+                    return el
+            except Exception:
+                pass
+        return self.rotor_hw
+
+    def _rotor_hw_for_line(self, line: str, tel: Any = None) -> HardwareClient:
+        try:
+            if tel is None:
+                tel = parse(str(line or "").strip())
+            if tel is not None:
+                dst = self._resolve_drive_dst(tel)
+                return self._rotor_hw_for_dst(int(dst))
+        except Exception:
+            pass
+        return self.rotor_hw
 
     def _start_proxy(self) -> None:
         if not self._active:
@@ -442,13 +700,16 @@ class ControllerRemoteUsbProxy:
                     pass
             self.ctrl_hw.on_rx_line = self.on_ctrl_rx_line
             self.ctrl_hw.on_tx_line = None
-            self.rotor_hw.on_rx_line = self.on_rotor_rx_line
-            self.rotor_hw.on_tx_line = self.on_rotor_tx_line
+            self._attach_rotor_hooks()
             self._active = True
             try:
                 self.log.write("INFO", "Controller Remote USB aktiv")
             except Exception:
                 pass
+            self._start_keepalive()
+        else:
+            # Dual-IP: el_hw kann nachträglich kommen
+            self._attach_rotor_hooks()
         try:
             chw = self._cfg.get("controller_hw") or {}
             self.ctrl.set_controller_link(self.ctrl_hw, True)
@@ -462,12 +723,10 @@ class ControllerRemoteUsbProxy:
     def _teardown_proxy(self, *, close_usb: bool) -> None:
         was = self._active
         self._active = False
+        self._stop_keepalive()
         if self.ctrl_hw.on_rx_line is self.on_ctrl_rx_line:
             self.ctrl_hw.on_rx_line = None
-        if self.rotor_hw.on_rx_line is self.on_rotor_rx_line:
-            self.rotor_hw.on_rx_line = None
-        if self.rotor_hw.on_tx_line is self.on_rotor_tx_line:
-            self.rotor_hw.on_tx_line = None
+        self._detach_rotor_hooks()
         try:
             self.ctrl.set_controller_link(self.ctrl_hw, False)
         except Exception:
@@ -667,18 +926,19 @@ class ControllerRemoteUsbProxy:
         except Exception:
             return line
 
-    def _forward_to_rotor(self, line: str, cmd_u: str) -> None:
+    def _forward_to_rotor(self, line: str, cmd_u: str, *, tel: Any = None) -> None:
         self._note_dedup(line)
+        hw = self._rotor_hw_for_line(line, tel)
         try:
             # GETs immer fire-and-forget: auf Antwort zu warten blockiert den Bus bis Timeout,
             # wenn die Display-Slave-ID nicht der aktive Rotor ist (stummer Zweit-Rotor).
             # ACKs kommen weiterhin per RX und werden ans Display gespiegelt.
             if cmd_u in _FIRE_AND_FORGET_CMDS or cmd_u.startswith("GET"):
-                self.rotor_hw.send_line_fire_and_forget(line)
+                hw.send_line_fire_and_forget(line)
             else:
                 prio = 0 if cmd_u in ("SETPOSDG", "STOP", "NSTOP", "SETREF") else 1
                 timeout = 1.5 if cmd_u == "SETPOSDG" else 0.8
-                self.rotor_hw.send_request(
+                hw.send_request(
                     HwRequest(
                         line=line,
                         expect_prefix=None,
@@ -708,7 +968,12 @@ class ControllerRemoteUsbProxy:
             except Exception:
                 pass
             line = self._rewrite_drive_line_for_rotor(line, tel, cmd_u)
-        self._forward_to_rotor(line, cmd_u)
+            # Nach Rewrite DST erneut parsen (Master→Slave)
+            try:
+                tel = parse(line) or tel
+            except Exception:
+                pass
+        self._forward_to_rotor(line, cmd_u, tel=tel)
         try:
             if tel is not None and hasattr(self.ctrl, "on_controller_link_telegram"):
                 self.ctrl.on_controller_link_telegram(tel)

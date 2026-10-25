@@ -8,7 +8,11 @@ import pytest
 
 
 def test_normalize_and_equal():
-    from rotortcpbridge.firmware_compat_check import normalize_version, versions_equal
+    from rotortcpbridge.firmware_compat_check import (
+        normalize_version,
+        version_at_least,
+        versions_equal,
+    )
 
     assert normalize_version("1.10.8") == "1.10.8"
     assert normalize_version("v1.10.8;extra") == "1.10.8"
@@ -16,6 +20,12 @@ def test_normalize_and_equal():
     assert versions_equal("1.10.8", "v1.10.8")
     assert not versions_equal("1.10.7", "1.10.8")
     assert not versions_equal("", "1.0.0")
+    # Rotor: neuer/gleich OK, älter nicht
+    assert version_at_least("1.10.8", "1.10.8")
+    assert version_at_least("1.10.9", "1.10.8")
+    assert version_at_least("1.11.0", "1.10.8")
+    assert not version_at_least("1.10.7", "1.10.8")
+    assert not version_at_least("", "1.10.8")
 
 
 def test_pinned_components_and_paths(tmp_path, monkeypatch):

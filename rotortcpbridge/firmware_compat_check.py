@@ -30,11 +30,30 @@ def normalize_version(raw: Optional[str]) -> str:
     return f"{int(major)}.{int(minor)}.{int(patch)}"
 
 
+def version_tuple(raw: Optional[str]) -> Optional[tuple[int, int, int]]:
+    """SemVer als (major, minor, patch) oder None."""
+    n = normalize_version(raw)
+    if not n:
+        return None
+    m = _VER_RE.match(n)
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
+
+
 def versions_equal(a: Optional[str], b: Optional[str]) -> bool:
-    na, nb = normalize_version(a), normalize_version(b)
-    if not na or not nb:
+    ta, tb = version_tuple(a), version_tuple(b)
+    if ta is None or tb is None:
         return False
-    return na == nb
+    return ta == tb
+
+
+def version_at_least(found: Optional[str], minimum: Optional[str]) -> bool:
+    """True wenn found >= minimum (neuere Firmware ist OK)."""
+    tf, tm = version_tuple(found), version_tuple(minimum)
+    if tf is None or tm is None:
+        return False
+    return tf >= tm
 
 
 @dataclass
@@ -150,19 +169,22 @@ def run_compat_check(ctrl: Any, cfg: Optional[dict] = None) -> CompatCheckResult
         if dst <= 0:
             return
         if not online:
+            # Offline: kein Hinweis, nicht in die Pflicht-Prüfung aufnehmen.
             rotor_results.append(
                 AxisVersionResult(
                     axis=axis,
                     expected=ROTOR_FW_VERSION,
                     found=None,
-                    ok=False,
+                    ok=True,
                     offline=True,
                 )
             )
             return
         raw = _sync_get(ctrl, dst, "GETVERSION", "ACK_GETVERSION")
         found = normalize_version(raw) if raw else None
-        ok = bool(found) and versions_equal(found, ROTOR_FW_VERSION)
+        # Neuere Rotor-FW als Pin ist OK — Hinweis nur wenn älter.
+        # Online aber keine lesbare Version → wie „passt nicht“ behandeln.
+        ok = bool(found) and version_at_least(found, ROTOR_FW_VERSION)
         rotor_results.append(
             AxisVersionResult(
                 axis=axis,
@@ -176,10 +198,12 @@ def run_compat_check(ctrl: Any, cfg: Optional[dict] = None) -> CompatCheckResult
     _check_axis("AZ", enable_az, "slave_az", "slave_az", 20)
     _check_axis("EL", enable_el, "slave_el", "slave_el", 21)
     out.rotor_axes = rotor_results
-    if rotor_results:
-        out.rotor_ok = all(r.ok for r in rotor_results)
+    # Pflicht-Hinweis nur für online geprüfte Achsen (offline ignorieren).
+    checked = [r for r in rotor_results if not r.offline]
+    if checked:
+        out.rotor_ok = all(r.ok for r in checked)
     else:
-        out.rotor_ok = True  # keine aktive Achse — nichts zu erzwingen
+        out.rotor_ok = True  # keine online Achse — kein Dialog
 
     # Controller (optional Info)
     chw = cfg.get("controller_hw") if isinstance(cfg.get("controller_hw"), dict) else {}

@@ -4652,9 +4652,9 @@ class MainWindow(QMainWindow):
 
         detail_lines: list[str] = []
         for ax in result.rotor_axes:
-            if ax.ok:
+            if ax.offline or ax.ok:
                 continue
-            if ax.offline or ax.query_failed or not ax.found:
+            if ax.query_failed or not ax.found:
                 detail_lines.append(
                     t(
                         "fw.rotor_mismatch_axis_offline",
@@ -4671,6 +4671,8 @@ class MainWindow(QMainWindow):
                         expected=ax.expected,
                     )
                 )
+        if not detail_lines and not info_parts:
+            return
         if info_parts:
             detail_lines.extend(info_parts)
 
@@ -4699,15 +4701,18 @@ class MainWindow(QMainWindow):
 
         rotor_text = t("settings.update_fw_rotor_unknown")
         if result is not None and getattr(result, "rotor_axes", None):
-            if result.rotor_ok:
+            online_axes = [ax for ax in result.rotor_axes if not ax.offline]
+            if not online_axes:
+                rotor_text = t("settings.update_fw_rotor_unknown")
+            elif result.rotor_ok:
                 rotor_text = t("settings.update_fw_rotor_ok", ver=ROTOR_FW_VERSION)
             else:
                 found_bits = []
-                for ax in result.rotor_axes:
+                for ax in online_axes:
                     if ax.found:
                         found_bits.append(f"{ax.axis}={ax.found}")
-                    elif ax.offline:
-                        found_bits.append(f"{ax.axis}=offline")
+                    else:
+                        found_bits.append(f"{ax.axis}=?")
                 rotor_text = t(
                     "settings.update_fw_rotor_bad",
                     expected=ROTOR_FW_VERSION,

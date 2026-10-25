@@ -1049,6 +1049,8 @@ class MainWindow(QMainWindow):
         self._error_popup = ErrorPopupHandler()
         self._warning_popup = WarningPopupHandler()
         self._startup_error_check_scheduled = False
+        self._firmware_compat_scheduled = False
+        self._firmware_compat_result = None
 
         apply_theme_mode(self.cfg)
         QTimer.singleShot(0, self._repolish_menu_bar_for_os_theme)
@@ -4485,6 +4487,10 @@ class MainWindow(QMainWindow):
             self._startup_error_check_scheduled = True
             QTimer.singleShot(400, self._startup_error_poll_and_show)
             QTimer.singleShot(2200, self._startup_error_poll_and_show)
+        if not self._firmware_compat_scheduled:
+            self._firmware_compat_scheduled = True
+            # Bus etwas Zeit geben, dann Bundle + Versionscheck einmalig.
+            QTimer.singleShot(2800, self._startup_firmware_compat_flow)
 
     def _startup_error_poll_and_show(self) -> None:
         """Nach kurzer Wartezeit Fehler-Popup (Fehlercode kommt per Broadcast ERR, kein GETERR)."""
@@ -4504,6 +4510,244 @@ class MainWindow(QMainWindow):
                 pass
 
         QTimer.singleShot(450, _show)
+
+    def _startup_firmware_compat_flow(self) -> None:
+        """Einmalig: ggf. FW-Bins laden, dann Rotor-Versionscheck mit Quittierung."""
+        from ..version import FIRMWARE_UPDATE_REQUIRED
+
+        if FIRMWARE_UPDATE_REQUIRED:
+            self._run_firmware_bundle_download(then_check=True)
+        else:
+            self._run_firmware_compat_check_and_dialogs()
+
+    def _run_firmware_bundle_download(self, *, then_check: bool = True) -> None:
+        from ..firmware_bundle import (
+            bundle_root_for_app,
+            download_missing_assets,
+            needs_download,
+        )
+
+        if not needs_download():
+            if then_check:
+                self._run_firmware_compat_check_and_dialogs()
+            return
+
+        progress = QProgressDialog(
+            t("fw.bundle_download_progress", detail="…"),
+            None,
+            0,
+            0,
+            self,
+        )
+        progress.setWindowTitle(t("fw.bundle_download_title"))
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setCancelButton(None)
+        progress.show()
+        QApplication.processEvents()
+
+        result: dict = {"ok": True, "errors": [], "detail": ""}
+
+        def _work() -> None:
+            def _prog(detail: str) -> None:
+                result["detail"] = str(detail or "")
+
+            ok, errs = download_missing_assets(progress=_prog)
+            result["ok"] = bool(ok)
+            result["errors"] = list(errs or [])
+
+        th = threading.Thread(target=_work, name="fw-bundle-dl", daemon=True)
+        th.start()
+
+        def _poll() -> None:
+            try:
+                detail = str(result.get("detail") or "…")
+                progress.setLabelText(
+                    t("fw.bundle_download_progress", detail=detail)
+                )
+            except Exception:
+                pass
+            if th.is_alive():
+                QTimer.singleShot(200, _poll)
+                return
+            try:
+                progress.close()
+            except Exception:
+                pass
+            path = str(bundle_root_for_app())
+            errs = result.get("errors") or []
+            if errs:
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Icon.Warning)
+                box.setWindowTitle(t("fw.bundle_download_title"))
+                box.setText(
+                    t(
+                        "fw.bundle_download_partial",
+                        errors="\n".join(str(e) for e in errs[:8]),
+                        path=path,
+                    )
+                )
+                btn_folder = box.addButton(
+                    t("fw.bundle_btn_open_folder"),
+                    QMessageBox.ButtonRole.ActionRole,
+                )
+                box.addButton(t("fw.bundle_btn_ok"), QMessageBox.ButtonRole.AcceptRole)
+                box.exec()
+                if box.clickedButton() is btn_folder:
+                    self._open_firmware_bundle_folder()
+            if then_check:
+                QTimer.singleShot(200, self._run_firmware_compat_check_and_dialogs)
+
+        QTimer.singleShot(200, _poll)
+
+    def _open_firmware_bundle_folder(self) -> None:
+        try:
+            from ..firmware_bundle import open_bundle_folder
+
+            path = open_bundle_folder()
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        except Exception:
+            pass
+
+    def _run_firmware_compat_check_and_dialogs(self) -> None:
+        from ..firmware_compat_check import run_compat_check
+        from ..version import (
+            APP_VERSION,
+            CONTROLLER_FW_VERSION,
+            INCLINOMETER_FW_VERSION,
+            ROTOR_FW_VERSION,
+            WLAN_MODULE_FW_VERSION,
+        )
+
+        try:
+            result = run_compat_check(self.ctrl, self.cfg)
+        except Exception as e:
+            self._log_exception("_run_firmware_compat_check_and_dialogs", e)
+            return
+        self._firmware_compat_result = result
+        self._apply_firmware_status_to_update_tab(result)
+
+        # Optionale Info-Zeilen (kein eigener Pflicht-Dialog)
+        info_parts: list[str] = []
+        if result.controller_ok is False and result.controller_found:
+            info_parts.append(
+                t(
+                    "fw.info_controller",
+                    found=result.controller_found,
+                    expected=CONTROLLER_FW_VERSION,
+                )
+            )
+        for line in result.info_lines:
+            if str(line).startswith("inclinometer_pin:"):
+                info_parts.append(
+                    t("fw.info_inclinometer", expected=INCLINOMETER_FW_VERSION)
+                )
+            elif str(line).startswith("wlan_pin:"):
+                info_parts.append(
+                    t("fw.info_wlan", expected=WLAN_MODULE_FW_VERSION)
+                )
+
+        if result.rotor_ok:
+            return
+
+        detail_lines: list[str] = []
+        for ax in result.rotor_axes:
+            if ax.ok:
+                continue
+            if ax.offline or ax.query_failed or not ax.found:
+                detail_lines.append(
+                    t(
+                        "fw.rotor_mismatch_axis_offline",
+                        axis=ax.axis,
+                        expected=ax.expected,
+                    )
+                )
+            else:
+                detail_lines.append(
+                    t(
+                        "fw.rotor_mismatch_axis_line",
+                        axis=ax.axis,
+                        found=ax.found,
+                        expected=ax.expected,
+                    )
+                )
+        if info_parts:
+            detail_lines.extend(info_parts)
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(t("fw.rotor_mismatch_title"))
+        box.setText(
+            t(
+                "fw.rotor_mismatch_msg",
+                app=APP_VERSION,
+                expected=ROTOR_FW_VERSION,
+                details="\n".join(detail_lines),
+            )
+        )
+        btn_folder = box.addButton(
+            t("fw.bundle_btn_open_folder"),
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        box.addButton(t("fw.rotor_mismatch_ack"), QMessageBox.ButtonRole.AcceptRole)
+        box.exec()
+        if box.clickedButton() is btn_folder:
+            self._open_firmware_bundle_folder()
+
+    def _apply_firmware_status_to_update_tab(self, result) -> None:
+        from ..version import ROTOR_FW_VERSION
+
+        rotor_text = t("settings.update_fw_rotor_unknown")
+        if result is not None and getattr(result, "rotor_axes", None):
+            if result.rotor_ok:
+                rotor_text = t("settings.update_fw_rotor_ok", ver=ROTOR_FW_VERSION)
+            else:
+                found_bits = []
+                for ax in result.rotor_axes:
+                    if ax.found:
+                        found_bits.append(f"{ax.axis}={ax.found}")
+                    elif ax.offline:
+                        found_bits.append(f"{ax.axis}=offline")
+                rotor_text = t(
+                    "settings.update_fw_rotor_bad",
+                    expected=ROTOR_FW_VERSION,
+                    found=", ".join(found_bits) or "—",
+                )
+        info_text = ""
+        try:
+            from ..version import (
+                CONTROLLER_FW_VERSION,
+                INCLINOMETER_FW_VERSION,
+                WLAN_MODULE_FW_VERSION,
+            )
+
+            parts: list[str] = []
+            if result is not None and result.controller_ok is False and result.controller_found:
+                parts.append(
+                    t(
+                        "fw.info_controller",
+                        found=result.controller_found,
+                        expected=CONTROLLER_FW_VERSION,
+                    )
+                )
+            for line in getattr(result, "info_lines", []) or []:
+                if str(line).startswith("inclinometer_pin:"):
+                    parts.append(
+                        t("fw.info_inclinometer", expected=INCLINOMETER_FW_VERSION)
+                    )
+                elif str(line).startswith("wlan_pin:"):
+                    parts.append(t("fw.info_wlan", expected=WLAN_MODULE_FW_VERSION))
+            info_text = "\n".join(parts)
+        except Exception:
+            info_text = ""
+        sw = getattr(self, "_settings_win", None)
+        if sw is not None and hasattr(sw, "apply_firmware_compat_status"):
+            try:
+                sw.apply_firmware_compat_status(
+                    rotor_text=rotor_text, info_text=info_text
+                )
+            except Exception:
+                pass
 
     def eventFilter(self, watched, event):  # noqa: N802
         """Klick außerhalb des Frequenzfelds: Fokus entfernen (QLabels nehmen oft keinen Fokus)."""

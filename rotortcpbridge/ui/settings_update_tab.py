@@ -25,6 +25,7 @@ class UpdateTab(QWidget):
     softap_toggled = Signal(str, bool)  # axis "az"|"el", want_on
     refresh_clicked = Signal()
     open_webflasher_clicked = Signal()
+    open_fw_folder_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -104,9 +105,36 @@ class UpdateTab(QWidget):
         vl.addWidget(self.btn_open, 0, Qt.AlignmentFlag.AlignLeft)
 
         root.addWidget(self._gb_softap)
+
+        self._gb_fw = QGroupBox(t("settings.update_fw_bundle_group"))
+        vl_fw = QVBoxLayout(self._gb_fw)
+        vl_fw.setSpacing(px_to_dip(self, 8))
+        self._lbl_fw_hint = QLabel(t("settings.update_fw_bundle_hint"))
+        self._lbl_fw_hint.setWordWrap(True)
+        vl_fw.addWidget(self._lbl_fw_hint)
+        self._lbl_fw_rotor = QLabel(t("settings.update_fw_rotor_unknown"))
+        self._lbl_fw_rotor.setWordWrap(True)
+        vl_fw.addWidget(self._lbl_fw_rotor)
+        self._lbl_fw_info = QLabel("")
+        self._lbl_fw_info.setWordWrap(True)
+        vl_fw.addWidget(self._lbl_fw_info)
+        self.btn_fw_folder = QPushButton(t("settings.update_fw_bundle_open"))
+        self.btn_fw_folder.setToolTip(tt("settings.update_fw_bundle_open_tooltip"))
+        self.btn_fw_folder.setAutoDefault(False)
+        self.btn_fw_folder.clicked.connect(self.open_fw_folder_clicked.emit)
+        vl_fw.addWidget(self.btn_fw_folder, 0, Qt.AlignmentFlag.AlignLeft)
+        root.addWidget(self._gb_fw)
+
         root.addStretch(1)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         self.set_axes_visible(az_on=True, el_on=False)
+
+    def set_fw_rotor_status(self, text: str) -> None:
+        self._lbl_fw_rotor.setText(str(text or ""))
+
+    def set_fw_info_status(self, text: str) -> None:
+        self._lbl_fw_info.setText(str(text or ""))
+        self._lbl_fw_info.setVisible(bool(str(text or "").strip()))
 
     def _on_chk_toggled(self, axis: str, checked: bool) -> None:
         if self._block_toggle.get(axis):
@@ -157,3 +185,7 @@ class UpdateTab(QWidget):
         self._lbl_reboot_hint.setText(t("settings.update_reboot_hint"))
         self.btn_open.setText(t("settings.update_btn_open_webflasher"))
         self.btn_open.setToolTip(tt("settings.update_btn_open_webflasher_tooltip"))
+        self._gb_fw.setTitle(t("settings.update_fw_bundle_group"))
+        self._lbl_fw_hint.setText(t("settings.update_fw_bundle_hint"))
+        self.btn_fw_folder.setText(t("settings.update_fw_bundle_open"))
+        self.btn_fw_folder.setToolTip(tt("settings.update_fw_bundle_open_tooltip"))

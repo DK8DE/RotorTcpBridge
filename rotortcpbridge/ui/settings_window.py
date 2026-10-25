@@ -1581,6 +1581,7 @@ class SettingsWindow(QDialog):
         self._update_tab.softap_toggled.connect(self._on_softap_toggled)
         self._update_tab.refresh_clicked.connect(self._refresh_softap_status)
         self._update_tab.open_webflasher_clicked.connect(self._open_softap_webflasher)
+        self._update_tab.open_fw_folder_clicked.connect(self._open_firmware_bundle_folder)
         self._settings_stack.addWidget(_scroll_page(self._update_tab))
         self._network_tab = NetworkModulesTab(self.cfg, self)
         self._network_tab.save_requested.connect(self._on_network_modules_save_requested)
@@ -3398,6 +3399,28 @@ class SettingsWindow(QDialog):
 
     def _open_softap_webflasher(self) -> None:
         QDesktopServices.openUrl(QUrl("http://192.168.4.1"))
+
+    def _open_firmware_bundle_folder(self) -> None:
+        try:
+            from ..firmware_bundle import open_bundle_folder
+
+            path = open_bundle_folder()
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        except Exception:
+            pass
+
+    def apply_firmware_compat_status(self, *, rotor_text: str, info_text: str = "") -> None:
+        """Statuszeilen im Update-Tab (von MainWindow nach Compat-Check)."""
+        tab = getattr(self, "_update_tab", None)
+        if tab is None:
+            return
+        try:
+            if hasattr(tab, "set_fw_rotor_status"):
+                tab.set_fw_rotor_status(rotor_text)
+            if hasattr(tab, "set_fw_info_status"):
+                tab.set_fw_info_status(info_text)
+        except Exception:
+            pass
 
     def refresh_nav_theme(self) -> None:
         """Nach globalem Palette-/Style-Wechsel (z. B. Force-Dark): linke Tab-Leiste neu einfärben."""

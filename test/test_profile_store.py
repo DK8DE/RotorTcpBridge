@@ -51,6 +51,38 @@ def test_new_profile_is_virgin_not_clone(profile_env):
     assert raw.get("rotor_bus", {}).get("slave_az") == DEFAULT_CONFIG["rotor_bus"]["slave_az"]
 
 
+def test_seed_commissioning_runtime_link_keeps_bus_virgin(profile_env):
+    _tmp, _ac, ps = profile_env
+    ps.ensure_profiles_migrated()
+    src = ps.load_active_config()
+    src.setdefault("hardware_link", {})["mode"] = "tcp"
+    src.setdefault("hardware_link", {})["tcp_ip"] = "10.0.0.42"
+    src.setdefault("controller_hw", {})["usb_remote"] = True
+    src.setdefault("controller_hw", {})["link_mode"] = 1
+    src.setdefault("controller_link", {})["com_port"] = "COM7"
+    src.setdefault("rotor_bus", {})["slave_az"] = 55
+    src.setdefault("ui", {})["setup_axis_endpoints"] = {
+        "az": {"host": "10.0.0.42", "port": 8886},
+        "el": {"host": "10.0.0.43", "port": 8886},
+    }
+    ps.save_active_config(src)
+
+    pid = ps.create_profile("R und S", clone_active=False)
+    ps.seed_commissioning_runtime_link(pid, src)
+    raw = ps.load_profile_config(pid)
+    assert raw["hardware_link"]["mode"] == "tcp"
+    assert raw["hardware_link"]["tcp_ip"] == "10.0.0.42"
+    assert raw["controller_hw"]["usb_remote"] is True
+    assert raw["controller_hw"]["link_mode"] == 1
+    assert raw["controller_link"]["com_port"] == "COM7"
+    assert raw["ui"]["setup_axis_endpoints"]["el"]["host"] == "10.0.0.43"
+    # Bus bleibt jungfräulich
+    from rotortcpbridge.app_config import DEFAULT_CONFIG
+
+    assert raw["rotor_bus"]["slave_az"] == DEFAULT_CONFIG["rotor_bus"]["slave_az"]
+    assert raw["rotor_bus"]["slave_az"] != 55
+
+
 def test_copy_profile_from_selected(profile_env):
     _tmp, _ac, ps = profile_env
     ps.ensure_profiles_migrated()

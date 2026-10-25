@@ -38,6 +38,34 @@ def _show_modal_warning(parent: Optional[QWidget], title: str, msg: str) -> None
         pass
 
 
+def _show_error_with_ack(
+    parent: Optional[QWidget],
+    title: str,
+    msg: str,
+    *,
+    axis_label: str,
+) -> bool:
+    """Fehlerdialog mit „Fehler Quittieren“. True wenn Quittieren gewählt wurde."""
+    _bring_parent_to_front(parent)
+    try:
+        box = QMessageBox(parent)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(title)
+        box.setText(msg)
+        btn_ack = box.addButton(
+            t("popup.error_btn_ack"),
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        box.addButton(
+            t("popup.error_btn_close"),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        box.exec()
+        return box.clickedButton() is btn_ack
+    except Exception:
+        return False
+
+
 class ErrorPopupHandler:
     """Verwaltet Fehler-Popups mit Cooldown."""
 
@@ -65,6 +93,7 @@ class ErrorPopupHandler:
             code = 0
 
         is_az = axis_label.upper() == "AZ"
+        axis_u = "AZ" if is_az else "EL"
         if is_az:
             last, recent_code = self._last_az, self._recent_code_az
             recent_ts, clear_since = self._recent_time_az, self._clear_since_az
@@ -104,7 +133,7 @@ class ErrorPopupHandler:
             return
 
         name, txt = error_info(code)
-        title = t("popup.error_title", axis=axis_label.upper())
+        title = t("popup.error_title", axis=axis_u)
         msg = t("popup.error_msg", code=code, name=name, txt=txt)
 
         if is_az:
@@ -119,13 +148,26 @@ class ErrorPopupHandler:
             self._pending_el = True
 
         def _show_and_clear() -> None:
+            ack = False
             try:
-                _show_modal_warning(parent, title, msg)
+                ack = _show_error_with_ack(
+                    parent, title, msg, axis_label=axis_u
+                )
+                if ack and parent is not None:
+                    ctrl = getattr(parent, "ctrl", None)
+                    fn = getattr(ctrl, "acknowledge_fault", None) if ctrl is not None else None
+                    if callable(fn):
+                        fn(axis_u)
             finally:
                 if is_az:
                     self._pending_az = False
+                    if ack:
+                        # Erneutes Popup erlauben, falls der Fehler zurückkommt.
+                        self._last_az = 0
                 else:
                     self._pending_el = False
+                    if ack:
+                        self._last_el = 0
 
         if parent is not None:
             QTimer.singleShot(0, parent, _show_and_clear)

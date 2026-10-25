@@ -1,7 +1,7 @@
 """Lokalisierte Rotor-Fehlertexte für Popups (de/en).
 
-Die Texte beschreiben Ursache und Prüfschritte am Rotor; Homing/SETREF wird nicht
-mehr als zuverlässige Quittierung während eines angezeigten Fehlers dargestellt.
+Die Texte beschreiben Ursache und Prüfschritte am Rotor. Quittierung läuft über
+den Popup-Button „Fehler Quittieren“ (Absolut: SETREF:0, Typ 1/2: SETREF:1).
 """
 
 from __future__ import annotations

@@ -3507,6 +3507,17 @@ class CommissioningWizard(QWizard):
         if mode == "new":
             # Temporäres Profil: bei Abbruch löschen, bei Fertig behalten.
             new_id = create_profile(want_name or "Profil", clone_active=False)
+            # PC-Link vom laufenden Profil übernehmen — sonst reißt DEFAULT
+            # (COM1 / Link-Mode 0) TCP+USB Remote ab und die App kann abstürzen.
+            try:
+                from ..profile_store import load_profile_config, seed_commissioning_runtime_link
+
+                live = self.cfg if isinstance(self.cfg, dict) else {}
+                if not live and previous:
+                    live = load_profile_config(previous)
+                seed_commissioning_runtime_link(new_id, live)
+            except Exception:
+                pass
             self._sess_working_id = new_id
             self._sess_temp = True
             self._sess_new_name = want_name or "Profil"

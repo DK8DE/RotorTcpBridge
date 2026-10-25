@@ -385,6 +385,45 @@ def create_profile(name: str, *, clone_active: bool = False) -> str:
     return _append_profile(display, data)
 
 
+def seed_commissioning_runtime_link(profile_id: str, source_cfg: Dict[str, Any]) -> None:
+    """Übernimmt PC↔Hardware/Controller-Link in ein jungfräuliches Profil.
+
+    Rotor-Bus und Kalibrierung bleiben Werkswerte. Ohne Seed würde die
+    Inbetriebnahme beim ersten „Weiter“ auf DEFAULT (COM1, Link-Mode 0)
+    umschalten und TCP/USB Remote abrupt trennen — Absturzrisiko.
+    """
+    pid = str(profile_id or "").strip()
+    if not pid or get_profile_meta(pid) is None:
+        raise ValueError(f"unknown profile: {profile_id}")
+    src = source_cfg if isinstance(source_cfg, dict) else {}
+    data = load_profile_config(pid)
+
+    for key in ("hardware_link", "controller_link", "network_modules"):
+        if key in src:
+            data[key] = copy.deepcopy(src[key])
+
+    src_chw = src.get("controller_hw") if isinstance(src.get("controller_hw"), dict) else {}
+    dst_chw = data.get("controller_hw")
+    if not isinstance(dst_chw, dict):
+        dst_chw = {}
+        data["controller_hw"] = dst_chw
+    for k in ("enabled", "cont_id", "usb_remote", "link_mode"):
+        if k in src_chw:
+            dst_chw[k] = copy.deepcopy(src_chw[k])
+
+    src_ui = src.get("ui") if isinstance(src.get("ui"), dict) else {}
+    dst_ui = data.get("ui")
+    if not isinstance(dst_ui, dict):
+        dst_ui = {}
+        data["ui"] = dst_ui
+    if "setup_axis_endpoints" in src_ui:
+        dst_ui["setup_axis_endpoints"] = copy.deepcopy(src_ui["setup_axis_endpoints"])
+    if "language" in src_ui:
+        dst_ui["language"] = copy.deepcopy(src_ui["language"])
+
+    save_profile_config(pid, data)
+
+
 def copy_profile(source_id: str, name: str) -> str:
     """Neues Profil als Kopie eines bestehenden (beliebige Listen-Zeile, nicht nur aktiv)."""
     ensure_profiles_migrated()

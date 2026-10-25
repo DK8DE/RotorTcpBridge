@@ -2262,10 +2262,12 @@ class MainWindow(QMainWindow):
 
         if defer_heavy:
             # Wizard: sofort zurückkehren; Rest im nächsten Event-Loop-Tick.
+            # Settings-Fenster nicht neu bauen — das würde bei offenem Wizard
+            # (Einstellungen → Inbetriebnahme) den Parent zerstören und abstürzen.
             QTimer.singleShot(
                 0,
                 lambda ol=old_lang, oc=dict(old_chw), vis=settings_was_visible: self._switch_rotor_profile_heavy_tail(
-                    ol, oc, settings_was_visible=vis
+                    ol, oc, settings_was_visible=vis, skip_settings_rebuild=True
                 ),
             )
             return
@@ -2280,16 +2282,21 @@ class MainWindow(QMainWindow):
         old_chw: dict,
         *,
         settings_was_visible: bool = False,
+        skip_settings_rebuild: bool = False,
     ) -> None:
         """Settings-Rebuild, Server-Restarts und UI nach Profilwechsel."""
         from ..i18n import load_lang
 
-        try:
-            self._rebuild_settings_win()
-            if settings_was_visible:
-                self._open_settings()
-        except Exception as e:
-            self._log_exception("_switch_rotor_profile rebuild settings", e)
+        if not skip_settings_rebuild:
+            try:
+                self._rebuild_settings_win()
+                if settings_was_visible:
+                    self._open_settings()
+            except Exception as e:
+                self._log_exception("_switch_rotor_profile rebuild settings", e)
+        elif settings_was_visible:
+            # Nach Wizard-Ende nachholen (siehe _flush_settings_rebuild_after_wizard).
+            self._settings_rebuild_pending = True
 
         try:
             self._last_main_antenna_labels = None
@@ -2801,8 +2808,26 @@ class MainWindow(QMainWindow):
         # Einstellungsfenster verzögert neu erstellen (wir befinden uns noch in seinem Aufrufstack)
         QTimer.singleShot(900, self._rebuild_settings_win)
 
+    def _flush_settings_rebuild_after_wizard(self) -> None:
+        """Verzögerten Settings-Rebuild nach Inbetriebnahme ausführen."""
+        if not getattr(self, "_settings_rebuild_pending", False):
+            return
+        self._settings_rebuild_pending = False
+        try:
+            self._rebuild_settings_win()
+        except Exception as e:
+            self._log_exception("_flush_settings_rebuild_after_wizard", e)
+
     def _rebuild_settings_win(self):
         """Einstellungsfenster mit neuer Sprache neu erstellen."""
+        try:
+            wiz = getattr(self, "_commissioning_wiz", None)
+            if wiz is not None and bool(wiz.isVisible()):
+                # Nicht zerstören, solange der Wizard (oft aus Einstellungen gestartet) offen ist.
+                self._settings_rebuild_pending = True
+                return
+        except Exception:
+            pass
         try:
             old = getattr(self, "_settings_win", None)
             if old is not None:
@@ -3982,6 +4007,7 @@ class MainWindow(QMainWindow):
                 controller_remote_proxy=getattr(self, "_controller_remote_proxy", None),
             )
             wiz.reload_profile_cb = self._reload_active_profile
+            wiz.finished.connect(lambda *_: self._flush_settings_rebuild_after_wizard())
             self._commissioning_wiz = wiz
         else:
             wiz.ctrl = self.ctrl

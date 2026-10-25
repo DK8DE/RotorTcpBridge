@@ -99,17 +99,20 @@ def _sync_nak_notimpl(r: str | None) -> bool:
 
 
 class _SettingsScrollArea(QScrollArea):
-    """Scroll-Bereich ohne riesige minimumSizeHint vom Formular-Inhalt (Dialog-Höhe bleibt steuerbar)."""
+    """Scroll-Bereich ohne riesige minimumSizeHint vom Formular-Inhalt (Dialog-Höhe/Breite bleibt steuerbar)."""
 
     def minimumSizeHint(self) -> QSize:
         sh = super().minimumSizeHint()
+        # QLabel-WordWrap und breite Button-Zeilen dürfen den Dialog nicht aufblasen.
+        cap_w = px_to_dip(self, 200)
         cap_h = px_to_dip(self, 120)
-        return QSize(sh.width(), min(sh.height(), cap_h))
+        return QSize(min(sh.width(), cap_w), min(sh.height(), cap_h))
 
     def sizeHint(self) -> QSize:
         sh = super().sizeHint()
+        cap_w = px_to_dip(self, 520)
         cap_h = px_to_dip(self, 560)
-        return QSize(sh.width(), min(sh.height(), cap_h))
+        return QSize(min(sh.width(), cap_w), min(sh.height(), cap_h))
 
 
 class SettingsWindow(QDialog):
@@ -1383,6 +1386,7 @@ class SettingsWindow(QDialog):
         self._wire_antenna_name_sync()
 
         def _scroll_page(inner: QWidget) -> QScrollArea:
+            inner.setMinimumWidth(0)
             inner.setSizePolicy(
                 QSizePolicy.Policy.Expanding,
                 QSizePolicy.Policy.Preferred,
@@ -1588,6 +1592,10 @@ class SettingsWindow(QDialog):
         self._sync_network_dual_axis_apply()
         self._sync_link_el_fields()
         gb_network = QGroupBox(t("settings.tab_network"))
+        gb_network.setMinimumWidth(0)
+        gb_network.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
+        )
         _vl_network = QVBoxLayout(gb_network)
         _vl_network.setContentsMargins(
             px_to_dip(self, 8),
@@ -1597,6 +1605,7 @@ class SettingsWindow(QDialog):
         )
         _vl_network.addWidget(self._network_tab)
         vl_links.insertWidget(max(0, vl_links.count() - 1), gb_network)
+        pg_links.setMinimumWidth(0)
         self._tab_profiles_index = 0
         self._tab_connections_index = 2
         self._tab_antenna_index = 4
@@ -1608,7 +1617,7 @@ class SettingsWindow(QDialog):
         self._tab_weather_index = 10
         self._tab_update_index = 11
         self._softap_poll_timer = QTimer(self)
-        self._softap_poll_timer.setInterval(3000)
+        self._softap_poll_timer.setInterval(2000)
         self._softap_poll_timer.timeout.connect(self._refresh_softap_status)
         self._calvalid_timer = QTimer(self)
         self._calvalid_timer.setInterval(5000)
@@ -1805,6 +1814,11 @@ class SettingsWindow(QDialog):
         self._update_strom_cal_buttons_enabled()
         if self._settings_nav.currentRow() == getattr(self, "_tab_statistics_index", -1):
             self._start_calvalid_timer()
+        if self._settings_nav.currentRow() == getattr(self, "_tab_update_index", -1):
+            self._sync_update_tab_axes_visibility()
+            QTimer.singleShot(0, self._refresh_softap_status)
+            if not self._softap_poll_timer.isActive():
+                self._softap_poll_timer.start()
         # Snapshots: nur geänderte Werte gehen auf den Bus (SETANTOFF / SETCON* …)
         self._capture_antenna_snapshots_from_ui()
         # Vergleichsbasis für SETCON* beim Speichern (sonst snap=None → kein Schreiben)
@@ -1888,6 +1902,10 @@ class SettingsWindow(QDialog):
             self._hw_link_timer.stop()
             self._pst_tcp_status_timer.stop()
             self._stop_calvalid_timer()
+            try:
+                self._softap_poll_timer.stop()
+            except Exception:
+                pass
             if hasattr(self.ctrl, "set_settings_window_open"):
                 self.ctrl.set_settings_window_open(False)
 
@@ -3195,32 +3213,21 @@ class SettingsWindow(QDialog):
         )
 
     def _on_settings_nav_changed(self, row: int) -> None:
-        """Linke Liste → rechten Stacked-Inhalt umschalten."""
+        """Linke Liste → rechten Stacked-Inhalt umschalten und Tab-Aktionen auslösen."""
         if row < 0 or row >= self._settings_stack.count():
             return
         self._settings_stack.setCurrentIndex(row)
+        self._on_settings_tab_shown(row)
 
-    def open_settings_tab(self, which: str) -> None:
-        """Öffentliche Navigation: ``connections`` | ``controller`` | ``protocols`` | …"""
-        key = str(which or "").strip().lower()
-        idx_map = {
-            "profiles": getattr(self, "_tab_profiles_index", 0),
-            "connections": getattr(self, "_tab_connections_index", 2),
-            "protocols": 3,  # settings.tab_rotor_emulation
-            "controller": getattr(self, "_tab_controller_index", 6),
-        }
-        row = int(idx_map.get(key, getattr(self, "_tab_connections_index", 2)))
-        try:
-            self._settings_nav.setCurrentRow(row)
-        except Exception:
-            self._settings_stack.setCurrentIndex(row)
-        self.show()
-        self.raise_()
-        self.activateWindow()
+    def _on_settings_tab_shown(self, row: int) -> None:
+        """Beim Anzeigen eines Einstellungs-Tabs: laden / Timer starten."""
         if row == getattr(self, "_tab_profiles_index", -1):
             self.refresh_profiles_list()
         if row == getattr(self, "_tab_connections_index", -1):
-            self._network_tab.on_tab_shown()
+            try:
+                self._network_tab.on_tab_shown()
+            except Exception:
+                pass
         if row == getattr(self, "_tab_statistics_index", -1):
             self._start_calvalid_timer()
             QTimer.singleShot(0, self._load_strom_limits_from_bus)
@@ -3236,12 +3243,45 @@ class SettingsWindow(QDialog):
             QTimer.singleShot(0, self._shortcuts_tab.refresh_antenna_shortcut_row_labels)
             QTimer.singleShot(400, self._shortcuts_tab.refresh_antenna_shortcut_row_labels)
         if row == getattr(self, "_tab_update_index", -1):
+            # Sofort GETWLAN, danach alle 2 s solange der Tab sichtbar ist.
             self._sync_update_tab_axes_visibility()
             QTimer.singleShot(0, self._refresh_softap_status)
             if not self._softap_poll_timer.isActive():
                 self._softap_poll_timer.start()
         else:
-            self._softap_poll_timer.stop()
+            try:
+                self._softap_poll_timer.stop()
+            except Exception:
+                pass
+
+    def open_settings_tab(self, which: str) -> None:
+        """Öffentliche Navigation: ``connections`` | ``controller`` | ``protocols`` | …"""
+        key = str(which or "").strip().lower()
+        idx_map = {
+            "profiles": getattr(self, "_tab_profiles_index", 0),
+            "connections": getattr(self, "_tab_connections_index", 2),
+            "protocols": 3,  # settings.tab_rotor_emulation
+            "controller": getattr(self, "_tab_controller_index", 6),
+            "update": getattr(self, "_tab_update_index", 11),
+        }
+        row = int(idx_map.get(key, getattr(self, "_tab_connections_index", 2)))
+        prev = -1
+        try:
+            prev = int(self._settings_nav.currentRow())
+        except Exception:
+            prev = -1
+        try:
+            self._settings_nav.setCurrentRow(row)
+        except Exception:
+            self._settings_stack.setCurrentIndex(row)
+            self._on_settings_tab_shown(row)
+        else:
+            # Gleiche Zeile erneut: currentRowChanged feuert nicht → manuell.
+            if prev == row:
+                self._on_settings_tab_shown(row)
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def _softap_axis_enabled(self, axis: str) -> bool:
         ax = str(axis or "").strip().lower()

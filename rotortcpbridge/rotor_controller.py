@@ -1311,8 +1311,20 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 pass
 
     def request_immediate_error_poll(self) -> None:
-        """Früher: GETERR nach Start. Fehler kommen nur noch per Firmware-Broadcast ERR; No-Op."""
-        return
+        """GETERR für alle aktiven Achsen (z. B. Fenster Warnungen/Fehler öffnen).
+
+        Laufzeitfehler kommen weiterhin primär per Broadcast ERR; beim Öffnen
+        der Diagnose-Ansicht frischen wir den Code gezielt nach.
+        """
+        if not self.hw.is_connected():
+            return
+        try:
+            if self.enable_az:
+                self._poll_err(self.slave_az, self.az, "AZ")
+            if self.enable_el:
+                self._poll_err(self.slave_el, self.el, "EL")
+        except Exception:
+            pass
 
     def request_immediate_pos(self) -> None:
         """Positionsabfrage sofort (Kompass öffnen) — über Coalescing-Pfad."""
@@ -3135,6 +3147,98 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             self.request_home_pos(az=False, el=True)
         except Exception:
             self._park_pending_el = False
+
+    def acknowledge_fault(self, axis: str) -> None:
+        """Fehler an einer Achse quittieren (Fehler-Popup).
+
+        Absolut-Encoder (Typ 3/4): ``SETREF:0`` (nur Quittierung, kein Homing).
+        Encoder Typ 1/2: ``SETREF:1`` (Homing/Quittierung per Homing-Start).
+        Ziel ist immer die Slave-Adresse der betroffenen Achse.
+        """
+        axis_u = str(axis or "").strip().upper()
+        if axis_u == "AZ":
+            if not self.enable_az:
+                return
+            dst = int(self.slave_az)
+            axis_state = self.az
+        elif axis_u == "EL":
+            if not self.enable_el:
+                return
+            dst = int(self.slave_el)
+            axis_state = self.el
+        else:
+            return
+        try:
+            if not self.hw.is_connected():
+                return
+        except Exception:
+            return
+
+        start_homing = not self.abs_encoder_no_homing()
+        param = "1" if start_homing else "0"
+        try:
+            axis_state.compass_target_d10 = None
+            axis_state.target_d10 = 0
+            axis_state.last_set_sent_target_d10 = None
+            axis_state.last_set_sent_ts = 0.0
+            axis_state.pos_resync_pending = False
+        except Exception:
+            pass
+
+        _start_homing = start_homing
+        _axis_state = axis_state
+        _ctrl = self
+        _axis_label = axis_u
+        line = build(self.master_id, dst, "SETREF", param)
+
+        def _on_done(tel: Optional[Telegram], err: Optional[str]) -> None:
+            if err:
+                _ctrl.log.write(
+                    "WARN", f"{_axis_label} SETREF (Fehler quittieren) -> keine Antwort ({err})"
+                )
+                _axis_state.ref_poll_active = False
+                _axis_state.moving = False
+                if _start_homing and callable(_ctrl.on_ref_start_failed):
+                    try:
+                        _ctrl.on_ref_start_failed(_axis_label)
+                    except Exception:
+                        pass
+                return
+            if tel and (tel.cmd.startswith("ACK_SETREF") or tel.cmd.startswith("ACK_REF")):
+                if _start_homing:
+                    _axis_state.ref_poll_active = True
+                    _axis_state.moving = True
+                else:
+                    # Absolut: Quittierung — Fehlercode zeitnah nachlesen.
+                    _axis_state.ref_poll_active = False
+                    _axis_state.moving = False
+                    try:
+                        _ctrl._poll_err(dst, _axis_state, _axis_label)
+                    except Exception:
+                        pass
+                return
+            _ctrl.log.write(
+                "WARN",
+                f"{_axis_label} SETREF (Fehler quittieren) -> NAK/unbekannte Antwort: "
+                f"{tel.cmd if tel else 'None'}",
+            )
+            _axis_state.ref_poll_active = False
+            _axis_state.moving = False
+            if _start_homing and callable(_ctrl.on_ref_start_failed):
+                try:
+                    _ctrl.on_ref_start_failed(_axis_label)
+                except Exception:
+                    pass
+
+        self._send_hw_request(
+            HwRequest(
+                line=line,
+                expect_prefix="ACK_SETREF",
+                timeout_s=1.0,
+                on_done=_on_done,
+                priority=0,
+            )
+        )
 
     def reference_all(self, start_homing: bool = True) -> None:
         """Referenziert alle aktiven Rotoren (AZ und/oder EL laut Config)."""

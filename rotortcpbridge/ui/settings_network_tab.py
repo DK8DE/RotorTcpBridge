@@ -6,9 +6,8 @@ import concurrent.futures
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -1742,14 +1741,23 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
 
         self._lbl_intro = QLabel(t("settings.network_intro"))
         self._lbl_intro.setWordWrap(True)
+        self._lbl_intro.setMinimumWidth(0)
+        self._lbl_intro.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+        )
         root.addWidget(self._lbl_intro)
 
         split = QSplitter(Qt.Orientation.Horizontal)
+        split.setChildrenCollapsible(False)
         # --- Liste ---
         left = QWidget()
+        left.setMinimumWidth(0)
+        left.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         left_l = QVBoxLayout(left)
         left_l.setContentsMargins(0, 0, 0, 0)
         self._list = QListWidget()
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._list.setTextElideMode(Qt.TextElideMode.ElideRight)
         self._list.currentRowChanged.connect(self._on_sel_changed)
         left_l.addWidget(self._list, 1)
         btn_row = QHBoxLayout()
@@ -1768,6 +1776,8 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
 
         # --- Detail ---
         right = QWidget()
+        right.setMinimumWidth(0)
+        right.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         right_l = QVBoxLayout(right)
         right_l.setContentsMargins(0, 0, 0, 0)
 
@@ -1898,16 +1908,16 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self._update_sock_fields_visibility()
 
         act = QVBoxLayout()
+        act.setSpacing(4)
+        # Zwei Zeilen: lange Buttons (Web / Übernehmen) dürfen die Tab-Breite nicht sprengen.
         act_row1 = QHBoxLayout()
+        act_row1.setContentsMargins(0, 0, 0, 0)
         self._btn_read = QPushButton(t("settings.network_btn_read"))
         self._btn_read.setToolTip(tt("settings.network_btn_read_tooltip"))
         self._btn_read.clicked.connect(self._on_read)
         self._btn_write = QPushButton(t("settings.network_btn_write"))
         self._btn_write.setToolTip(tt("settings.network_btn_write_tooltip"))
         self._btn_write.clicked.connect(self._on_write)
-        self._btn_web = QPushButton(t("settings.network_btn_web"))
-        self._btn_web.setToolTip(tt("settings.network_btn_web_tooltip"))
-        self._btn_web.clicked.connect(self._on_web)
         self._btn_apply_link = QPushButton(t("settings.network_btn_apply_link"))
         self._btn_apply_link.setToolTip(tt("settings.network_btn_apply_link_tooltip"))
         self._btn_apply_link.clicked.connect(self._on_apply_to_link)
@@ -1921,7 +1931,6 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self._btn_apply_el.setVisible(False)
         act_row1.addWidget(self._btn_read)
         act_row1.addWidget(self._btn_write)
-        act_row1.addWidget(self._btn_web)
         act_row1.addWidget(self._btn_apply_link)
         act_row1.addWidget(self._btn_apply_az)
         act_row1.addWidget(self._btn_apply_el)
@@ -1931,9 +1940,13 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self._act_row2_wrap = QWidget()
         act_row2 = QHBoxLayout(self._act_row2_wrap)
         act_row2.setContentsMargins(0, 0, 0, 0)
+        self._btn_web = QPushButton(t("settings.network_btn_web"))
+        self._btn_web.setToolTip(tt("settings.network_btn_web_tooltip"))
+        self._btn_web.clicked.connect(self._on_web)
         self._btn_stats = QPushButton(t("settings.network_btn_stats"))
         self._btn_stats.setToolTip(tt("settings.network_btn_stats_tooltip"))
         self._btn_stats.clicked.connect(self._on_stats)
+        act_row2.addWidget(self._btn_web)
         act_row2.addWidget(self._btn_stats)
         act_row2.addStretch(1)
         act.addWidget(self._act_row2_wrap)
@@ -1941,17 +1954,36 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
 
         self._lbl_status = QLabel("")
         self._lbl_status.setWordWrap(True)
+        self._lbl_status.setMinimumWidth(0)
         right_l.addWidget(self._lbl_status)
         right_l.addStretch(1)
         split.addWidget(right)
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 2)
+        split.setSizes([px_to_dip(self, 180), px_to_dip(self, 320)])
+        self._split = split
         root.addWidget(split, 1)
+        self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         self._update_vendor_fields_visibility()
         # Ohne Auswahl sind Detailfelder wirkungslos (_apply_form_to_current
         # speichert nichts) - daher von Anfang an deaktiviert.
         self._set_detail_enabled(False)
+
+    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
+        # Intro-Text und Button-Zeilen melden sonst unwrapped ~800px+.
+        return QSize(px_to_dip(self, 280), super().minimumSizeHint().height())
+
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        return QSize(px_to_dip(self, 480), super().sizeHint().height())
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        # Word-Wrap braucht eine echte Maximalbreite, sonst bleibt sizeHint unwrapped.
+        try:
+            self._lbl_intro.setMaximumWidth(max(80, int(self.width()) - 4))
+        except Exception:
+            pass
 
     def _fill_vendor_combo(self) -> None:
         self.cb_vendor.blockSignals(True)

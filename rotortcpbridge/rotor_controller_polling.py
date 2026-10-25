@@ -1255,6 +1255,13 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5)
         )
 
+    def _poll_err(self, dst: int, axis_state: AxisState, axis: str):
+        # Wie GETWARN: ohne pending; ACK_ERR / ACK_GETERR → _on_async_tel.
+        line = build(self.master_id, dst, "GETERR", "0")
+        self._send_hw_request(
+            HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5)
+        )
+
     def _poll_ref(self, dst: int, axis_state: AxisState, axis: str):
         # Absolut-Encoder (GETENCTYPE=3): kein periodisches GETREF in Ruhe/Homing.
         if self.abs_encoder_no_homing():

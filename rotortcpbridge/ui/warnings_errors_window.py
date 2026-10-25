@@ -189,6 +189,13 @@ class WarningsErrorsWindow(QDialog):
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
+        # Fehlercodes gezielt nachlesen (nicht nur Broadcast ERR).
+        try:
+            fn = getattr(self._ctrl, "request_immediate_error_poll", None)
+            if callable(fn):
+                fn()
+        except Exception:
+            pass
         self._refresh()
         self._timer.start()
 

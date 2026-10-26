@@ -191,6 +191,7 @@ class _RotorPollingHost:
     _statistics_window_open: bool
     _settings_window_open: bool
     _settings_strom_tab_open: bool
+    _inclinometer_window_open: bool
     _compass_window_open: bool
     _compass_strom_heatmap_az: bool
     _compass_strom_heatmap_el: bool
@@ -205,6 +206,7 @@ class _RotorPollingHost:
     _acc_bins_stats_arm_after_setpos_el: bool
     _hw_prev_connected: bool
     _startup_burst_until: float
+    _startup_secondary_due_ts: float
     _last_poll: float
     _last_warn: float
     _last_tel: float
@@ -418,7 +420,9 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         # Wenn die Hardware-Verbindung gerade (wieder) da ist: Timer zurücksetzen,
         # damit beim ersten Mal alle Werte sofort abgefragt werden (Startup/Recover).
         if link_on and (not self._hw_prev_connected):
-            self._startup_burst_until = float(now) + 3.0
+            self._startup_burst_until = float(now) + 4.0
+            # Antennen/Config erst nach Main-GUI-Erstabfrage (AZ→EL)
+            self._startup_secondary_due_ts = float(now) + 1.6
             self._last_poll = 0.0
             self._last_warn = 0.0
             self._last_tel = 0.0
@@ -444,66 +448,22 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             self.wind_enabled_known = False
             self._wind_enable_inflight = False
             self._wind_enable_sent_ts = 0.0
-            # Sofortige Erstabfrage (damit UI direkt gefüllt wird):
-            # Position + PWM + MINPWM + REF + Warn + Temp (Fehler: Broadcast ERR, kein GETERR)
-            # GETWINDENABLE wird vom Idle-Polling-Block übernommen (Inflight-Guard verhindert Doppelabfrage)
             try:
-                if self.enable_az and hw_on:
-                    self._poll_pos(self.slave_az, self.az, "AZ", now, expected_period_s=pos_fast_s)
-                    self._poll_pwm(self.slave_az, self.az, "AZ")
-                    self._poll_minpwm(self.slave_az, self.az, "AZ")
-                    self._poll_ref(self.slave_az, self.az, "AZ")
-                    self._poll_warn(self.slave_az, self.az, "AZ")
-                    self._poll_idle_telemetry(self.slave_az, self.az, "AZ")
-                    if not self.abs_encoder_no_homing():
-                        self._poll_idle_wind(self.slave_az, self.az, "AZ")
-                if self.enable_el and el_on:
-                    self._poll_pos(self.slave_el, self.el, "EL", now, expected_period_s=pos_fast_s)
-                    self._poll_pwm(self.slave_el, self.el, "EL")
-                    self._poll_minpwm(self.slave_el, self.el, "EL")
-                    self._poll_ref(self.slave_el, self.el, "EL")
-                    self._poll_warn(self.slave_el, self.el, "EL")
-                    self._poll_idle_telemetry(self.slave_el, self.el, "EL")
-                if (not bool(getattr(self, "_antenna_bootstrap_requested", False))) and self.enable_az:
-                    self.request_antenna_offsets()
-                    self.request_antenna_angles()
-                    self.request_antenna_ranges()
-                    self.request_antenna_names()
-                    self.request_antenna_dipoles()
-                    self._antenna_bootstrap_requested = True
-                if not bool(getattr(self, "_antenna_selection_bootstrap_requested", False)):
-                    # Antennenauswahl liegt im AZ-Rotor-NVS (GETASELECT / SETASELECT).
-                    if self.enable_az:
-                        self.request_antenna_selection()
-                        self._antenna_selection_bootstrap_requested = True
-                if (not bool(getattr(self, "_encoder_type_requested", False))) and self.enable_az:
-                    self.request_encoder_type()
-                    self._encoder_type_requested = True
-                if (not bool(getattr(self, "_endstc_requested", False))) and (
-                    self.enable_az or self.enable_el
-                ):
-                    self.request_endstc()
-                    self._endstc_requested = True
-                if (not bool(getattr(self, "_max_deg_requested", False))) and self.enable_az:
-                    self.request_max_deg()
-                    self._max_deg_requested = True
-                if not bool(getattr(self, "_arrtol_requested", False)):
-                    if self.enable_az or self.enable_el:
-                        self.request_arrtol()
-                        self._arrtol_requested = True
-                if not bool(getattr(self, "_home_pos_requested", False)):
-                    if self.enable_az or self.enable_el:
-                        self.request_home_pos()
-                        self._home_pos_requested = True
-                if (not bool(getattr(self, "_el_rotor_type_requested", False))) and self.enable_el:
-                    self.request_el_rotor_type()
-                    self._el_rotor_type_requested = True
+                self._queue_startup_main_gui(
+                    now, pos_fast_s, hw_on=hw_on, el_on=el_on
+                )
             except Exception:
                 pass
         if (not link_on) and self._hw_prev_connected:
             self.encoder_type = None
             self.encoder_type_known = False
             self._encoder_type_requested = False
+            self.encoder_type_el = None
+            self.encoder_type_el_known = False
+            self._inclinometer_present = False
+            self._inc_shker_absent_el = False
+            self._inc_shker_absent_az = False
+            self._last_inc_shker = 0.0
             self._endstc_requested = False
             self._max_deg_requested = False
             self._arrtol_requested = False
@@ -521,8 +481,14 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 self.az.home_pos_d10 = None
                 self.az.endstc = None
                 self.az.endstc_known = False
+                self.az.inc_shock = False
+                from .rotor_model import WARN_ID_INC_SHOCK as _WID_INC
+
+                self.az.warnings.discard(int(_WID_INC))
                 self.el.endstc = None
                 self.el.endstc_known = False
+                self.el.inc_shock = False
+                self.el.warnings.discard(int(_WID_INC))
             except Exception:
                 pass
             try:
@@ -531,6 +497,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             except Exception:
                 pass
             self._antenna_selection_bootstrap_requested = False
+            self._startup_secondary_due_ts = 0.0
             self._setposcc_poll_hold = False
             self._setposcc_hold_until = 0.0
             cb = getattr(self, "on_encoder_type_changed", None)
@@ -553,17 +520,11 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     pass
         self._hw_prev_connected = link_on
 
-        # Auch ohne Connect-Kante (Profilwechsel bei bestehendem Link): GETANTOFF nachholen.
-        if hw_on and self.enable_az and not bool(getattr(self, "_antenna_bootstrap_requested", False)):
-            try:
-                self.request_antenna_offsets()
-                self.request_antenna_angles()
-                self.request_antenna_ranges()
-                self.request_antenna_names()
-                self.request_antenna_dipoles()
-                self._antenna_bootstrap_requested = True
-            except Exception:
-                pass
+        # Sekundär-Bootstrap (Antennen/Config): erst nach Main-GUI-Erstabfrage.
+        try:
+            self._tick_startup_secondary_bootstrap(now, hw_on=hw_on, el_on=el_on)
+        except Exception:
+            pass
 
         pos_slow_s = self._cfg_poll["pos_slow"] / 1000.0
         warn_s = self._cfg_poll["warn"] / 1000.0
@@ -589,6 +550,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         except Exception:
             pass
         poll_restrict = self._motion_poll_restrict_active(now, pos_fast_s)
+        inc_live = bool(getattr(self, "_inclinometer_window_open", False))
         cc_hold = self.cc_poll_hold_active(now)
         try:
             foreign_yield = bool(self.foreign_master_yield_active(now))
@@ -601,8 +563,9 @@ class RotorControllerPollingMixin(_RotorPollingHost):
 
         # GETACCBINS: Abschlussprüfung auch ohne hw_on (sonst hängt Inflight bei Disconnect).
         self._tick_acc_bins_finalize_rounds(now)
-        if (poll_restrict or foreign_yield) and not cc_hold:
-            # Harte Vorgabe: während Fahrt / Mitlauf nur Positions-/Fehlerpfad; Strom-/Statistikketten sofort stoppen.
+        if (poll_restrict or foreign_yield or inc_live) and not cc_hold:
+            # Harte Vorgabe: während Fahrt / Mitlauf / Inklinometer-Live nur Positions-/Fehlerpfad;
+            # Strom-/Statistikketten sofort stoppen.
             self._abort_acc_bins_fetch_only()
 
         if link_on and (not cc_hold) and (not foreign_yield):
@@ -641,16 +604,24 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             # schnell laufen. Das Idle-Defer-Fenster darf die Positionsabfrage dann NICHT bremsen.
             _defer_u = float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
             skip_pos_for_cc = (not poll_restrict) and (now < _defer_u)
+            # Inklinometer-Config: Bus für GETINCDG freimachen (wie Idle-Extras bei Fahrt),
+            # echte Bewegung behält schnelles GETPOSDG.
+            skip_pos_for_inc = bool(inc_live) and (not poll_restrict)
             acc_chain = self._acc_bins_chain_in_progress()
             # Während Fahrt: GETACCBINS darf GETPOSDG nie verdrängen (Zeiger-Ruckeln).
             block_pos_for_acc = bool(acc_chain) and (not poll_restrict)
             # Nach Ankunft: Settle-GETPOSDG (~200 ms), auch wenn Idle-Intervall noch lange wäre.
-            if (not homing_active) and (not skip_pos_for_cc) and (not block_pos_for_acc):
+            if (
+                (not homing_active)
+                and (not skip_pos_for_cc)
+                and (not skip_pos_for_inc)
+                and (not block_pos_for_acc)
+            ):
                 self._tick_pos_settle_polls(now)
             if (
                 (not homing_active)
-                and
-                (not skip_pos_for_cc)
+                and (not skip_pos_for_cc)
+                and (not skip_pos_for_inc)
                 and (now - self._last_poll >= pos_period)
                 and (not block_pos_for_acc)
             ):
@@ -687,12 +658,18 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             # Idle-Zusatzabfragen bei SETPOSCC-Strom kurz aussetzen (Bus frei für Encoder/GETPOSDG).
             # Während GETACCBINS-Kette ebenfalls aussetzen (sonst stauen andere Telegramme und
             # überholen per Priorität den nächsten ACC-Block → falsche Timeouts).
+            # `_ui_cmd_idle_defer_until`: sync_ui (Versionscheck) — GETPOSDG läuft weiter.
+            _idle_extra_ok = now >= max(
+                float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0),
+                float(getattr(self, "_ui_cmd_idle_defer_until", 0.0) or 0.0),
+            )
             if (
                 not poll_restrict
-                and now >= float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
+                and (not inc_live)
+                and _idle_extra_ok
                 and (not acc_chain)
             ):
-                # Idle: alle Zusatzabfragen – während Fahrt / SETPOSDG-Grace nur GETPOSDG.
+                # Idle: alle Zusatzabfragen – während Fahrt / Inklinometer-Live / SETPOSDG-Grace nur Position bzw. GETINCDG.
 
                 # GETPWM: 2 s
                 if now - self._last_pwm >= pwm_s:
@@ -803,13 +780,40 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                     if self.enable_el:
                         self._poll_ref(self.slave_el, self.el, "EL")
 
+            # Inklinometer-Ruckfehler (GETINCSHKER): auch bei offenem Config-Fenster.
+            # Dual-IP: EL immer proben (AZ kann Typ≠4 sein und trotzdem Wind haben).
+            if (
+                (not poll_restrict)
+                and (not cc_hold)
+                and now
+                >= max(
+                    float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0),
+                    float(getattr(self, "_ui_cmd_idle_defer_until", 0.0) or 0.0),
+                )
+            ):
+                try:
+                    last_shker = float(getattr(self, "_last_inc_shker", 0.0) or 0.0)
+                    if (now - last_shker) >= float(warn_s):
+                        targets = self._inc_shker_poll_targets()
+                        if targets:
+                            self._last_inc_shker = now
+                            for dst, axis_st, axis_nm in targets:
+                                self._poll_inc_shker(int(dst), axis_st, str(axis_nm))
+                except Exception:
+                    pass
+
             # Wind auch während GETACCBINS: GETANEMO/GETWINDDIR/GETBEAUFORT haben prio 2, kein Pending —
             # blockiert ACC nicht, hält aber Telemetrie für den Kompass (Windpfeil) aktuell.
             if (
                 (not poll_restrict)
+                and (not inc_live)
                 and (not cc_hold)
                 and (not self.abs_encoder_no_homing())
-                and now >= float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
+                and now
+                >= max(
+                    float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0),
+                    float(getattr(self, "_ui_cmd_idle_defer_until", 0.0) or 0.0),
+                )
             ):
                 if self.wind_enabled and (now - self._last_wind >= 2.0):
                     if self.enable_az and (not self._wind_speed_inflight):
@@ -867,58 +871,26 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             if last <= 0.0:
                 axis_state.online = False
                 # User-Wunsch: Beim Übergang nach offline Ziel zurücksetzen
+                # (Telemetrie/Referenz behalten — Anzeige nicht leerwischen)
                 if prev_online:
                     try:
                         axis_state.target_d10 = 0
                         axis_state.last_set_sent_target_d10 = None
                         axis_state.last_set_sent_ts = 0.0
-                        # Absolut-Encoder: Homing-Flag nicht löschen (sonst bleibt SETPOSDG tot)
-                        if not self.abs_encoder_no_homing():
-                            axis_state.referenced = False
                         axis_state.moving = False
-                        axis_state.error_code = 0
-                        try:
-                            axis_state.warnings.clear()
-                        except Exception:
-                            axis_state.warnings = set()
-                        try:
-                            axis_state.telemetry.temp_ambient_c = None
-                            axis_state.telemetry.temp_motor_c = None
-                            axis_state.telemetry.wind_kmh = None
-                            axis_state.telemetry.wind_dir_deg = None
-                            axis_state.telemetry.wind_beaufort = None
-                            axis_state.telemetry.pwm_max_pct = None
-                            axis_state.telemetry.pwm_min_pct = None
-                        except Exception:
-                            pass
                     except Exception:
                         pass
                 return
             new_online = (now - last) <= float(max(2.0, offline_timeout_s))
             axis_state.online = bool(new_online)
             if prev_online and (not new_online):
+                # Nur Fahr-/Zielzustand zurücksetzen — Telemetrie und Referenz behalten,
+                # sonst flackert die Main-GUI beim kurzen Bus-Stau (z. B. Versionscheck) leer.
                 try:
                     axis_state.target_d10 = 0
                     axis_state.last_set_sent_target_d10 = None
                     axis_state.last_set_sent_ts = 0.0
-                    if not self.abs_encoder_no_homing():
-                        axis_state.referenced = False
                     axis_state.moving = False
-                    axis_state.error_code = 0
-                    try:
-                        axis_state.warnings.clear()
-                    except Exception:
-                        axis_state.warnings = set()
-                    try:
-                        axis_state.telemetry.temp_ambient_c = None
-                        axis_state.telemetry.temp_motor_c = None
-                        axis_state.telemetry.wind_kmh = None
-                        axis_state.telemetry.wind_dir_deg = None
-                        axis_state.telemetry.wind_beaufort = None
-                        axis_state.telemetry.pwm_max_pct = None
-                        axis_state.telemetry.pwm_min_pct = None
-                    except Exception:
-                        pass
                 except Exception:
                     pass
             elif (not prev_online) and new_online:
@@ -1246,13 +1218,130 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             pass
         return True
 
-    def _poll_warn(self, dst: int, axis_state: AxisState, axis: str):
+    def _queue_startup_main_gui(
+        self,
+        now: float,
+        pos_fast_s: float,
+        *,
+        hw_on: bool,
+        el_on: bool,
+    ) -> None:
+        """Connect: nur Main-GUI-Werte, zuerst AZ dann EL (hohe Priorität).
+
+        Reihenfolge pro Achse: REF → POS/MOVE → WARN → PWM/MINPWM → TEMP.
+        AZ zusätzlich: WINDENABLE (+ Wind sobald bekannt).
+        Antennen-/Encoder-Config folgt später über ``_tick_startup_secondary_bootstrap``.
+        """
+        gui_prio = 1
+
+        def _one(dst: int, axis_state: AxisState, name: str) -> None:
+            self._poll_ref(dst, axis_state, name, priority=gui_prio)
+            self._poll_pos(
+                dst,
+                axis_state,
+                name,
+                now,
+                expected_period_s=pos_fast_s,
+                high_priority=True,
+            )
+            self._poll_warn(dst, axis_state, name, priority=gui_prio)
+            self._poll_pwm(dst, axis_state, name, priority=gui_prio)
+            self._poll_minpwm(dst, axis_state, name, priority=gui_prio)
+            self._poll_idle_telemetry(dst, axis_state, name, priority=gui_prio)
+
+        if self.enable_az and hw_on:
+            # Wind-Flag zuerst, damit Anemo/Dir nicht als No-Op enden
+            if not self.abs_encoder_no_homing():
+                self._poll_wind_enable(self.slave_az, self.az, "AZ")
+            _one(self.slave_az, self.az, "AZ")
+        if self.enable_el and el_on:
+            _one(self.slave_el, self.el, "EL")
+
+    def _tick_startup_secondary_bootstrap(
+        self, now: float, *, hw_on: bool, el_on: bool
+    ) -> None:
+        """Antennen/Config nach Main-GUI-Erstabfrage (niedrige Priorität)."""
+        due = float(getattr(self, "_startup_secondary_due_ts", 0.0) or 0.0)
+        if due <= 0.0 or now < due:
+            # Profilwechsel bei bestehendem Link: Antennen ohne Connect-Kante nachholen,
+            # aber nicht vor dem Secondary-Fenster (due==0 und noch nie verbunden → sofort ok).
+            if due > 0.0:
+                return
+        if not (hw_on or el_on):
+            return
+        if (not bool(getattr(self, "_antenna_bootstrap_requested", False))) and self.enable_az and hw_on:
+            self.request_antenna_offsets()
+            self.request_antenna_angles()
+            self.request_antenna_ranges()
+            self.request_antenna_names()
+            self.request_antenna_dipoles()
+            self._antenna_bootstrap_requested = True
+        if (
+            not bool(getattr(self, "_antenna_selection_bootstrap_requested", False))
+            and self.enable_az
+            and hw_on
+        ):
+            self.request_antenna_selection()
+            self._antenna_selection_bootstrap_requested = True
+        if (not bool(getattr(self, "_encoder_type_requested", False))) and self.enable_az and hw_on:
+            self.request_encoder_type()
+            self._encoder_type_requested = True
+        if (not bool(getattr(self, "_endstc_requested", False))) and (
+            (self.enable_az and hw_on) or (self.enable_el and el_on)
+        ):
+            self.request_endstc()
+            self._endstc_requested = True
+        if (not bool(getattr(self, "_max_deg_requested", False))) and self.enable_az and hw_on:
+            self.request_max_deg()
+            self._max_deg_requested = True
+        if not bool(getattr(self, "_arrtol_requested", False)):
+            if (self.enable_az and hw_on) or (self.enable_el and el_on):
+                self.request_arrtol()
+                self._arrtol_requested = True
+        if not bool(getattr(self, "_home_pos_requested", False)):
+            if (self.enable_az and hw_on) or (self.enable_el and el_on):
+                self.request_home_pos()
+                self._home_pos_requested = True
+        if (
+            (not bool(getattr(self, "_el_rotor_type_requested", False)))
+            and self.enable_el
+            and el_on
+        ):
+            self.request_el_rotor_type()
+            self._el_rotor_type_requested = True
+
+    def _poll_warn(
+        self, dst: int, axis_state: AxisState, axis: str, *, priority: int = 5
+    ):
         # WICHTIG: Warn-/Error-/Telemetrie-Polls dürfen die Positionsanzeige nicht ausbremsen.
         # Daher: ohne expect_prefix senden (kein "pending"), Antworten kommen asynchron rein
         # und werden in _on_async_tel verarbeitet.
         line = build(self.master_id, dst, "GETWARN", "0")
         self._send_hw_request(
-            HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5)
+            HwRequest(
+                line=line,
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=int(priority),
+            )
+        )
+
+    def _poll_inc_shker(
+        self, dst: int, axis_state: AxisState, axis: str, *, priority: int = 5
+    ) -> None:
+        """GETINCSHKER (latched Ruck-Fehler) ohne Pending — Antwort in ``_on_async_tel``."""
+        _ = axis_state
+        _ = axis
+        line = build(self.master_id, dst, "GETINCSHKER", "0")
+        self._send_hw_request(
+            HwRequest(
+                line=line,
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=int(priority),
+            )
         )
 
     def _poll_err(self, dst: int, axis_state: AxisState, axis: str):
@@ -1262,7 +1351,9 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=5)
         )
 
-    def _poll_ref(self, dst: int, axis_state: AxisState, axis: str):
+    def _poll_ref(
+        self, dst: int, axis_state: AxisState, axis: str, *, priority: int = 2
+    ):
         # Absolut-Encoder (GETENCTYPE=3): kein periodisches GETREF in Ruhe/Homing.
         if self.abs_encoder_no_homing():
             return
@@ -1270,7 +1361,13 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         # Daher ohne pending senden; Antwort wird in _on_async_tel verarbeitet.
         line = build(self.master_id, dst, "GETREF", "0")
         self._send_hw_request(
-            HwRequest(line=line, expect_prefix=None, timeout_s=0.8, on_done=None, priority=2)
+            HwRequest(
+                line=line,
+                expect_prefix=None,
+                timeout_s=0.8,
+                on_done=None,
+                priority=int(priority),
+            )
         )
 
     def _poll_telemetry(self, dst: int, axis_state: AxisState, axis: str):
@@ -1297,18 +1394,21 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         self._poll_idle_wind(dst, axis_state, axis)
         # PWM wird separat über _poll_pwm() abgefragt (max. alle ~2s).
 
-    def _poll_idle_telemetry(self, dst: int, axis_state: AxisState, axis: str):
+    def _poll_idle_telemetry(
+        self, dst: int, axis_state: AxisState, axis: str, *, priority: int = 6
+    ):
         """Telemetrie, die im Idle abgefragt werden darf (Temp/Wind).
 
         Während der Fahrt bewusst NICHT pollen, um die Positionsanzeige nicht auszubremsen.
         """
+        prio = int(priority)
         self._send_hw_request(
             HwRequest(
                 line=build(self.master_id, dst, "GETTEMPA", "0"),
                 expect_prefix=None,
                 timeout_s=0.8,
                 on_done=None,
-                priority=6,
+                priority=prio,
             )
         )
         self._send_hw_request(
@@ -1317,7 +1417,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 expect_prefix=None,
                 timeout_s=0.8,
                 on_done=None,
-                priority=6,
+                priority=prio,
             )
         )
         # Wind wird separat mit eigener Taktung/Prio gepollt (siehe _poll_idle_wind()).
@@ -1405,7 +1505,9 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             )
         )
 
-    def _poll_pwm(self, dst: int, axis_state: AxisState, axis: str):
+    def _poll_pwm(
+        self, dst: int, axis_state: AxisState, axis: str, *, priority: int = 6
+    ):
         """PWM-Status abfragen (immer nur alle ~2s)."""
         self._send_hw_request(
             HwRequest(
@@ -1413,11 +1515,13 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 expect_prefix=None,
                 timeout_s=0.8,
                 on_done=None,
-                priority=6,
+                priority=int(priority),
             )
         )
 
-    def _poll_minpwm(self, dst: int, axis_state: AxisState, axis: str):
+    def _poll_minpwm(
+        self, dst: int, axis_state: AxisState, axis: str, *, priority: int = 6
+    ):
         """MINPWM abfragen (Untergrenze für PWM)."""
         self._send_hw_request(
             HwRequest(
@@ -1425,7 +1529,7 @@ class RotorControllerPollingMixin(_RotorPollingHost):
                 expect_prefix=None,
                 timeout_s=0.8,
                 on_done=None,
-                priority=6,
+                priority=int(priority),
             )
         )
 

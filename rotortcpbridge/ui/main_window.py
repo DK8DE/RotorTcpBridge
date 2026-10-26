@@ -672,24 +672,38 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
 
-        hw_row = QHBoxLayout()
-        hw_row.setContentsMargins(0, 0, 0, 0)
-        hw_row.setSpacing(px_to_dip(self, 6))
+        # Dual-IP: AZ und EL untereinander (nicht nebeneinander — sonst zu breit).
+        hw_col = QVBoxLayout()
+        hw_col.setContentsMargins(0, 0, 0, 0)
+        hw_col.setSpacing(px_to_dip(self, 2))
         self._hw_led_az_wrap = self._srv_led_wrap(self.led_hw)
         self._hw_led_el_wrap = self._srv_led_wrap(self.led_hw_el)
-        hw_row.addWidget(self._hw_led_az_wrap)
-        hw_row.addWidget(self._lbl_hw_az_tag)
-        hw_row.addWidget(self.lbl_hw, 1)
-        hw_row.addWidget(self._hw_led_el_wrap)
-        hw_row.addWidget(self._lbl_hw_el_tag)
-        hw_row.addWidget(self.lbl_hw_el, 1)
-        # EL-LED/Text nur bei Dual-IP sichtbar
-        self._hw_led_el_wrap.setVisible(False)
-        self._lbl_hw_el_tag.setVisible(False)
-        self.lbl_hw_el.setVisible(False)
+
+        hw_az_row = QHBoxLayout()
+        hw_az_row.setContentsMargins(0, 0, 0, 0)
+        hw_az_row.setSpacing(px_to_dip(self, 6))
+        hw_az_row.addWidget(self._hw_led_az_wrap)
+        hw_az_row.addWidget(self._lbl_hw_az_tag)
+        hw_az_row.addWidget(self.lbl_hw, 1)
+        hw_az_row_w = QWidget()
+        hw_az_row_w.setLayout(hw_az_row)
+
+        hw_el_row = QHBoxLayout()
+        hw_el_row.setContentsMargins(0, 0, 0, 0)
+        hw_el_row.setSpacing(px_to_dip(self, 6))
+        hw_el_row.addWidget(self._hw_led_el_wrap)
+        hw_el_row.addWidget(self._lbl_hw_el_tag)
+        hw_el_row.addWidget(self.lbl_hw_el, 1)
+        self._hw_el_row_w = QWidget()
+        self._hw_el_row_w.setLayout(hw_el_row)
+
+        hw_col.addWidget(hw_az_row_w)
+        hw_col.addWidget(self._hw_el_row_w)
+        # EL-Zeile / AZ-Tag nur bei Dual-IP sichtbar
+        self._hw_el_row_w.setVisible(False)
         self._lbl_hw_az_tag.setVisible(False)
         hw_row_w = QWidget()
-        hw_row_w.setLayout(hw_row)
+        hw_row_w.setLayout(hw_col)
         srv_form.addRow(t("main.srv_hw_label"), hw_row_w)
         self._srv_row_hw_w = hw_row_w
 
@@ -1051,6 +1065,7 @@ class MainWindow(QMainWindow):
         self._startup_error_check_scheduled = False
         self._firmware_compat_scheduled = False
         self._firmware_compat_result = None
+        self._app_online_version: str | None = None
 
         apply_theme_mode(self.cfg)
         QTimer.singleShot(0, self._repolish_menu_bar_for_os_theme)
@@ -4489,7 +4504,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(2200, self._startup_error_poll_and_show)
         if not self._firmware_compat_scheduled:
             self._firmware_compat_scheduled = True
-            # Bus etwas Zeit geben, dann Bundle + Versionscheck einmalig.
+            # Bus etwas Zeit geben, dann App-Update-Hinweis + Rotor-Versionscheck.
             QTimer.singleShot(2800, self._startup_firmware_compat_flow)
 
     def _startup_error_poll_and_show(self) -> None:
@@ -4512,102 +4527,82 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(450, _show)
 
     def _startup_firmware_compat_flow(self) -> None:
-        """Einmalig: ggf. FW-Bins laden, dann Rotor-Versionscheck mit Quittierung."""
-        from ..version import FIRMWARE_UPDATE_REQUIRED
+        """Einmalig: ggf. App-Update-Hinweis (GitHub), dann Rotor-Versionscheck."""
+        self._run_app_update_check(then=self._run_firmware_compat_check_and_dialogs)
 
-        if FIRMWARE_UPDATE_REQUIRED:
-            self._run_firmware_bundle_download(then_check=True)
-        else:
-            self._run_firmware_compat_check_and_dialogs()
+    def _open_download_page(self) -> None:
+        try:
+            from ..app_update_check import download_page_url
 
-    def _run_firmware_bundle_download(self, *, then_check: bool = True) -> None:
-        from ..firmware_bundle import (
-            bundle_root_for_app,
-            download_missing_assets,
-            needs_download,
-        )
+            QDesktopServices.openUrl(QUrl(download_page_url()))
+        except Exception:
+            try:
+                QDesktopServices.openUrl(QUrl("https://dk8.de/de/download/"))
+            except Exception:
+                pass
 
-        if not needs_download():
-            if then_check:
-                self._run_firmware_compat_check_and_dialogs()
-            return
-
-        progress = QProgressDialog(
-            t("fw.bundle_download_progress", detail="…"),
-            None,
-            0,
-            0,
-            self,
-        )
-        progress.setWindowTitle(t("fw.bundle_download_title"))
-        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
-        progress.setMinimumDuration(0)
-        progress.setCancelButton(None)
-        progress.show()
-        QApplication.processEvents()
-
-        result: dict = {"ok": True, "errors": [], "detail": ""}
+    def _run_app_update_check(self, *, then=None) -> None:
+        """Bei Internet: neuere GitHub-Release-Version melden (nur Link, kein Download)."""
+        result: dict = {"available": False, "remote": None, "done": False}
 
         def _work() -> None:
-            def _prog(detail: str) -> None:
-                result["detail"] = str(detail or "")
+            try:
+                from ..app_update_check import check_app_update_available
+                from ..net_utils import check_internet
 
-            ok, errs = download_missing_assets(progress=_prog)
-            result["ok"] = bool(ok)
-            result["errors"] = list(errs or [])
+                if not check_internet():
+                    result["done"] = True
+                    return
+                available, remote = check_app_update_available()
+                result["available"] = bool(available)
+                result["remote"] = remote
+            except Exception as e:
+                try:
+                    self._log_exception("_run_app_update_check", e)
+                except Exception:
+                    pass
+            finally:
+                result["done"] = True
 
-        th = threading.Thread(target=_work, name="fw-bundle-dl", daemon=True)
+        th = threading.Thread(target=_work, name="app-update-check", daemon=True)
         th.start()
 
         def _poll() -> None:
-            try:
-                detail = str(result.get("detail") or "…")
-                progress.setLabelText(
-                    t("fw.bundle_download_progress", detail=detail)
-                )
-            except Exception:
-                pass
-            if th.is_alive():
+            if th.is_alive() or not result.get("done"):
                 QTimer.singleShot(200, _poll)
                 return
-            try:
-                progress.close()
-            except Exception:
-                pass
-            path = str(bundle_root_for_app())
-            errs = result.get("errors") or []
-            if errs:
-                box = QMessageBox(self)
-                box.setIcon(QMessageBox.Icon.Warning)
-                box.setWindowTitle(t("fw.bundle_download_title"))
-                box.setText(
-                    t(
-                        "fw.bundle_download_partial",
-                        errors="\n".join(str(e) for e in errs[:8]),
-                        path=path,
+            remote = result.get("remote")
+            if remote:
+                self._app_online_version = str(remote)
+            if result.get("available") and remote:
+                try:
+                    box = QMessageBox(self)
+                    box.setIcon(QMessageBox.Icon.Information)
+                    box.setWindowTitle(t("fw.app_update_title"))
+                    box.setText(
+                        t(
+                            "fw.app_update_msg",
+                            current=APP_VERSION,
+                            latest=str(remote),
+                        )
                     )
-                )
-                btn_folder = box.addButton(
-                    t("fw.bundle_btn_open_folder"),
-                    QMessageBox.ButtonRole.ActionRole,
-                )
-                box.addButton(t("fw.bundle_btn_ok"), QMessageBox.ButtonRole.AcceptRole)
-                box.exec()
-                if box.clickedButton() is btn_folder:
-                    self._open_firmware_bundle_folder()
-            if then_check:
-                QTimer.singleShot(200, self._run_firmware_compat_check_and_dialogs)
+                    btn_dl = box.addButton(
+                        t("fw.btn_open_download_page"),
+                        QMessageBox.ButtonRole.ActionRole,
+                    )
+                    box.addButton(t("fw.app_update_later"), QMessageBox.ButtonRole.AcceptRole)
+                    box.exec()
+                    if box.clickedButton() is btn_dl:
+                        self._open_download_page()
+                except Exception as e:
+                    try:
+                        self._log_exception("_run_app_update_check.dialog", e)
+                    except Exception:
+                        pass
+            if callable(then):
+                QTimer.singleShot(100, then)
 
         QTimer.singleShot(200, _poll)
-
-    def _open_firmware_bundle_folder(self) -> None:
-        try:
-            from ..firmware_bundle import open_bundle_folder
-
-            path = open_bundle_folder()
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
-        except Exception:
-            pass
 
     def _run_firmware_compat_check_and_dialogs(self) -> None:
         from ..firmware_compat_check import run_compat_check
@@ -4687,37 +4682,16 @@ class MainWindow(QMainWindow):
                 details="\n".join(detail_lines),
             )
         )
-        btn_folder = box.addButton(
-            t("fw.bundle_btn_open_folder"),
+        btn_dl = box.addButton(
+            t("fw.btn_open_download_page"),
             QMessageBox.ButtonRole.ActionRole,
         )
         box.addButton(t("fw.rotor_mismatch_ack"), QMessageBox.ButtonRole.AcceptRole)
         box.exec()
-        if box.clickedButton() is btn_folder:
-            self._open_firmware_bundle_folder()
+        if box.clickedButton() is btn_dl:
+            self._open_download_page()
 
     def _apply_firmware_status_to_update_tab(self, result) -> None:
-        from ..version import ROTOR_FW_VERSION
-
-        rotor_text = t("settings.update_fw_rotor_unknown")
-        if result is not None and getattr(result, "rotor_axes", None):
-            online_axes = [ax for ax in result.rotor_axes if not ax.offline]
-            if not online_axes:
-                rotor_text = t("settings.update_fw_rotor_unknown")
-            elif result.rotor_ok:
-                rotor_text = t("settings.update_fw_rotor_ok", ver=ROTOR_FW_VERSION)
-            else:
-                found_bits = []
-                for ax in online_axes:
-                    if ax.found:
-                        found_bits.append(f"{ax.axis}={ax.found}")
-                    else:
-                        found_bits.append(f"{ax.axis}=?")
-                rotor_text = t(
-                    "settings.update_fw_rotor_bad",
-                    expected=ROTOR_FW_VERSION,
-                    found=", ".join(found_bits) or "—",
-                )
         info_text = ""
         try:
             from ..version import (
@@ -4749,8 +4723,17 @@ class MainWindow(QMainWindow):
         if sw is not None and hasattr(sw, "apply_firmware_compat_status"):
             try:
                 sw.apply_firmware_compat_status(
-                    rotor_text=rotor_text, info_text=info_text
+                    info_text=info_text,
+                    result=result,
+                    app_online=getattr(self, "_app_online_version", None),
                 )
+            except Exception:
+                pass
+        elif sw is not None and hasattr(sw, "_apply_version_table_from_result"):
+            try:
+                if getattr(self, "_app_online_version", None):
+                    sw._app_online_version = self._app_online_version
+                sw._apply_version_table_from_result(result, extra_info=info_text)
             except Exception:
                 pass
 
@@ -5663,13 +5646,17 @@ class MainWindow(QMainWindow):
             az_detail = com_disp
             dual_ips = False
 
-        # Dual-IP: AZ- und EL-LED/Text getrennt; sonst eine Zeile wie bisher
+        # Dual-IP: AZ- und EL-Zeile untereinander; sonst nur eine Zeile
         show_dual = bool(dual_ips)
         try:
             self._lbl_hw_az_tag.setVisible(show_dual)
-            self._hw_led_el_wrap.setVisible(show_dual)
-            self._lbl_hw_el_tag.setVisible(show_dual)
-            self.lbl_hw_el.setVisible(show_dual)
+            el_row = getattr(self, "_hw_el_row_w", None)
+            if el_row is not None:
+                el_row.setVisible(show_dual)
+            else:
+                self._hw_led_el_wrap.setVisible(show_dual)
+                self._lbl_hw_el_tag.setVisible(show_dual)
+                self.lbl_hw_el.setVisible(show_dual)
         except Exception:
             pass
 

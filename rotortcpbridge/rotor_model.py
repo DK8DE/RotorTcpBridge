@@ -6,6 +6,9 @@ from typing import Set, Optional
 
 from .angle_utils import is_az_pos_at_full_circle_d10, shortest_delta_deg
 
+# Synthetische Bridge-Warnung (nicht aus Rotor-GETWARN); bleibt bei GETWARN-Clear erhalten.
+WARN_ID_INC_SHOCK = 100
+
 WARNINGS = {
     0: ("SW_NONE", "Keine Warnung", "-"),
     1: (
@@ -22,6 +25,13 @@ WARNINGS = {
     4: ("SW_DRAG_DECREASE", "Gleichmäßig weniger Reibung", "Kann auf 'Last fehlt' hinweisen"),
     5: ("SW_TEMP_AMBIENT_HIGH", "Umgebung zu warm", "Warnschwelle / Schutz / Belüftung prüfen"),
     6: ("SW_TEMP_MOTOR_HIGH", "Motor zu warm", "Warnschwelle / Pausen / Last reduzieren"),
+    WARN_ID_INC_SHOCK: (
+        "SW_INC_SHOCK",
+        "Inklinometer: Ruck-Fehler (GETINCSHKER)",
+        "Wenn der Sensor zu sensibel eingestellt ist, kann es zu dieser Meldung kommen, "
+        "oder die Mechanik hat Probleme, oder sie wurde durch starken Wind verursacht. "
+        "Rotor/Antenne prüfen und Einstellungen nach Bedarf anpassen.",
+    ),
 }
 
 
@@ -32,6 +42,15 @@ def warning_info(wid: int) -> tuple[str, str, str]:
     except Exception:
         w = 0
     name, meaning, todo = WARNINGS.get(w, ("SW_UNKNOWN", "Unbekannt", "-"))
+    if w == int(WARN_ID_INC_SHOCK):
+        try:
+            from .i18n import t
+
+            m = str(t("warn.inc_shock_meaning", fallback=str(meaning)))
+            tip = str(t("warn.inc_shock_tip", fallback=str(todo)))
+            return "SW_INC_SHOCK", m, tip
+        except Exception:
+            pass
     return str(name), str(meaning), str(todo)
 
 
@@ -263,6 +282,8 @@ class AxisState:
     getmove_supported: Optional[bool] = None
     error_code: int = 0
     warnings: Set[int] = field(default_factory=set)
+    # Inklinometer GETINCSHKER=1 (Bridge-Warnung WARN_ID_INC_SHOCK)
+    inc_shock: bool = False
     ref_poll_active: bool = False
     # Korrekturwinkel (GETDGCAL/SETDGCAL) in 0,1°; None = noch nicht gelesen
     dgcal_d10: Optional[int] = None

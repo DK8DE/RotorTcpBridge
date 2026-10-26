@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -96,6 +97,8 @@ def _scroll(inner: QWidget) -> QScrollArea:
     sc.setWidgetResizable(True)
     sc.setFrameShape(QScrollArea.Shape.NoFrame)
     sc.setWidget(inner)
+    sc.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+    sc.setMinimumHeight(120)
     return sc
 
 
@@ -1951,28 +1954,87 @@ class CalPage(QWizardPage, _CmdMixin):
         self.scroll_flow = _scroll(self.box_flow)
         root.addWidget(self.scroll_flow, 1)
 
-        # --- Inklinometer ----------------------------------------------------
+        # --- Inklinometer (Encoder-Typ 4) ------------------------------------
         self.box_inc = QGroupBox(t("setup.cal_inc_group"))
-        il = QFormLayout(self.box_inc)
+        il_root = QVBoxLayout(self.box_inc)
+        self.lbl_inc_hint = QLabel(t("setup.inc_hint"))
+        self.lbl_inc_hint.setWordWrap(True)
+        il_root.addWidget(self.lbl_inc_hint)
+
+        gb_orient = QGroupBox(t("setup.inc_group_orient"))
+        fl_or = QFormLayout(gb_orient)
         self.chk_swap = QCheckBox(t("setup.inc_swapxy"))
+        self.chk_invref = QCheckBox(t("setup.inc_invref"))
+        self.chk_invsen = QCheckBox(t("setup.inc_invsen"))
+        self.chk_invrot = QCheckBox(t("setup.inc_invrot"))
+        self.cb_mount = QComboBox()
+        for v in (0, 90, 180, 270):
+            self.cb_mount.addItem(f"{v}°", int(v))
+        self.chk_lim180 = QCheckBox(t("setup.inc_lim180"))
         self.sp_cal = QDoubleSpinBox()
-        self.sp_cal.setRange(-180, 180)
+        self.sp_cal.setRange(-180.0, 180.0)
         self.sp_cal.setDecimals(2)
-        il.addRow(self.chk_swap)
-        il.addRow(t("setup.inc_cal"), self.sp_cal)
+        self.sp_cal.setSingleStep(0.1)
+        self.sp_cal.setSuffix(" °")
+        fl_or.addRow(self.chk_swap)
+        fl_or.addRow(self.chk_invref)
+        fl_or.addRow(self.chk_invsen)
+        fl_or.addRow(self.chk_invrot)
+        fl_or.addRow(t("setup.inc_mount"), self.cb_mount)
+        fl_or.addRow(self.chk_lim180)
+        fl_or.addRow(t("setup.inc_cal"), self.sp_cal)
+        il_root.addWidget(gb_orient)
+
+        gb_shock = QGroupBox(t("setup.inc_group_shock"))
+        fl_sh = QFormLayout(gb_shock)
+        self.sp_shkth = QSpinBox()
+        self.sp_shkth.setRange(1, 63)
+        self.sp_shkth.setValue(25)
+        self.sp_shkth.setToolTip(tt("setup.inc_shkth_tooltip"))
+        self.sp_shkwn = QSpinBox()
+        self.sp_shkwn.setRange(1, 3600)
+        self.sp_shkwn.setValue(60)
+        self.sp_shkwn.setSuffix(" s")
+        self.sp_shklm = QSpinBox()
+        self.sp_shklm.setRange(0, 60)
+        self.sp_shklm.setValue(5)
+        self.sp_shklm.setSpecialValueText(t("setup.inc_shklm_off"))
+        self.sp_shklm.setToolTip(tt("setup.inc_shklm_tooltip"))
+        fl_sh.addRow(t("setup.inc_shkth"), self.sp_shkth)
+        fl_sh.addRow(t("setup.inc_shkwn"), self.sp_shkwn)
+        fl_sh.addRow(t("setup.inc_shklm"), self.sp_shklm)
+        il_root.addWidget(gb_shock)
+
+        row_live = QHBoxLayout()
+        self.lbl_inc_angle = QLabel(t("setup.inc_angle_na"))
+        self.lbl_inc_angle.setWordWrap(True)
+        row_live.addWidget(self.lbl_inc_angle, 1)
+        btn_inc_read = QPushButton(t("setup.btn_read"))
+        btn_inc_read.clicked.connect(self._load_inc)
+        row_live.addWidget(btn_inc_read)
+        il_root.addLayout(row_live)
+
+        row_inc_btn = QHBoxLayout()
         binc = QPushButton(t("setup.btn_set_and_verify"))
         binc.clicked.connect(self._apply_inc)
-        il.addRow(binc)
+        row_inc_btn.addWidget(binc)
         btn_win = QPushButton(t("setup.inc_open_full"))
         btn_win.clicked.connect(self._open_inc_win)
-        il.addRow(btn_win)
-        root.addWidget(self.box_inc)
+        row_inc_btn.addWidget(btn_win)
+        row_inc_btn.addStretch(1)
+        il_root.addLayout(row_inc_btn)
+        self.lbl_inc_status = QLabel("")
+        self.lbl_inc_status.setWordWrap(True)
+        il_root.addWidget(self.lbl_inc_status)
+        self.scroll_inc = _scroll(self.box_inc)
+        root.addWidget(self.scroll_inc, 1)
         # --- SSI -------------------------------------------------------------
         self.box_ssi = QGroupBox(t("setup.cal_ssi_group"))
         sl = QVBoxLayout(self.box_ssi)
         sl.addWidget(QLabel(t("setup.cal_ssi_hint")))
         root.addWidget(self.box_ssi)
-        root.addStretch(1)
+        # Kein root.addStretch: sonst teilt sich die Höhe mit scroll_* und der
+        # Scrollbereich bleibt zu klein (leerer Bereich darunter).
 
         self._setup_on = False
         self._zero_done = False
@@ -2004,8 +2066,12 @@ class CalPage(QWizardPage, _CmdMixin):
         show_ssi = setenczero_primary(et)
         self.scroll_flow.setVisible(flow)
         self.top_flow.setVisible(flow)
-        self.box_inc.setVisible(show_inc)
+        self.scroll_inc.setVisible(show_inc)
         self.box_ssi.setVisible(show_ssi)
+        lay = self.layout()
+        if lay is not None:
+            lay.setStretchFactor(self.scroll_flow, 1 if flow else 0)
+            lay.setStretchFactor(self.scroll_inc, 1 if show_inc else 0)
         if flow:
             self.lbl_mode.setText(t("setup.cal_mode_flow"))
         elif show_inc:
@@ -2025,6 +2091,9 @@ class CalPage(QWizardPage, _CmdMixin):
         self._refresh_enabled()
         if flow:
             self._read_setup_state()
+        elif show_inc:
+            self.lbl_inc_status.setText("")
+            QTimer.singleShot(100, self._load_inc)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -2596,10 +2665,165 @@ class CalPage(QWizardPage, _CmdMixin):
 
         self._set_here(vmin, after_here)
 
+    def _inc_bool01(self, raw: Optional[str]) -> bool:
+        v = _pf(raw)
+        return bool(v is not None and int(v) != 0)
+
+    def _inc_set_combo(self, cb: QComboBox, raw: Optional[str]) -> None:
+        v = _pf(raw)
+        if v is None:
+            return
+        try:
+            iv = int(v)
+        except Exception:
+            return
+        for i in range(cb.count()):
+            try:
+                if int(cb.itemData(i)) == iv:
+                    cb.blockSignals(True)
+                    cb.setCurrentIndex(i)
+                    cb.blockSignals(False)
+                    return
+            except Exception:
+                continue
+
+    def _load_inc(self) -> None:
+        """Aktuelle Inklinometer-Werte vom Sensor lesen (GETINC*)."""
+        self.lbl_inc_status.setText(t("setup.inc_reading"))
+
+        steps: list[tuple[str, Callable[[Optional[str]], None]]] = [
+            ("GETINCSWAPXY", lambda p: self.chk_swap.setChecked(self._inc_bool01(p))),
+            ("GETINCINVREF", lambda p: self.chk_invref.setChecked(self._inc_bool01(p))),
+            ("GETINCINVSEN", lambda p: self.chk_invsen.setChecked(self._inc_bool01(p))),
+            ("GETINCINVROT", lambda p: self.chk_invrot.setChecked(self._inc_bool01(p))),
+            ("GETINCMOUNT", lambda p: self._inc_set_combo(self.cb_mount, p)),
+            ("GETINCLIM180", lambda p: self.chk_lim180.setChecked(self._inc_bool01(p))),
+            (
+                "GETINCCAL",
+                lambda p: (
+                    self.sp_cal.setValue(float(v))
+                    if (v := _pf(p)) is not None
+                    else None
+                ),
+            ),
+            (
+                "GETINCSHKTH",
+                lambda p: (
+                    self.sp_shkth.setValue(int(v))
+                    if (v := _pf(p)) is not None
+                    else None
+                ),
+            ),
+            (
+                "GETINCSHKWN",
+                lambda p: (
+                    self.sp_shkwn.setValue(int(v))
+                    if (v := _pf(p)) is not None
+                    else None
+                ),
+            ),
+            (
+                "GETINCSHKLM",
+                lambda p: (
+                    self.sp_shklm.setValue(int(v))
+                    if (v := _pf(p)) is not None
+                    else None
+                ),
+            ),
+        ]
+
+        def run(i: int = 0, last_err: str = "") -> None:
+            if i >= len(steps):
+                self._refresh_inc_angle()
+                self.lbl_inc_status.setText(
+                    t("setup.inc_read_ok")
+                    if not last_err
+                    else t("setup.inc_read_partial", err=last_err)
+                )
+                return
+            cmd, apply_fn = steps[i]
+
+            def got(p: Optional[str], e: str) -> None:
+                if p is not None:
+                    try:
+                        apply_fn(p)
+                    except Exception:
+                        pass
+                    run(i + 1, last_err)
+                else:
+                    run(i + 1, e or last_err or cmd)
+
+            self._cmd(cmd, "0", got, timeout=1.5)
+
+        run(0)
+
+    def _refresh_inc_angle(self) -> None:
+        def got_dg(p: Optional[str], e: str) -> None:
+            if p is not None:
+                v = _pf(p)
+                if v is not None:
+                    self.lbl_inc_angle.setText(
+                        t("setup.inc_angle_live", deg=f"{v:.2f}".replace(".", ","))
+                    )
+                    return
+            # Fallback Rotor-Position
+            def got_pos(pp: Optional[str], ee: str) -> None:
+                v = _pf(pp)
+                if v is not None:
+                    self.lbl_inc_angle.setText(
+                        t("setup.inc_angle_rotor", deg=f"{v:.2f}".replace(".", ","))
+                    )
+                else:
+                    self.lbl_inc_angle.setText(t("setup.inc_angle_na"))
+
+            self._cmd("GETPOSDG", "0", got_pos)
+
+        self._cmd("GETINCDG", "0", got_dg)
+
     def _apply_inc(self) -> None:
-        self._send("SETINCSWAPXY", "1" if self.chk_swap.isChecked() else "0")
+        """Lage, Offset und Stoßempfindlichkeit schreiben, danach Winkel lesen."""
+        self.lbl_inc_status.setText(t("setup.inc_writing"))
+        mount = 0
+        try:
+            mount = int(self.cb_mount.currentData())
+        except Exception:
+            mount = 0
         cal = f"{self.sp_cal.value():.2f}".replace(".", ",")
-        self._send("SETINCCAL", cal)
+        writes: list[tuple[str, str]] = [
+            ("SETINCSWAPXY", "1" if self.chk_swap.isChecked() else "0"),
+            ("SETINCINVREF", "1" if self.chk_invref.isChecked() else "0"),
+            ("SETINCINVSEN", "1" if self.chk_invsen.isChecked() else "0"),
+            ("SETINCINVROT", "1" if self.chk_invrot.isChecked() else "0"),
+            ("SETINCMOUNT", str(mount)),
+            ("SETINCLIM180", "1" if self.chk_lim180.isChecked() else "0"),
+            ("SETINCCAL", cal),
+            ("SETINCSHKTH", str(int(self.sp_shkth.value()))),
+            ("SETINCSHKWN", str(int(self.sp_shkwn.value()))),
+            ("SETINCSHKLM", str(int(self.sp_shklm.value()))),
+        ]
+
+        def run(i: int = 0, errs: Optional[list[str]] = None) -> None:
+            errs = errs if errs is not None else []
+            if i >= len(writes):
+                # Filter braucht nach Lageänderung ~1–2 s
+                QTimer.singleShot(1200, self._refresh_inc_angle)
+                if errs:
+                    self.lbl_inc_status.setText(
+                        t("setup.inc_write_partial", err="; ".join(errs[:4]))
+                    )
+                else:
+                    self.lbl_inc_status.setText(t("setup.inc_write_ok"))
+                return
+            cmd, params = writes[i]
+
+            def got(p: Optional[str], e: str) -> None:
+                if p is None and e:
+                    errs.append(f"{cmd}: {e}")
+                run(i + 1, errs)
+
+            self._cmd(cmd, params, got, timeout=1.5)
+
+        run(0)
 
     def _open_inc_win(self) -> None:
         from .inclinometer_config_window import InclinometerConfigWindow

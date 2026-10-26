@@ -76,6 +76,7 @@ class CompatCheckResult:
     inclinometer_found: Optional[str] = None
     inclinometer_expected: str = INCLINOMETER_FW_VERSION
     inclinometer_ok: Optional[bool] = None
+    inclinometer_axis: Optional[str] = None  # "AZ" | "EL" wenn gefunden
     wlan_note: Optional[str] = None  # nur Info, oft keine Bus-Version
     info_lines: List[str] = field(default_factory=list)
 
@@ -223,11 +224,60 @@ def run_compat_check(ctrl: Any, cfg: Optional[dict] = None) -> CompatCheckResult
                         f"controller:{found}:{CONTROLLER_FW_VERSION}"
                     )
 
-    # Inklinometer nur wenn Typ 4 — GETVERSION am AZ (Sensor-FW oft über Rotor)
-    if _inclinometer_configured(ctrl, cfg):
-        # Kein separates GETINCVERSION in Bridge — Info-Hinweis mit Pin
-        out.inclinometer_ok = None
-        out.info_lines.append(f"inclinometer_pin:{INCLINOMETER_FW_VERSION}")
+    # Inklinometer: GETINCVER nur wenn Typ 4 bekannt/konfiguriert (EL zuerst).
+    # Kein blindes GETENCTYPE an jede Achse — spart Buszeit beim Start.
+    _inc_candidates: list[tuple[str, bool, str, str, int]] = [
+        ("EL", enable_el, "slave_el", "slave_el", 21),
+        ("AZ", enable_az, "slave_az", "slave_az", 20),
+    ]
+    known_et: Optional[int] = None
+    try:
+        if bool(getattr(ctrl, "encoder_type_known", False)):
+            known_et = int(getattr(ctrl, "encoder_type", -1))
+    except Exception:
+        known_et = None
+    want_inc = (known_et == 4) or _inclinometer_configured(ctrl, cfg)
+    if want_inc:
+        for axis, enable, slave_attr, cfg_key, default_id in _inc_candidates:
+            if not enable:
+                continue
+            st = getattr(ctrl, axis.lower(), None)
+            online = bool(getattr(st, "online", False)) if st is not None else False
+            if not online:
+                continue
+            try:
+                dst = int(getattr(ctrl, slave_attr, rb.get(cfg_key, default_id)) or default_id)
+            except Exception:
+                dst = default_id
+            if dst <= 0:
+                continue
+            if known_et != 4:
+                et_raw = _sync_get(ctrl, dst, "GETENCTYPE", "ACK_GETENCTYPE", timeout_s=1.0)
+                if et_raw is None:
+                    continue
+                try:
+                    et_val = int(str(et_raw).split(";")[0].strip().split(",")[0])
+                except Exception:
+                    continue
+                if et_val != 4:
+                    continue
+            raw = _sync_get(ctrl, dst, "GETINCVER", "ACK_GETINCVER", timeout_s=1.2)
+            if not raw:
+                continue
+            found = normalize_version(raw)
+            out.inclinometer_found = found
+            out.inclinometer_axis = axis
+            out.inclinometer_ok = bool(found) and version_at_least(
+                found, INCLINOMETER_FW_VERSION
+            )
+            if out.inclinometer_ok is False:
+                out.info_lines.append(
+                    f"inclinometer:{found or '?'}:{INCLINOMETER_FW_VERSION}:{axis}"
+                )
+            break
+        else:
+            out.inclinometer_ok = None
+            out.info_lines.append(f"inclinometer_pin:{INCLINOMETER_FW_VERSION}")
 
     if _has_dk8de_wlan_module(cfg):
         out.wlan_note = WLAN_MODULE_FW_VERSION

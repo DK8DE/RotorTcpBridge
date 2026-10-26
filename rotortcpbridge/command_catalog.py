@@ -1926,7 +1926,46 @@ SPECS_DATA: list[dict] = [
             "2 = two end switches."
         ),
     },
-    # --- Inklinometer (nur SETENCTYPE:4; Werte im Sensor-NVS) ---
+    # --- Inklinometer (nur SETENCTYPE:4; Proxy Rotor → Sensor) ---
+    {
+        "name": "GETINCVER",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Inklinometer: Firmware-Version des Sensors (SemVer, z. B. 1.3.5). "
+            "Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: sensor firmware version (SemVer, e.g. 1.3.5). "
+            "Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCUID",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Inklinometer: Geräte-UID (6 Hex-Zeichen). SoftAP-SSID: INKLINO-<UID>. "
+            "Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: device UID (6 hex digits). SoftAP SSID: INKLINO-<UID>. "
+            "Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCDG",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Inklinometer: gefilterter Elevationswinkel direkt vom Sensor (°). "
+            "Normalbetrieb weiter über GETPOSDG. Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: filtered elevation angle directly from the sensor (°). "
+            "Normal operation still uses GETPOSDG. Only with encoder type 4."
+        ),
+    },
     {
         "name": "SETINCSWAPXY",
         "kind": "int",
@@ -2052,10 +2091,10 @@ SPECS_DATA: list[dict] = [
         "step": 1.0,
         "default": 0.0,
         "help_text": (
-            "Inklinometer: Soft-Limit 0…180° (0 = aus, 1 = ein). Nur bei Encoder-Typ 4."
+            "Inklinometer: Soft-Limit Ausgabe 0…180° (0 = aus, 1 = ein). Nur bei Encoder-Typ 4."
         ),
         "help_text_en": (
-            "Inclinometer: soft limit 0…180° (0 = off, 1 = on). Only with encoder type 4."
+            "Inclinometer: soft-limit output 0…180° (0 = off, 1 = on). Only with encoder type 4."
         ),
     },
     {
@@ -2158,6 +2197,133 @@ SPECS_DATA: list[dict] = [
         "params_literal": "0",
         "help_text": "Inklinometer: EMA-Filter-Alpha lesen. Nur bei Encoder-Typ 4.",
         "help_text_en": "Inclinometer: read EMA filter alpha. Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCSHKTH",
+        "kind": "int",
+        "min_value": 1.0,
+        "max_value": 63.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 8.0,
+        "help_text": (
+            "Inklinometer: Stoßschwelle 1…63. Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: shock threshold 1…63. Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCSHKTH",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: Stoßschwelle lesen (1…63). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read shock threshold (1…63). Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCSHKWN",
+        "kind": "int",
+        "min_value": 1.0,
+        "max_value": 3600.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 60.0,
+        "help_text": (
+            "Inklinometer: Ruck-Zeitfenster in Sekunden (1…3600). Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: shock time window in seconds (1…3600). Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCSHKWN",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: Ruck-Zeitfenster lesen (s). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read shock time window (s). Only with encoder type 4.",
+    },
+    {
+        "name": "SETINCSHKLM",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 60.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Inklinometer: Rucke bis Fehler 0…60 (0 = aus). Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: shocks until fault 0…60 (0 = off). Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCSHKLM",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: Rucke-bis-Fehler lesen (0…60). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read shocks-until-fault (0…60). Only with encoder type 4.",
+    },
+    {
+        "name": "GETINCSHKCT",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Inklinometer: aktuelle Ruck-Anzahl im Zeitfenster (nur GET). "
+            "Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: current shock count in the window (GET only). "
+            "Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "SETINCSHKER",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 0.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Inklinometer: Ruck-Fehler löschen (nur SET:0). Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: clear shock fault (SET:0 only). Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCSHKER",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Inklinometer: Ruck-Fehler lesen (0/1). Nur bei Encoder-Typ 4.",
+        "help_text_en": "Inclinometer: read shock fault (0/1). Only with encoder type 4.",
+    },
+    {
+        "name": "GETINCSTL",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Inklinometer: Mechanik stabil (1) / nicht stabil (0). Nur GET. "
+            "Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: mechanics settled (1) / not settled (0). GET only. "
+            "Only with encoder type 4."
+        ),
+    },
+    {
+        "name": "GETINCSHK",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Inklinometer: Stoß/Ruck erkannt (1) / kein Stoß (0). Nur GET. "
+            "Nur bei Encoder-Typ 4."
+        ),
+        "help_text_en": (
+            "Inclinometer: shock/jerk detected (1) / none (0). GET only. "
+            "Only with encoder type 4."
+        ),
     },
     {
         "name": "SETINCWLAN",

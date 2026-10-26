@@ -184,7 +184,7 @@ class SettingsWindow(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
         # Breite fix; Mindesthöhe / Start-Höhe beim Öffnen: 680 Referenzpixel.
-        self._settings_base_width_dip = 730
+        self._settings_base_width_dip = 770
         self._settings_min_height_dip = 680
         self._settings_open_height_dip = 680
         self.setFixedWidth(px_to_dip(self, self._settings_base_width_dip))
@@ -241,11 +241,6 @@ class SettingsWindow(QDialog):
         self.chk_pst_enabled = QCheckBox(t("settings.chk_pst_enabled"))
         self.chk_pst_enabled.setChecked(bool(cfg["pst_server"].get("enabled", False)))
         self.chk_pst_enabled.setToolTip(tt("settings.chk_pst_enabled_tooltip"))
-        self.chk_pst_az_shortest = QCheckBox(t("settings.chk_az_shortest_path"))
-        self.chk_pst_az_shortest.setChecked(
-            bool(cfg["pst_server"].get("az_shortest_path", False))
-        )
-        self.chk_pst_az_shortest.setToolTip(tt("settings.chk_az_shortest_path_tooltip"))
         self.chk_pst_az_report_mod360 = QCheckBox(t("settings.chk_az_report_mod360"))
         self.chk_pst_az_report_mod360.setChecked(
             bool(cfg["pst_server"].get("az_report_mod360", False))
@@ -263,7 +258,6 @@ class SettingsWindow(QDialog):
         self._lbl_spid_emulation_info.setWordWrap(True)
         fl_spid_tcp_pst.addRow(self._lbl_spid_emulation_info)
         fl_spid_tcp_pst.addRow(self.chk_pst_enabled)
-        fl_spid_tcp_pst.addRow(self.chk_pst_az_shortest)
         fl_spid_tcp_pst.addRow(self.chk_pst_az_report_mod360)
         fl_spid_tcp_pst.addRow(t("settings.pst_listen_host"), self.ed_listen_host)
         fl_spid_tcp_pst.addRow(t("settings.pst_port_az"), self.sp_listen_port_az)
@@ -441,11 +435,6 @@ class SettingsWindow(QDialog):
         self.chk_udp_pst = QCheckBox(t("settings.chk_udp_pst"))
         self.chk_udp_pst.setToolTip(tt("settings.chk_udp_pst_tooltip"))
         self.chk_udp_pst.setChecked(bool(_ui0.get("udp_pst_enabled", False)))
-        self.chk_udp_pst_az_shortest = QCheckBox(t("settings.chk_az_shortest_path"))
-        self.chk_udp_pst_az_shortest.setChecked(
-            bool(_ui0.get("udp_pst_az_shortest_path", False))
-        )
-        self.chk_udp_pst_az_shortest.setToolTip(tt("settings.chk_az_shortest_path_tooltip"))
         self.chk_udp_pst_az_report_mod360 = QCheckBox(t("settings.chk_az_report_mod360"))
         self.chk_udp_pst_az_report_mod360.setChecked(
             bool(_ui0.get("udp_pst_az_report_mod360", False))
@@ -591,16 +580,8 @@ class SettingsWindow(QDialog):
         grid_pst.addWidget(QLabel(_lbl_tgt), 1, 1, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         grid_pst.addWidget(self.ed_udp_pst_send_host, 1, 2, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         grid_pst.addWidget(
-            self.chk_udp_pst_az_shortest,
-            2,
-            0,
-            1,
-            5,
-            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-        )
-        grid_pst.addWidget(
             self.chk_udp_pst_az_report_mod360,
-            3,
+            2,
             0,
             1,
             5,
@@ -631,11 +612,6 @@ class SettingsWindow(QDialog):
         self.chk_rotctld_enabled = QCheckBox(t("settings.chk_rotctld_enabled"))
         self.chk_rotctld_enabled.setChecked(bool(_rc_cfg.get("enabled", False)))
         self.chk_rotctld_enabled.setToolTip(tt("settings.chk_rotctld_enabled_tooltip"))
-        self.chk_rotctld_az_shortest = QCheckBox(t("settings.chk_az_shortest_path"))
-        self.chk_rotctld_az_shortest.setChecked(
-            bool(_rc_cfg.get("az_shortest_path", False))
-        )
-        self.chk_rotctld_az_shortest.setToolTip(tt("settings.chk_az_shortest_path_tooltip"))
         self.chk_rotctld_az_report_mod360 = QCheckBox(t("settings.chk_az_report_mod360"))
         self.chk_rotctld_az_report_mod360.setChecked(
             bool(_rc_cfg.get("az_report_mod360", False))
@@ -656,7 +632,6 @@ class SettingsWindow(QDialog):
         fl_rotctld.setContentsMargins(0, 0, 0, 0)
         fl_rotctld.addRow(self._lbl_rotctld_info)
         fl_rotctld.addRow(self.chk_rotctld_enabled)
-        fl_rotctld.addRow(self.chk_rotctld_az_shortest)
         fl_rotctld.addRow(self.chk_rotctld_az_report_mod360)
         fl_rotctld.addRow(t("settings.rotctld_listen_host"), self.ed_rotctld_host)
         fl_rotctld.addRow(t("settings.rotctld_port"), self.sp_rotctld_port)
@@ -753,9 +728,6 @@ class SettingsWindow(QDialog):
         self.chk_n1mm_enabled = QCheckBox(t("settings.chk_n1mm_enabled"))
         self.chk_n1mm_enabled.setChecked(bool(_n1_cfg.get("enabled", False)))
         self.chk_n1mm_enabled.setToolTip(tt("settings.chk_n1mm_enabled_tooltip"))
-        self.chk_n1mm_az_shortest = QCheckBox(t("settings.chk_az_shortest_path"))
-        self.chk_n1mm_az_shortest.setChecked(bool(_n1_cfg.get("az_shortest_path", False)))
-        self.chk_n1mm_az_shortest.setToolTip(tt("settings.chk_az_shortest_path_tooltip"))
         self.chk_n1mm_az_report_mod360 = QCheckBox(t("settings.chk_az_report_mod360"))
         self.chk_n1mm_az_report_mod360.setChecked(bool(_n1_cfg.get("az_report_mod360", False)))
         self.chk_n1mm_az_report_mod360.setToolTip(tt("settings.chk_az_report_mod360_tooltip"))
@@ -780,7 +752,6 @@ class SettingsWindow(QDialog):
         fl_n1mm.setContentsMargins(0, 0, 0, 0)
         fl_n1mm.addRow(self._lbl_n1mm_info)
         fl_n1mm.addRow(self.chk_n1mm_enabled)
-        fl_n1mm.addRow(self.chk_n1mm_az_shortest)
         fl_n1mm.addRow(self.chk_n1mm_az_report_mod360)
         fl_n1mm.addRow(t("settings.n1mm_listen_host"), self.ed_n1mm_listen_host)
         fl_n1mm.addRow(t("settings.n1mm_listen_port"), self.sp_n1mm_listen_port)
@@ -816,6 +787,17 @@ class SettingsWindow(QDialog):
         vl_links.addWidget(gb_axes)
         vl_links.addStretch(1)
 
+        # Globaler „Kürzerer Weg“ für alle Emulationsprotokolle
+        self.chk_az_shortest_path = QCheckBox(t("settings.chk_az_shortest_path"))
+        self.chk_az_shortest_path.setChecked(bool(_ui0.get("az_shortest_path", False)))
+        self.chk_az_shortest_path.setToolTip(tt("settings.chk_az_shortest_path_tooltip"))
+        self._lbl_az_shortest_intro = QLabel(t("settings.az_shortest_path_intro"))
+        self._lbl_az_shortest_intro.setWordWrap(True)
+        self._gb_az_shortest = QGroupBox(t("settings.group_az_shortest_path"))
+        _vl_az_short = QVBoxLayout(self._gb_az_shortest)
+        _vl_az_short.addWidget(self._lbl_az_shortest_intro)
+        _vl_az_short.addWidget(self.chk_az_shortest_path)
+
         pg_rotor_emulation = QWidget()
         vl_rotor_emu = QVBoxLayout(pg_rotor_emulation)
         vl_rotor_emu.setContentsMargins(0, 0, 0, 0)
@@ -837,13 +819,7 @@ class SettingsWindow(QDialog):
             self.chk_n1mm_enabled.setChecked(False)
         self.chk_pst_enabled.stateChanged.connect(self._on_pst_tcp_emulation_toggled)
         self.chk_udp_pst.stateChanged.connect(self._on_udp_pst_emulation_toggled)
-        self.chk_pst_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
-        self.chk_udp_pst_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
-        self.chk_rotctld_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
-        self.chk_gs232_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
-        self.chk_easycomm_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
-        self.chk_dcu1_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
-        self.chk_n1mm_az_shortest.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
+        self.chk_az_shortest_path.stateChanged.connect(self._update_az_overlap_checkboxes_ui)
 
         def _sync_aswatch_aircraft_row():
             en = self.chk_aswatch_udp.isChecked()
@@ -1141,6 +1117,10 @@ class SettingsWindow(QDialog):
         fl_display.addRow(t("settings.language_label"), self.cb_language)
         form_ui.addRow(gb_display)
 
+        self._location_panel = LocationPanel(cfg, self)
+        self._location_panel.install_aliases_on(self)
+        form_ui.addRow(self._location_panel)
+
         gb_park = QGroupBox(t("settings.group_park_position"))
         self._gb_park = gb_park
         fl_park = QFormLayout(gb_park)
@@ -1168,10 +1148,7 @@ class SettingsWindow(QDialog):
         self._snapshot_home_el: float | None = None
         self._park_home_suppress = False
         form_ui.addRow(gb_park)
-
-        self._location_panel = LocationPanel(cfg, self)
-        self._location_panel.install_aliases_on(self)
-        form_ui.addRow(self._location_panel)
+        form_ui.addRow(self._gb_az_shortest)
         # --- Linke Spalte: Verbindung ---
         antenna_names = _antenna_names_cfg
 
@@ -1522,11 +1499,11 @@ class SettingsWindow(QDialog):
         gb_map_ws = QGroupBox(t("settings.tab_map_webserver"))
         _vl_map_ws_box = QVBoxLayout(gb_map_ws)
         _vl_map_ws_box.addWidget(w_map_ws)
-        # Webserver + ehem. „Externe Programme“ vor dem Stretch im Protokolle-Tab
+        # Webserver ganz oben; „Externe Programme“ / AirScout vor dem Stretch
+        vl_rotor_emu.insertWidget(0, gb_map_ws)
         _ins = max(0, vl_rotor_emu.count() - 1)
-        vl_rotor_emu.insertWidget(_ins, gb_map_ws)
-        vl_rotor_emu.insertWidget(_ins + 1, gb_external_programs)
-        vl_rotor_emu.insertWidget(_ins + 2, gb_map_airscout)
+        vl_rotor_emu.insertWidget(_ins, gb_external_programs)
+        vl_rotor_emu.insertWidget(_ins + 1, gb_map_airscout)
         self.chk_map_webserver_enabled.stateChanged.connect(self._on_map_webserver_toggled)
         self.chk_map_webserver_ssl.stateChanged.connect(self._on_map_webserver_toggled)
 
@@ -1581,7 +1558,9 @@ class SettingsWindow(QDialog):
         self._update_tab.softap_toggled.connect(self._on_softap_toggled)
         self._update_tab.refresh_clicked.connect(self._refresh_softap_status)
         self._update_tab.open_webflasher_clicked.connect(self._open_softap_webflasher)
-        self._update_tab.open_fw_folder_clicked.connect(self._open_firmware_bundle_folder)
+        self._update_tab.open_download_page_clicked.connect(self._open_download_page)
+        self._update_tab.versions_refresh_clicked.connect(self._refresh_update_version_status)
+        self._app_online_version: str | None = None
         self._settings_stack.addWidget(_scroll_page(self._update_tab))
         self._network_tab = NetworkModulesTab(self.cfg, self)
         self._network_tab.save_requested.connect(self._on_network_modules_save_requested)
@@ -3237,7 +3216,9 @@ class SettingsWindow(QDialog):
         if row == getattr(self, "_tab_antenna_index", -1):
             QTimer.singleShot(0, self._load_rotor_antenna_names_from_bus)
         if row == getattr(self, "_tab_controller_index", -1):
+            # Sofort lesen; falls PC-USB/Link noch nicht bereit → nachziehen bis LED stimmt.
             QTimer.singleShot(0, self._load_controller_from_bus)
+            self._schedule_controller_reload_when_connected(250)
         if row == getattr(self, "_tab_shortcuts_index", -1):
             self._shortcuts_tab.refresh_el_visibility()
             self.maybe_refresh_antenna_names_for_shortcuts_tab()
@@ -3247,6 +3228,7 @@ class SettingsWindow(QDialog):
             # Sofort GETWLAN, danach alle 2 s solange der Tab sichtbar ist.
             self._sync_update_tab_axes_visibility()
             QTimer.singleShot(0, self._refresh_softap_status)
+            QTimer.singleShot(50, self._refresh_update_version_status)
             if not self._softap_poll_timer.isActive():
                 self._softap_poll_timer.start()
         else:
@@ -3400,25 +3382,337 @@ class SettingsWindow(QDialog):
     def _open_softap_webflasher(self) -> None:
         QDesktopServices.openUrl(QUrl("http://192.168.4.1"))
 
-    def _open_firmware_bundle_folder(self) -> None:
+    def _open_download_page(self) -> None:
         try:
-            from ..firmware_bundle import open_bundle_folder
+            from ..app_update_check import download_page_url
 
-            path = open_bundle_folder()
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            QDesktopServices.openUrl(QUrl(download_page_url()))
         except Exception:
-            pass
+            try:
+                QDesktopServices.openUrl(QUrl("https://dk8.de/de/download/"))
+            except Exception:
+                pass
 
-    def apply_firmware_compat_status(self, *, rotor_text: str, info_text: str = "") -> None:
-        """Statuszeilen im Update-Tab (von MainWindow nach Compat-Check)."""
+    def apply_firmware_compat_status(
+        self,
+        *,
+        rotor_text: str = "",
+        info_text: str = "",
+        result=None,
+        app_online: str | None = None,
+    ) -> None:
+        """Versionsvergleich im Update-Tab (von MainWindow oder lokalem Refresh)."""
+        if app_online is not None:
+            self._app_online_version = app_online or None
+        self._apply_version_table_from_result(result, extra_info=info_text or rotor_text)
+
+    def _refresh_update_version_status(self) -> None:
+        """Bus + GitHub: Softwarestände im Update-Tab neu lesen."""
         tab = getattr(self, "_update_tab", None)
         if tab is None:
             return
+        # Sofort „Prüfung…“ für App anzeigen
         try:
-            if hasattr(tab, "set_fw_rotor_status"):
-                tab.set_fw_rotor_status(rotor_text)
-            if hasattr(tab, "set_fw_info_status"):
-                tab.set_fw_info_status(info_text)
+            from ..version import (
+                APP_VERSION,
+                CONTROLLER_FW_VERSION,
+                INCLINOMETER_FW_VERSION,
+                ROTOR_FW_VERSION,
+            )
+
+            tab.set_version_row(
+                "app",
+                current=f"v{APP_VERSION}",
+                online=t("settings.update_ver_checking"),
+                status_key="unknown",
+                status_text=t("settings.update_ver_status_checking"),
+            )
+            for key, online in (
+                ("controller", CONTROLLER_FW_VERSION),
+                ("az", ROTOR_FW_VERSION),
+                ("el", ROTOR_FW_VERSION),
+                ("inc", INCLINOMETER_FW_VERSION),
+            ):
+                tab.set_version_row(
+                    key,
+                    current=t("settings.update_ver_checking"),
+                    online=online,
+                    status_key="unknown",
+                    status_text=t("settings.update_ver_status_checking"),
+                )
+        except Exception:
+            pass
+
+        result = None
+        try:
+            from ..firmware_compat_check import run_compat_check
+
+            result = run_compat_check(self.ctrl, self.cfg)
+            mw = self.parent()
+            if mw is not None and hasattr(mw, "_firmware_compat_result"):
+                try:
+                    mw._firmware_compat_result = result
+                except Exception:
+                    pass
+        except Exception:
+            result = None
+
+        self._apply_version_table_from_result(result, extra_info="")
+        self._fetch_app_online_version_for_update_tab()
+
+    def _fetch_app_online_version_for_update_tab(self) -> None:
+        import threading
+
+        box: dict = {"remote": None, "done": False}
+
+        def _work() -> None:
+            try:
+                from ..app_update_check import check_app_update_available
+                from ..net_utils import check_internet
+
+                if check_internet():
+                    _avail, remote = check_app_update_available()
+                    box["remote"] = remote
+            except Exception:
+                pass
+            finally:
+                box["done"] = True
+
+        th = threading.Thread(target=_work, name="update-tab-app-ver", daemon=True)
+        th.start()
+
+        def _poll() -> None:
+            if th.is_alive() or not box.get("done"):
+                QTimer.singleShot(200, _poll)
+                return
+            remote = box.get("remote")
+            self._app_online_version = str(remote) if remote else None
+            self._apply_app_row_only()
+
+        QTimer.singleShot(200, _poll)
+
+    def _apply_app_row_only(self) -> None:
+        tab = getattr(self, "_update_tab", None)
+        if tab is None or not hasattr(tab, "set_version_row"):
+            return
+        from ..firmware_compat_check import version_tuple
+        from ..version import APP_VERSION
+
+        remote = self._app_online_version
+        cur = f"v{APP_VERSION}"
+        if remote:
+            online = str(remote)
+            tr, tl = version_tuple(remote), version_tuple(APP_VERSION)
+            if tr is None or tl is None:
+                sk, st = "unknown", t("settings.update_ver_status_unknown")
+            elif tl >= tr:
+                sk, st = "ok", t("settings.update_ver_status_ok")
+            else:
+                sk, st = "update", t("settings.update_ver_status_update")
+        else:
+            online = t("settings.update_ver_offline_hint")
+            sk, st = "unknown", t("settings.update_ver_status_unknown")
+        tab.set_version_row(
+            "app", current=cur, online=online, status_key=sk, status_text=st
+        )
+
+    def _apply_version_table_from_result(self, result, *, extra_info: str = "") -> None:
+        tab = getattr(self, "_update_tab", None)
+        if tab is None or not hasattr(tab, "set_version_row"):
+            return
+        from ..firmware_compat_check import version_at_least, version_tuple
+        from ..version import (
+            CONTROLLER_FW_VERSION,
+            INCLINOMETER_FW_VERSION,
+            ROTOR_FW_VERSION,
+            WLAN_MODULE_FW_VERSION,
+        )
+
+        # Achsen-Sichtbarkeit
+        rb = self.cfg.get("rotor_bus") if isinstance(self.cfg.get("rotor_bus"), dict) else {}
+        if hasattr(self, "chk_enable_az") and hasattr(self, "chk_enable_el"):
+            az_on = bool(self.chk_enable_az.isChecked())
+            el_on = bool(self.chk_enable_el.isChecked())
+        else:
+            az_on = bool(rb.get("enable_az", True))
+            el_on = bool(rb.get("enable_el", False))
+
+        self._apply_app_row_only()
+
+        # Controller
+        cont_found = getattr(result, "controller_found", None) if result else None
+        bus_offline = bool(
+            result is not None
+            and any(str(x).startswith("bus_offline") for x in (getattr(result, "info_lines", None) or []))
+        )
+        if bus_offline and not cont_found:
+            tab.set_version_row(
+                "controller",
+                current=t("about.ver_no_bus"),
+                online=CONTROLLER_FW_VERSION,
+                status_key="offline",
+                status_text=t("settings.update_ver_status_nobus"),
+            )
+        elif cont_found:
+            tf, te = version_tuple(cont_found), version_tuple(CONTROLLER_FW_VERSION)
+            if tf is not None and te is not None and tf > te:
+                sk, st = "ok", t("settings.update_ver_status_newer")
+            elif version_at_least(cont_found, CONTROLLER_FW_VERSION):
+                sk, st = "ok", t("settings.update_ver_status_ok")
+            else:
+                sk, st = "update", t("settings.update_ver_status_update")
+            tab.set_version_row(
+                "controller",
+                current=str(cont_found),
+                online=CONTROLLER_FW_VERSION,
+                status_key=sk,
+                status_text=st,
+            )
+        else:
+            tab.set_version_row(
+                "controller",
+                current=t("about.ver_na"),
+                online=CONTROLLER_FW_VERSION,
+                status_key="unknown",
+                status_text=t("settings.update_ver_status_unknown"),
+            )
+
+        axes = {a.axis.upper(): a for a in (getattr(result, "rotor_axes", None) or [])} if result else {}
+
+        def _fill_axis(key: str, axis_name: str, enabled: bool) -> None:
+            if not enabled:
+                tab.set_version_row(
+                    key,
+                    current=t("about.ver_na"),
+                    online=ROTOR_FW_VERSION,
+                    status_key="na",
+                    status_text=t("about.ver_na"),
+                    visible=False,
+                )
+                return
+            ax = axes.get(axis_name.upper())
+            if ax is None:
+                tab.set_version_row(
+                    key,
+                    current=t("about.ver_na") if not bus_offline else t("about.ver_no_bus"),
+                    online=ROTOR_FW_VERSION,
+                    status_key="offline" if bus_offline else "unknown",
+                    status_text=(
+                        t("settings.update_ver_status_nobus")
+                        if bus_offline
+                        else t("settings.update_ver_status_unknown")
+                    ),
+                    visible=True,
+                )
+                return
+            if ax.offline:
+                tab.set_version_row(
+                    key,
+                    current=t("about.ver_offline"),
+                    online=ROTOR_FW_VERSION,
+                    status_key="offline",
+                    status_text=t("settings.update_ver_status_offline"),
+                    visible=True,
+                )
+                return
+            found = ax.found
+            if found:
+                tf, te = version_tuple(found), version_tuple(ROTOR_FW_VERSION)
+                if tf is not None and te is not None and tf > te:
+                    sk, st = "ok", t("settings.update_ver_status_newer")
+                elif version_at_least(found, ROTOR_FW_VERSION):
+                    sk, st = "ok", t("settings.update_ver_status_ok")
+                else:
+                    sk, st = "update", t("settings.update_ver_status_update")
+                tab.set_version_row(
+                    key,
+                    current=str(found),
+                    online=ROTOR_FW_VERSION,
+                    status_key=sk,
+                    status_text=st,
+                    visible=True,
+                )
+            else:
+                tab.set_version_row(
+                    key,
+                    current=t("about.ver_fail"),
+                    online=ROTOR_FW_VERSION,
+                    status_key="update",
+                    status_text=t("settings.update_ver_status_update"),
+                    visible=True,
+                )
+
+        _fill_axis("az", "AZ", az_on)
+        _fill_axis("el", "EL", el_on)
+
+        # Inklinometer (GETINCVER)
+        inc_found = getattr(result, "inclinometer_found", None) if result else None
+        inc_ok = getattr(result, "inclinometer_ok", None) if result else None
+        inc_axis = getattr(result, "inclinometer_axis", None) if result else None
+        show_inc = bool(inc_found) or inc_ok is not None or any(
+            str(x).startswith("inclinometer")
+            for x in (getattr(result, "info_lines", None) or [])
+        )
+        if show_inc and inc_found:
+            tf, te = version_tuple(inc_found), version_tuple(INCLINOMETER_FW_VERSION)
+            if tf is not None and te is not None and tf > te:
+                sk, st = "ok", t("settings.update_ver_status_newer")
+            elif version_at_least(inc_found, INCLINOMETER_FW_VERSION):
+                sk, st = "ok", t("settings.update_ver_status_ok")
+            else:
+                sk, st = "update", t("settings.update_ver_status_update")
+            cur_txt = str(inc_found)
+            if inc_axis:
+                cur_txt = f"{inc_found} ({inc_axis})"
+            tab.set_version_row(
+                "inc",
+                current=cur_txt,
+                online=INCLINOMETER_FW_VERSION,
+                status_key=sk,
+                status_text=st,
+                visible=True,
+            )
+        elif show_inc:
+            tab.set_version_row(
+                "inc",
+                current=t("about.ver_fail"),
+                online=INCLINOMETER_FW_VERSION,
+                status_key="unknown",
+                status_text=t("settings.update_ver_status_unknown"),
+                visible=True,
+            )
+        else:
+            tab.set_version_row(
+                "inc",
+                current=t("about.ver_na"),
+                online=INCLINOMETER_FW_VERSION,
+                status_key="na",
+                status_text=t("about.ver_na"),
+                visible=False,
+            )
+
+        parts: list[str] = []
+        if extra_info and str(extra_info).strip():
+            parts.append(str(extra_info).strip())
+        if result is not None:
+            for line in getattr(result, "info_lines", []) or []:
+                s = str(line)
+                if s.startswith("inclinometer_pin:"):
+                    parts.append(
+                        t("fw.info_inclinometer", expected=INCLINOMETER_FW_VERSION)
+                    )
+                elif s.startswith("inclinometer:") and not inc_found:
+                    parts.append(
+                        t("fw.info_inclinometer", expected=INCLINOMETER_FW_VERSION)
+                    )
+                elif s.startswith("wlan_pin:"):
+                    parts.append(t("fw.info_wlan", expected=WLAN_MODULE_FW_VERSION))
+        try:
+            tab.set_fw_extra_info("\n".join(parts))
+        except Exception:
+            pass
+        try:
+            self._sync_update_tab_axes_visibility()
         except Exception:
             pass
 
@@ -3981,14 +4275,37 @@ class SettingsWindow(QDialog):
         self.cfg["pst_server"]["listen_host"] = self.ed_listen_host.text().strip()
         self.cfg["pst_server"]["listen_port_az"] = int(self.sp_listen_port_az.value())
         self.cfg["pst_server"]["listen_port_el"] = int(self.sp_listen_port_el.value())
-        self.cfg["pst_server"]["az_shortest_path"] = bool(
-            self.chk_pst_az_shortest.isChecked()
-        )
+        shortest = self._az_shortest_checked()
+        self.cfg["pst_server"]["az_shortest_path"] = shortest
         self.cfg["pst_server"]["az_report_mod360"] = bool(
-            self.chk_pst_az_report_mod360.isChecked()
-            and self.chk_pst_az_shortest.isChecked()
+            self.chk_pst_az_report_mod360.isChecked() and shortest
         )
         self.cfg.setdefault("ui", {})["udp_pst_enabled"] = bool(self.chk_udp_pst.isChecked())
+
+    def _az_shortest_checked(self) -> bool:
+        """Globaler Haken „Kürzerer Weg“ (gilt für alle Emulationsprotokolle)."""
+        chk = getattr(self, "chk_az_shortest_path", None)
+        if chk is not None:
+            return bool(chk.isChecked())
+        return bool((self.cfg.get("ui") or {}).get("az_shortest_path", False))
+
+    def _apply_global_az_shortest_to_cfg(self) -> None:
+        """Schreibt den globalen „Kürzerer Weg“ in ui und alle Protokoll-Sektionen."""
+        shortest = self._az_shortest_checked()
+        ui = self.cfg.setdefault("ui", {})
+        ui["az_shortest_path"] = shortest
+        ui["udp_pst_az_shortest_path"] = shortest
+        for sec_name in (
+            "pst_server",
+            "rotctld_server",
+            "gs232_server",
+            "easycomm_server",
+            "dcu1_server",
+            "n1mm_rotor",
+        ):
+            sec = self.cfg.setdefault(sec_name, {})
+            if isinstance(sec, dict):
+                sec["az_shortest_path"] = shortest
 
     def _tick_pst_tcp_status(self) -> None:
         """Status-LED und Bind-Text für den PST-TCP-Emulationsdienst."""
@@ -4040,9 +4357,6 @@ class SettingsWindow(QDialog):
         chk_en = QCheckBox(t(enabled_key))
         chk_en.setChecked(bool(sec.get("enabled", False)))
         chk_en.setToolTip(tt(enabled_tt))
-        chk_short = QCheckBox(t("settings.chk_az_shortest_path"))
-        chk_short.setChecked(bool(sec.get("az_shortest_path", False)))
-        chk_short.setToolTip(tt("settings.chk_az_shortest_path_tooltip"))
         chk_mod = QCheckBox(t("settings.chk_az_report_mod360"))
         chk_mod.setChecked(bool(sec.get("az_report_mod360", False)))
         chk_mod.setToolTip(tt("settings.chk_az_report_mod360_tooltip"))
@@ -4054,7 +4368,6 @@ class SettingsWindow(QDialog):
         sp_port.setValue(int(sec.get("listen_port", default_port)))
         sp_port.setToolTip(tt(port_tt))
         setattr(self, f"chk_{prefix}_enabled", chk_en)
-        setattr(self, f"chk_{prefix}_az_shortest", chk_short)
         setattr(self, f"chk_{prefix}_az_report_mod360", chk_mod)
         setattr(self, f"ed_{prefix}_host", ed_host)
         setattr(self, f"sp_{prefix}_port", sp_port)
@@ -4063,7 +4376,6 @@ class SettingsWindow(QDialog):
         fl.setContentsMargins(0, 0, 0, 0)
         fl.addRow(lbl_info)
         fl.addRow(chk_en)
-        fl.addRow(chk_short)
         fl.addRow(chk_mod)
         fl.addRow(t("settings.rotctld_listen_host"), ed_host)
         fl.addRow(t(port_label_key), sp_port)
@@ -4094,7 +4406,7 @@ class SettingsWindow(QDialog):
         sec["enabled"] = bool(getattr(self, f"chk_{prefix}_enabled").isChecked())
         sec["listen_host"] = getattr(self, f"ed_{prefix}_host").text().strip() or "127.0.0.1"
         sec["listen_port"] = int(getattr(self, f"sp_{prefix}_port").value())
-        shortest = bool(getattr(self, f"chk_{prefix}_az_shortest").isChecked())
+        shortest = self._az_shortest_checked()
         sec["az_shortest_path"] = shortest
         sec["az_report_mod360"] = bool(
             getattr(self, f"chk_{prefix}_az_report_mod360").isChecked() and shortest
@@ -4173,7 +4485,7 @@ class SettingsWindow(QDialog):
         nr["broadcast_host"] = self.ed_n1mm_broadcast_host.text().strip() or "127.0.0.1"
         nr["broadcast_port"] = int(self.sp_n1mm_broadcast_port.value())
         nr["rotor_name"] = self.ed_n1mm_rotor_name.text().strip()
-        shortest = bool(self.chk_n1mm_az_shortest.isChecked())
+        shortest = self._az_shortest_checked()
         nr["az_shortest_path"] = shortest
         nr["az_report_mod360"] = bool(
             self.chk_n1mm_az_report_mod360.isChecked() and shortest
@@ -4267,10 +4579,10 @@ class SettingsWindow(QDialog):
         rc["enabled"] = bool(self.chk_rotctld_enabled.isChecked())
         rc["listen_host"] = self.ed_rotctld_host.text().strip() or "127.0.0.1"
         rc["listen_port"] = int(self.sp_rotctld_port.value())
-        rc["az_shortest_path"] = bool(self.chk_rotctld_az_shortest.isChecked())
+        shortest = self._az_shortest_checked()
+        rc["az_shortest_path"] = shortest
         rc["az_report_mod360"] = bool(
-            self.chk_rotctld_az_report_mod360.isChecked()
-            and self.chk_rotctld_az_shortest.isChecked()
+            self.chk_rotctld_az_report_mod360.isChecked() and shortest
         )
 
     def _apply_rotctld_server_live(self) -> None:
@@ -4428,10 +4740,11 @@ class SettingsWindow(QDialog):
         ui["udp_pst_port"] = int(self.sp_udp_pst_port.value())
         ui["udp_pst_listen_host"] = self.ed_udp_pst_listen.text().strip()
         ui["udp_pst_send_host"] = self.ed_udp_pst_send_host.text().strip()
-        ui["udp_pst_az_shortest_path"] = bool(self.chk_udp_pst_az_shortest.isChecked())
+        shortest = self._az_shortest_checked()
+        ui["az_shortest_path"] = shortest
+        ui["udp_pst_az_shortest_path"] = shortest
         ui["udp_pst_az_report_mod360"] = bool(
-            self.chk_udp_pst_az_report_mod360.isChecked()
-            and self.chk_udp_pst_az_shortest.isChecked()
+            self.chk_udp_pst_az_report_mod360.isChecked() and shortest
         )
 
     def _tick_udp_pst_status(self) -> None:
@@ -4942,12 +5255,10 @@ class SettingsWindow(QDialog):
         self.cfg["pst_server"]["listen_host"] = self.ed_listen_host.text().strip()
         self.cfg["pst_server"]["listen_port_az"] = int(self.sp_listen_port_az.value())
         self.cfg["pst_server"]["listen_port_el"] = int(self.sp_listen_port_el.value())
-        self.cfg["pst_server"]["az_shortest_path"] = bool(
-            self.chk_pst_az_shortest.isChecked()
-        )
+        self._apply_global_az_shortest_to_cfg()
+        shortest = self._az_shortest_checked()
         self.cfg["pst_server"]["az_report_mod360"] = bool(
-            self.chk_pst_az_report_mod360.isChecked()
-            and self.chk_pst_az_shortest.isChecked()
+            self.chk_pst_az_report_mod360.isChecked() and shortest
         )
 
         self._sync_rotctld_cfg_from_ui()
@@ -5019,12 +5330,11 @@ class SettingsWindow(QDialog):
         self.cfg.setdefault("ui", {})["udp_pst_enabled"] = bool(self.chk_udp_pst.isChecked())
         self.cfg.setdefault("ui", {})["udp_pst_port"] = int(self.sp_udp_pst_port.value())
         self.cfg.setdefault("ui", {})["udp_pst_listen_host"] = self.ed_udp_pst_listen.text().strip()
-        self.cfg.setdefault("ui", {})["udp_pst_az_shortest_path"] = bool(
-            self.chk_udp_pst_az_shortest.isChecked()
-        )
+        shortest = self._az_shortest_checked()
+        self.cfg.setdefault("ui", {})["az_shortest_path"] = shortest
+        self.cfg.setdefault("ui", {})["udp_pst_az_shortest_path"] = shortest
         self.cfg.setdefault("ui", {})["udp_pst_az_report_mod360"] = bool(
-            self.chk_udp_pst_az_report_mod360.isChecked()
-            and self.chk_udp_pst_az_shortest.isChecked()
+            self.chk_udp_pst_az_report_mod360.isChecked() and shortest
         )
         self.cfg.setdefault("ui", {})["udp_pst_send_host"] = self.ed_udp_pst_send_host.text().strip()
         self._sync_pst_target_push_cfg_from_ui()
@@ -5457,38 +5767,22 @@ class SettingsWindow(QDialog):
         """
         max_known = bool(getattr(self.ctrl, "_max_deg_known", False))
         show = max_known and az_extended_range_active(getattr(self.ctrl, "az", None))
-        pairs = (
-            (getattr(self, "chk_pst_az_shortest", None), getattr(self, "chk_pst_az_report_mod360", None)),
-            (
-                getattr(self, "chk_udp_pst_az_shortest", None),
-                getattr(self, "chk_udp_pst_az_report_mod360", None),
-            ),
-            (
-                getattr(self, "chk_rotctld_az_shortest", None),
-                getattr(self, "chk_rotctld_az_report_mod360", None),
-            ),
-            (
-                getattr(self, "chk_gs232_az_shortest", None),
-                getattr(self, "chk_gs232_az_report_mod360", None),
-            ),
-            (
-                getattr(self, "chk_easycomm_az_shortest", None),
-                getattr(self, "chk_easycomm_az_report_mod360", None),
-            ),
-            (
-                getattr(self, "chk_dcu1_az_shortest", None),
-                getattr(self, "chk_dcu1_az_report_mod360", None),
-            ),
-            (
-                getattr(self, "chk_n1mm_az_shortest", None),
-                getattr(self, "chk_n1mm_az_report_mod360", None),
-            ),
-        )
-        for chk_short, chk_mod in pairs:
-            if chk_short is None or chk_mod is None:
+        gb = getattr(self, "_gb_az_shortest", None)
+        if gb is not None:
+            gb.setVisible(show)
+        shortest_on = show and self._az_shortest_checked()
+        for attr in (
+            "chk_pst_az_report_mod360",
+            "chk_udp_pst_az_report_mod360",
+            "chk_rotctld_az_report_mod360",
+            "chk_gs232_az_report_mod360",
+            "chk_easycomm_az_report_mod360",
+            "chk_dcu1_az_report_mod360",
+            "chk_n1mm_az_report_mod360",
+        ):
+            chk_mod = getattr(self, attr, None)
+            if chk_mod is None:
                 continue
-            chk_short.setVisible(show)
-            shortest_on = show and bool(chk_short.isChecked())
             chk_mod.setVisible(shortest_on)
             chk_mod.setEnabled(shortest_on)
 
@@ -5975,7 +6269,13 @@ class SettingsWindow(QDialog):
     def _set_controller_led_ok(self, ok: bool) -> None:
         """LED neben „ID setzen“: grün = alle Controller-Werte vom Bus gelesen, sonst rot."""
         self._controller_led_ok = bool(ok)
-        if not hasattr(self, "_lbl_controller_led"):
+        tab = getattr(self, "_controller_tab", None)
+        lbl = None
+        if tab is not None:
+            lbl = getattr(tab, "_lbl_controller_led", None)
+        if lbl is None:
+            lbl = getattr(self, "_lbl_controller_led", None)
+        if lbl is None:
             return
         d = px_to_dip(self, 6)
         s = px_to_dip(self, 12)
@@ -5983,11 +6283,15 @@ class SettingsWindow(QDialog):
             bg, br = "#2e7d32", "#1b5e20"
         else:
             bg, br = "#c62828", "#8e0000"
-        self._lbl_controller_led.setStyleSheet(
+        lbl.setStyleSheet(
             f"QLabel#controllerReadLed {{ background-color: {bg}; border: 1px solid {br}; "
             f"border-radius: {d}px; min-width: {s}px; max-width: {s}px; "
             f"min-height: {s}px; max-height: {s}px; }}"
         )
+        try:
+            lbl.update()
+        except Exception:
+            pass
 
     def _set_antenna_names_wait_visible(self, visible: bool) -> None:
         if not hasattr(self, "_lbl_antenna_names_wait"):
@@ -6187,6 +6491,9 @@ class SettingsWindow(QDialog):
                     self.lbl_status.setText(t("settings.controller_status_usb_offline"))
                 except Exception:
                     pass
+                # Tab ist offen, Link kommt oft erst kurz danach (Proxy/USB) — LED nachziehen.
+                if self._controller_tab_is_current():
+                    self._schedule_controller_reload_when_connected(300)
             return
         if not self._controller_bus_read_enabled():
             self._apply_controller_from_cfg_only()

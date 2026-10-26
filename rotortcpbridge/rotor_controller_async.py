@@ -6,7 +6,7 @@ import time
 
 from .angle_utils import shortest_delta_deg
 from .rs485_protocol import BROADCAST_DST, Telegram
-from .rotor_model import AxisState
+from .rotor_model import WARN_ID_INC_SHOCK, AxisState
 from .rotor_controller_polling import _RotorPollingHost
 from .rotor_parse_utils import (
     parse_float,
@@ -870,7 +870,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                 )
                             except Exception:
                                 pass
-                        self.log.write("INFO", f"{axis_name} referenziert")
+                            self.log.write("INFO", f"{axis_name} referenziert")
                         # Falls Ziel bereits gesetzt ist, erneut anstoßen.
                         # AZ: shortest_path=True bei MAXDG>360 — sonst wickelt
                         # resolve_external_az_d10 Overlap-Ziele (z. B. 367°) auf 0…360 (7°)
@@ -916,9 +916,55 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             n = parse_int(part)
                             if n is not None:
                                 axis_state.warnings.add(n)
+                    # Bridge-Warnung Inklinometer-Ruck nicht von Rotor-GETWARN überschreiben
+                    if bool(getattr(axis_state, "inc_shock", False)):
+                        axis_state.warnings.add(int(WARN_ID_INC_SHOCK))
                     return
                 if tel.cmd.startswith("NAK_GETWARN"):
                     self.log.write("WARN", f"{axis_name} GETWARN NAK: {tel.params}")
+                    return
+
+                # Inklinometer: latched Ruck-Fehler (GETINCSHKER) → Soft-Warnung + Log
+                # Wichtig: ACK_GETINCSHKER vor generischem ACK_GETINCSHK* prüfen.
+                _inc_cmd = str(tel.cmd or "").strip().upper()
+                if _inc_cmd.startswith("ACK_GETINCSHKER"):
+                    try:
+                        self._note_inclinometer_present()
+                    except Exception:
+                        pass
+                    if axis_name == "EL":
+                        self._inc_shker_absent_el = False
+                    elif axis_name == "AZ":
+                        self._inc_shker_absent_az = False
+                    v = parse_int(tel.params.strip())
+                    active = bool(v is not None and int(v) != 0)
+                    was = bool(getattr(axis_state, "inc_shock", False))
+                    axis_state.inc_shock = active
+                    if active:
+                        axis_state.warnings.add(int(WARN_ID_INC_SHOCK))
+                        if not was:
+                            self.log.write(
+                                "WARN",
+                                f"{axis_name} Inklinometer-Ruckfehler (GETINCSHKER)",
+                            )
+                    else:
+                        axis_state.warnings.discard(int(WARN_ID_INC_SHOCK))
+                    return
+                if _inc_cmd.startswith("NAK_GETINCSHKER"):
+                    # Kein Inklinometer auf dieser Achse → Idle-Probe stoppen
+                    if axis_name == "EL":
+                        self._inc_shker_absent_el = True
+                    elif axis_name == "AZ":
+                        self._inc_shker_absent_az = True
+                    return
+                if _inc_cmd.startswith("ACK_GETINC"):
+                    # Präsenz merken; Warnung nur über GETINCSHKER (oben)
+                    try:
+                        self._note_inclinometer_present()
+                    except Exception:
+                        pass
+                    return
+                if _inc_cmd.startswith("NAK_GETINC"):
                     return
 
                 # Fehlercode
@@ -945,11 +991,24 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         axis_state.telemetry.temp_motor_c = v
                     return
 
-                # Encoder-Typ (GETENCTYPE, global am AZ-Slave)
-                if axis_name == "AZ" and tel.cmd.startswith("ACK_GETENCTYPE"):
+                # Encoder-Typ (GETENCTYPE): AZ global; EL separat (Inklinometer oft nur EL)
+                if tel.cmd.startswith("ACK_GETENCTYPE"):
                     v = parse_int(tel.params.strip())
                     if v is not None:
                         new_type = int(v)
+                        if axis_name == "EL":
+                            self.encoder_type_el = new_type
+                            self.encoder_type_el_known = True
+                            if new_type == 4:
+                                try:
+                                    self._note_inclinometer_present()
+                                except Exception:
+                                    pass
+                                try:
+                                    self._inc_shker_absent_el = False
+                                except Exception:
+                                    pass
+                            return
                         changed = (not self.encoder_type_known) or (
                             int(self.encoder_type or -1) != new_type
                         )
@@ -969,6 +1028,11 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                                 self.wind_enabled_known = True
                             except Exception:
                                 pass
+                            if new_type == 4:
+                                try:
+                                    self._note_inclinometer_present()
+                                except Exception:
+                                    pass
                         if changed and callable(self.on_encoder_type_changed):
                             try:
                                 self.on_encoder_type_changed()

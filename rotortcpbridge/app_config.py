@@ -303,6 +303,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # Standard aus (wie SPID-TCP); Nutzer schaltet bei Bedarf ein.
         "udp_pst_enabled": False,
         "udp_pst_port": 12000,
+        # Globaler „Kürzerer Weg“ (UI); wird auf alle Emulationsprotokolle gespiegelt.
+        "az_shortest_path": False,
         # Wie pst_server.az_shortest_path: Standard aus = exakter eingehender Winkel.
         "udp_pst_az_shortest_path": False,
         "udp_pst_az_report_mod360": False,
@@ -547,9 +549,38 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
             },
         )
 
-    if "ui" in cfg and isinstance(cfg["ui"], dict):
-        cfg["ui"].setdefault("udp_pst_az_shortest_path", False)
-        cfg["ui"].setdefault("udp_pst_az_report_mod360", False)
+    ui_m = cfg.setdefault("ui", {})
+    if not isinstance(ui_m, dict):
+        ui_m = {}
+        cfg["ui"] = ui_m
+    ui_m.setdefault("udp_pst_az_shortest_path", False)
+    ui_m.setdefault("udp_pst_az_report_mod360", False)
+    # Globaler „Kürzerer Weg“: einmalig aus bestehenden Protokoll-Flags ableiten,
+    # danach auf alle Emulationsprotokolle spiegeln.
+    _proto_short_keys = (
+        "pst_server",
+        "rotctld_server",
+        "gs232_server",
+        "easycomm_server",
+        "dcu1_server",
+        "n1mm_rotor",
+    )
+    if "az_shortest_path" not in ui_m:
+        _short_any = bool(ui_m.get("udp_pst_az_shortest_path", False))
+        for _sec_name in _proto_short_keys:
+            _sec = cfg.get(_sec_name)
+            if isinstance(_sec, dict) and bool(_sec.get("az_shortest_path", False)):
+                _short_any = True
+                break
+        ui_m["az_shortest_path"] = _short_any
+    else:
+        ui_m["az_shortest_path"] = bool(ui_m.get("az_shortest_path", False))
+    _g_short = bool(ui_m["az_shortest_path"])
+    ui_m["udp_pst_az_shortest_path"] = _g_short
+    for _sec_name in _proto_short_keys:
+        _sec = cfg.get(_sec_name)
+        if isinstance(_sec, dict):
+            _sec["az_shortest_path"] = _g_short
 
     # Migration: enable flags defaults
     if "rotor_bus" in cfg and isinstance(cfg["rotor_bus"], dict):
@@ -753,6 +784,22 @@ def migrate_and_merge_config(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, 
     _merge(merged, cfg)
     ui = merged.setdefault("ui", {})
     _apply_compass_strom_analysis_defaults(ui)
+    # Globalen „Kürzeren Weg“ nach dem Merge auf alle Protokoll-Defaults spiegeln
+    # (fehlende Sektionen kommen aus DEFAULT_CONFIG mit False und würden sonst abweichen).
+    _g_short = bool(ui.get("az_shortest_path", False))
+    ui["az_shortest_path"] = _g_short
+    ui["udp_pst_az_shortest_path"] = _g_short
+    for _sec_name in (
+        "pst_server",
+        "rotctld_server",
+        "gs232_server",
+        "easycomm_server",
+        "dcu1_server",
+        "n1mm_rotor",
+    ):
+        _sec = merged.get(_sec_name)
+        if isinstance(_sec, dict):
+            _sec["az_shortest_path"] = _g_short
     # Entfernt: Schnell-Buttons (GUI gibt es nicht mehr); alte Keys aus früheren Versionen verwerfen.
     ui.pop("quick_buttons", None)
     try:

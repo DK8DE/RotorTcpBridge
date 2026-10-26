@@ -614,25 +614,18 @@ def fill_axis_panel(
     except Exception:
         pass
 
-    if offline:
-        fields["tempa"].setText("0.0")
-        fields["tempm"].setText("0.0")
-        try:
-            pwm_slider = fields.get("pwm_slider")
-            pwm_val = fields.get("pwm_val")
-            if pwm_slider is not None:
-                pwm_slider.blockSignals(True)
-                pwm_slider.setValue(0)
-                pwm_slider.blockSignals(False)
-            if pwm_val is not None:
-                pwm_val.setText("0")
-        except Exception:
-            pass
-        return
-
+    # Offline: letzte Telemetriewerte behalten (nicht auf 0/leer setzen — Start-/Bus-Stau).
     tel = axis_state.telemetry
     fields["tempa"].setText("" if tel.temp_ambient_c is None else f"{tel.temp_ambient_c:.1f}")
     fields["tempm"].setText("" if tel.temp_motor_c is None else f"{tel.temp_motor_c:.1f}")
+    if offline:
+        try:
+            pwm_slider = fields.get("pwm_slider")
+            if pwm_slider is not None:
+                pwm_slider.setEnabled(False)
+        except Exception:
+            pass
+        return
 
     try:
         pwm_slider = fields.get("pwm_slider")

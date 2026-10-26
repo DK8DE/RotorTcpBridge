@@ -1,10 +1,13 @@
-"""Einstellungen-Tab: Rotor SoftAP / Web-OTA (Update)."""
+"""Einstellungen-Tab: Rotor SoftAP / Web-OTA und Versionsvergleich."""
 
 from __future__ import annotations
+
+from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -15,33 +18,168 @@ from PySide6.QtWidgets import (
 )
 
 from ..i18n import t, tt
+from ..version import (
+    APP_VERSION,
+    CONTROLLER_FW_VERSION,
+    INCLINOMETER_FW_VERSION,
+    ROTOR_FW_VERSION,
+)
 from .led_widget import Led
 from .ui_utils import px_to_dip
 
 
+def _status_style(kind: str) -> str:
+    """kind: ok | update | unknown | offline | na"""
+    colors = {
+        "ok": "#1b7a3d",
+        "update": "#b35c00",
+        "unknown": "#666666",
+        "offline": "#666666",
+        "na": "#666666",
+    }
+    c = colors.get(kind, "#666666")
+    return f"color: {c}; font-weight: bold;"
+
+
 class UpdateTab(QWidget):
-    """SoftAP pro aktiver Achse (AZ/EL) und Webflasher-Hinweis."""
+    """SoftAP pro aktiver Achse (AZ/EL), Webflasher und Versionsvergleich."""
 
     softap_toggled = Signal(str, bool)  # axis "az"|"el", want_on
     refresh_clicked = Signal()
     open_webflasher_clicked = Signal()
-    open_fw_folder_clicked = Signal()
+    open_download_page_clicked = Signal()
+    versions_refresh_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._block_toggle: dict[str, bool] = {"az": False, "el": False}
         self._axis_visible = {"az": True, "el": False}
+        self._ver_value_lbls: dict[str, QLabel] = {}
+        self._ver_online_lbls: dict[str, QLabel] = {}
+        self._ver_status_lbls: dict[str, QLabel] = {}
+        self._ver_row_widgets: dict[str, list] = {}
 
         root = QVBoxLayout(self)
         root.setSpacing(px_to_dip(self, 10))
 
-        self._lbl_intro = QLabel(t("settings.update_intro"))
-        self._lbl_intro.setWordWrap(True)
-        root.addWidget(self._lbl_intro)
+        # --- Versionsvergleich (wie Hilfe → Version + Online-Soll) -------------
+        self._gb_fw = QGroupBox(t("settings.update_fw_bundle_group"))
+        vl_fw = QVBoxLayout(self._gb_fw)
+        vl_fw.setSpacing(px_to_dip(self, 8))
+        self._lbl_fw_hint = QLabel(t("settings.update_fw_bundle_hint"))
+        self._lbl_fw_hint.setWordWrap(True)
+        vl_fw.addWidget(self._lbl_fw_hint)
 
+        grid_w = QWidget()
+        self._ver_grid = QGridLayout(grid_w)
+        self._ver_grid.setContentsMargins(0, 0, 0, 0)
+        self._ver_grid.setHorizontalSpacing(px_to_dip(self, 12))
+        self._ver_grid.setVerticalSpacing(px_to_dip(self, 4))
+
+        self._hdr_comp = QLabel(t("settings.update_ver_col_component"))
+        self._hdr_cur = QLabel(t("settings.update_ver_col_current"))
+        self._hdr_online = QLabel(t("settings.update_ver_col_online"))
+        self._hdr_status = QLabel(t("settings.update_ver_col_status"))
+        for h in (self._hdr_comp, self._hdr_cur, self._hdr_online, self._hdr_status):
+            h.setStyleSheet("font-weight: bold;")
+        self._ver_grid.addWidget(self._hdr_comp, 0, 0)
+        self._ver_grid.addWidget(self._hdr_cur, 0, 1)
+        self._ver_grid.addWidget(self._hdr_online, 0, 2)
+        self._ver_grid.addWidget(self._hdr_status, 0, 3)
+
+        self._ver_row_keys = ("app", "controller", "az", "el", "inc")
+        self._ver_label_keys = {
+            "app": "settings.update_ver_app",
+            "controller": "about.lbl_controller",
+            "az": "about.lbl_rotor_az",
+            "el": "about.lbl_rotor_el",
+            "inc": "settings.update_ver_inclinometer",
+        }
+        for i, key in enumerate(self._ver_row_keys, start=1):
+            name = QLabel(t(self._ver_label_keys[key]))
+            cur = QLabel("—")
+            cur.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            online = QLabel("—")
+            online.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            status = QLabel("—")
+            self._ver_grid.addWidget(name, i, 0)
+            self._ver_grid.addWidget(cur, i, 1)
+            self._ver_grid.addWidget(online, i, 2)
+            self._ver_grid.addWidget(status, i, 3)
+            self._ver_value_lbls[key] = cur
+            self._ver_online_lbls[key] = online
+            self._ver_status_lbls[key] = status
+            self._ver_row_widgets[key] = [name, cur, online, status]
+
+        vl_fw.addWidget(grid_w)
+
+        self._lbl_fw_extra = QLabel("")
+        self._lbl_fw_extra.setWordWrap(True)
+        self._lbl_fw_extra.setVisible(False)
+        vl_fw.addWidget(self._lbl_fw_extra)
+
+        btn_fw_row = QHBoxLayout()
+        btn_fw_row.setSpacing(px_to_dip(self, 8))
+        self.btn_ver_refresh = QPushButton(t("settings.update_ver_refresh"))
+        self.btn_ver_refresh.setToolTip(tt("settings.update_ver_refresh_tooltip"))
+        self.btn_ver_refresh.setAutoDefault(False)
+        self.btn_ver_refresh.clicked.connect(self.versions_refresh_clicked.emit)
+        btn_fw_row.addWidget(self.btn_ver_refresh, 0)
+        self.btn_fw_download = QPushButton(t("settings.update_fw_open_download"))
+        self.btn_fw_download.setToolTip(tt("settings.update_fw_open_download_tooltip"))
+        self.btn_fw_download.setAutoDefault(False)
+        self.btn_fw_download.clicked.connect(self.open_download_page_clicked.emit)
+        btn_fw_row.addWidget(self.btn_fw_download, 0)
+        btn_fw_row.addStretch(1)
+        vl_fw.addLayout(btn_fw_row)
+        root.addWidget(self._gb_fw)
+
+        # Startwerte (App sofort, Rest nach Prüfung)
+        self.set_version_row(
+            "app",
+            current=f"v{APP_VERSION}",
+            online=t("settings.update_ver_checking"),
+            status_key="unknown",
+            status_text=t("settings.update_ver_status_checking"),
+        )
+        self.set_version_row(
+            "controller",
+            current=t("about.ver_na"),
+            online=CONTROLLER_FW_VERSION,
+            status_key="unknown",
+            status_text=t("settings.update_ver_status_checking"),
+        )
+        self.set_version_row(
+            "az",
+            current=t("about.ver_na"),
+            online=ROTOR_FW_VERSION,
+            status_key="unknown",
+            status_text=t("settings.update_ver_status_checking"),
+        )
+        self.set_version_row(
+            "el",
+            current=t("about.ver_na"),
+            online=ROTOR_FW_VERSION,
+            status_key="na",
+            status_text=t("about.ver_na"),
+        )
+        self.set_version_row(
+            "inc",
+            current=t("about.ver_na"),
+            online=INCLINOMETER_FW_VERSION,
+            status_key="na",
+            status_text=t("about.ver_na"),
+            visible=False,
+        )
+
+        # --- Webserver Rotor --------------------------------------------------
         self._gb_softap = QGroupBox(t("settings.update_group_softap"))
         vl = QVBoxLayout(self._gb_softap)
         vl.setSpacing(px_to_dip(self, 8))
+
+        self._lbl_intro = QLabel(t("settings.update_intro"))
+        self._lbl_intro.setWordWrap(True)
+        vl.addWidget(self._lbl_intro)
 
         led_d = max(8, px_to_dip(self, 12))
         self._axis_rows: dict[str, QWidget] = {}
@@ -105,36 +243,45 @@ class UpdateTab(QWidget):
         vl.addWidget(self.btn_open, 0, Qt.AlignmentFlag.AlignLeft)
 
         root.addWidget(self._gb_softap)
-
-        self._gb_fw = QGroupBox(t("settings.update_fw_bundle_group"))
-        vl_fw = QVBoxLayout(self._gb_fw)
-        vl_fw.setSpacing(px_to_dip(self, 8))
-        self._lbl_fw_hint = QLabel(t("settings.update_fw_bundle_hint"))
-        self._lbl_fw_hint.setWordWrap(True)
-        vl_fw.addWidget(self._lbl_fw_hint)
-        self._lbl_fw_rotor = QLabel(t("settings.update_fw_rotor_unknown"))
-        self._lbl_fw_rotor.setWordWrap(True)
-        vl_fw.addWidget(self._lbl_fw_rotor)
-        self._lbl_fw_info = QLabel("")
-        self._lbl_fw_info.setWordWrap(True)
-        vl_fw.addWidget(self._lbl_fw_info)
-        self.btn_fw_folder = QPushButton(t("settings.update_fw_bundle_open"))
-        self.btn_fw_folder.setToolTip(tt("settings.update_fw_bundle_open_tooltip"))
-        self.btn_fw_folder.setAutoDefault(False)
-        self.btn_fw_folder.clicked.connect(self.open_fw_folder_clicked.emit)
-        vl_fw.addWidget(self.btn_fw_folder, 0, Qt.AlignmentFlag.AlignLeft)
-        root.addWidget(self._gb_fw)
-
         root.addStretch(1)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         self.set_axes_visible(az_on=True, el_on=False)
 
+    def set_version_row(
+        self,
+        key: str,
+        *,
+        current: str,
+        online: str,
+        status_key: str,
+        status_text: str,
+        visible: Optional[bool] = None,
+    ) -> None:
+        cur = self._ver_value_lbls.get(key)
+        onl = self._ver_online_lbls.get(key)
+        st = self._ver_status_lbls.get(key)
+        if cur is not None:
+            cur.setText(str(current or "—"))
+        if onl is not None:
+            onl.setText(str(online or "—"))
+        if st is not None:
+            st.setText(str(status_text or "—"))
+            st.setStyleSheet(_status_style(status_key))
+        if visible is not None:
+            for w in self._ver_row_widgets.get(key, []):
+                w.setVisible(bool(visible))
+
+    def set_fw_extra_info(self, text: str) -> None:
+        self._lbl_fw_extra.setText(str(text or ""))
+        self._lbl_fw_extra.setVisible(bool(str(text or "").strip()))
+
+    # Rückwärtskompatibilität für ältere Aufrufer
     def set_fw_rotor_status(self, text: str) -> None:
-        self._lbl_fw_rotor.setText(str(text or ""))
+        if str(text or "").strip():
+            self.set_fw_extra_info(text)
 
     def set_fw_info_status(self, text: str) -> None:
-        self._lbl_fw_info.setText(str(text or ""))
-        self._lbl_fw_info.setVisible(bool(str(text or "").strip()))
+        self.set_fw_extra_info(text)
 
     def _on_chk_toggled(self, axis: str, checked: bool) -> None:
         if self._block_toggle.get(axis):
@@ -149,6 +296,10 @@ class UpdateTab(QWidget):
             row.setVisible(bool(self._axis_visible.get(axis)))
         both = bool(az_on) and bool(el_on)
         self._lbl_both_hint.setVisible(both)
+        for w in self._ver_row_widgets.get("az", []):
+            w.setVisible(bool(az_on))
+        for w in self._ver_row_widgets.get("el", []):
+            w.setVisible(bool(el_on))
 
     def set_softap_active(self, axis: str, active: bool | None) -> None:
         """LED + Checkbox einer Achse an SoftAP-Status anpassen (ohne Signal)."""
@@ -187,5 +338,15 @@ class UpdateTab(QWidget):
         self.btn_open.setToolTip(tt("settings.update_btn_open_webflasher_tooltip"))
         self._gb_fw.setTitle(t("settings.update_fw_bundle_group"))
         self._lbl_fw_hint.setText(t("settings.update_fw_bundle_hint"))
-        self.btn_fw_folder.setText(t("settings.update_fw_bundle_open"))
-        self.btn_fw_folder.setToolTip(tt("settings.update_fw_bundle_open_tooltip"))
+        self.btn_fw_download.setText(t("settings.update_fw_open_download"))
+        self.btn_fw_download.setToolTip(tt("settings.update_fw_open_download_tooltip"))
+        self.btn_ver_refresh.setText(t("settings.update_ver_refresh"))
+        self.btn_ver_refresh.setToolTip(tt("settings.update_ver_refresh_tooltip"))
+        self._hdr_comp.setText(t("settings.update_ver_col_component"))
+        self._hdr_cur.setText(t("settings.update_ver_col_current"))
+        self._hdr_online.setText(t("settings.update_ver_col_online"))
+        self._hdr_status.setText(t("settings.update_ver_col_status"))
+        for key, lbl_key in self._ver_label_keys.items():
+            widgets = self._ver_row_widgets.get(key) or []
+            if widgets:
+                widgets[0].setText(t(lbl_key))

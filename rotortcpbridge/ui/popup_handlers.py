@@ -26,16 +26,31 @@ def _bring_parent_to_front(parent: Optional[QWidget]) -> None:
 
 def _show_modal_warning(parent: Optional[QWidget], title: str, msg: str) -> None:
     """Modalen Dialog anzeigen — nur aus QTimer.singleShot(0), nicht aus _tick."""
+    _show_modal_warning_with_clear(parent, title, msg)
+
+
+def _show_modal_warning_with_clear(
+    parent: Optional[QWidget], title: str, msg: str
+) -> bool:
+    """Warnungsdialog mit „Warnungen löschen“. True wenn Löschen gewählt wurde."""
     _bring_parent_to_front(parent)
     try:
-        QMessageBox.warning(
-            parent,
-            title,
-            msg,
-            QMessageBox.StandardButton.Ok,
+        box = QMessageBox(parent)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(title)
+        box.setText(msg)
+        btn_clear = box.addButton(
+            t("main.menu_delwarn"),
+            QMessageBox.ButtonRole.AcceptRole,
         )
+        box.addButton(
+            t("popup.error_btn_close"),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        box.exec()
+        return box.clickedButton() is btn_clear
     except Exception:
-        pass
+        return False
 
 
 def _show_error_with_ack(
@@ -272,13 +287,23 @@ class WarningPopupHandler:
         msg = t("popup.warn_msg", lines="\n\n".join(lines))
 
         def _show_and_clear() -> None:
+            cleared = False
             try:
-                _show_modal_warning(parent, title, msg)
+                cleared = _show_modal_warning_with_clear(parent, title, msg)
+                if cleared and parent is not None:
+                    ctrl = getattr(parent, "ctrl", None)
+                    fn = getattr(ctrl, "clear_warnings_all", None) if ctrl is not None else None
+                    if callable(fn):
+                        fn()
             finally:
                 if is_az:
                     self._pending_az = False
+                    if cleared:
+                        self._last_az = frozenset()
                 else:
                     self._pending_el = False
+                    if cleared:
+                        self._last_el = frozenset()
 
         if parent is not None:
             QTimer.singleShot(0, parent, _show_and_clear)

@@ -1,0 +1,46 @@
+name: Sync firmware version pins
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Täglich 06:15 UTC — Pins an neueste GitHub-Releases anpassen
+    - cron: "15 6 * * *"
+  push:
+    branches: [main, master]
+    paths:
+      - "rotortcpbridge/version.py"
+      - "scripts/sync_fw_versions_from_github.py"
+      - ".github/workflows/sync-fw-versions.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Damit der Bot zurück committen kann
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Sync version.py from firmware releases
+        run: python scripts/sync_fw_versions_from_github.py
+
+      - name: Commit if changed
+        run: |
+          if git diff --quiet -- rotortcpbridge/version.py; then
+            echo "Keine Änderung."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add rotortcpbridge/version.py
+          git commit -m "chore: sync firmware pins from GitHub [skip ci]"
+          git push

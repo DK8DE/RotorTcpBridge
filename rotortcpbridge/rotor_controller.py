@@ -108,6 +108,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.az = AxisState(position_wrap_360=True)
         self.el = AxisState(position_wrap_360=False)
         self._idle_poll_defer_until: float = 0.0
+        # Nur Idle-Zusatzpolls (nicht GETPOSDG) — sync_ui_command_response / UI-Bus
+        self._ui_cmd_idle_defer_until: float = 0.0
         self._setposcc_poll_hold: bool = False
         self._setposcc_hold_until: float = 0.0
         self._setposdg_poll_grace_until_ts: float = 0.0
@@ -179,6 +181,17 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._settings_window_open: bool = False
         # Einstellungen → Tab Stromwerte: CAL-Status + GETCALBINS (kein ACC)
         self._settings_strom_tab_open: bool = False
+        # Inklinometer-Config offen: GETINCDG live, Idle-Bus (TEMP/WARN/Wind/…) pausieren
+        self._inclinometer_window_open: bool = False
+        # Mindestens eine erfolgreiche GETINC*-Antwort gesehen (auch wenn AZ-GETENCTYPE ≠ 4)
+        self._inclinometer_present: bool = False
+        # EL ohne Inklinometer: GETINCSHKER-NAK → Idle-Probe abschalten
+        self._inc_shker_absent_el: bool = False
+        self._inc_shker_absent_az: bool = False
+        self._last_inc_shker: float = 0.0
+        # Encoder-Typ der EL-Achse (GETENCTYPE am EL-Slave); unabhängig von AZ
+        self.encoder_type_el: Optional[int] = None
+        self.encoder_type_el_known: bool = False
         # Kompass-Fenster offen (Anzeige); Strom-Bins nur wenn Heatmap „strom“ aktiv (siehe set_compass_strom_heatmap_active)
         self._compass_window_open: bool = False
         self._compass_open_sources: set[str] = set()
@@ -255,6 +268,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._wind_enable_sent_ts: float = 0.0
         self._hw_prev_connected: bool = False
         self._startup_burst_until: float = 0.0
+        # Nach Connect: erst Main-GUI (AZ→EL), danach Antennen/Config-Bootstrap
+        self._startup_secondary_due_ts: float = 0.0
         self._last_wind_enable_poll: float = 0.0
         # Polling-Intervalle (ms):
         # Fahrt  : nur GETPOSDG (Fehler kommen per Broadcast ERR / ACK_ERR, kein GETERR-Poll)
@@ -543,6 +558,12 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self.encoder_type = None
         self.encoder_type_known = False
         self._encoder_type_requested = False
+        self.encoder_type_el = None
+        self.encoder_type_el_known = False
+        self._inclinometer_present = False
+        self._inc_shker_absent_el = False
+        self._inc_shker_absent_az = False
+        self._last_inc_shker = 0.0
         self._endstc_requested = False
         self._max_deg_requested = False
         self._max_deg_known = False
@@ -771,7 +792,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 "0",
                 expect_prefix="ACK_GETDGCAL",
                 timeout_s=1.2,
-                priority=1,
+                # Nicht vor Main-GUI-Temperaturen/PWM (Startup)
+                priority=5,
                 on_done=done,
                 apply_local_state=False,
             )
@@ -859,6 +881,46 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         except (TypeError, ValueError):
             return False
 
+    def inclinometer_connected(self) -> bool:
+        """True bei Typ 4 (AZ oder EL) oder wenn GETINC* bereits erfolgreich geantwortet hat."""
+        if bool(getattr(self, "_inclinometer_present", False)):
+            return True
+        try:
+            if self.encoder_type_known and int(self.encoder_type) == 4:
+                return True
+        except (TypeError, ValueError):
+            pass
+        try:
+            if bool(getattr(self, "encoder_type_el_known", False)) and int(
+                getattr(self, "encoder_type_el", -1)
+            ) == 4:
+                return True
+        except (TypeError, ValueError):
+            pass
+        return False
+
+    def _note_inclinometer_present(self) -> None:
+        """Nach erfolgreicher Inklinometer-Antwort: Idle-GETINCSHKER freischalten."""
+        self._inclinometer_present = True
+
+    def _inc_shker_poll_targets(self) -> list[tuple[int, object, str]]:
+        """Achsen für Idle-GETINCSHKER.
+
+        Dual-IP: AZ oft Wind/Typ 1–3, Inklinometer typisch auf EL — EL immer
+        pollen bis NAK. AZ nur ohne EL oder wenn AZ selbst Typ 4 ist.
+        """
+        out: list[tuple[int, object, str]] = []
+        if self.enable_el and not bool(getattr(self, "_inc_shker_absent_el", False)):
+            out.append((int(self.slave_el), self.el, "EL"))
+        if self.enable_az and not bool(getattr(self, "_inc_shker_absent_az", False)):
+            try:
+                az_type4 = bool(self.encoder_type_known) and int(self.encoder_type) == 4
+            except (TypeError, ValueError):
+                az_type4 = False
+            if (not self.enable_el) or az_type4:
+                out.append((int(self.slave_az), self.az, "AZ"))
+        return out
+
     def _axis_has_endstops(self, axis_state: AxisState) -> bool:
         """True wenn Endschalter vorhanden oder noch unbekannt (optimistic bis GETENDSTC)."""
         if not bool(getattr(axis_state, "endstc_known", False)):
@@ -901,7 +963,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     expect_prefix=None,
                     timeout_s=0.5,
                     on_done=None,
-                    priority=4,
+                    priority=7,
                 )
             )
         if el and self.enable_el:
@@ -911,7 +973,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     expect_prefix=None,
                     timeout_s=0.5,
                     on_done=None,
-                    priority=4,
+                    priority=7,
                 )
             )
 
@@ -988,18 +1050,27 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         return None
 
     def request_encoder_type(self) -> None:
-        """Encoder-Variante vom Rotor lesen (GETENCTYPE, nur AZ-Slave)."""
-        if not self.enable_az:
-            return
-        self._send_hw_request(
-            HwRequest(
-                line=build(self.master_id, self.slave_az, "GETENCTYPE", "0"),
-                expect_prefix=None,
-                timeout_s=0.5,
-                on_done=None,
-                priority=4,
+        """Encoder-Variante lesen (GETENCTYPE): AZ und ggf. EL (Dual-IP / Inklinometer)."""
+        if self.enable_az:
+            self._send_hw_request(
+                HwRequest(
+                    line=build(self.master_id, self.slave_az, "GETENCTYPE", "0"),
+                    expect_prefix=None,
+                    timeout_s=0.5,
+                    on_done=None,
+                    priority=7,
+                )
             )
-        )
+        if self.enable_el:
+            self._send_hw_request(
+                HwRequest(
+                    line=build(self.master_id, self.slave_el, "GETENCTYPE", "0"),
+                    expect_prefix=None,
+                    timeout_s=0.5,
+                    on_done=None,
+                    priority=7,
+                )
+            )
 
     def request_endstc(self, *, az: bool = True, el: bool = True) -> None:
         """Endschalter-Anzahl je Achse lesen (GETENDSTC) — Homing nur bei >0."""
@@ -1010,7 +1081,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     expect_prefix=None,
                     timeout_s=0.5,
                     on_done=None,
-                    priority=4,
+                    priority=7,
                 )
             )
         if el and self.enable_el:
@@ -1020,7 +1091,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     expect_prefix=None,
                     timeout_s=0.5,
                     on_done=None,
-                    priority=4,
+                    priority=7,
                 )
             )
 
@@ -1034,7 +1105,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 expect_prefix=None,
                 timeout_s=0.5,
                 on_done=None,
-                priority=4,
+                priority=7,
             )
         )
 
@@ -1105,7 +1176,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 expect_prefix=None,
                 timeout_s=0.5,
                 on_done=None,
-                priority=4,
+                priority=7,
             )
         )
 
@@ -1118,7 +1189,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     expect_prefix=None,
                     timeout_s=0.5,
                     on_done=None,
-                    priority=4,
+                    priority=7,
                 )
             )
         if el and self.enable_el:
@@ -1128,7 +1199,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     expect_prefix=None,
                     timeout_s=0.5,
                     on_done=None,
-                    priority=4,
+                    priority=7,
                 )
             )
 
@@ -1239,6 +1310,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         self._settings_window_open = bool(open)
         if not open:
             self._settings_strom_tab_open = False
+
+    def set_inclinometer_window_open(self, open: bool) -> None:
+        """Inklinometer-Config offen: Idle-Telemetrie pausieren (wie bei Fahrt), Bus für GETINCDG."""
+        self._inclinometer_window_open = bool(open)
 
     def set_settings_strom_tab_open(self, open: bool) -> None:
         """Einstellungen-Tab „Stromwerte“ aktiv: GETCALSTATE + GETCALBINS (kein ACC/LIVE-Dauerpoll)."""
@@ -1357,7 +1432,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         except Exception:
             pass
 
-    def request_antenna_offsets(self, *, priority: int = 4) -> None:
+    def request_antenna_offsets(self, *, priority: int = 7) -> None:
         """AZ-Antennenversätze vom Rotor lesen (GETANTOFF1–3). EL-Versatz entfällt."""
         if self.enable_az:
             for cmd in ("GETANTOFF1", "GETANTOFF2", "GETANTOFF3"):
@@ -1371,7 +1446,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     )
                 )
 
-    def request_antenna_angles(self) -> None:
+    def request_antenna_angles(self, *, priority: int = 7) -> None:
         """AZ-Antennen-Öffnungswinkel vom Rotor lesen (GETANGLE1–3)."""
         if self.enable_az:
             for cmd in ("GETANGLE1", "GETANGLE2", "GETANGLE3"):
@@ -1381,11 +1456,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         expect_prefix=None,
                         timeout_s=0.5,
                         on_done=None,
-                        priority=4,
+                        priority=int(priority),
                     )
                 )
 
-    def request_antenna_dipoles(self) -> None:
+    def request_antenna_dipoles(self, *, priority: int = 7) -> None:
         """AZ-Antennen-Dipolflags vom Rotor lesen (GETANTDP1–3)."""
         if self.enable_az:
             for cmd in ("GETANTDP1", "GETANTDP2", "GETANTDP3"):
@@ -1395,11 +1470,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         expect_prefix=None,
                         timeout_s=0.5,
                         on_done=None,
-                        priority=4,
+                        priority=int(priority),
                     )
                 )
 
-    def request_antenna_ranges(self) -> None:
+    def request_antenna_ranges(self, *, priority: int = 7) -> None:
         """AZ-Antennen-Reichweiten vom Rotor lesen (GETANTDIS1–3)."""
         if self.enable_az:
             for cmd in ("GETANTDIS1", "GETANTDIS2", "GETANTDIS3"):
@@ -1409,11 +1484,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         expect_prefix=None,
                         timeout_s=0.5,
                         on_done=None,
-                        priority=4,
+                        priority=int(priority),
                     )
                 )
 
-    def request_antenna_names(self) -> None:
+    def request_antenna_names(self, *, priority: int = 7) -> None:
         """AZ-Antennen-Anzeigenamen vom Rotor lesen (GETANTNAME1–3)."""
         if self.enable_az:
             for cmd in ("GETANTNAME1", "GETANTNAME2", "GETANTNAME3"):
@@ -1423,7 +1498,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         expect_prefix=None,
                         timeout_s=0.5,
                         on_done=None,
-                        priority=4,
+                        priority=int(priority),
                     )
                 )
 
@@ -1512,7 +1587,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 expect_prefix=None,
                 timeout_s=0.8,
                 on_done=None,
-                priority=4,
+                priority=7,
             )
         )
 
@@ -2281,9 +2356,12 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
         try:
             now = time.time()
-            prev = float(getattr(self, "_idle_poll_defer_until", 0.0) or 0.0)
-            # Kurz Idle-Zusatzpolls zurückstellen; Fahrt-GETPOSDG bleibt über poll_restrict aktiv.
-            self._idle_poll_defer_until = max(prev, now + max(0.8, min(2.0, float(timeout_s))))
+            # Nur Idle-Zusatzpolls (WARN/TEMP/Wind/…) zurückstellen — NICHT GETPOSDG.
+            # Früher: `_idle_poll_defer_until` → skip_pos → last_rx altert → Offline → GUI leer.
+            prev = float(getattr(self, "_ui_cmd_idle_defer_until", 0.0) or 0.0)
+            self._ui_cmd_idle_defer_until = max(
+                prev, now + max(0.8, min(2.0, float(timeout_s)))
+            )
         except Exception:
             pass
 
@@ -2303,6 +2381,19 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     result[0] = SYNC_UI_NAK_PREFIX + str(tel.params)
                 elif self._ack_cmd_matches_expect(cmd_u, expect_prefix):
                     result[0] = str(tel.params)
+                # Pending-ACKs gehen nicht durch _on_async_tel → last_rx hier pflegen
+                try:
+                    src = int(getattr(tel, "src", 0) or 0)
+                    ax = None
+                    if src == int(self.slave_az):
+                        ax = self.az
+                    elif src == int(self.slave_el):
+                        ax = self.el
+                    if ax is not None:
+                        ax.online = True
+                        ax.last_rx_ts = time.time()
+                except Exception:
+                    pass
             done[0] = True
 
         self.send_ui_command(
@@ -3424,10 +3515,47 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         )
 
     def clear_warnings_all(self):
+        """Rotor-Warnungen (DELWARN) und ggf. Inklinometer-Ruckfehler (SETINCSHKER:0) löschen."""
+        from .rotor_model import WARN_ID_INC_SHOCK
+
         if self.enable_az:
             self._send_simple(self.slave_az, "DELWARN", "1", expect="ACK_DELWARN", prio=0)
         if self.enable_el:
             self._send_simple(self.slave_el, "DELWARN", "1", expect="ACK_DELWARN", prio=0)
+
+        # Inklinometer-Ruckfehler über Bus quittieren (wie Inklinometer-Config „Löschen“)
+        try:
+            inc = bool(self.inclinometer_connected())
+        except Exception:
+            inc = False
+        if inc:
+            if self.enable_el:
+                self._send_simple(
+                    self.slave_el, "SETINCSHKER", "0", expect="ACK_SETINCSHKER", prio=0
+                )
+                try:
+                    self.el.inc_shock = False
+                    self.el.warnings.discard(int(WARN_ID_INC_SHOCK))
+                except Exception:
+                    pass
+            elif self.enable_az:
+                self._send_simple(
+                    self.slave_az, "SETINCSHKER", "0", expect="ACK_SETINCSHKER", prio=0
+                )
+                try:
+                    self.az.inc_shock = False
+                    self.az.warnings.discard(int(WARN_ID_INC_SHOCK))
+                except Exception:
+                    pass
+        else:
+            # Auch ohne Typ-4-Erkennung lokale Bridge-Warnung entfernen, falls gesetzt
+            for ax in (self.az, self.el):
+                try:
+                    if bool(getattr(ax, "inc_shock", False)):
+                        ax.inc_shock = False
+                        ax.warnings.discard(int(WARN_ID_INC_SHOCK))
+                except Exception:
+                    pass
 
     def set_pwm_all(self, pwm_pct: float):
         self.set_pwm_az(pwm_pct)

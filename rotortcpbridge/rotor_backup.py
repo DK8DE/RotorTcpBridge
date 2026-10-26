@@ -61,6 +61,7 @@ _EXCLUDED_SET = frozenset(
         "SETWLAN",  # SoftAP nicht persistent / kein Backup
         "SETINCWLAN",  # Inklinometer-SoftAP nicht persistent
         "SETINCDBG",  # USB-Debug nicht für Backup
+        "SETINCSHKER",  # Ruck-Fehler löschen, kein Backup-Wert
     }
 )
 

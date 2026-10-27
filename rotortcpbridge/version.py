@@ -11,7 +11,7 @@ FIRMWARE_UPDATE_REQUIRED = True
 
 # Empfohlene Firmware (Vergleich mit Live-GETVERSION)
 # Quelle: neueste GitHub-Releases der Repos unten (scripts/sync_fw_versions_from_github.py)
-ROTOR_FW_VERSION = "1.10.13"
+ROTOR_FW_VERSION = "1.10.14"
 CONTROLLER_FW_VERSION = "1.5.9"
 INCLINOMETER_FW_VERSION = "1.3.8"
 WLAN_MODULE_FW_VERSION = "1.5.1"

@@ -1,7 +1,7 @@
 """Versions- und Metadaten für RotorTcpBridge."""
 
 APP_NAME = "RotorTcpBridge"
-APP_VERSION = "2.5"
+APP_VERSION = "2.5.1"
 APP_DATE = "25.10.2026"
 APP_AUTHOR = "Jörg Körner DK8DE"
 APP_COPYRIGHT = "2026 Jörg Körner DK8DE"
@@ -11,9 +11,9 @@ FIRMWARE_UPDATE_REQUIRED = True
 
 # Empfohlene Firmware (Vergleich mit Live-GETVERSION)
 # Quelle: neueste GitHub-Releases der Repos unten (scripts/sync_fw_versions_from_github.py)
-ROTOR_FW_VERSION = "1.10.11"
+ROTOR_FW_VERSION = "1.10.13"
 CONTROLLER_FW_VERSION = "1.5.9"
-INCLINOMETER_FW_VERSION = "1.3.7"
+INCLINOMETER_FW_VERSION = "1.3.8"
 WLAN_MODULE_FW_VERSION = "1.5.1"
 
 # Download-Seite (kein Auto-Download in der App)

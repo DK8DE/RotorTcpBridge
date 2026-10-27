@@ -1,6 +1,6 @@
-# Rotor‑Controller – RS485‑Anleitung & Firmware‑Dokumentation (DE)
+# Protokoll-Referenz (RS485)
 
-Stand: 2026-04-26 • Rotor-Firmware ab **1.10.13** (vollständige RS485-Befehlsliste inkl. Inklinometer-Stoß, HOME, GETVERSION, JOGTOUT, MASTHEIGHT, ASELECT, ENCTURN, RAPDG, SRVJOG) • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler & Warnungen. Die **Befehlstabelle** enthält alle Kommandos aus `Rs485Dispatcher.cpp`. Diese Datei ist mit `RotorTcpBridge/docs/RotorController_RS485.html` abgestimmt.
+Stand: 2026-04-26 • Rotor-Firmware ab **1.10.13** (vollständige RS485-Befehlsliste inkl. Inklinometer-Stoß, HOME, GETVERSION, JOGTOUT, MASTHEIGHT, ASELECT, ENCTURN, RAPDG, SRVJOG) • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler & Warnungen. Die **Befehlstabelle** enthält alle Kommandos aus `Rs485Dispatcher.cpp`. Diese Datei ist mit `RotorTcpBridge/docs/Protokoll_Referenz.html` abgestimmt.
 
 ## Inhaltsverzeichnis {#toc}
 
@@ -381,6 +381,7 @@ Schreibbefehle speichern in `config.json` (Slow/Fast‑PWM, IDs, Touch‑Pieps, 
 | `GETCONTAZID` / `SETCONTAZID` | `ACK_GETCONTAZID` / `ACK_SETCONTAZID` (bzw. `NAK_…`) — AZ-Rotor-Slave-ID am Controller (0…254; **0 = AZ-Achse aus**). JSON `az_rotor_id`. |
 | `GETCONTELID` / `SETCONTELID` | `ACK_GETCONTELID` / `ACK_SETCONTELID` (bzw. `NAK_…`) — EL-Rotor-Slave-ID am Controller (0…254; **0 = EL-Achse aus**). JSON `el_rotor_id`. |
 | `GETCONTID` | `ACK_GETCONTID` (Parameter = `master_id` des Controllers) |
+| `GETCOVERSION` | `ACK_GETCOVERSION` — Firmware-Version des Display-Controllers (SemVer). Ziel `DST = master_id`. |
 | `SETCONTID` | `ACK_SETCONTID` / `NAK_SETCONTID` (1…254) — Ziel `DST = master_id` (unicast). |
 | `SETCONIDF` oder `SETCONTID` mit `DST = 255` (Broadcast) | `ACK_SETCONIDF` bzw. `ACK_SETCONTID` / `NAK_SETCONTID` — setzt die **neue** Controller‑`master_id` in `config.json`, wenn die bisherige ID unbekannt ist. Checksumme: `CS = SRC + 255 + <neue ID>` (z. B. `#1:255:SETCONIDF:5:261$` mit `1+255+5=261`). |
 | `GETCONSPWM` / `SETCONSPWM` | `ACK_GETCONSPWM` / `ACK_SETCONSPWM` (bzw. `NAK_SETCONSPWM`) — Slow‑PWM in % (0…100), entspricht `slow_pwm` in der JSON. |

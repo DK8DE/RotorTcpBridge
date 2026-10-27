@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Rotor-Controller – RS485-Anleitung &amp; Firmware-Dokumentation</title>
+  <title>Protokoll-Referenz (RS485)</title>
   <style>
 
         body {
@@ -49,8 +49,8 @@
   </style>
 </head>
 <body>
-<h1 id="rotorcontroller-rs485anleitung-firmwaredokumentation-de">Rotor‑Controller – RS485‑Anleitung &amp; Firmware‑Dokumentation (DE)</h1>
-<p>Stand: 2026-04-26 • Rotor-Firmware ab <strong>1.10.13</strong> (vollständige RS485-Befehlsliste inkl. Inklinometer-Stoß, HOME, GETVERSION, JOGTOUT, MASTHEIGHT, ASELECT, ENCTURN, RAPDG, SRVJOG) • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler &amp; Warnungen. Die <strong>Befehlstabelle</strong> enthält alle Kommandos aus <code>Rs485Dispatcher.cpp</code>. Diese Datei ist mit <code>RotorTcpBridge/docs/RotorController_RS485.html</code> abgestimmt.</p>
+<h1 id="protokoll-referenz-rs485">Protokoll-Referenz (RS485)</h1>
+<p>Stand: 2026-04-26 • Rotor-Firmware ab <strong>1.10.13</strong> (vollständige RS485-Befehlsliste inkl. Inklinometer-Stoß, HOME, GETVERSION, JOGTOUT, MASTHEIGHT, ASELECT, ENCTURN, RAPDG, SRVJOG) • Fokus: RS485‑Befehle, Einstellungen (INO), Kalibrierung/Statistik, Fehler &amp; Warnungen. Die <strong>Befehlstabelle</strong> enthält alle Kommandos aus <code>Rs485Dispatcher.cpp</code>. Diese Datei ist mit <code>RotorTcpBridge/docs/Protokoll_Referenz.md</code> abgestimmt.</p>
 <h2 id="toc">Inhaltsverzeichnis</h2>
 <ul>
 <li><a href="#protocol">1. RS485‑Protokoll (Format, Dezimal, Checksumme)</a></li>
@@ -1310,6 +1310,10 @@
 <tr>
 <td><code>GETCONTID</code></td>
 <td><code>ACK_GETCONTID</code> (Parameter = <code>master_id</code> des Controllers)</td>
+</tr>
+<tr>
+<td><code>GETCOVERSION</code></td>
+<td><code>ACK_GETCOVERSION</code> — Firmware-Version des Display-Controllers (SemVer). Ziel <code>DST = master_id</code>.</td>
 </tr>
 <tr>
 <td><code>SETCONTID</code></td>

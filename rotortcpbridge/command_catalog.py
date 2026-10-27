@@ -54,6 +54,13 @@ SPECS_DATA: list[dict] = [
         "help_text_en": "Query whether reference (homing) is available. Response: 0 = not homed, 1 = homed.",
     },
     {
+        "name": "GETHOMING",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Abfragen, ob gerade ein Homing läuft (1/0). Bei Absolutencodern (SSI/Inklinometer) immer 0.",
+        "help_text_en": "Query whether homing is currently running (1/0). Absolute encoders (SSI/inclinometer): always 0.",
+    },
+    {
         "name": "GETPOSDG",
         "kind": "none",
         "params_literal": "0",
@@ -324,6 +331,30 @@ SPECS_DATA: list[dict] = [
         "help_text_en": 'Read "more friction" threshold (%). Mean value threshold.',
     },
     {
+        "name": "SETRAPDG",
+        "kind": "float",
+        "min_value": 0.0,
+        "max_value": 360.0,
+        "decimals": 2,
+        "step": 0.1,
+        "default": 5.0,
+        "help_text": (
+            "Ignore-Länge (Grad) für Acc-Bins / GETACCBINS setzen. Unabhängig von der Fahr-Rampe "
+            "(SETRAMP/SETCALIGNDG). Default 5,00°. NVS rap."
+        ),
+        "help_text_en": (
+            "Set ignore length (degrees) for Acc bins / GETACCBINS. Independent of drive ramp "
+            "(SETRAMP/SETCALIGNDG). Default 5.00°. NVS rap."
+        ),
+    },
+    {
+        "name": "GETRAPDG",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Ignore-Länge (Grad) für Acc-Bins / GETACCBINS lesen (NVS rap, Default 5,00).",
+        "help_text_en": "Read ignore length (degrees) for Acc bins / GETACCBINS (NVS rap, default 5.00).",
+    },
+    {
         "name": "SETDRAGBINS",
         "kind": "int",
         "min_value": 0.0,
@@ -590,6 +621,30 @@ SPECS_DATA: list[dict] = [
         ),
     },
     {
+        "name": "SETJOGTOUT",
+        "kind": "int",
+        "min_value": 100.0,
+        "max_value": 5000.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 500.0,
+        "help_text": (
+            "JOG-Watchdog-Timeout (ms) setzen. Ohne neuen JOG:1/2 in dieser Zeit stoppt der Rotor weich. "
+            "Zulässig 100…5000 ms (NVS jogt)."
+        ),
+        "help_text_en": (
+            "Set JOG watchdog timeout (ms). Without a new JOG:1/2 within this time the rotor soft-stops. "
+            "Allowed 100…5000 ms (NVS jogt)."
+        ),
+    },
+    {
+        "name": "GETJOGTOUT",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "JOG-Watchdog-Timeout (ms) lesen. Default oft 500 ms.",
+        "help_text_en": "Read JOG watchdog timeout (ms). Default often 500 ms.",
+    },
+    {
         "name": "SETSETUP",
         "kind": "int",
         "min_value": 0.0,
@@ -634,6 +689,17 @@ SPECS_DATA: list[dict] = [
         "help_text_en": (
             "Service JOG only when unreferenced/stalled, without free limits. "
             "For calibrating below/above Amin/Amax always use SETSETUP."
+        ),
+    },
+    {
+        "name": "GETSRVJOG",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Service-JOG-Status lesen (0/1). Nicht persistent (nach Reboot/SoftAP-Ende aus)."
+        ),
+        "help_text_en": (
+            "Read service-JOG status (0/1). Not persistent (off after reboot/SoftAP end)."
         ),
     },
     {
@@ -1146,6 +1212,19 @@ SPECS_DATA: list[dict] = [
         "help_text_en": "Read home/park angle (degrees).",
     },
     {
+        "name": "HOME",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Zur gespeicherten Home-/Parkposition fahren (SETHOMEPOS). "
+            "Erfordert Referenz (GETREF=1), sonst NAK NOREF."
+        ),
+        "help_text_en": (
+            "Drive to stored home/park position (SETHOMEPOS). "
+            "Requires reference (GETREF=1), otherwise NAK NOREF."
+        ),
+    },
+    {
         "name": "SETHOMEBACKOFF",
         "kind": "int",
         "min_value": 0.0,
@@ -1632,6 +1711,30 @@ SPECS_DATA: list[dict] = [
             "Set encoder/sensor zero at current position "
             "(absolute encoder type 3 / inclinometer type 4). Parameter 1 = execute."
         ),
+    },
+    {
+        "name": "SETENCTURN",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "SSI Soft-Turn setzen (0/1) für Bereich >360°. Nur Encoder-Typ 3, sonst NAK NOTSSI. "
+            "Wird mit Position in FRAM gespeichert."
+        ),
+        "help_text_en": (
+            "Set SSI soft-turn (0/1) for range >360°. Encoder type 3 only, else NAK NOTSSI. "
+            "Stored with position in FRAM."
+        ),
+    },
+    {
+        "name": "GETENCTURN",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "SSI Soft-Turn lesen (0/1). Nur Encoder-Typ 3, sonst NAK NOTSSI.",
+        "help_text_en": "Read SSI soft-turn (0/1). Encoder type 3 only, else NAK NOTSSI.",
     },
     # Controller-Oberfläche (HW-Display / Tasten)
     {

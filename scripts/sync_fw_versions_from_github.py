@@ -92,23 +92,23 @@ def sync(*, check_only: bool, force: bool, timeout_s: float) -> int:
             org=APP_GITHUB_ORG, repo=repo, timeout_s=timeout_s
         )
         if not tag:
-            print(f"  {const}: {loc}  ← {repo}: kein Release (offline/Fehler)")
+            print(f"  {const}: {loc}  <- {repo}: kein Release (offline/Fehler)")
             continue
         rem = normalize_version(tag)
         if not rem:
-            print(f"  {const}: {loc}  ← {repo}: Tag unlesbar ({tag!r})")
+            print(f"  {const}: {loc}  <- {repo}: Tag unlesbar ({tag!r})")
             continue
         if rem == loc:
             print(f"  {const}: {loc}  = {repo}@{tag} (aktuell)")
             continue
         if force or _remote_newer(rem, loc):
-            print(f"  {const}: {loc}  → {rem}  ({repo}@{tag})")
+            print(f"  {const}: {loc}  -> {rem}  ({repo}@{tag})")
             updates[const] = rem
             if _remote_newer(rem, loc):
                 stale.append(const)
         else:
             print(
-                f"  {const}: {loc}  > {rem}  ({repo}@{tag}) — lokal neuer, unverändert"
+                f"  {const}: {loc}  > {rem}  ({repo}@{tag}) - lokal neuer, unveraendert"
             )
 
     if check_only:

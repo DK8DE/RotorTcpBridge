@@ -98,10 +98,11 @@ _BLOCK1_DEFS = [
 # Block 2
 _BLOCK2_DEFS = [
     ("cmd.label_end_switches", "SETENDSTC", "GETENDSTC"),
+    ("cmd.label_end_inv", "SETENDINV", "GETENDINV"),
     ("cmd.label_home_return", "SETHOMERETURN", "GETHOMRETURN"),
     ("cmd.label_homing_pwm", "SETHOMEPWM", "GETHOMEPWM"),
     ("cmd.label_homing_seek_pwm", "SETHOMESEEKPPWM", "GETHOMESEEKPPWM"),
-    ("cmd.label_homing_backoff_angle", "SETHOMEBACKOFF", "GETHOMEBACKOFF"),
+    ("cmd.label_homing_backoff_pwm", "SETHOMEBACKOFF", "GETHOMEBACKOFF"),
     ("cmd.label_home_bl_scale", "SETHOMEBLSCALE", "GETHOMEBLSCALE"),
     ("cmd.label_min_pwm", "SETMINPWM", "GETMINPWM"),
     ("cmd.label_dgcal", "SETDGCAL", "GETDGCAL"),
@@ -139,11 +140,12 @@ _PARAM_SPEC = {
     "SETPOSTIMEOUT": (1, 600, "s", False, True),
     "SETHOMETIMEOUT": (1, 600, "s", False, True),
     "SETENDSTC": (0, 2, "", False, False),
+    "SETENDINV": (0, 1, "", False, False),
     "SETHOMERETURN": (0, 1, "", False, False),
     "SETHOMEPWM": (0, 100, "%", False, False),
     "SETHOMESEEKPPWM": (0, 100, "%", False, False),
-    # Homing Rückzug Winkel (Grad). Empfehlung laut Help: 10..60.
-    "SETHOMEBACKOFF": (0, 360, "°", False, False),
+    # Homing: PWM (%) zum Herausfahren aus dem Endschalter.
+    "SETHOMEBACKOFF": (0, 100, "%", False, False),
     "SETHOMEBLSCALE": (0, 1, "0…1", False, False),
     "SETHOMEPOS": (0, 720, "°", False, False),
     "SETMINPWM": (15, 100, "%", False, False),
@@ -164,6 +166,7 @@ _INTEGER_PERCENT_SET_CMDS = frozenset(
     {
         "SETHOMEPWM",
         "SETHOMESEEKPPWM",
+        "SETHOMEBACKOFF",
         "SETMINPWM",
         "SETCALPWM1",
         "SETCALPWM2",
@@ -181,7 +184,7 @@ _FLOAT_PREC2_SET_CMDS = frozenset({"SETARRTOL"})
 # Spezielle Steuerelemente statt freier Zahleneingabe
 _PARAM_COMBO_SET_CMDS = frozenset({"SETROTORTYPE", "SETENCTYPE", "SETENDSTC"})
 _PARAM_CHECK_SET_CMDS = frozenset(
-    {"SETWINDENABLE", "SETSWAPTEMP", "SETHOMERETURN", "SETWLAN"}
+    {"SETWINDENABLE", "SETSWAPTEMP", "SETHOMERETURN", "SETWLAN", "SETENDINV"}
 )
 
 # Dropdown-Optionen: (Wert, i18n-Key)
@@ -327,7 +330,7 @@ class CommandButtonsWindow(QDialog):
         self.setWindowTitle(t("cmd.title"))
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setFixedSize(730, 798)
+        self.setFixedSize(830, 798)
 
         self._backup_state: Optional[dict] = None
         self._restore_state: Optional[dict] = None
@@ -477,6 +480,7 @@ class CommandButtonsWindow(QDialog):
         for row, (label, set_cmd, get_cmd) in enumerate(_BLOCK1()):
             ed, btn = self._add_param_row_to_grid(gl1, row, label, set_cmd, get_cmd)
             self._param_rows[get_cmd] = (ed, btn)
+        self._fit_param_grid_input_column(gl1)
         blocks_h.addWidget(gb1, 1)
 
         gb2 = QGroupBox(t("cmd.group_homing"))
@@ -492,6 +496,7 @@ class CommandButtonsWindow(QDialog):
         for row, (label, set_cmd, get_cmd) in enumerate(_BLOCK2()):
             ed, btn = self._add_param_row_to_grid(gl2, row, label, set_cmd, get_cmd)
             self._param_rows[get_cmd] = (ed, btn)
+        self._fit_param_grid_input_column(gl2)
         gb2_layout.addLayout(gl2)
 
         # (CAL Buttons entfernt – nicht mehr gewünscht)
@@ -877,6 +882,23 @@ class CommandButtonsWindow(QDialog):
         range_line = f"{t('catalog.range')}: {int(min_ma)} .. {int(max_ma)} mA"
         return "\n".join([set_cmd, help_line, note_line, range_line])
 
+    @staticmethod
+    def _fit_param_grid_input_column(grid: QGridLayout) -> None:
+        """Spalte 1 mindestens so breit wie das breiteste Eingabefeld/Combo."""
+        widest = _PARAM_EDIT_WIDTH
+        for r in range(grid.rowCount()):
+            item = grid.itemAtPosition(r, 1)
+            w = item.widget() if item is not None else None
+            if w is None:
+                continue
+            widest = max(widest, int(w.sizeHint().width()), int(w.minimumWidth()))
+            # Combos liegen in einem Wrap-Widget — innere Breite berücksichtigen
+            for child in w.findChildren(QComboBox):
+                widest = max(widest, int(child.width()), int(child.minimumWidth()))
+            for child in w.findChildren(QCheckBox):
+                widest = max(widest, int(child.width()), int(child.minimumWidth()))
+        grid.setColumnMinimumWidth(1, _PARAM_EDIT_LEFT_MARGIN + widest)
+
     def _add_param_row_to_grid(
         self, grid: QGridLayout, row: int, label: str, set_cmd: str, get_cmd: str
     ):
@@ -897,18 +919,26 @@ class CommandButtonsWindow(QDialog):
 
         if set_cmd in _PARAM_COMBO_SET_CMDS:
             ed: QWidget = QComboBox()
-            combo_w = _PARAM_COMBO_WIDTH
-            if set_cmd == "SETENDSTC":
-                combo_w = max(combo_w, 110)
-            elif set_cmd == "SETENCTYPE":
-                combo_w = max(combo_w, 120)
-            ed.setFixedWidth(combo_w)
             for val, key in _PARAM_COMBO_OPTIONS.get(set_cmd, ()):
                 ed.addItem(t(key), int(val))
+            # Breite am längsten Eintrag + Platz für Dropdown-Pfeil/Rahmen.
+            fm = ed.fontMetrics()
+            text_w = max(
+                (fm.horizontalAdvance(ed.itemText(i)) for i in range(ed.count())),
+                default=0,
+            )
+            combo_w = max(_PARAM_EDIT_WIDTH, int(text_w) + 36)
+            ed.setFixedWidth(combo_w)
             unit_txt = ""
         elif set_cmd in _PARAM_CHECK_SET_CMDS:
-            ed = QCheckBox(t("cmd.chk_enabled"))
-            ed.setFixedWidth(_PARAM_COMBO_WIDTH)
+            # SETENDINV: aus = aktiv LOW (Default), an = aktiv HIGH
+            chk_key = (
+                "cmd.chk_endinv_high" if set_cmd == "SETENDINV" else "cmd.chk_enabled"
+            )
+            ed = QCheckBox(t(chk_key))
+            ed.setFixedWidth(
+                max(_PARAM_COMBO_WIDTH, 110) if set_cmd == "SETENDINV" else _PARAM_COMBO_WIDTH
+            )
             unit_txt = ""
         else:
             ed = QLineEdit()

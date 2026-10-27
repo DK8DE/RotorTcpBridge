@@ -714,7 +714,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 return False
             if not (
                 bool(getattr(self.az, "ref_status_known", False))
-                or self.abs_encoder_no_homing()
+                or self.abs_encoder_no_homing_for_axis("AZ")
             ):
                 return False
         if self.enable_el:
@@ -724,7 +724,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 return False
             if not (
                 bool(getattr(self.el, "ref_status_known", False))
-                or self.abs_encoder_no_homing()
+                or self.abs_encoder_no_homing_for_axis("EL")
             ):
                 return False
         return True
@@ -870,7 +870,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         return True
 
     def abs_encoder_no_homing(self) -> bool:
-        """Absolut-Sensor ohne Homing: Typ 3 (R&S) oder Typ 4 (Inklinometer)."""
+        """Absolut-Sensor ohne Homing auf AZ: Typ 3 (R&S) oder Typ 4 (Inklinometer).
+
+        Für achsenspezifische Entscheidungen (EL-Inklinometer bei Wind/Typ 1–3 auf AZ)
+        ``abs_encoder_no_homing_for_axis`` verwenden.
+        """
         if not self.encoder_type_known:
             return False
         et = self.encoder_type
@@ -880,6 +884,21 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return int(et) in (3, 4)
         except (TypeError, ValueError):
             return False
+
+    def abs_encoder_no_homing_for_axis(self, axis: str) -> bool:
+        """Absolut-Sensor ohne Homing für die genannte Achse (Typ 3/4 bzw. Inklinometer)."""
+        axis_u = str(axis or "").strip().upper()
+        if axis_u == "EL":
+            try:
+                if bool(getattr(self, "encoder_type_el_known", False)):
+                    return int(getattr(self, "encoder_type_el", -1)) in (3, 4)
+            except (TypeError, ValueError):
+                pass
+            # Dual-IP: Inklinometer typisch auf EL — GETINC* schon erfolgreich.
+            if bool(getattr(self, "_inclinometer_present", False)):
+                return True
+            return False
+        return self.abs_encoder_no_homing()
 
     def inclinometer_connected(self) -> bool:
         """True bei Typ 4 (AZ oder EL) oder wenn GETINC* bereits erfolgreich geantwortet hat."""
@@ -932,9 +951,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
     def homing_button_hidden_for_axis(self, axis: str) -> bool:
         """Homing-Taste ausblenden: Absolut-Encoder oder keine Endanschläge (GETENDSTC=0)."""
-        if self.abs_encoder_no_homing():
+        axis_u = str(axis or "").strip().upper()
+        if self.abs_encoder_no_homing_for_axis(axis_u):
             return True
-        ax = self.az if str(axis or "").strip().lower() == "az" else self.el
+        ax = self.az if axis_u == "AZ" else self.el
         return not self._axis_has_endstops(ax)
 
     def _axis_arrtol_deg(self, axis_state: AxisState) -> float:
@@ -1236,18 +1256,25 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return True
         return False
 
-    def _apply_abs_encoder_referenced(self) -> None:
-        """Absolut-Encoder (Typ 3): als referenziert behandeln, kein GETREF-Polling."""
-        if self.enable_az:
-            self.az.referenced = True
-            self.az.ref_status_known = True
-            self.az.ref_poll_active = False
-            self.az.moving = False
-        if self.enable_el:
-            self.el.referenced = True
-            self.el.ref_status_known = True
-            self.el.ref_poll_active = False
-            self.el.moving = False
+    def _apply_abs_encoder_referenced(self, axis: str | None = None) -> None:
+        """Absolut-Encoder (Typ 3/4): als referenziert behandeln, kein GETREF-Polling."""
+        axes: list[str]
+        if axis is None:
+            axes = []
+            if self.enable_az:
+                axes.append("AZ")
+            if self.enable_el:
+                axes.append("EL")
+        else:
+            axes = [str(axis).strip().upper()]
+        for ax in axes:
+            if not self.abs_encoder_no_homing_for_axis(ax):
+                continue
+            st = self.az if ax == "AZ" else self.el
+            st.referenced = True
+            st.ref_status_known = True
+            st.ref_poll_active = False
+            st.moving = False
 
     def reset_statistics_bins_for_rotor_change(self) -> None:
         """Nach Profil-/Slave-ID-Wechsel: keine GETCAL/LIVE/ACC mehr an die alte ID."""
@@ -2759,16 +2786,18 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         - Wenn ACK_GETREF:0 -> referenced=False (User muss ggf. SETREF drücken)
         - Keine Dauerschleife (kein ref_poll_active), nur ein einmaliger Check.
         """
-        if self.abs_encoder_no_homing():
-            self._apply_abs_encoder_referenced()
-            return
-
         if self.enable_az:
-            # Ohne pending senden (darf Startup nicht blockieren)
-            self._poll_ref(self.slave_az, self.az, "AZ")
+            if self.abs_encoder_no_homing_for_axis("AZ"):
+                self._apply_abs_encoder_referenced("AZ")
+            else:
+                # Ohne pending senden (darf Startup nicht blockieren)
+                self._poll_ref(self.slave_az, self.az, "AZ")
 
         if self.enable_el:
-            self._poll_ref(self.slave_el, self.el, "EL")
+            if self.abs_encoder_no_homing_for_axis("EL"):
+                self._apply_abs_encoder_referenced("EL")
+            else:
+                self._poll_ref(self.slave_el, self.el, "EL")
 
     # -------------------- Kommandos von PstRotator (SPID) --------------------
     def set_pos_from_spid(self, az_d10: int, el_d10: int):
@@ -2860,9 +2889,9 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return
 
         if not self.az.referenced:
-            # Absolut-Encoder (Typ 3): Homing entfällt — referenced darf SETPOSDG nicht blockieren
+            # Absolut-Encoder (Typ 3/4): Homing entfällt — referenced darf SETPOSDG nicht blockieren
             # (z. B. nach Offline-Reset ohne erneutes GETREF-Polling).
-            if self.abs_encoder_no_homing():
+            if self.abs_encoder_no_homing_for_axis("AZ"):
                 self.az.referenced = True
             else:
                 self.log.write("WARN", "AZ SETPOSDG ignoriert: AZ nicht referenziert (Ziel gemerkt)")
@@ -2903,7 +2932,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             return
 
         if not self.el.referenced:
-            if self.abs_encoder_no_homing():
+            if self.abs_encoder_no_homing_for_axis("EL"):
                 self.el.referenced = True
             else:
                 self.log.write("WARN", "EL SETPOSDG ignoriert: EL nicht referenziert (Ziel gemerkt)")
@@ -3242,7 +3271,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
     def acknowledge_fault(self, axis: str) -> None:
         """Fehler an einer Achse quittieren (Fehler-Popup).
 
-        Absolut-Encoder (Typ 3/4): ``SETREF:0`` (nur Quittierung, kein Homing).
+        Absolut-Encoder (Typ 3/4) der *betroffenen Achse*: ``SETREF:0`` (nur Quittierung).
         Encoder Typ 1/2: ``SETREF:1`` (Homing/Quittierung per Homing-Start).
         Ziel ist immer die Slave-Adresse der betroffenen Achse.
         """
@@ -3265,7 +3294,8 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         except Exception:
             return
 
-        start_homing = not self.abs_encoder_no_homing()
+        # EL-Inklinometer bei AZ-Wind: globaler AZ-Typ darf Homing auf EL nicht auslösen.
+        start_homing = not self.abs_encoder_no_homing_for_axis(axis_u)
         param = "1" if start_homing else "0"
         try:
             axis_state.compass_target_d10 = None
@@ -3275,11 +3305,18 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             axis_state.pos_resync_pending = False
         except Exception:
             pass
+        if not start_homing:
+            # Optimistisch löschen — sonst öffnet das Popup erneut, solange error_code noch 16 ist.
+            try:
+                axis_state.error_code = 0
+            except Exception:
+                pass
 
         _start_homing = start_homing
         _axis_state = axis_state
         _ctrl = self
         _axis_label = axis_u
+        _dst = dst
         line = build(self.master_id, dst, "SETREF", param)
 
         def _on_done(tel: Optional[Telegram], err: Optional[str]) -> None:
@@ -3294,6 +3331,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                         _ctrl.on_ref_start_failed(_axis_label)
                     except Exception:
                         pass
+                try:
+                    _ctrl._poll_err(_dst, _axis_state, _axis_label)
+                except Exception:
+                    pass
                 return
             if tel and (tel.cmd.startswith("ACK_SETREF") or tel.cmd.startswith("ACK_REF")):
                 if _start_homing:
@@ -3304,7 +3345,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     _axis_state.ref_poll_active = False
                     _axis_state.moving = False
                     try:
-                        _ctrl._poll_err(dst, _axis_state, _axis_label)
+                        _axis_state.error_code = 0
+                    except Exception:
+                        pass
+                    try:
+                        _ctrl._poll_err(_dst, _axis_state, _axis_label)
                     except Exception:
                         pass
                 return
@@ -3320,6 +3365,10 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                     _ctrl.on_ref_start_failed(_axis_label)
                 except Exception:
                     pass
+            try:
+                _ctrl._poll_err(_dst, _axis_state, _axis_label)
+            except Exception:
+                pass
 
         self._send_hw_request(
             HwRequest(
@@ -3333,11 +3382,9 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
     def reference_all(self, start_homing: bool = True) -> None:
         """Referenziert alle aktiven Rotoren (AZ und/oder EL laut Config)."""
-        if self.abs_encoder_no_homing():
-            return
-        if self.enable_az:
+        if self.enable_az and not self.abs_encoder_no_homing_for_axis("AZ"):
             self.reference_az(start_homing)
-        if self.enable_el:
+        if self.enable_el and not self.abs_encoder_no_homing_for_axis("EL"):
             self.reference_el(start_homing)
 
     def reference_az(self, start_homing: bool = True) -> None:
@@ -3346,7 +3393,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         moving und ref_poll_active werden erst nach erfolgreichem ACK_SETREF gesetzt.
         Bei Timeout oder NAK wird on_ref_start_failed aufgerufen (aus Hintergrundthread!).
         """
-        if self.abs_encoder_no_homing():
+        if self.abs_encoder_no_homing_for_axis("AZ"):
             return
         if start_homing and not self._axis_has_endstops(self.az):
             return
@@ -3412,7 +3459,7 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
         moving und ref_poll_active werden erst nach erfolgreichem ACK_SETREF gesetzt.
         Bei Timeout oder NAK wird on_ref_start_failed aufgerufen (aus Hintergrundthread!).
         """
-        if self.abs_encoder_no_homing():
+        if self.abs_encoder_no_homing_for_axis("EL"):
             return
         if start_homing and not self._axis_has_endstops(self.el):
             return
@@ -3474,9 +3521,9 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
 
     def set_enc_zero(self, axis: str) -> None:
         """SETENCZERO 1 — Absolut-Encoder in der aktuellen Position auf 0 setzen."""
-        if not self.abs_encoder_no_homing():
-            return
         axis_u = str(axis or "").strip().upper()
+        if not self.abs_encoder_no_homing_for_axis(axis_u):
+            return
         if axis_u == "AZ":
             if not self.enable_az:
                 return

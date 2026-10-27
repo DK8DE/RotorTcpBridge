@@ -21,8 +21,8 @@ STEP_DONE = "done"
 
 ROTOR_STEPS = (
     STEP_ENCODER,
-    STEP_DRIVE,
     STEP_ENDSTOPS,
+    STEP_DRIVE,
     STEP_WEATHER,
     STEP_TEMP,
     STEP_CAL,
@@ -113,12 +113,30 @@ def wind_alerts_allowed(enc_type: Optional[int]) -> bool:
     return weather_allowed(enc_type)
 
 
-def jog_allowed(enc_type: Optional[int], endstc: Optional[int]) -> bool:
-    return enc_type in (1, 2) and endstc == 0
+def jog_allowed(enc_type: Optional[int], endstc: Optional[int] = None) -> bool:
+    """Setup-JOG zur Richtungsprüfung: Typ 1–4 (Endschalter-Anzahl egal)."""
+    _ = endstc
+    return enc_type in (1, 2, 3, 4)
+
+
+def enc_inv_allowed(enc_type: Optional[int]) -> bool:
+    """SETENCINV nur Typ 1/2/3 (Typ 4 → NAK ENCTYPE / SETINC*)."""
+    return enc_type in (1, 2, 3)
+
+
+def mot_inv_allowed(enc_type: Optional[int]) -> bool:
+    """SETMOTINV für alle bekannten Encoder-Typen."""
+    return enc_type in (1, 2, 3, 4)
+
+
+def endstat_ui_allowed(endstc: Optional[int]) -> bool:
+    """Live-Endschalter (GETENDSTAT / SETENDSWAP) wenn Anzahl > 0."""
+    return endstc is not None and int(endstc) > 0
 
 
 def cpr_measure_allowed(enc_type: Optional[int], endstc: Optional[int]) -> bool:
-    return jog_allowed(enc_type, endstc)
+    """CPR-Einmessen nur Typ 1/2 ohne Endschalter."""
+    return enc_type in (1, 2) and endstc == 0
 
 
 def homing_setref_allowed(enc_type: Optional[int], endstc: Optional[int]) -> bool:
@@ -137,8 +155,20 @@ def inclinometer_cal_allowed(enc_type: Optional[int]) -> bool:
     return enc_type == 4
 
 
-def antenna_names_allowed(*, enable_az: bool) -> bool:
-    return bool(enable_az)
+def zero_ref_step_allowed(enc_type: Optional[int]) -> bool:
+    """Nullpunkt & Referenz: bei Typ 4 (Inklinometer) nicht nötig — absoluter Sensor."""
+    return enc_type != 4
+
+
+def antenna_names_allowed(
+    *, enable_az: bool, axis_role: Optional[str] = None
+) -> bool:
+    """Antennennamen nur bei AZ-Inbetriebnahme (Werte liegen am AZ-Rotor)."""
+    if not bool(enable_az):
+        return False
+    if axis_role is not None and str(axis_role).strip().lower() != "az":
+        return False
+    return True
 
 
 def endstc_recommendation(enc_type: Optional[int]) -> int:
@@ -180,9 +210,24 @@ def drive_defaults(enc_type: Optional[int], axis: str) -> dict:
         "home_seek_pwm": 60.0,
         "arrtol": arrtol,
         "ramp": None,  # aus GET übernehmen
-        "iwarn": 3000,
-        "imax": 5000,
+        # UI in mA (Bus SETIWARN/SETIMAX in mV, 1 A = 130 mV): ≈300 mV / ≈455 mV
+        "iwarn": 2300,
+        "imax": 3500,
     }
+
+
+# Stromschwellen: UI mA ↔ Rotor mV (wie Settings / Rotor-Konfiguration).
+STROM_MV_PER_A = 130.0
+
+
+def strom_ma_to_mv(ma: float | int) -> int:
+    """Laststrom mA → SETIWARN/SETIMAX-Wert in mV."""
+    return int(round(float(ma) * STROM_MV_PER_A / 1000.0))
+
+
+def strom_mv_to_ma(mv: float | int) -> int:
+    """GETIWARN/GETIMAX mV → Anzeige in mA."""
+    return int(round(float(mv) * 1000.0 / STROM_MV_PER_A))
 
 
 def compute_cpr(count_a: int, count_b: int, degrees: float) -> Optional[int]:
@@ -246,13 +291,16 @@ def step_visible(
     enc_type: Optional[int] = None,
     endstc: Optional[int] = None,
     enable_az: bool = True,
+    axis_role: Optional[str] = None,
 ) -> bool:
     """Ob ein Rotor-Schritt in der aktuellen Konfiguration gezeigt wird."""
     sid = str(step_id or "").strip()
     if sid == STEP_WEATHER:
         return weather_allowed(enc_type)
+    if sid == STEP_ZERO_REF:
+        return zero_ref_step_allowed(enc_type)
     if sid == STEP_ANTENNA:
-        return antenna_names_allowed(enable_az=enable_az)
+        return antenna_names_allowed(enable_az=enable_az, axis_role=axis_role)
     if sid == STEP_ALERTS:
         # Optional, aber immer angeboten (Wind-UI nur bei Typ 1/2).
         return True
@@ -266,11 +314,18 @@ def visible_rotor_steps(
     enc_type: Optional[int] = None,
     endstc: Optional[int] = None,
     enable_az: bool = True,
+    axis_role: Optional[str] = None,
 ) -> list[str]:
     return [
         s
         for s in ROTOR_STEPS
-        if step_visible(s, enc_type=enc_type, endstc=endstc, enable_az=enable_az)
+        if step_visible(
+            s,
+            enc_type=enc_type,
+            endstc=endstc,
+            enable_az=enable_az,
+            axis_role=axis_role,
+        )
     ]
 
 

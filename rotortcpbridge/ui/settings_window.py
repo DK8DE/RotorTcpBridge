@@ -3268,6 +3268,8 @@ class SettingsWindow(QDialog):
 
     def _softap_axis_enabled(self, axis: str) -> bool:
         ax = str(axis or "").strip().lower()
+        if ax == "inc":
+            return self._inclinometer_softap_available()
         try:
             if ax == "az":
                 return bool(self.chk_enable_az.isChecked())
@@ -3281,6 +3283,41 @@ class SettingsWindow(QDialog):
             return bool(getattr(self.ctrl, "enable_el", False))
         return False
 
+    def _inclinometer_softap_available(self) -> bool:
+        """True wenn Encoder-Typ 4 / Inklinometer am Bus (wie Config-Fenster)."""
+        ctrl = self.ctrl
+        if ctrl is None:
+            return False
+        try:
+            if bool(getattr(ctrl, "inclinometer_connected", lambda: False)()):
+                return True
+        except Exception:
+            pass
+        try:
+            if bool(getattr(ctrl, "encoder_type_known", False)) and int(
+                getattr(ctrl, "encoder_type", -1)
+            ) == 4:
+                return True
+        except (TypeError, ValueError):
+            pass
+        try:
+            if bool(getattr(ctrl, "encoder_type_el_known", False)) and int(
+                getattr(ctrl, "encoder_type_el", -1)
+            ) == 4:
+                return True
+        except (TypeError, ValueError):
+            pass
+        # Nach Versionscheck: Zeile „Inklinometer“ sichtbar
+        try:
+            tab = getattr(self, "_update_tab", None)
+            if tab is not None:
+                widgets = getattr(tab, "_ver_row_widgets", {}).get("inc") or []
+                if widgets and bool(widgets[0].isVisible()):
+                    return True
+        except Exception:
+            pass
+        return False
+
     def _sync_update_tab_axes_visibility(self) -> None:
         tab = getattr(self, "_update_tab", None)
         if tab is None or not hasattr(tab, "set_axes_visible"):
@@ -3288,9 +3325,10 @@ class SettingsWindow(QDialog):
         tab.set_axes_visible(
             az_on=self._softap_axis_enabled("az"),
             el_on=self._softap_axis_enabled("el"),
+            inc_on=self._softap_axis_enabled("inc"),
         )
 
-    def _slave_dst_for_softap(self, axis: str) -> int:
+    def _slave_id_for_axis(self, axis: str) -> int:
         ax = str(axis or "").strip().lower()
         try:
             if ax == "el":
@@ -3304,13 +3342,51 @@ class SettingsWindow(QDialog):
                 dst = int(getattr(self.ctrl, "slave_az", 0) or 0)
         return dst if dst > 0 else 0
 
+    def _slave_dst_for_inc_softap(self) -> int:
+        """Slave-ID der Achse mit Inklinometer (Typ 4), sonst EL dann AZ."""
+        ctrl = self.ctrl
+        prefer: str | None = None
+        try:
+            if bool(getattr(ctrl, "encoder_type_el_known", False)) and int(
+                getattr(ctrl, "encoder_type_el", -1)
+            ) == 4:
+                prefer = "el"
+        except (TypeError, ValueError):
+            pass
+        if prefer is None:
+            try:
+                if bool(getattr(ctrl, "encoder_type_known", False)) and int(
+                    getattr(ctrl, "encoder_type", -1)
+                ) == 4:
+                    prefer = "az"
+            except (TypeError, ValueError):
+                pass
+        if prefer is None:
+            try:
+                mw = self.parent()
+                res = getattr(mw, "_firmware_compat_result", None) if mw is not None else None
+                axis = str(getattr(res, "inclinometer_axis", "") or "").strip().upper()
+                if axis in ("AZ", "EL"):
+                    prefer = axis.lower()
+            except Exception:
+                pass
+        if prefer is None:
+            prefer = "el" if self._softap_axis_enabled("el") else "az"
+        return self._slave_id_for_axis(prefer)
+
+    def _slave_dst_for_softap(self, axis: str) -> int:
+        ax = str(axis or "").strip().lower()
+        if ax == "inc":
+            return self._slave_dst_for_inc_softap()
+        return self._slave_id_for_axis(ax)
+
     def _refresh_softap_status(self) -> None:
-        """GETWLAN → LED/Checkbox je sichtbarer Achse im Update-Tab."""
+        """GETWLAN / GETINCWLAN → LED/Checkbox je sichtbarer Zeile im Update-Tab."""
         tab = getattr(self, "_update_tab", None)
         if tab is None:
             return
         self._sync_update_tab_axes_visibility()
-        axes = [a for a in ("az", "el") if self._softap_axis_enabled(a)]
+        axes = [a for a in ("az", "el", "inc") if self._softap_axis_enabled(a)]
         if not axes:
             return
         if not bool(getattr(self.hw, "is_connected", lambda: False)()):
@@ -3328,8 +3404,12 @@ class SettingsWindow(QDialog):
                 tab.set_softap_active(a, False)
                 tab.set_status(a, t("settings.update_status_error"))
                 continue
+            if a == "inc":
+                get_cmd, ack = "GETINCWLAN", "ACK_GETINCWLAN"
+            else:
+                get_cmd, ack = "GETWLAN", "ACK_GETWLAN"
             r = self.ctrl.sync_ui_command_response(
-                dst, "GETWLAN", "0", "ACK_GETWLAN", timeout_s=1.2
+                dst, get_cmd, "0", ack, timeout_s=1.2
             )
             if not _sync_got_ack_value(r):
                 tab.set_softap_active(a, False)
@@ -3346,12 +3426,12 @@ class SettingsWindow(QDialog):
             )
 
     def _on_softap_toggled(self, axis: str, want_on: bool) -> None:
-        """SETWLAN:1/0 am AZ- oder EL-Slave; SoftAP ist nicht persistent."""
+        """SETWLAN bzw. SETINCWLAN: SoftAP ist nicht persistent."""
         tab = getattr(self, "_update_tab", None)
         if tab is None:
             return
         ax = str(axis or "").strip().lower()
-        if ax not in ("az", "el") or not self._softap_axis_enabled(ax):
+        if ax not in ("az", "el", "inc") or not self._softap_axis_enabled(ax):
             return
         if not bool(getattr(self.hw, "is_connected", lambda: False)()):
             tab.set_softap_active(ax, False)
@@ -3366,11 +3446,15 @@ class SettingsWindow(QDialog):
             return
         tab.set_status(ax, t("settings.update_status_saving"))
         QApplication.processEvents()
+        if ax == "inc":
+            set_cmd, ack = "SETINCWLAN", "ACK_SETINCWLAN"
+        else:
+            set_cmd, ack = "SETWLAN", "ACK_SETWLAN"
         r = self.ctrl.sync_ui_command_response(
             dst,
-            "SETWLAN",
+            set_cmd,
             "1" if want_on else "0",
-            "ACK_SETWLAN",
+            ack,
             timeout_s=2.0,
         )
         if not _sync_got_ack_value(r):
@@ -5756,6 +5840,10 @@ class SettingsWindow(QDialog):
         self._update_enc_zero_button_ui()
         self._update_az_overlap_checkboxes_ui()
         self._update_weather_tab_visibility()
+        try:
+            self._sync_update_tab_axes_visibility()
+        except Exception:
+            pass
 
     def _update_az_overlap_checkboxes_ui(self, *_args) -> None:
         """Kürzerer Weg / 0…360-Ausgabe bei MAXDG > 360° (Encoder Typ 1/2/3); Ausgabe nur mit kürzerem Weg.

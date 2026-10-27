@@ -1152,16 +1152,16 @@ SPECS_DATA: list[dict] = [
         "max_value": 100.0,
         "decimals": 0,
         "step": 1.0,
-        "default": 22.0,
-        "help_text": "Homing: Rückzug (Grad) setzen. Wie weit nach Endschalter wegfahren. Empf.: 10..60.",
-        "help_text_en": "Homing: set backoff (degrees). How far to move after limit switch. Rec.: 10..60.",
+        "default": 30.0,
+        "help_text": "Homing: PWM (%) zum Herausfahren aus dem Endschalter. Mit dieser PWM verlässt der Motor den Endschalter.",
+        "help_text_en": "Homing: PWM (%) for leaving the limit switch. Motor backs out of the switch at this PWM.",
     },
     {
         "name": "GETHOMEBACKOFF",
         "kind": "none",
         "params_literal": "0",
-        "help_text": "Homing: Rückzug (Grad) lesen. Wie weit nach Endschalter wegfahren.",
-        "help_text_en": "Homing: read backoff (degrees). How far to move after limit switch.",
+        "help_text": "Homing: PWM (%) zum Herausfahren aus dem Endschalter lesen.",
+        "help_text_en": "Homing: read PWM (%) used to leave the limit switch.",
     },
     {
         "name": "SETHOMEBLSCALE",
@@ -1924,6 +1924,119 @@ SPECS_DATA: list[dict] = [
         "help_text_en": (
             "Read number of end switches. 0 = none, 1 = one end switch, "
             "2 = two end switches."
+        ),
+    },
+    {
+        "name": "SETENCINV",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Encoder-Auswertung invertieren (0/1). Nur Encoder-Typ 1/2/3; "
+            "bei Typ 4 → NAK ENCTYPE (dort SETINCINVROT / SETINCINVSEN etc.)."
+        ),
+        "help_text_en": (
+            "Invert encoder evaluation (0/1). Encoder types 1/2/3 only; "
+            "type 4 → NAK ENCTYPE (use SETINCINVROT / SETINCINVSEN etc.)."
+        ),
+    },
+    {
+        "name": "GETENCINV",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Encoder-Invertierung lesen (0/1). Nur Typ 1/2/3; Typ 4 → NAK ENCTYPE."
+        ),
+        "help_text_en": (
+            "Read encoder invert (0/1). Types 1/2/3 only; type 4 → NAK ENCTYPE."
+        ),
+    },
+    {
+        "name": "SETMOTINV",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Motor-PWM-Polarität invertieren (0/1). Gilt für alle Encoder-Typen."
+        ),
+        "help_text_en": (
+            "Invert motor PWM polarity (0/1). Applies to all encoder types."
+        ),
+    },
+    {
+        "name": "GETMOTINV",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Motor-PWM-Invertierung lesen (0/1). Alle Encoder-Typen.",
+        "help_text_en": "Read motor PWM invert (0/1). All encoder types.",
+    },
+    {
+        "name": "SETENDSWAP",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Endschalter logisch L↔R tauschen (0 = normal, 1 = getauscht)."
+        ),
+        "help_text_en": (
+            "Swap end switches logically L↔R (0 = normal, 1 = swapped)."
+        ),
+    },
+    {
+        "name": "GETENDSWAP",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": "Endschalter-Tausch lesen (0 = normal, 1 = L↔R getauscht).",
+        "help_text_en": "Read end-switch swap (0 = normal, 1 = L↔R swapped).",
+    },
+    {
+        "name": "SETENDINV",
+        "kind": "int",
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "decimals": 0,
+        "step": 1.0,
+        "default": 0.0,
+        "help_text": (
+            "Endschalter-Pegel: 0 = aktiv LOW (Default, gedrückt = LOW), "
+            "1 = aktiv HIGH (gedrückt = HIGH)."
+        ),
+        "help_text_en": (
+            "End-switch polarity: 0 = active LOW (default, pressed = LOW), "
+            "1 = active HIGH (pressed = HIGH)."
+        ),
+    },
+    {
+        "name": "GETENDINV",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Endschalter-Pegel lesen: 0 = aktiv LOW, 1 = aktiv HIGH."
+        ),
+        "help_text_en": (
+            "Read end-switch polarity: 0 = active LOW, 1 = active HIGH."
+        ),
+    },
+    {
+        "name": "GETENDSTAT",
+        "kind": "none",
+        "params_literal": "0",
+        "help_text": (
+            "Live-Endschalterstatus lesen: L;R als 0/1 (nach Swap logisch). "
+            "1 = gedrückt."
+        ),
+        "help_text_en": (
+            "Read live end-switch status: L;R as 0/1 (logical after swap). "
+            "1 = pressed."
         ),
     },
     # --- Inklinometer (nur SETENCTYPE:4; Proxy Rotor → Sensor) ---

@@ -52,8 +52,8 @@ class UpdateTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._block_toggle: dict[str, bool] = {"az": False, "el": False}
-        self._axis_visible = {"az": True, "el": False}
+        self._block_toggle: dict[str, bool] = {"az": False, "el": False, "inc": False}
+        self._axis_visible = {"az": True, "el": False, "inc": False}
         self._ver_value_lbls: dict[str, QLabel] = {}
         self._ver_online_lbls: dict[str, QLabel] = {}
         self._ver_status_lbls: dict[str, QLabel] = {}
@@ -187,31 +187,50 @@ class UpdateTab(QWidget):
         self._chks: dict[str, QCheckBox] = {}
         self._status_lbls: dict[str, QLabel] = {}
 
-        for axis, enable_key, tip_key in (
-            ("az", "settings.update_softap_enable_az", "settings.update_softap_enable_az_tooltip"),
-            ("el", "settings.update_softap_enable_el", "settings.update_softap_enable_el_tooltip"),
+        # Eine Grid-Tabelle: LED | Checkbox | Status — gleiche Spalten für AZ/EL/Inc
+        softap_grid_w = QWidget(self)
+        softap_grid = QGridLayout(softap_grid_w)
+        softap_grid.setContentsMargins(0, 0, 0, 0)
+        softap_grid.setHorizontalSpacing(px_to_dip(self, 8))
+        softap_grid.setVerticalSpacing(px_to_dip(self, 6))
+        softap_grid.setColumnStretch(1, 1)
+        softap_grid.setColumnStretch(2, 0)
+
+        for row_i, (axis, enable_key, tip_key) in enumerate(
+            (
+                ("az", "settings.update_softap_enable_az", "settings.update_softap_enable_az_tooltip"),
+                ("el", "settings.update_softap_enable_el", "settings.update_softap_enable_el_tooltip"),
+                ("inc", "settings.update_softap_enable_inc", "settings.update_softap_enable_inc_tooltip"),
+            )
         ):
-            row_w = QWidget(self)
-            row = QHBoxLayout(row_w)
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(px_to_dip(self, 8))
             led = Led(led_d, self)
-            led.setToolTip(tt("settings.update_softap_led_tooltip"))
+            tip_led = (
+                "settings.update_softap_led_inc_tooltip"
+                if axis == "inc"
+                else "settings.update_softap_led_tooltip"
+            )
+            led.setToolTip(tt(tip_led))
             led.set_state(False)
-            row.addWidget(led, 0, Qt.AlignmentFlag.AlignVCenter)
             chk = QCheckBox(t(enable_key))
             chk.setToolTip(tt(tip_key))
             chk.toggled.connect(lambda checked, a=axis: self._on_chk_toggled(a, checked))
-            row.addWidget(chk, 0, Qt.AlignmentFlag.AlignVCenter)
-            row.addStretch(1)
             status = QLabel("")
-            status.setWordWrap(True)
-            row.addWidget(status, 1)
-            vl.addWidget(row_w)
-            self._axis_rows[axis] = row_w
+            status.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            status.setMinimumWidth(px_to_dip(self, 140))
+            softap_grid.addWidget(led, row_i, 0, Qt.AlignmentFlag.AlignVCenter)
+            softap_grid.addWidget(chk, row_i, 1, Qt.AlignmentFlag.AlignVCenter)
+            softap_grid.addWidget(status, row_i, 2, Qt.AlignmentFlag.AlignVCenter)
+            # Sichtbarkeit: ganze Zeile über LED/Chk/Status (kein Row-Widget)
+            self._axis_rows[axis] = (led, chk, status)
             self._leds[axis] = led
             self._chks[axis] = chk
             self._status_lbls[axis] = status
+            if axis == "inc":
+                for w in (led, chk, status):
+                    w.setVisible(False)
+        vl.addWidget(softap_grid_w)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(px_to_dip(self, 8))
@@ -226,6 +245,11 @@ class UpdateTab(QWidget):
         self._lbl_details = QLabel(t("settings.update_softap_details"))
         self._lbl_details.setWordWrap(True)
         vl.addWidget(self._lbl_details)
+
+        self._lbl_inc_details = QLabel(t("settings.update_softap_inc_details"))
+        self._lbl_inc_details.setWordWrap(True)
+        self._lbl_inc_details.setVisible(False)
+        vl.addWidget(self._lbl_inc_details)
 
         self._lbl_both_hint = QLabel(t("settings.update_softap_both_hint"))
         self._lbl_both_hint.setWordWrap(True)
@@ -245,7 +269,7 @@ class UpdateTab(QWidget):
         root.addWidget(self._gb_softap)
         root.addStretch(1)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-        self.set_axes_visible(az_on=True, el_on=False)
+        self.set_axes_visible(az_on=True, el_on=False, inc_on=False)
 
     def set_version_row(
         self,
@@ -288,21 +312,31 @@ class UpdateTab(QWidget):
             return
         self.softap_toggled.emit(str(axis), bool(checked))
 
-    def set_axes_visible(self, *, az_on: bool, el_on: bool) -> None:
-        """Zeilen nur für aktivierte Achsen anzeigen."""
+    def set_axes_visible(
+        self, *, az_on: bool, el_on: bool, inc_on: bool | None = None
+    ) -> None:
+        """Zeilen nur für aktivierte Achsen / vorhandenes Inklinometer anzeigen."""
         self._axis_visible["az"] = bool(az_on)
         self._axis_visible["el"] = bool(el_on)
-        for axis, row in self._axis_rows.items():
-            row.setVisible(bool(self._axis_visible.get(axis)))
+        if inc_on is not None:
+            self._axis_visible["inc"] = bool(inc_on)
+        for axis, cells in self._axis_rows.items():
+            show = bool(self._axis_visible.get(axis))
+            if isinstance(cells, (tuple, list)):
+                for w in cells:
+                    w.setVisible(show)
+            else:
+                cells.setVisible(show)
         both = bool(az_on) and bool(el_on)
         self._lbl_both_hint.setVisible(both)
+        self._lbl_inc_details.setVisible(bool(self._axis_visible.get("inc")))
         for w in self._ver_row_widgets.get("az", []):
             w.setVisible(bool(az_on))
         for w in self._ver_row_widgets.get("el", []):
             w.setVisible(bool(el_on))
 
     def set_softap_active(self, axis: str, active: bool | None) -> None:
-        """LED + Checkbox einer Achse an SoftAP-Status anpassen (ohne Signal)."""
+        """LED + Checkbox einer Achse/Inklinometer an SoftAP-Status anpassen (ohne Signal)."""
         ax = str(axis or "").strip().lower()
         if ax not in self._chks:
             return
@@ -327,11 +361,15 @@ class UpdateTab(QWidget):
         self._chks["az"].setToolTip(tt("settings.update_softap_enable_az_tooltip"))
         self._chks["el"].setText(t("settings.update_softap_enable_el"))
         self._chks["el"].setToolTip(tt("settings.update_softap_enable_el_tooltip"))
-        for led in self._leds.values():
-            led.setToolTip(tt("settings.update_softap_led_tooltip"))
+        self._chks["inc"].setText(t("settings.update_softap_enable_inc"))
+        self._chks["inc"].setToolTip(tt("settings.update_softap_enable_inc_tooltip"))
+        self._leds["az"].setToolTip(tt("settings.update_softap_led_tooltip"))
+        self._leds["el"].setToolTip(tt("settings.update_softap_led_tooltip"))
+        self._leds["inc"].setToolTip(tt("settings.update_softap_led_inc_tooltip"))
         self.btn_refresh.setText(t("settings.update_btn_refresh"))
         self.btn_refresh.setToolTip(tt("settings.update_btn_refresh_tooltip"))
         self._lbl_details.setText(t("settings.update_softap_details"))
+        self._lbl_inc_details.setText(t("settings.update_softap_inc_details"))
         self._lbl_both_hint.setText(t("settings.update_softap_both_hint"))
         self._lbl_reboot_hint.setText(t("settings.update_reboot_hint"))
         self.btn_open.setText(t("settings.update_btn_open_webflasher"))

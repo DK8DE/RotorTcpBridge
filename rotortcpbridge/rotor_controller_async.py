@@ -831,9 +831,9 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         axis_state.ref_status_known = True
                     except Exception:
                         pass
-                    # Absolut-Encoder (Typ 3): GETREF ist irrelevant — nicht auf 0 zurückfallen.
+                    # Absolut-Encoder (Typ 3/4): GETREF ist irrelevant — nicht auf 0 zurückfallen.
                     try:
-                        if self.abs_encoder_no_homing():
+                        if self.abs_encoder_no_homing_for_axis(axis_name):
                             axis_state.referenced = True
                             axis_state.ref_poll_active = False
                             return
@@ -999,6 +999,11 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                         if axis_name == "EL":
                             self.encoder_type_el = new_type
                             self.encoder_type_el_known = True
+                            if new_type in (3, 4):
+                                try:
+                                    self._apply_abs_encoder_referenced("EL")
+                                except Exception:
+                                    pass
                             if new_type == 4:
                                 try:
                                     self._note_inclinometer_present()
@@ -1020,7 +1025,7 @@ class RotorControllerAsyncMixin(_RotorPollingHost):
                             pass
                         if new_type in (3, 4):
                             try:
-                                self._apply_abs_encoder_referenced()
+                                self._apply_abs_encoder_referenced("AZ")
                             except Exception:
                                 pass
                             try:

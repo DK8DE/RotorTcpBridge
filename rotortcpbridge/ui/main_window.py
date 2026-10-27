@@ -1228,6 +1228,9 @@ class MainWindow(QMainWindow):
             return False
         if action in az_motion_actions:
             try:
+                fn = getattr(self.ctrl, "abs_encoder_no_homing_for_axis", None)
+                if callable(fn) and bool(fn("AZ")):
+                    return bool(getattr(self.ctrl, "enable_az", True))
                 if bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)()):
                     return bool(getattr(self.ctrl, "enable_az", True))
                 return bool(getattr(self.ctrl.az, "referenced", False))
@@ -1236,6 +1239,9 @@ class MainWindow(QMainWindow):
         try:
             if not bool(getattr(self.ctrl, "enable_el", False)):
                 return False
+            fn = getattr(self.ctrl, "abs_encoder_no_homing_for_axis", None)
+            if callable(fn) and bool(fn("EL")):
+                return True
             return bool(getattr(self.ctrl.el, "referenced", False))
         except Exception:
             return False
@@ -4645,28 +4651,24 @@ class MainWindow(QMainWindow):
         if result.rotor_ok:
             return
 
+        # Nur echte Mismatches: Version wurde gelesen und ist zu alt.
+        # Offline / nicht lesbar → kein Dialog „Firmware passt nicht“.
         detail_lines: list[str] = []
         for ax in result.rotor_axes:
-            if ax.offline or ax.ok:
+            if ax.offline or ax.ok or ax.query_failed or not ax.found:
                 continue
-            if ax.query_failed or not ax.found:
-                detail_lines.append(
-                    t(
-                        "fw.rotor_mismatch_axis_offline",
-                        axis=ax.axis,
-                        expected=ax.expected,
-                    )
+            detail_lines.append(
+                t(
+                    "fw.rotor_mismatch_axis_line",
+                    axis=ax.axis,
+                    found=ax.found,
+                    expected=ax.expected,
                 )
-            else:
-                detail_lines.append(
-                    t(
-                        "fw.rotor_mismatch_axis_line",
-                        axis=ax.axis,
-                        found=ax.found,
-                        expected=ax.expected,
-                    )
-                )
+            )
         if not detail_lines and not info_parts:
+            return
+        if not detail_lines:
+            # Nur optionale Info (Controller/Inklinometer/WLAN) — kein Rotor-Mismatch-Dialog.
             return
         if info_parts:
             detail_lines.extend(info_parts)
@@ -4859,8 +4861,7 @@ class MainWindow(QMainWindow):
         self._update_homing_buttons_visibility()
         self._update_encoder_dependent_settings_ui()
         try:
-            if bool(getattr(self.ctrl, "abs_encoder_no_homing", lambda: False)()):
-                self.ctrl._apply_abs_encoder_referenced()
+            self.ctrl._apply_abs_encoder_referenced()
         except Exception:
             pass
 
@@ -4885,14 +4886,20 @@ class MainWindow(QMainWindow):
         return (abs_hide, hide_az, hide_el)
 
     def _update_homing_buttons_visibility(self) -> None:
-        abs_hide, _hide_az, _hide_el = self._homing_visibility_key()
+        _abs_hide, hide_az, hide_el = self._homing_visibility_key()
         # Main-GUI: keine Homing-Taste; Home-Status-LED nur bei Absolut-Encoder aus.
-        for fields in (getattr(self, "az_fields", None), getattr(self, "el_fields", None)):
-            if fields is not None:
-                try:
-                    update_axis_homing_visibility(fields, abs_hide)
-                except Exception:
-                    pass
+        az_fields = getattr(self, "az_fields", None)
+        if az_fields is not None:
+            try:
+                update_axis_homing_visibility(az_fields, hide_az)
+            except Exception:
+                pass
+        el_fields = getattr(self, "el_fields", None)
+        if el_fields is not None:
+            try:
+                update_axis_homing_visibility(el_fields, hide_el)
+            except Exception:
+                pass
         cw = getattr(self, "_compass_win", None)
         if cw is not None and hasattr(cw, "update_homing_buttons_visibility"):
             try:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Optional
 
 from PySide6.QtCore import Qt, QEvent, QTimer, Signal, Slot
@@ -36,6 +37,21 @@ _UNIT_W = 36
 _TIMEOUT_S = 1.5
 _LIVE_DG_MS = 200
 _LIVE_DG_TIMEOUT_S = 0.6
+
+# Katalog-Hilfetexte wiederholen „nur Typ 4“ — im dedizierten Fenster überflüssig.
+_TYPE4_TIP_RE = re.compile(
+    r"\s*(?:Nur bei Encoder-Typ 4|Only with encoder type 4)\.?",
+    re.IGNORECASE,
+)
+
+
+def _tip_for_inc_window(tip: str) -> str:
+    """Tooltip für dieses Fenster: Typ-4-Hinweis entfernen (Fenster gilt nur dafür)."""
+    s = _TYPE4_TIP_RE.sub("", str(tip or ""))
+    # Doppelte Leerzeichen / leere Zeilen nach dem Strip bereinigen
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
 
 # (label_key, set_cmd, get_cmd, kind)
 # kind: "bool" | "mount" | "dec" | "fs1g" | "float" | "int" | "ro" | "clear0"
@@ -213,6 +229,7 @@ class InclinometerConfigWindow(QDialog):
         tip_cmd = set_cmd or get_cmd
         spec = self._spec_by_name.get(tip_cmd) or self._spec_by_name.get(get_cmd)
         tip = format_cmd_tooltip(spec) if spec is not None else tip_cmd
+        tip = _tip_for_inc_window(tip)
         if tip:
             lab.setToolTip(format_tooltip(tip))
 

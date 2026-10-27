@@ -183,16 +183,29 @@ def run_compat_check(ctrl: Any, cfg: Optional[dict] = None) -> CompatCheckResult
             return
         raw = _sync_get(ctrl, dst, "GETVERSION", "ACK_GETVERSION")
         found = normalize_version(raw) if raw else None
+        # Keine lesbare Version = Achse für den Check nicht erreichbar —
+        # kein „Firmware passt nicht“ (nur echte gelesene, zu alte Stände).
+        if not found:
+            rotor_results.append(
+                AxisVersionResult(
+                    axis=axis,
+                    expected=ROTOR_FW_VERSION,
+                    found=None,
+                    ok=True,
+                    offline=True,
+                    query_failed=True,
+                )
+            )
+            return
         # Neuere Rotor-FW als Pin ist OK — Hinweis nur wenn älter.
-        # Online aber keine lesbare Version → wie „passt nicht“ behandeln.
-        ok = bool(found) and version_at_least(found, ROTOR_FW_VERSION)
+        ok = version_at_least(found, ROTOR_FW_VERSION)
         rotor_results.append(
             AxisVersionResult(
                 axis=axis,
                 expected=ROTOR_FW_VERSION,
                 found=found,
                 ok=ok,
-                query_failed=raw is None,
+                query_failed=False,
             )
         )
 

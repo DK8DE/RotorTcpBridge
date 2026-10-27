@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -77,6 +78,8 @@ from ..rotor_setup_steps import (
     STEP_ZERO_REF,
     cpr_for_range,
     drive_defaults,
+    enc_inv_allowed,
+    endstat_ui_allowed,
     endstc_choices,
     endstc_recommendation,
     homing_setref_allowed,
@@ -84,11 +87,16 @@ from ..rotor_setup_steps import (
     jog_allowed,
     manual_setref_allowed,
     max_dg_for_rotor_type,
+    mot_inv_allowed,
     parse_encoder_type,
     parse_endstc,
     setenczero_primary,
+    antenna_names_allowed,
+    strom_ma_to_mv,
+    strom_mv_to_ma,
     weather_allowed,
     wind_alerts_allowed,
+    zero_ref_step_allowed,
 )
 
 
@@ -1340,21 +1348,25 @@ class DrivePage(QWizardPage, _CmdMixin):
         self.sp_iwarn = QSpinBox()
         self.sp_iwarn.setRange(100, 10000)
         self.sp_iwarn.setSuffix(" mA")
+        self.sp_iwarn.setToolTip(tt("settings.strom_iwarn_tooltip"))
         form.addRow(t("setup.drive_iwarn"), self.sp_iwarn)
         self.sp_imax = QSpinBox()
         self.sp_imax.setRange(100, 10000)
         self.sp_imax.setSuffix(" mA")
+        self.sp_imax.setToolTip(tt("settings.strom_imax_tooltip"))
         form.addRow(t("setup.drive_imax"), self.sp_imax)
         self.sp_homepwm = QDoubleSpinBox()
         self.sp_homepwm.setRange(0, 100)
         self.sp_homepwm.setDecimals(0)
         self.sp_homepwm.setSuffix(" %")
-        form.addRow(t("setup.drive_homepwm"), self.sp_homepwm)
+        self._lbl_homepwm = QLabel(t("setup.drive_homepwm"))
+        form.addRow(self._lbl_homepwm, self.sp_homepwm)
         self.sp_seek = QDoubleSpinBox()
         self.sp_seek.setRange(0, 100)
         self.sp_seek.setDecimals(0)
         self.sp_seek.setSuffix(" %")
-        form.addRow(t("setup.drive_seekpwm"), self.sp_seek)
+        self._lbl_seek = QLabel(t("setup.drive_seekpwm"))
+        form.addRow(self._lbl_seek, self.sp_seek)
         self.sp_ramp = QDoubleSpinBox()
         self.sp_ramp.setRange(0, 60)
         self.sp_ramp.setDecimals(1)
@@ -1364,10 +1376,10 @@ class DrivePage(QWizardPage, _CmdMixin):
         self.sp_arrtol.setDecimals(2)
         self.sp_arrtol.setSuffix(" °")
         form.addRow(t("setup.drive_arrtol"), self.sp_arrtol)
-        tip = QLabel(t("setup.drive_hint"))
-        tip.setWordWrap(True)
-        tip.setStyleSheet("color: gray;")
-        form.addRow(tip)
+        self.lbl_drive_hint = QLabel(t("setup.drive_hint"))
+        self.lbl_drive_hint.setWordWrap(True)
+        self.lbl_drive_hint.setStyleSheet("color: gray;")
+        form.addRow(self.lbl_drive_hint)
         self.lbl = QLabel("")
         form.addRow(self.lbl)
         btn = QPushButton(t("setup.btn_set_and_verify"))
@@ -1384,9 +1396,22 @@ class DrivePage(QWizardPage, _CmdMixin):
         self.cb_rtype.currentIndexChanged.connect(self._on_rtype_changed)
 
     def initializePage(self) -> None:
+        self._refresh_homing_visibility()
+        self.lbl_drive_hint.setText(t("setup.drive_hint"))
         self._apply_defaults_to_ui()
         self._ok = False
         self._read_from_rotor()
+
+    def _homing_fields_visible(self) -> bool:
+        """Homing-PWM nur bei Encoder 1–3 sinnvoll (nicht Inklinometer Typ 4)."""
+        return int(self.wiz.enc_type or 0) != 4
+
+    def _refresh_homing_visibility(self) -> None:
+        show = self._homing_fields_visible()
+        self.sp_homepwm.setVisible(show)
+        self._lbl_homepwm.setVisible(show)
+        self.sp_seek.setVisible(show)
+        self._lbl_seek.setVisible(show)
 
     def _apply_defaults_to_ui(self) -> None:
         d = drive_defaults(self.wiz.enc_type, self.wiz.axis_role)
@@ -1434,9 +1459,10 @@ class DrivePage(QWizardPage, _CmdMixin):
             if vals.get("ramp") is not None:
                 self.sp_ramp.setValue(float(vals["ramp"]))
             if vals.get("iwarn") is not None:
-                self.sp_iwarn.setValue(int(vals["iwarn"]))
+                # Bus liefert mV → Anzeige mA
+                self.sp_iwarn.setValue(strom_mv_to_ma(int(vals["iwarn"])))
             if vals.get("imax") is not None:
-                self.sp_imax.setValue(int(vals["imax"]))
+                self.sp_imax.setValue(strom_mv_to_ma(int(vals["imax"])))
         finally:
             self._loading = False
             self._rtype_prev_idx = int(self.cb_rtype.currentIndex())
@@ -1444,6 +1470,12 @@ class DrivePage(QWizardPage, _CmdMixin):
     def _read_from_rotor(self) -> None:
         self.lbl.setText(t("setup.drive_reading"))
         fields = list(DRIVE_GET_FIELDS)
+        if not self._homing_fields_visible():
+            fields = [
+                f
+                for f in fields
+                if f[0] not in ("GETHOMEPWM", "GETHOMESEEKPPWM")
+            ]
         vals: dict = {}
         n_ok = 0
 
@@ -1530,13 +1562,15 @@ class DrivePage(QWizardPage, _CmdMixin):
             "SETBEGINDG": self._fmt(self.sp_begin.value()),
             "SETMAXDG": self._fmt(self.sp_max.value()),
             "SETMINPWM": str(int(self.sp_minpwm.value())),
-            "SETIWARN": str(int(self.sp_iwarn.value())),
-            "SETIMAX": str(int(self.sp_imax.value())),
-            "SETHOMEPWM": str(int(self.sp_homepwm.value())),
-            "SETHOMESEEKPPWM": str(int(self.sp_seek.value())),
+            # UI mA → Bus mV (1 A = 130 mV)
+            "SETIWARN": str(strom_ma_to_mv(int(self.sp_iwarn.value()))),
+            "SETIMAX": str(strom_ma_to_mv(int(self.sp_imax.value()))),
             "SETRAMP": self._fmt(self.sp_ramp.value()),
             "SETARRTOL": self._fmt(self.sp_arrtol.value()),
         }
+        if self._homing_fields_visible():
+            values["SETHOMEPWM"] = str(int(self.sp_homepwm.value()))
+            values["SETHOMESEEKPPWM"] = str(int(self.sp_seek.value()))
         pairs = [(cmd, values[cmd]) for cmd in DRIVE_SET_SEQUENCE if cmd in values]
         self.lbl.setText(t("setup.working"))
         self._queue = list(pairs)
@@ -1547,18 +1581,20 @@ class DrivePage(QWizardPage, _CmdMixin):
         if not self._queue:
             self.lbl.setText(t("setup.drive_done"))
             self._ok = True
-            self.wiz.drive_snapshot = {
+            snap = {
                 "rotor_type": int(self.cb_rtype.currentData()),
                 "begin_dg": float(self.sp_begin.value()),
                 "max_dg": float(self.sp_max.value()),
                 "min_pwm": float(self.sp_minpwm.value()),
                 "iwarn": int(self.sp_iwarn.value()),
                 "imax": int(self.sp_imax.value()),
-                "home_pwm": float(self.sp_homepwm.value()),
-                "home_seek_pwm": float(self.sp_seek.value()),
                 "ramp": float(self.sp_ramp.value()),
                 "arrtol": float(self.sp_arrtol.value()),
             }
+            if self._homing_fields_visible():
+                snap["home_pwm"] = float(self.sp_homepwm.value())
+                snap["home_seek_pwm"] = float(self.sp_seek.value())
+            self.wiz.drive_snapshot = snap
             return
         cmd, params = self._queue.pop(0)
 
@@ -1577,6 +1613,34 @@ class DrivePage(QWizardPage, _CmdMixin):
         return True
 
 
+def _endstat_led(label: str) -> tuple[QWidget, QLabel]:
+    """Kompakte Status-LED + Beschriftung (grün = gedrückt)."""
+    wrap = QWidget()
+    lay = QHBoxLayout(wrap)
+    lay.setContentsMargins(0, 0, 0, 0)
+    led = QLabel("")
+    led.setFixedSize(18, 18)
+    led.setStyleSheet(
+        "border-radius: 9px; background: #9e9e9e; border: 1px solid #616161;"
+    )
+    txt = QLabel(label)
+    lay.addWidget(led)
+    lay.addWidget(txt)
+    lay.addStretch(1)
+    return wrap, led
+
+
+def _set_endstat_led(led: QLabel, pressed: bool) -> None:
+    if pressed:
+        led.setStyleSheet(
+            "border-radius: 9px; background: #43a047; border: 1px solid #2e7d32;"
+        )
+    else:
+        led.setStyleSheet(
+            "border-radius: 9px; background: #9e9e9e; border: 1px solid #616161;"
+        )
+
+
 class EndstopsPage(QWizardPage, _CmdMixin):
     def __init__(self, wiz: "CommissioningWizard") -> None:
         super().__init__()
@@ -1585,6 +1649,7 @@ class EndstopsPage(QWizardPage, _CmdMixin):
         self.setSubTitle(t("setup.page_endst_sub"))
         root = QVBoxLayout(self)
         self.cb = QComboBox()
+        self.cb.currentIndexChanged.connect(self._on_count_changed)
         root.addWidget(self.cb)
         self.lbl_rec = QLabel("")
         self.lbl_rec.setWordWrap(True)
@@ -1594,10 +1659,51 @@ class EndstopsPage(QWizardPage, _CmdMixin):
         btn = QPushButton(t("setup.btn_set_and_verify"))
         btn.clicked.connect(self._apply)
         root.addWidget(btn)
+
+        self.box_test = QGroupBox(t("setup.endst_test_group"))
+        tl = QVBoxLayout(self.box_test)
+        howto = QLabel(t("setup.endst_test_howto"))
+        howto.setWordWrap(True)
+        tl.addWidget(howto)
+        self.lbl_no_homing = QLabel(t("setup.endst_no_homing_hint"))
+        self.lbl_no_homing.setWordWrap(True)
+        self.lbl_no_homing.setStyleSheet("color: gray;")
+        tl.addWidget(self.lbl_no_homing)
+        row_led = QHBoxLayout()
+        w_l, self.led_l = _endstat_led(t("setup.endst_led_l"))
+        w_r, self.led_r = _endstat_led(t("setup.endst_led_r"))
+        row_led.addWidget(w_l)
+        row_led.addWidget(w_r)
+        tl.addLayout(row_led)
+        self.lbl_swap = QLabel("")
+        tl.addWidget(self.lbl_swap)
+        self.btn_swap = QPushButton(t("setup.endst_swap_btn"))
+        self.btn_swap.clicked.connect(self._swap_ends)
+        tl.addWidget(self.btn_swap)
+        inv_row = QHBoxLayout()
+        self._lbl_endinv = QLabel(t("setup.endst_inv_label"))
+        self.cb_endinv = QComboBox()
+        self.cb_endinv.addItem(t("setup.endst_inv_low"), 0)
+        self.cb_endinv.addItem(t("setup.endst_inv_high"), 1)
+        self.cb_endinv.currentIndexChanged.connect(self._on_endinv_changed)
+        inv_row.addWidget(self._lbl_endinv)
+        inv_row.addWidget(self.cb_endinv, 1)
+        tl.addLayout(inv_row)
+        self.lbl_test = QLabel("")
+        self.lbl_test.setWordWrap(True)
+        tl.addWidget(self.lbl_test)
+        root.addWidget(self.box_test)
         root.addStretch(1)
         self._ok = False
+        self._swap_val = 0
+        self._endinv_loading = False
+        self._stat_inflight = False
+        self._poll = QTimer(self)
+        self._poll.setInterval(250)
+        self._poll.timeout.connect(self._poll_endstat)
 
     def initializePage(self) -> None:
+        self.cb.blockSignals(True)
         self.cb.clear()
         for v in endstc_choices(self.wiz.enc_type):
             self.cb.addItem(t(f"setup.endst_{v}"), v)
@@ -1607,7 +1713,54 @@ class EndstopsPage(QWizardPage, _CmdMixin):
             if int(self.cb.itemData(i)) == rec:
                 self.cb.setCurrentIndex(i)
                 break
+        self.cb.blockSignals(False)
         self._ok = False
+        self.lbl_test.setText("")
+        self._refresh_test_ui()
+        self._load_swap()
+        self._load_endinv()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if endstat_ui_allowed(self._selected_count()):
+            self._poll.start()
+            self._poll_endstat()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._poll.stop()
+        super().hideEvent(event)
+
+    def cleanupPage(self) -> None:
+        self._poll.stop()
+
+    def _selected_count(self) -> int:
+        try:
+            return int(self.cb.currentData())
+        except Exception:
+            return 0
+
+    def _on_count_changed(self, _idx: int = 0) -> None:
+        self._ok = False
+        self._refresh_test_ui()
+        if endstat_ui_allowed(self._selected_count()):
+            if not self._poll.isActive():
+                self._poll.start()
+            self._poll_endstat()
+            self._load_swap()
+            self._load_endinv()
+        else:
+            self._poll.stop()
+
+    def _refresh_test_ui(self) -> None:
+        n = self._selected_count()
+        show = endstat_ui_allowed(n)
+        self.box_test.setVisible(show)
+        self.lbl_no_homing.setVisible(
+            show and bool(inclinometer_cal_allowed(self.wiz.enc_type))
+        )
+        if not show:
+            _set_endstat_led(self.led_l, False)
+            _set_endstat_led(self.led_r, False)
 
     def _apply(self) -> None:
         val = int(self.cb.currentData())
@@ -1624,6 +1777,11 @@ class EndstopsPage(QWizardPage, _CmdMixin):
                     self.wiz.endstc = val
                     self.lbl.setText(t("setup.verify_ok", val=got))
                     self._ok = True
+                    self._refresh_test_ui()
+                    if endstat_ui_allowed(val):
+                        self._load_swap()
+                        self._load_endinv()
+                        self._poll_endstat()
                 else:
                     self.lbl.setText(t("setup.verify_mismatch", want=val, got=got))
                     self._ok = False
@@ -1631,6 +1789,138 @@ class EndstopsPage(QWizardPage, _CmdMixin):
             self._send("GETENDSTC", "0", on_done=gdone)
 
         self._send("SETENDSTC", str(val), on_done=after)
+
+    def _parse01(self, params: object) -> Optional[int]:
+        try:
+            return int(float(str(params or "").strip().split(";")[0].replace(",", ".")))
+        except Exception:
+            return None
+
+    def _load_swap(self) -> None:
+        if not endstat_ui_allowed(self._selected_count()):
+            return
+
+        def done(tel, err):
+            if err or tel is None:
+                self.lbl_swap.setText(t("setup.endst_stat_fail", err=str(err or "")))
+                return
+            v = self._parse01(getattr(tel, "params", ""))
+            if v is None:
+                self.lbl_swap.setText(t("setup.endst_stat_fail", err="parse"))
+                return
+            self._swap_val = 1 if int(v) else 0
+            st = t("setup.endst_swap_on") if self._swap_val else t("setup.endst_swap_off")
+            self.lbl_swap.setText(t("setup.endst_swap_state", v=st))
+
+        self._send("GETENDSWAP", "0", on_done=done)
+
+    def _swap_ends(self) -> None:
+        nxt = 0 if self._swap_val else 1
+
+        def after(tel, err):
+            if err or tel is None:
+                self.lbl_test.setText(t("setup.endst_swap_fail", err=str(err or "")))
+                return
+
+            def gdone(tel2, err2):
+                got = self._parse01(getattr(tel2, "params", "") if tel2 else None)
+                if got is None:
+                    self.lbl_test.setText(t("setup.endst_swap_fail", err=str(err2 or "parse")))
+                    return
+                self._swap_val = 1 if int(got) else 0
+                st = t("setup.endst_swap_on") if self._swap_val else t("setup.endst_swap_off")
+                self.lbl_swap.setText(t("setup.endst_swap_state", v=st))
+                self.lbl_test.setText(t("setup.endst_swap_ok", v=st))
+
+            self._send("GETENDSWAP", "0", on_done=gdone)
+
+        self._send("SETENDSWAP", str(nxt), on_done=after)
+
+    def _set_endinv_combo(self, val: int) -> None:
+        want = 1 if int(val) else 0
+        self._endinv_loading = True
+        try:
+            for i in range(self.cb_endinv.count()):
+                if int(self.cb_endinv.itemData(i)) == want:
+                    self.cb_endinv.setCurrentIndex(i)
+                    break
+        finally:
+            self._endinv_loading = False
+
+    def _load_endinv(self) -> None:
+        if not endstat_ui_allowed(self._selected_count()):
+            return
+
+        def done(tel, err):
+            if err or tel is None:
+                # Default aktiv LOW, wenn noch nicht lesbar
+                self._set_endinv_combo(0)
+                return
+            v = self._parse01(getattr(tel, "params", ""))
+            self._set_endinv_combo(0 if v is None else int(v))
+
+        self._send("GETENDINV", "0", on_done=done)
+
+    def _on_endinv_changed(self, _idx: int = 0) -> None:
+        if self._endinv_loading or not endstat_ui_allowed(self._selected_count()):
+            return
+        try:
+            val = int(self.cb_endinv.currentData())
+        except Exception:
+            return
+
+        def after(tel, err):
+            if err or tel is None:
+                self.lbl_test.setText(t("setup.endst_inv_fail", err=str(err or "")))
+                return
+
+            def gdone(tel2, err2):
+                got = self._parse01(getattr(tel2, "params", "") if tel2 else None)
+                if got is None:
+                    self.lbl_test.setText(
+                        t("setup.endst_inv_fail", err=str(err2 or "parse"))
+                    )
+                    return
+                self._set_endinv_combo(int(got))
+                lab = (
+                    t("setup.endst_inv_high")
+                    if int(got)
+                    else t("setup.endst_inv_low")
+                )
+                self.lbl_test.setText(t("setup.endst_inv_ok", v=lab))
+
+            self._send("GETENDINV", "0", on_done=gdone)
+
+        self._send("SETENDINV", str(int(val)), on_done=after)
+
+    def _poll_endstat(self) -> None:
+        if self._stat_inflight or not endstat_ui_allowed(self._selected_count()):
+            return
+        if not self.isVisible():
+            return
+        self._stat_inflight = True
+
+        def done(tel, err):
+            self._stat_inflight = False
+            if err or tel is None:
+                return
+            raw = str(getattr(tel, "params", "") or "").strip()
+            parts = [p.strip() for p in raw.replace(",", ";").split(";") if p.strip() != ""]
+            if len(parts) < 2:
+                # Fallback: "L,R" oder einzelner Wert
+                parts = [p.strip() for p in raw.replace(";", ",").split(",") if p.strip() != ""]
+            try:
+                l_on = int(float(parts[0].replace(",", "."))) != 0 if parts else False
+            except Exception:
+                l_on = False
+            try:
+                r_on = int(float(parts[1].replace(",", "."))) != 0 if len(parts) > 1 else False
+            except Exception:
+                r_on = False
+            _set_endstat_led(self.led_l, bool(l_on))
+            _set_endstat_led(self.led_r, bool(r_on))
+
+        self._send("GETENDSTAT", "0", on_done=done, timeout_s=0.6)
 
     def validatePage(self) -> bool:
         self.wiz.endstc = int(self.cb.currentData())
@@ -1669,16 +1959,30 @@ class WeatherPage(QWizardPage, _CmdMixin):
         root.addStretch(1)
         self._known_val: Optional[bool] = None  # Windmesser-Zustand laut Rotor (GETWINDENABLE)
         self._touched = False
+        self._timer = QTimer(self)
+        self._timer.setInterval(2000)
+        self._timer.timeout.connect(self._read_sensors)
         self.chk.toggled.connect(self._on_chk_toggled)
 
-    def _on_chk_toggled(self, _checked: bool) -> None:
+    def _on_chk_toggled(self, checked: bool) -> None:
         self._touched = True
+        self._sync_live_poll(bool(checked))
+
+    def _sync_live_poll(self, enabled: bool) -> None:
+        """Bei aktivem Haken live GETANEMO/GETWINDDIR (zum Testen ohne Lesen-Knopf)."""
+        if enabled:
+            if not self._timer.isActive():
+                self._timer.start()
+            self._read_sensors()
+        else:
+            self._timer.stop()
 
     def initializePage(self) -> None:
         """Windmesser-Checkbox vom Rotor übernehmen (nicht ungefragt aktivieren/deaktivieren)."""
         self._known_val = None
         self._touched = False
         self.wiz.wind_choice = None
+        self._timer.stop()
         self.chk.blockSignals(True)
         self.chk.setChecked(False)
         self.chk.blockSignals(False)
@@ -1699,8 +2003,21 @@ class WeatherPage(QWizardPage, _CmdMixin):
             self.chk.blockSignals(True)
             self.chk.setChecked(self._known_val)
             self.chk.blockSignals(False)
+            self._sync_live_poll(self._known_val)
 
         self._send("GETWINDENABLE", "0", on_done=got)
+
+    def cleanupPage(self) -> None:
+        self._timer.stop()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self.chk.isChecked():
+            self._sync_live_poll(True)
 
     def validatePage(self) -> bool:
         cur = bool(self.chk.isChecked())
@@ -1727,11 +2044,13 @@ class WeatherPage(QWizardPage, _CmdMixin):
                 return
             off = f"{self.sp_off.value():.1f}".replace(".", ",")
             self._send("SETWINDDIROF", off)
-            self._read_sensors()
+            self._sync_live_poll(bool(self.chk.isChecked()))
 
         self._send("SETWINDENABLE", en, on_done=d1)
 
     def _read_sensors(self) -> None:
+        if not self.chk.isChecked():
+            return
         self._get_sync_ui("GETANEMO", self.lbl_anemo)
         self._get_sync_ui("GETWINDDIR", self.lbl_dir)
 
@@ -1836,6 +2155,52 @@ class CalPage(QWizardPage, _CmdMixin):
         self.lbl_mode.setWordWrap(True)
         root.addWidget(self.lbl_mode)
 
+        # --- Richtung prüfen (JOG / Invert) — Typ 1–4 -------------------------
+        # Setup-Modus: beim Betreten der Seite automatisch AN, beim Verlassen AUS
+        # (keine manuellen An/Aus-Tasten mehr).
+        self.box_dir = QGroupBox(t("setup.cal_dir_group"))
+        dl = QVBoxLayout(self.box_dir)
+        dir_howto = QLabel(t("setup.cal_dir_howto"))
+        dir_howto.setWordWrap(True)
+        dl.addWidget(dir_howto)
+        self.dir_setup_row, self.led_dir_setup = _endstat_led(
+            t("setup.cal_setup_mode_label")
+        )
+        dl.addWidget(self.dir_setup_row)
+        self.lbl_dir_pos = QLabel("—")
+        self.lbl_dir_pos.setStyleSheet(
+            "font-size: 28px; font-weight: bold; font-family: Consolas, 'Courier New', monospace;"
+        )
+        dl.addWidget(QLabel(t("setup.cal_dir_live_pos")))
+        dl.addWidget(self.lbl_dir_pos)
+        self.dir_jog = QGroupBox(t("setup.cal_jog_group"))
+        djl = QHBoxLayout(self.dir_jog)
+        self.btn_dir_ccw = QPushButton(t("setup.cal_jog_to_zero"))
+        self.btn_dir_cw = QPushButton(t("setup.cal_jog_to_max"))
+        self.btn_dir_ccw.setMinimumHeight(40)
+        self.btn_dir_cw.setMinimumHeight(40)
+        self.btn_dir_ccw.pressed.connect(lambda: self._jog(1))
+        self.btn_dir_ccw.released.connect(lambda: self._jog(0))
+        self.btn_dir_cw.pressed.connect(lambda: self._jog(2))
+        self.btn_dir_cw.released.connect(lambda: self._jog(0))
+        djl.addWidget(self.btn_dir_ccw)
+        djl.addWidget(self.btn_dir_cw)
+        dl.addWidget(self.dir_jog)
+        # Außerhalb der JOG-GroupBox: Geschwindigkeit auch ohne Setup-Modus änderbar
+        self.pwm_dir_row, self.sl_pwm_dir, self.lbl_pwm_dir = self._make_pwm_row()
+        dl.addWidget(self.pwm_dir_row)
+        self.chk_enc_inv = QCheckBox(t("setup.cal_dir_enc_inv"))
+        self.chk_mot_inv = QCheckBox(t("setup.cal_dir_mot_inv"))
+        dl.addWidget(self.chk_enc_inv)
+        dl.addWidget(self.chk_mot_inv)
+        self.btn_dir_apply = QPushButton(t("setup.cal_dir_apply"))
+        self.btn_dir_apply.clicked.connect(self._dir_apply_inv)
+        dl.addWidget(self.btn_dir_apply)
+        self.lbl_dir_status = QLabel("")
+        self.lbl_dir_status.setWordWrap(True)
+        dl.addWidget(self.lbl_dir_status)
+        root.addWidget(self.box_dir)
+
         # --- Einmessen ohne Endschalter (Typ 1/2) ----------------------------
         self.box_flow = QGroupBox(t("setup.cal_flow_group"))
         fv = QVBoxLayout(self.box_flow)
@@ -1847,27 +2212,30 @@ class CalPage(QWizardPage, _CmdMixin):
         warn.setWordWrap(True)
         warn.setStyleSheet("color: #b71c1c;")
         tv.addWidget(warn)
+        self.flow_setup_row, self.led_flow_setup = _endstat_led(
+            t("setup.cal_setup_mode_label")
+        )
+        tv.addWidget(self.flow_setup_row)
         live = QFormLayout()
-        self.lbl_setup = QLabel("—")
-        self.lbl_setup.setStyleSheet("font-weight: bold;")
         self.lbl_count = QLabel("—")
         self.lbl_raw = QLabel("—")
-        live.addRow(t("setup.cal_live_setup"), self.lbl_setup)
+        self.lbl_raw.setStyleSheet(
+            "font-size: 28px; font-weight: bold; font-family: Consolas, 'Courier New', monospace;"
+        )
         live.addRow(t("setup.cal_live_count"), self.lbl_count)
         live.addRow(t("setup.cal_live_raw"), self.lbl_raw)
         tv.addLayout(live)
         root.addWidget(self.top_flow)
 
-        # Schritt 1
-        g1 = QGroupBox(t("setup.cal_s1_title"))
-        l1 = QVBoxLayout(g1)
-        self.btn_s1 = QPushButton(t("setup.cal_s1_btn"))
-        self.btn_s1.clicked.connect(self._start_setup)
-        l1.addWidget(self.btn_s1)
+        # Schritt 1 entfällt in der UI: Setup startet automatisch beim Seitenaufruf.
+        # Statuszeile bleibt für Meldungen aus dem Auto-Start.
+        self.g1 = QGroupBox(t("setup.cal_s1_title"))
+        l1 = QVBoxLayout(self.g1)
         self.lbl_s1 = QLabel("")
         self.lbl_s1.setWordWrap(True)
         l1.addWidget(self.lbl_s1)
-        fv.addWidget(g1)
+        self.g1.setVisible(False)
+        fv.addWidget(self.g1)
 
         # Rotor von Hand fahren (gilt für Schritt 2, 3 und 5)
         self.g_jog = QGroupBox(t("setup.cal_jog_group"))
@@ -1883,6 +2251,9 @@ class CalPage(QWizardPage, _CmdMixin):
         jl.addWidget(self.btn_ccw)
         jl.addWidget(self.btn_cw)
         tv.addWidget(self.g_jog)
+        # Außerhalb der JOG-GroupBox: Geschwindigkeit auch ohne Setup-Modus änderbar
+        self.pwm_flow_row, self.sl_pwm_flow, self.lbl_pwm_flow = self._make_pwm_row()
+        tv.addWidget(self.pwm_flow_row)
 
         # Schritt 2
         self.g2 = QGroupBox(t("setup.cal_s2_title"))
@@ -1955,77 +2326,15 @@ class CalPage(QWizardPage, _CmdMixin):
         root.addWidget(self.scroll_flow, 1)
 
         # --- Inklinometer (Encoder-Typ 4) ------------------------------------
+        # Keine Teil-Editoren hier: alle Werte im Inclinometer-Setup-Fenster.
         self.box_inc = QGroupBox(t("setup.cal_inc_group"))
         il_root = QVBoxLayout(self.box_inc)
         self.lbl_inc_hint = QLabel(t("setup.inc_hint"))
         self.lbl_inc_hint.setWordWrap(True)
         il_root.addWidget(self.lbl_inc_hint)
-
-        gb_orient = QGroupBox(t("setup.inc_group_orient"))
-        fl_or = QFormLayout(gb_orient)
-        self.chk_swap = QCheckBox(t("setup.inc_swapxy"))
-        self.chk_invref = QCheckBox(t("setup.inc_invref"))
-        self.chk_invsen = QCheckBox(t("setup.inc_invsen"))
-        self.chk_invrot = QCheckBox(t("setup.inc_invrot"))
-        self.cb_mount = QComboBox()
-        for v in (0, 90, 180, 270):
-            self.cb_mount.addItem(f"{v}°", int(v))
-        self.chk_lim180 = QCheckBox(t("setup.inc_lim180"))
-        self.sp_cal = QDoubleSpinBox()
-        self.sp_cal.setRange(-180.0, 180.0)
-        self.sp_cal.setDecimals(2)
-        self.sp_cal.setSingleStep(0.1)
-        self.sp_cal.setSuffix(" °")
-        fl_or.addRow(self.chk_swap)
-        fl_or.addRow(self.chk_invref)
-        fl_or.addRow(self.chk_invsen)
-        fl_or.addRow(self.chk_invrot)
-        fl_or.addRow(t("setup.inc_mount"), self.cb_mount)
-        fl_or.addRow(self.chk_lim180)
-        fl_or.addRow(t("setup.inc_cal"), self.sp_cal)
-        il_root.addWidget(gb_orient)
-
-        gb_shock = QGroupBox(t("setup.inc_group_shock"))
-        fl_sh = QFormLayout(gb_shock)
-        self.sp_shkth = QSpinBox()
-        self.sp_shkth.setRange(1, 63)
-        self.sp_shkth.setValue(25)
-        self.sp_shkth.setToolTip(tt("setup.inc_shkth_tooltip"))
-        self.sp_shkwn = QSpinBox()
-        self.sp_shkwn.setRange(1, 3600)
-        self.sp_shkwn.setValue(60)
-        self.sp_shkwn.setSuffix(" s")
-        self.sp_shklm = QSpinBox()
-        self.sp_shklm.setRange(0, 60)
-        self.sp_shklm.setValue(5)
-        self.sp_shklm.setSpecialValueText(t("setup.inc_shklm_off"))
-        self.sp_shklm.setToolTip(tt("setup.inc_shklm_tooltip"))
-        fl_sh.addRow(t("setup.inc_shkth"), self.sp_shkth)
-        fl_sh.addRow(t("setup.inc_shkwn"), self.sp_shkwn)
-        fl_sh.addRow(t("setup.inc_shklm"), self.sp_shklm)
-        il_root.addWidget(gb_shock)
-
-        row_live = QHBoxLayout()
-        self.lbl_inc_angle = QLabel(t("setup.inc_angle_na"))
-        self.lbl_inc_angle.setWordWrap(True)
-        row_live.addWidget(self.lbl_inc_angle, 1)
-        btn_inc_read = QPushButton(t("setup.btn_read"))
-        btn_inc_read.clicked.connect(self._load_inc)
-        row_live.addWidget(btn_inc_read)
-        il_root.addLayout(row_live)
-
-        row_inc_btn = QHBoxLayout()
-        binc = QPushButton(t("setup.btn_set_and_verify"))
-        binc.clicked.connect(self._apply_inc)
-        row_inc_btn.addWidget(binc)
         btn_win = QPushButton(t("setup.inc_open_full"))
         btn_win.clicked.connect(self._open_inc_win)
-        row_inc_btn.addWidget(btn_win)
-        row_inc_btn.addStretch(1)
-        il_root.addLayout(row_inc_btn)
-        self.lbl_inc_status = QLabel("")
-        self.lbl_inc_status.setWordWrap(True)
-        il_root.addWidget(self.lbl_inc_status)
+        il_root.addWidget(btn_win)
         self.scroll_inc = _scroll(self.box_inc)
         root.addWidget(self.scroll_inc, 1)
         # --- SSI -------------------------------------------------------------
@@ -2053,19 +2362,167 @@ class CalPage(QWizardPage, _CmdMixin):
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(1000)
         self._poll_timer.timeout.connect(self._poll_live)
+        self._dir_poll_timer = QTimer(self)
+        self._dir_poll_timer.setInterval(400)
+        self._dir_poll_timer.timeout.connect(self._dir_poll_pos)
+        self._dir_poll_inflight = False
+        self._pwm_pending: Optional[float] = None
+        self._pwm_applying = False
+        self._pwm_send_timer = QTimer(self)
+        self._pwm_send_timer.setSingleShot(True)
+        self._pwm_send_timer.timeout.connect(self._flush_pwm)
+
+    # --- Motorspeed (SETPWM) -------------------------------------------------
+
+    def _make_pwm_row(self) -> tuple[QWidget, QSlider, QLabel]:
+        """Motorspeed-Zeile wie in der Haupt-GUI (JOG-Geschwindigkeit)."""
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 4, 0, 0)
+        lbl = QLabel(t("axis.motorspeed_label"))
+        sl = QSlider(Qt.Orientation.Horizontal)
+        sl.setRange(0, 100)
+        sl.setSingleStep(1)
+        sl.setPageStep(5)
+        sl.setValue(40)
+        val = QLabel("40")
+        val.setFixedWidth(36)
+        val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        h.addWidget(lbl)
+        h.addWidget(sl, 1)
+        h.addWidget(val)
+
+        def _on_moved(v: int, _val=val) -> None:
+            _val.setText(str(int(v)))
+            self._schedule_pwm(float(int(v)))
+
+        def _on_changed(v: int, _val=val) -> None:
+            _val.setText(str(int(v)))
+
+        sl.sliderMoved.connect(_on_moved)
+        sl.valueChanged.connect(_on_changed)
+        sl.sliderReleased.connect(lambda _sl=sl: self._commit_pwm(float(_sl.value())))
+        sl.actionTriggered.connect(
+            lambda _a, _sl=sl: self._schedule_pwm(float(_sl.value()))
+        )
+        return row, sl, val
+
+    def _pwm_sliders(self) -> list[QSlider]:
+        out: list[QSlider] = []
+        for attr in ("sl_pwm_dir", "sl_pwm_flow"):
+            sl = getattr(self, attr, None)
+            if sl is not None:
+                out.append(sl)
+        return out
+
+    def _set_pwm_widgets(self, value: int, minimum: Optional[int] = None) -> None:
+        v = max(0, min(100, int(value)))
+        for sl in self._pwm_sliders():
+            sl.blockSignals(True)
+            if minimum is not None:
+                mn = max(0, min(100, int(minimum)))
+                sl.setMinimum(mn)
+                if v < mn:
+                    v = mn
+            sl.setValue(v)
+            sl.blockSignals(False)
+        for attr in ("lbl_pwm_dir", "lbl_pwm_flow"):
+            lab = getattr(self, attr, None)
+            if lab is not None:
+                lab.setText(str(v))
+
+    def _schedule_pwm(self, v: float) -> None:
+        self._pwm_pending = float(v)
+        self._pwm_send_timer.start(150)
+
+    def _commit_pwm(self, v: float) -> None:
+        self._pwm_pending = float(v)
+        self._pwm_send_timer.stop()
+        self._flush_pwm()
+
+    def _flush_pwm(self) -> None:
+        if self._pwm_pending is None or self._pwm_applying:
+            return
+        v = float(self._pwm_pending)
+        self._pwm_pending = None
+        self._pwm_applying = True
+        ctrl = self.wiz.ctrl
+        role = str(self.wiz.axis_role or "az").lower()
+        try:
+            if ctrl is not None:
+                if role == "el":
+                    ctrl.set_pwm_el(v)
+                else:
+                    ctrl.set_pwm_az(v)
+            else:
+                self._send("SETPWM", f"{v:.1f}".replace(".", ","))
+        except Exception:
+            pass
+        self._set_pwm_widgets(int(round(v)))
+        self._pwm_applying = False
+
+    def _load_pwm(self) -> None:
+        """Aktuelles PWM-Limit und Minimum vom Rotor lesen."""
+        # Sofort aus Telemetrie (falls schon gepollt), dann frisch vom Bus.
+        ctrl = self.wiz.ctrl
+        role = str(self.wiz.axis_role or "az").lower()
+        try:
+            ax = getattr(ctrl, "el" if role == "el" else "az", None) if ctrl else None
+            tel = getattr(ax, "telemetry", None)
+            mn = getattr(tel, "pwm_min_pct", None) if tel else None
+            cur = getattr(tel, "pwm_max_pct", None) if tel else None
+            if cur is not None:
+                self._set_pwm_widgets(
+                    int(round(float(cur))),
+                    int(round(float(mn))) if mn is not None else None,
+                )
+        except Exception:
+            pass
+
+        def got_min(p, _e):
+            mn_v = _pf(p)
+            if mn_v is not None:
+                for sl in self._pwm_sliders():
+                    sl.blockSignals(True)
+                    sl.setMinimum(max(0, min(100, int(round(mn_v)))))
+                    if sl.value() < sl.minimum():
+                        sl.setValue(sl.minimum())
+                    sl.blockSignals(False)
+
+        def got_pwm(p, _e):
+            cur_v = _pf(p)
+            if cur_v is not None:
+                self._set_pwm_widgets(int(round(cur_v)))
+
+        self._cmd("GETMINPWM", "0", got_min, timeout=0.8)
+        self._cmd("GETPWM", "0", got_pwm, timeout=0.8)
 
     # --- Seite ---------------------------------------------------------------
 
     def _flow_active(self) -> bool:
         return self.wiz.enc_type in (1, 2) and self.wiz.endstc == 0
 
+    def _dir_panel_active(self) -> bool:
+        return jog_allowed(self.wiz.enc_type, self.wiz.endstc)
+
     def initializePage(self) -> None:
         et = self.wiz.enc_type
         flow = self._flow_active()
+        show_dir = self._dir_panel_active()
         show_inc = inclinometer_cal_allowed(et)
         show_ssi = setenczero_primary(et)
+        self.box_dir.setVisible(show_dir)
+        # Bei vollem Einmess-Flow: JOG/Setup dort; hier nur Invert + Hinweis.
+        self.dir_jog.setVisible(show_dir and not flow)
+        self.pwm_dir_row.setVisible(show_dir and not flow)
+        self.chk_enc_inv.setVisible(show_dir and enc_inv_allowed(et))
+        self.chk_mot_inv.setVisible(show_dir and mot_inv_allowed(et))
+        self.btn_dir_apply.setVisible(
+            show_dir and (enc_inv_allowed(et) or mot_inv_allowed(et))
+        )
         self.scroll_flow.setVisible(flow)
         self.top_flow.setVisible(flow)
+        self.pwm_flow_row.setVisible(flow)
         self.scroll_inc.setVisible(show_inc)
         self.box_ssi.setVisible(show_ssi)
         lay = self.layout()
@@ -2088,32 +2545,45 @@ class CalPage(QWizardPage, _CmdMixin):
         self._cpr_applied = False
         for lb in (self.lbl_s1, self.lbl_s2, self.lbl_s3, self.lbl_s4, self.lbl_s5):
             lb.setText("")
+        self.lbl_dir_status.setText("")
         self._refresh_enabled()
+        # Setup-Modus automatisch AN (JOG-fähig); beim Verlassen der Seite wieder AUS.
         if flow:
-            self._read_setup_state()
-        elif show_inc:
-            self.lbl_inc_status.setText("")
-            QTimer.singleShot(100, self._load_inc)
+            QTimer.singleShot(0, lambda: self._start_setup(silent=True))
+        elif show_dir:
+            QTimer.singleShot(0, self._auto_dir_setup_on)
+        if flow or show_dir:
+            QTimer.singleShot(30, self._load_pwm)
+        if show_dir:
+            QTimer.singleShot(50, self._dir_load_inv)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         if self._flow_active():
             self._poll_timer.start()
+        if self._dir_panel_active() and not self._flow_active():
+            self._dir_poll_timer.start()
+            self._dir_poll_pos()
 
     def hideEvent(self, event) -> None:  # noqa: N802
         self._poll_timer.stop()
+        self._dir_poll_timer.stop()
         self._jog(0)
         super().hideEvent(event)
 
     def cleanupPage(self) -> None:
         self._poll_timer.stop()
+        self._dir_poll_timer.stop()
         self._jog(0)
         self._setup_off_silent()
 
     def validatePage(self) -> bool:
         self._jog(0)
+        # Warnung nur beim Einmessen ohne Endschalter (Typ 1/2, endstc=0):
+        # dort braucht man Setup, um unter den Min-Winkel zu fahren.
+        # Bei bloßer Richtungsprüfung (Typ 1/2 mit Endschaltern, Typ 3/4)
+        # ist diese Meldung falsch — Setup einfach beenden.
         if self._setup_on and self._flow_active():
-            # Versehentliches "Weiter" abfangen: Setup läuft noch, Einmessen nicht abgeschlossen.
             reply = QMessageBox.question(
                 self,
                 t("setup.title"),
@@ -2138,7 +2608,6 @@ class CalPage(QWizardPage, _CmdMixin):
     def _refresh_enabled(self) -> None:
         on = bool(self._setup_on)
         busy = bool(self._busy)
-        self.btn_s1.setEnabled(not busy and not on)
         self.g_jog.setEnabled(on)
         self.g2.setEnabled(on)
         self.btn_s2.setEnabled(on and not busy)
@@ -2148,9 +2617,10 @@ class CalPage(QWizardPage, _CmdMixin):
         self.btn_s4.setEnabled(self._new_cpr is not None and not busy)
         self.g5.setEnabled(on and self._cpr_applied)
         self.btn_s5.setEnabled(on and self._cpr_applied and not busy)
-        self.lbl_setup.setText(
-            t("setup.cal_on") if on else t("setup.cal_off")
-        )
+        _set_endstat_led(self.led_dir_setup, on)
+        _set_endstat_led(self.led_flow_setup, on)
+        self.dir_jog.setEnabled(on and not busy)
+        self.btn_dir_apply.setEnabled(not busy)
 
     def _show_step(self, w: QWidget) -> None:
         """Nächsten Schritt in den sichtbaren Bereich scrollen."""
@@ -2239,7 +2709,7 @@ class CalPage(QWizardPage, _CmdMixin):
         def got_raw(p, e):
             self._poll_inflight = False
             v = _pf(p)
-            self.lbl_raw.setText("—" if v is None else f"{v:.2f} °".replace(".", ","))
+            self.lbl_raw.setText(self._fmt_cal_angle(v))
 
         def got_count(p, e):
             v = _pf(p)
@@ -2283,17 +2753,162 @@ class CalPage(QWizardPage, _CmdMixin):
 
         self._send("JOG", str(int(d)), on_done=done, timeout_s=0.5)
 
-    # --- Schritt 1: Setup-Modus ------------------------------------------------
+    # --- Richtung prüfen (Invert / Setup-JOG außerhalb Flow) -------------------
 
-    def _start_setup(self) -> None:
-        if self._busy:
+    def _dir_poll_pos(self) -> None:
+        if self._dir_poll_inflight or self._busy or not self._dir_panel_active():
             return
-        reply = QMessageBox.question(
-            self, t("setup.title"), t("setup.cal_s1_confirm")
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        if self._flow_active():
+            return
+        self._dir_poll_inflight = True
+
+        def got(p, e):
+            self._dir_poll_inflight = False
+            v = _pf(p)
+            self.lbl_dir_pos.setText(self._fmt_cal_angle(v))
+
+        self._cmd("GETPOSDG", "0", got, timeout=0.8)
+
+    @staticmethod
+    def _fmt_cal_angle(v: Optional[float]) -> str:
+        """Live-Winkel auf der Kalibrierseite: eine Nachkommastelle."""
+        if v is None:
+            return "—"
+        return f"{float(v):.1f} °".replace(".", ",")
+
+    def _auto_dir_setup_on(self) -> None:
+        """Setup-Modus beim Betreten der Kalibrierseite automatisch einschalten."""
+        if self._busy or self._setup_on:
+            return
+        if not self._dir_panel_active() or self._flow_active():
             return
         self._set_busy(True)
+        self.lbl_dir_status.setText(t("setup.working"))
+
+        def after(p, e):
+            self._set_busy(False)
+            if p is None:
+                self.lbl_dir_status.setText(t("setup.cal_dir_setup_fail", err=e))
+                self._refresh_enabled()
+                return
+
+            def chk(p2, e2):
+                v = _pf(p2)
+                self._setup_on = bool(v is not None and int(v) == 1)
+                if self._setup_on:
+                    self.wiz._setup_dst = int(self.wiz.slave_dst())
+                    self.lbl_dir_status.setText(t("setup.cal_dir_setup_ok"))
+                else:
+                    self.lbl_dir_status.setText(t("setup.cal_s1_not_on"))
+                self._refresh_enabled()
+
+            self._cmd("GETSETUP", "0", chk)
+
+        self._cmd("SETSETUP", "1", after)
+
+    def _dir_parse01(self, params: object) -> Optional[int]:
+        try:
+            return int(float(str(params or "").strip().split(";")[0].replace(",", ".")))
+        except Exception:
+            return None
+
+    def _dir_load_inv(self) -> None:
+        et = self.wiz.enc_type
+        if not self._dir_panel_active():
+            return
+
+        def load_mot(_p=None, _e=None):
+            if not mot_inv_allowed(et):
+                return
+
+            def got_m(tel, err):
+                if err or tel is None:
+                    self.lbl_dir_status.setText(
+                        t("setup.cal_dir_load_fail", err=str(err or ""))
+                    )
+                    return
+                v = self._dir_parse01(getattr(tel, "params", ""))
+                if v is not None:
+                    self.chk_mot_inv.setChecked(bool(int(v)))
+
+            self._send("GETMOTINV", "0", on_done=got_m)
+
+        if enc_inv_allowed(et):
+
+            def got_e(tel, err):
+                if not (err or tel is None):
+                    v = self._dir_parse01(getattr(tel, "params", ""))
+                    if v is not None:
+                        self.chk_enc_inv.setChecked(bool(int(v)))
+                load_mot()
+
+            self._send("GETENCINV", "0", on_done=got_e)
+        else:
+            load_mot()
+
+    def _dir_apply_inv(self) -> None:
+        et = self.wiz.enc_type
+        if self._busy:
+            return
+        self._set_busy(True)
+        self.lbl_dir_status.setText(t("setup.working"))
+        steps: list[tuple[str, str]] = []
+        if enc_inv_allowed(et):
+            steps.append(("SETENCINV", "1" if self.chk_enc_inv.isChecked() else "0"))
+        if mot_inv_allowed(et):
+            steps.append(("SETMOTINV", "1" if self.chk_mot_inv.isChecked() else "0"))
+        if not steps:
+            self._set_busy(False)
+            return
+
+        def run(i: int) -> None:
+            if i >= len(steps):
+                self._set_busy(False)
+                self.lbl_dir_status.setText(t("setup.cal_dir_apply_ok"))
+                return
+            cmd, par = steps[i]
+
+            def done(tel, err):
+                if err or tel is None:
+                    self._set_busy(False)
+                    self.lbl_dir_status.setText(
+                        t("setup.cal_dir_apply_fail", err=str(err or ""))
+                    )
+                    return
+                cmd_u = str(getattr(tel, "cmd", "") or "").upper()
+                if cmd_u.startswith("NAK_"):
+                    self._set_busy(False)
+                    self.lbl_dir_status.setText(
+                        t(
+                            "setup.cal_dir_apply_fail",
+                            err=f"{cmd_u} {getattr(tel, 'params', '')}",
+                        )
+                    )
+                    return
+                run(i + 1)
+
+            self._send(cmd, par, on_done=done)
+
+        run(0)
+
+    # --- Schritt 1: Setup-Modus ------------------------------------------------
+
+    def _start_setup(self, silent: bool = False) -> None:
+        """Setup für Einmessen ohne Endschalter starten (CPR-Check + SETSETUP).
+
+        silent=True: ohne Rückfrage, z. B. automatisch beim Betreten der Seite.
+        """
+        if self._busy or self._setup_on:
+            return
+        if not silent:
+            reply = QMessageBox.question(
+                self, t("setup.title"), t("setup.cal_s1_confirm")
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        self._set_busy(True)
+        if silent:
+            self.g1.setVisible(True)
         self.lbl_s1.setText(t("setup.working"))
         get_cmd, set_cmd = self._cpr_cmds()
         self._s1_note = ""
@@ -2665,166 +3280,6 @@ class CalPage(QWizardPage, _CmdMixin):
 
         self._set_here(vmin, after_here)
 
-    def _inc_bool01(self, raw: Optional[str]) -> bool:
-        v = _pf(raw)
-        return bool(v is not None and int(v) != 0)
-
-    def _inc_set_combo(self, cb: QComboBox, raw: Optional[str]) -> None:
-        v = _pf(raw)
-        if v is None:
-            return
-        try:
-            iv = int(v)
-        except Exception:
-            return
-        for i in range(cb.count()):
-            try:
-                if int(cb.itemData(i)) == iv:
-                    cb.blockSignals(True)
-                    cb.setCurrentIndex(i)
-                    cb.blockSignals(False)
-                    return
-            except Exception:
-                continue
-
-    def _load_inc(self) -> None:
-        """Aktuelle Inklinometer-Werte vom Sensor lesen (GETINC*)."""
-        self.lbl_inc_status.setText(t("setup.inc_reading"))
-
-        steps: list[tuple[str, Callable[[Optional[str]], None]]] = [
-            ("GETINCSWAPXY", lambda p: self.chk_swap.setChecked(self._inc_bool01(p))),
-            ("GETINCINVREF", lambda p: self.chk_invref.setChecked(self._inc_bool01(p))),
-            ("GETINCINVSEN", lambda p: self.chk_invsen.setChecked(self._inc_bool01(p))),
-            ("GETINCINVROT", lambda p: self.chk_invrot.setChecked(self._inc_bool01(p))),
-            ("GETINCMOUNT", lambda p: self._inc_set_combo(self.cb_mount, p)),
-            ("GETINCLIM180", lambda p: self.chk_lim180.setChecked(self._inc_bool01(p))),
-            (
-                "GETINCCAL",
-                lambda p: (
-                    self.sp_cal.setValue(float(v))
-                    if (v := _pf(p)) is not None
-                    else None
-                ),
-            ),
-            (
-                "GETINCSHKTH",
-                lambda p: (
-                    self.sp_shkth.setValue(int(v))
-                    if (v := _pf(p)) is not None
-                    else None
-                ),
-            ),
-            (
-                "GETINCSHKWN",
-                lambda p: (
-                    self.sp_shkwn.setValue(int(v))
-                    if (v := _pf(p)) is not None
-                    else None
-                ),
-            ),
-            (
-                "GETINCSHKLM",
-                lambda p: (
-                    self.sp_shklm.setValue(int(v))
-                    if (v := _pf(p)) is not None
-                    else None
-                ),
-            ),
-        ]
-
-        def run(i: int = 0, last_err: str = "") -> None:
-            if i >= len(steps):
-                self._refresh_inc_angle()
-                self.lbl_inc_status.setText(
-                    t("setup.inc_read_ok")
-                    if not last_err
-                    else t("setup.inc_read_partial", err=last_err)
-                )
-                return
-            cmd, apply_fn = steps[i]
-
-            def got(p: Optional[str], e: str) -> None:
-                if p is not None:
-                    try:
-                        apply_fn(p)
-                    except Exception:
-                        pass
-                    run(i + 1, last_err)
-                else:
-                    run(i + 1, e or last_err or cmd)
-
-            self._cmd(cmd, "0", got, timeout=1.5)
-
-        run(0)
-
-    def _refresh_inc_angle(self) -> None:
-        def got_dg(p: Optional[str], e: str) -> None:
-            if p is not None:
-                v = _pf(p)
-                if v is not None:
-                    self.lbl_inc_angle.setText(
-                        t("setup.inc_angle_live", deg=f"{v:.2f}".replace(".", ","))
-                    )
-                    return
-            # Fallback Rotor-Position
-            def got_pos(pp: Optional[str], ee: str) -> None:
-                v = _pf(pp)
-                if v is not None:
-                    self.lbl_inc_angle.setText(
-                        t("setup.inc_angle_rotor", deg=f"{v:.2f}".replace(".", ","))
-                    )
-                else:
-                    self.lbl_inc_angle.setText(t("setup.inc_angle_na"))
-
-            self._cmd("GETPOSDG", "0", got_pos)
-
-        self._cmd("GETINCDG", "0", got_dg)
-
-    def _apply_inc(self) -> None:
-        """Lage, Offset und Stoßempfindlichkeit schreiben, danach Winkel lesen."""
-        self.lbl_inc_status.setText(t("setup.inc_writing"))
-        mount = 0
-        try:
-            mount = int(self.cb_mount.currentData())
-        except Exception:
-            mount = 0
-        cal = f"{self.sp_cal.value():.2f}".replace(".", ",")
-        writes: list[tuple[str, str]] = [
-            ("SETINCSWAPXY", "1" if self.chk_swap.isChecked() else "0"),
-            ("SETINCINVREF", "1" if self.chk_invref.isChecked() else "0"),
-            ("SETINCINVSEN", "1" if self.chk_invsen.isChecked() else "0"),
-            ("SETINCINVROT", "1" if self.chk_invrot.isChecked() else "0"),
-            ("SETINCMOUNT", str(mount)),
-            ("SETINCLIM180", "1" if self.chk_lim180.isChecked() else "0"),
-            ("SETINCCAL", cal),
-            ("SETINCSHKTH", str(int(self.sp_shkth.value()))),
-            ("SETINCSHKWN", str(int(self.sp_shkwn.value()))),
-            ("SETINCSHKLM", str(int(self.sp_shklm.value()))),
-        ]
-
-        def run(i: int = 0, errs: Optional[list[str]] = None) -> None:
-            errs = errs if errs is not None else []
-            if i >= len(writes):
-                # Filter braucht nach Lageänderung ~1–2 s
-                QTimer.singleShot(1200, self._refresh_inc_angle)
-                if errs:
-                    self.lbl_inc_status.setText(
-                        t("setup.inc_write_partial", err="; ".join(errs[:4]))
-                    )
-                else:
-                    self.lbl_inc_status.setText(t("setup.inc_write_ok"))
-                return
-            cmd, params = writes[i]
-
-            def got(p: Optional[str], e: str) -> None:
-                if p is None and e:
-                    errs.append(f"{cmd}: {e}")
-                run(i + 1, errs)
-
-            self._cmd(cmd, params, got, timeout=1.5)
-
-        run(0)
-
     def _open_inc_win(self) -> None:
         from .inclinometer_config_window import InclinometerConfigWindow
 
@@ -2889,7 +3344,8 @@ class ZeroRefPage(QWizardPage, _CmdMixin):
         self.btn_homing.setVisible(homing_setref_allowed(et, es))
         self.btn_manual.setVisible(manual_setref_allowed(et, es))
         self.btn_ssi.setVisible(setenczero_primary(et))
-        j = jog_allowed(et, es)
+        # ZeroRef-JOG nur ohne Endschalter (Typ 1/2); Richtungs-JOG sitzt auf CalPage.
+        j = manual_setref_allowed(et, es)
         self.btn_ccw.setVisible(j)
         self.btn_cw.setVisible(j)
         if inclinometer_cal_allowed(et):
@@ -2993,7 +3449,20 @@ class VerifyPage(QWizardPage, _CmdMixin):
         self._get_sync_ui("GETREF", self.lbl_ref)
         self._get_sync_ui("GETERR", self.lbl_err)
         self._get_sync_ui("GETMOVE", self.lbl_move)
-        self._get_sync_ui("GETPOSDG", self.lbl_pos)
+        self._poll_pos()
+
+    def _poll_pos(self) -> None:
+        def done(tel, err):
+            if err or tel is None:
+                self.lbl_pos.setText(t("setup.val_err", err=str(err or "—")))
+                return
+            v = _pf(getattr(tel, "params", ""))
+            if v is None:
+                self.lbl_pos.setText(str(getattr(tel, "params", "") or "—"))
+            else:
+                self.lbl_pos.setText(f"{float(v):.1f} °".replace(".", ","))
+
+        self._send("GETPOSDG", "0", on_done=done)
 
 
 class AntennaPage(QWizardPage, _CmdMixin):
@@ -3371,6 +3840,20 @@ class DonePage(QWizardPage):
         wrap = QWidget()
         wrap.setLayout(self._body)
         root.addWidget(_scroll(wrap))
+        self.box_next_axis = QGroupBox(t("setup.done_sec_axis"))
+        na = QVBoxLayout(self.box_next_axis)
+        self.lbl_next_axis = QLabel(t("setup.done_next_axis_hint"))
+        self.lbl_next_axis.setWordWrap(True)
+        na.addWidget(self.lbl_next_axis)
+        row = QHBoxLayout()
+        self.btn_other_axis = QPushButton(t("setup.done_btn_other_axis"))
+        self.btn_finish_leave = QPushButton(t("setup.done_btn_finish_leave"))
+        self.btn_other_axis.clicked.connect(self._on_other_axis)
+        self.btn_finish_leave.clicked.connect(self._on_finish_leave)
+        row.addWidget(self.btn_other_axis)
+        row.addWidget(self.btn_finish_leave)
+        na.addLayout(row)
+        root.addWidget(self.box_next_axis)
         foot = QLabel(t("setup.done_footer"))
         foot.setWordWrap(True)
         foot.setStyleSheet("color: gray;")
@@ -3508,21 +3991,29 @@ class DonePage(QWizardPage):
                 2: t("setup.rtype_90"),
                 3: t("setup.rtype_180"),
             }.get(rt, str(rt))
-            self._section(
-                t("setup.done_sec_drive"),
+            drive_rows: list[tuple[str, object]] = [
+                (t("setup.drive_rotor_type"), rt_txt),
+                (t("setup.drive_begin"), f"{snap.get('begin_dg', '—')}°"),
+                (t("setup.drive_max"), f"{snap.get('max_dg', '—')}°"),
+                (t("setup.drive_minpwm"), f"{snap.get('min_pwm', '—')} %"),
+                (t("setup.drive_iwarn"), f"{snap.get('iwarn', '—')} mA"),
+                (t("setup.drive_imax"), f"{snap.get('imax', '—')} mA"),
+            ]
+            if "home_pwm" in snap:
+                drive_rows.append(
+                    (t("setup.drive_homepwm"), f"{snap.get('home_pwm', '—')} %")
+                )
+            if "home_seek_pwm" in snap:
+                drive_rows.append(
+                    (t("setup.drive_seekpwm"), f"{snap.get('home_seek_pwm', '—')} %")
+                )
+            drive_rows.extend(
                 [
-                    (t("setup.drive_rotor_type"), rt_txt),
-                    (t("setup.drive_begin"), f"{snap.get('begin_dg', '—')}°"),
-                    (t("setup.drive_max"), f"{snap.get('max_dg', '—')}°"),
-                    (t("setup.drive_minpwm"), f"{snap.get('min_pwm', '—')} %"),
-                    (t("setup.drive_iwarn"), f"{snap.get('iwarn', '—')} mA"),
-                    (t("setup.drive_imax"), f"{snap.get('imax', '—')} mA"),
-                    (t("setup.drive_homepwm"), f"{snap.get('home_pwm', '—')} %"),
-                    (t("setup.drive_seekpwm"), f"{snap.get('home_seek_pwm', '—')} %"),
                     (t("setup.drive_ramp"), snap.get("ramp", "—")),
                     (t("setup.drive_arrtol"), f"{snap.get('arrtol', '—')}°"),
-                ],
+                ]
             )
+            self._section(t("setup.done_sec_drive"), drive_rows)
 
         if wiz.wind_choice is not None:
             wind_txt = t("setup.done_yes") if wiz.wind_choice else t("setup.done_no")
@@ -3572,11 +4063,22 @@ class DonePage(QWizardPage):
                 ),
                 (
                     t("setup.done_web"),
-                    f"{_onoff(web.get('enabled'))} · Port {web.get('port', '—')}",
+                    f"{_onoff(web.get('enabled'))} · "
+                    f"{web.get('listen_host', '—')}:"
+                    f"{web.get('listen_port', web.get('port', '—'))}",
                 ),
             ],
         )
         self._body.addStretch(1)
+
+        dual = bool(rb.get("enable_az", True)) and bool(rb.get("enable_el", False))
+        self.box_next_axis.setVisible(dual)
+
+    def _on_other_axis(self) -> None:
+        self.wiz.save_and_continue_other_axis()
+
+    def _on_finish_leave(self) -> None:
+        self.wiz.accept()
 
 
 # ---------------------------------------------------------------------------
@@ -3788,6 +4290,40 @@ class CommissioningWizard(QWizard):
         self._sess_committed = True
         self._sess_active = False
 
+    def save_and_continue_other_axis(self) -> None:
+        """Aktuelle Achse speichern und zur Zielachse-Seite zurück (zweite Achse)."""
+        self.force_setup_off()
+        working = str(getattr(self, "_sess_working_id", "") or "")
+        mode = str(getattr(self, "_sess_mode", "") or "edit")
+        if mode == "new":
+            mode = "edit"
+        if mode not in ("default", "edit"):
+            mode = "edit"
+        self.commit_profile_session()
+        cb = self.reload_profile_cb
+        if callable(cb):
+            try:
+                cb()
+            except Exception:
+                pass
+        # Neue Edit-Session auf dem gespeicherten Profil für die zweite Achse
+        if working:
+            try:
+                self.begin_profile_session(mode, profile_id=working)
+            except Exception:
+                pass
+        self.axis_role = "az"
+        self.axis_dst = 20
+        self.enc_type = None
+        self.endstc = None
+        self._pending_cpr = None
+        self.wind_choice = None
+        self.drive_snapshot = None
+        try:
+            self.setCurrentId(int(self._id_axis))
+        except Exception:
+            pass
+
     def rollback_profile_session(self) -> None:
         """Abbruch: Temp löschen; Edit/Default auf Snapshot zurück."""
         if not self._sess_active or self._sess_committed:
@@ -3960,8 +4496,8 @@ class CommissioningWizard(QWizard):
             self._id_ctrl,
             self._id_axis,
             self._id_enc,
-            self._id_drive,
             self._id_endst,
+            self._id_drive,
             self._id_weather,
             self._id_temp,
             self._id_cal,
@@ -3979,9 +4515,14 @@ class CommissioningWizard(QWizard):
         for nid in order[idx + 1 :]:
             if nid == self._id_weather and not weather_allowed(self.enc_type):
                 continue
+            if nid == self._id_zero and not zero_ref_step_allowed(self.enc_type):
+                continue
             if nid == self._id_ant:
                 rb = self.cfg.get("rotor_bus") or {}
-                if not bool(rb.get("enable_az", True)):
+                if not antenna_names_allowed(
+                    enable_az=bool(rb.get("enable_az", True)),
+                    axis_role=self.axis_role,
+                ):
                     continue
             return nid
         return -1

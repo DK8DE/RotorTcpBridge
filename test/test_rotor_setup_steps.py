@@ -10,17 +10,22 @@ from rotortcpbridge.rotor_setup_steps import (
     STEP_CAL,
     STEP_DRIVE,
     STEP_WEATHER,
+    STEP_ZERO_REF,
     ack_value_matches,
+    antenna_names_allowed,
     compute_cpr,
     cpr_for_range,
     cpr_measure_allowed,
     drive_defaults,
+    enc_inv_allowed,
+    endstat_ui_allowed,
     endstc_choices,
     endstc_recommendation,
     homing_setref_allowed,
     inclinometer_cal_allowed,
     jog_allowed,
     manual_setref_allowed,
+    mot_inv_allowed,
     parse_encoder_type,
     parse_endstc,
     setenczero_primary,
@@ -28,6 +33,7 @@ from rotortcpbridge.rotor_setup_steps import (
     visible_rotor_steps,
     weather_allowed,
     wind_alerts_allowed,
+    zero_ref_step_allowed,
 )
 from rotortcpbridge.ui.antenna_names_panel import sanitize_antenna_name
 
@@ -68,11 +74,16 @@ def test_weather_only_type_1_2() -> None:
     assert STEP_ALERTS in visible_rotor_steps(enc_type=3, enable_az=True)
 
 
-def test_jog_and_cpr_only_type12_endstc0() -> None:
-    assert jog_allowed(1, 0) and cpr_measure_allowed(2, 0)
-    assert not jog_allowed(1, 1)
-    assert not jog_allowed(3, 0)
-    assert not jog_allowed(4, 0)
+def test_jog_all_types_cpr_only_type12_endstc0() -> None:
+    assert jog_allowed(1, 0) and jog_allowed(1, 2)
+    assert jog_allowed(3, 0) and jog_allowed(4, 0)
+    assert cpr_measure_allowed(2, 0)
+    assert not cpr_measure_allowed(1, 1)
+    assert not cpr_measure_allowed(3, 0)
+    assert enc_inv_allowed(1) and enc_inv_allowed(3) and not enc_inv_allowed(4)
+    assert mot_inv_allowed(4) and mot_inv_allowed(2)
+    assert endstat_ui_allowed(1) and endstat_ui_allowed(2)
+    assert not endstat_ui_allowed(0) and not endstat_ui_allowed(None)
 
 
 def test_homing_vs_manual_ref() -> None:
@@ -87,6 +98,11 @@ def test_ssi_and_inclinometer() -> None:
     assert not setenczero_primary(1)
     assert inclinometer_cal_allowed(4)
     assert not inclinometer_cal_allowed(2)
+    assert zero_ref_step_allowed(1) and zero_ref_step_allowed(3)
+    assert not zero_ref_step_allowed(4)
+    assert not step_visible(STEP_ZERO_REF, enc_type=4)
+    assert step_visible(STEP_ZERO_REF, enc_type=1)
+    assert STEP_ZERO_REF not in visible_rotor_steps(enc_type=4)
 
 
 def test_endstc_matrix() -> None:
@@ -104,7 +120,24 @@ def test_visible_steps_skip_weather_and_antenna() -> None:
     assert STEP_CAL in steps_t3
     steps_no_az = visible_rotor_steps(enc_type=1, endstc=0, enable_az=False)
     assert STEP_ANTENNA not in steps_no_az
-    assert STEP_ANTENNA in visible_rotor_steps(enc_type=1, enable_az=True)
+    assert STEP_ANTENNA in visible_rotor_steps(
+        enc_type=1, enable_az=True, axis_role="az"
+    )
+    assert STEP_ANTENNA not in visible_rotor_steps(
+        enc_type=1, enable_az=True, axis_role="el"
+    )
+    assert antenna_names_allowed(enable_az=True, axis_role="az")
+    assert not antenna_names_allowed(enable_az=True, axis_role="el")
+
+
+def test_strom_ma_mv_roundtrip() -> None:
+    from rotortcpbridge.rotor_setup_steps import strom_ma_to_mv, strom_mv_to_ma
+
+    # 350 mV ≈ 2692 mA bei 130 mV/A (UI zeigt mA, Bus speichert mV)
+    assert strom_mv_to_ma(350) == 2692
+    assert strom_ma_to_mv(2692) == 350
+    assert strom_ma_to_mv(1000) == 130  # 1 A
+    assert strom_mv_to_ma(130) == 1000
 
 
 def test_drive_defaults_arrtol_and_axis() -> None:

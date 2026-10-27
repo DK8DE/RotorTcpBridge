@@ -149,11 +149,8 @@ def test_flow_without_endswitch(app, monkeypatch):
     rotor.dgcal = 3.5  # alter Korrekturwinkel soll am Ende weg sein
     wiz, page = _make_page(rotor)
     page.initializePage()
-    _pump(app, 100)
-    assert not page.g2.isEnabled()
-
-    # Schritt 1: CPR fehlt -> Startwert, Reboot-Wartezeit, dann Setup an + vorläufiges Max
-    page._start_setup()
+    # Schritt 1 automatisch beim Seitenaufruf: CPR fehlt -> Startwert,
+    # Reboot-Wartezeit, dann Setup an + vorläufiges Max
     _pump(app, 4500)
     assert rotor.cpr == 28600
     assert rotor.setup == 1 and page._setup_on

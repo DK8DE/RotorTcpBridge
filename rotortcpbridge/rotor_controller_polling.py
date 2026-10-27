@@ -896,7 +896,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             elif (not prev_online) and new_online:
                 # Wieder online: Absolut-Encoder ohne Homing erneut als referenziert markieren
                 try:
-                    if self.abs_encoder_no_homing():
+                    ax_name = "AZ" if axis_state is self.az else "EL"
+                    if self.abs_encoder_no_homing_for_axis(ax_name):
                         axis_state.referenced = True
                 except Exception:
                     pass
@@ -1354,8 +1355,8 @@ class RotorControllerPollingMixin(_RotorPollingHost):
     def _poll_ref(
         self, dst: int, axis_state: AxisState, axis: str, *, priority: int = 2
     ):
-        # Absolut-Encoder (GETENCTYPE=3): kein periodisches GETREF in Ruhe/Homing.
-        if self.abs_encoder_no_homing():
+        # Absolut-Encoder (GETENCTYPE=3/4): kein periodisches GETREF in Ruhe/Homing.
+        if self.abs_encoder_no_homing_for_axis(axis):
             return
         # WICHTIG: GETREF darf die restlichen Polls (Pos/Err/Warn/Telemetrie) nicht blockieren.
         # Daher ohne pending senden; Antwort wird in _on_async_tel verarbeitet.

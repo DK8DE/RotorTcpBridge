@@ -1,8 +1,8 @@
 """Versions- und Metadaten für RotorTcpBridge."""
 
 APP_NAME = "RotorTcpBridge"
-APP_VERSION = "2.5.1"
-APP_DATE = "25.10.2026"
+APP_VERSION = "2.5.2"
+APP_DATE = "14.11.2026"
 APP_AUTHOR = "Jörg Körner DK8DE"
 APP_COPYRIGHT = "2026 Jörg Körner DK8DE"
 
@@ -15,7 +15,7 @@ ROTOR_FW_VERSION = "1.10.14"
 CONTROLLER_FW_VERSION = "1.5.9"
 INCLINOMETER_FW_VERSION = "1.3.8"
 WLAN_MODULE_FW_VERSION = "1.5.1"
-
+LAN_MODULE_FW_VERSION = "1.0.1"
 # Download-Seite (kein Auto-Download in der App)
 DOWNLOAD_PAGE_URL = "https://dk8.de/de/download/"
 
@@ -30,4 +30,5 @@ FW_GITHUB_REPOS: dict[str, str] = {
     "CONTROLLER_FW_VERSION": "Rotor_Display_5",
     "INCLINOMETER_FW_VERSION": "Inklinometer_IIS2ICLXTR",
     "WLAN_MODULE_FW_VERSION": "WLAN_to_RS485_Modul",
+    "LAN_MODULE_FW_VERSION": "LAN_to_RS485_Modul",
 }

@@ -6,6 +6,10 @@ import struct
 import unittest
 
 from rotortcpbridge.dk8de_wlan_module import (
+    VENDOR_DK8DE,
+    VENDOR_DK8DE_LAN,
+    classify_dk8de_device,
+    classify_dk8de_vendor,
     config_frame_encode,
     config_frame_try_parse,
     dk8de_crc16,
@@ -98,6 +102,25 @@ class TestUid(unittest.TestCase):
     def test_valid(self):
         self.assertTrue(uid_is_valid("C5E632AC"))
         self.assertFalse(uid_is_valid("SHORT"))
+
+
+class TestClassifyVendor(unittest.TestCase):
+    def test_lan_by_hw(self):
+        self.assertEqual(classify_dk8de_vendor(hw="NE2"), VENDOR_DK8DE_LAN)
+
+    def test_lan_by_name(self):
+        self.assertEqual(
+            classify_dk8de_vendor(name="ROTOR-LAN-E18C24C8"), VENDOR_DK8DE_LAN
+        )
+
+    def test_wlan_default(self):
+        self.assertEqual(classify_dk8de_vendor(hw="WROOM", name="ROTOR-WLAN-X"), VENDOR_DK8DE)
+
+    def test_device(self):
+        lan = _device_from_info(
+            {"UID": "E18C24C8", "HW": "NE2", "NAME": "ROTOR-LAN-E18C24C8"}
+        )
+        self.assertEqual(classify_dk8de_device(lan), VENDOR_DK8DE_LAN)
 
 
 class TestBuildWanCmds(unittest.TestCase):

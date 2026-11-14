@@ -3511,6 +3511,7 @@ class SettingsWindow(QDialog):
                 status_key="unknown",
                 status_text=t("settings.update_ver_status_checking"),
             )
+
             for key, online in (
                 ("controller", CONTROLLER_FW_VERSION),
                 ("az", ROTOR_FW_VERSION),
@@ -3524,6 +3525,8 @@ class SettingsWindow(QDialog):
                     status_key="unknown",
                     status_text=t("settings.update_ver_status_checking"),
                 )
+            if hasattr(tab, "clear_network_module_rows"):
+                tab.clear_network_module_rows()
         except Exception:
             pass
 
@@ -3608,6 +3611,7 @@ class SettingsWindow(QDialog):
         from ..version import (
             CONTROLLER_FW_VERSION,
             INCLINOMETER_FW_VERSION,
+            LAN_MODULE_FW_VERSION,
             ROTOR_FW_VERSION,
             WLAN_MODULE_FW_VERSION,
         )
@@ -3775,6 +3779,53 @@ class SettingsWindow(QDialog):
                 visible=False,
             )
 
+        # DK8DE WLAN-/LAN-Module: je Modul eine eigene Zeile
+        mods = list(getattr(result, "modules", None) or []) if result else []
+        module_rows: list[dict] = []
+        for kind, expected, type_key in (
+            ("wlan", WLAN_MODULE_FW_VERSION, "settings.update_ver_wlan"),
+            ("lan", LAN_MODULE_FW_VERSION, "settings.update_ver_lan"),
+        ):
+            type_lbl = t(type_key)
+            for m in mods:
+                if str(getattr(m, "kind", "")) != kind:
+                    continue
+                label = str(getattr(m, "label", "") or getattr(m, "uid", "") or "?")
+                host = str(getattr(m, "host", "") or "").strip()
+                tip = f"{type_lbl}" + (f" · {host}" if host else "")
+                if getattr(m, "offline", False) or not getattr(m, "found", None):
+                    module_rows.append(
+                        {
+                            "name": label,
+                            "tooltip": tip,
+                            "current": t("about.ver_offline"),
+                            "online": expected,
+                            "status_key": "offline",
+                            "status_text": t("settings.update_ver_status_offline"),
+                        }
+                    )
+                    continue
+                found = str(m.found)
+                tf, te = version_tuple(found), version_tuple(expected)
+                if tf is not None and te is not None and tf > te:
+                    sk, st = "ok", t("settings.update_ver_status_newer")
+                elif bool(getattr(m, "ok", False)):
+                    sk, st = "ok", t("settings.update_ver_status_ok")
+                else:
+                    sk, st = "update", t("settings.update_ver_status_update")
+                module_rows.append(
+                    {
+                        "name": label,
+                        "tooltip": tip,
+                        "current": found,
+                        "online": expected,
+                        "status_key": sk,
+                        "status_text": st,
+                    }
+                )
+        if hasattr(tab, "set_network_module_rows"):
+            tab.set_network_module_rows(module_rows)
+
         parts: list[str] = []
         if extra_info and str(extra_info).strip():
             parts.append(str(extra_info).strip())
@@ -3789,8 +3840,20 @@ class SettingsWindow(QDialog):
                     parts.append(
                         t("fw.info_inclinometer", expected=INCLINOMETER_FW_VERSION)
                     )
-                elif s.startswith("wlan_pin:"):
-                    parts.append(t("fw.info_wlan", expected=WLAN_MODULE_FW_VERSION))
+                elif s.startswith("module_mismatch:"):
+                    # module_mismatch:kind:label:found:expected
+                    bits = s.split(":")
+                    if len(bits) >= 5:
+                        parts.append(
+                            t(
+                                "fw.info_module_mismatch",
+                                kind=bits[1].upper(),
+                                name=bits[2],
+                                found=bits[3],
+                                expected=bits[4],
+                            )
+                        )
+                # wlan_pin/lan_pin: nicht mehr als Extra-Text — steht schon in den Modulzeilen
         try:
             tab.set_fw_extra_info("\n".join(parts))
         except Exception:

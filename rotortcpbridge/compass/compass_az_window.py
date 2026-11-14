@@ -561,9 +561,40 @@ class CompassWidget(QWidget):
             d = 1
         self._angle_decimals = d
 
+    def _outer_ring_pad_px(self) -> float:
+        """Reserve außerhalb von r: Heatmap-/Standzeit-Ringe werden um den Hauptkreis gezeichnet."""
+        modes = self._heatmap_modes if self._heatmap_visible else []
+        # Antialiasing / 2px-Kontur immer etwas Luft lassen
+        pad = 3.0
+        if not modes:
+            return pad
+        # Gleiche Breiten wie in paintEvent (strom/dwell 6.5, om 7, Gap 1)
+        for i, mode in enumerate(modes):
+            pad += 6.5 if mode in ("strom", "dwell") else 7.0
+            if i < len(modes) - 1:
+                pad += 1.0
+        return pad
+
     def _geom(self) -> tuple[float, float, float]:
-        """Hilfsgeometrie: (cx, cy, r). Rand oben/unten für Beschriftung + äußere Ringe."""
-        rect = self.rect().adjusted(10, 26, -10, -14)
+        """Hilfsgeometrie: (cx, cy, r). Rand inkl. Reserve für äußere Ringe (kein Clip)."""
+        ring_pad = self._outer_ring_pad_px()
+        # Horizontal großzügiger: beim Zusammenschieben begrenzt die Breite r —
+        # ohne Ring-Reserve wird der Standzeit-Ring links/rechts abgeschnitten.
+        m_h = 12.0 + ring_pad
+        m_t = 26.0 + max(0.0, ring_pad - 2.0)
+        m_b = 14.0 + ring_pad
+        rect = self.rect().adjusted(
+            int(round(m_h)),
+            int(round(m_t)),
+            -int(round(m_h)),
+            -int(round(m_b)),
+        )
+        if rect.width() < 8 or rect.height() < 8:
+            # Extrem klein: trotzdem zentriert, r so klein wie nötig
+            cx = float(self.width()) * 0.5
+            cy = float(self.height()) * 0.5 - float(_COMPASS_CENTER_Y_SHIFT_PX)
+            r = max(4.0, float(min(self.width(), self.height())) * 0.5 - m_h)
+            return cx, cy, r
         cx = float(rect.center().x())
         cy = float(rect.center().y()) - float(_COMPASS_CENTER_Y_SHIFT_PX)
         r = float(min(rect.width(), rect.height())) / 2.0

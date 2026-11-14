@@ -268,24 +268,48 @@ body.web-ov { display:flex; flex-direction:column; }
 body.web-ov #mapWrap { flex:1 1 auto; min-height:0; height:auto; }
 body.web-ov #map { height:100%; }
 #ovTop {
-  flex:0 0 auto; z-index:1000; display:flex; align-items:center; gap:10px;
-  padding:8px 12px; border-bottom:1px solid #8884;
-  background: rgba(250,250,250,0.94);
+  flex:0 0 auto; z-index:1000; display:flex; align-items:center; gap:6px;
+  padding:4px 6px; height:38px; min-height:38px; max-height:38px;
+  border-bottom:1px solid rgba(128,128,128,0.4);
+  background: rgba(255,255,255,0.96); color:#1a1a1a;
+  font:13px/1.35 system-ui, Segoe UI, sans-serif;
+  box-sizing:border-box; overflow:hidden;
 }
-body.map-dark #ovTop { background: rgba(36,36,36,0.94); color:#eaeaea; border-color:#555; }
-#ovTop h1 { font-size:15px; margin:0; font-weight:600; }
-#ovStatus { margin-left:auto; font-size:12px; opacity:0.9; }
+body.map-dark #ovTop {
+  background: rgba(28,28,30,0.96); color:#eaeaea;
+  border-bottom-color: rgba(180,180,190,0.3);
+}
+/* In der Shell (embed): Aktionen liegen in der Shell-Leiste */
+body.embed #ovTop { display:none !important; }
+#ovNav { display:flex; align-items:center; gap:6px; flex:0 0 auto; }
+#ovTopActions { display:flex; align-items:center; gap:6px; flex:1 1 auto; min-width:0; }
+#ovStatus { margin-left:auto; font-size:11px; opacity:0.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #ovChkActiveWrap {
   display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;
   user-select:none; white-space:nowrap;
 }
 #ovChkActiveWrap input { margin:0; }
-#ovTop button {
-  border:1px solid #8888; border-radius:6px; padding:5px 10px; cursor:pointer;
-  background:#fff; color:inherit; font-size:12px;
+/* Identisch zur Shell-Nav (#bar button.navTab) */
+#ovTop button.ovNavBtn, #ovTop button.ovAction {
+  box-sizing: border-box;
+  font:700 13px/1.2 sans-serif;
+  height:30px; min-height:30px; max-height:30px;
+  padding:0 12px; border-radius:6px; cursor:pointer;
+  border:1px solid rgba(128,128,128,0.4); background:rgba(255,255,255,0.9); color:inherit;
+  touch-action:manipulation; display:inline-flex; align-items:center; justify-content:center;
+  -webkit-appearance:none; appearance:none; white-space:nowrap;
 }
-body.map-dark #ovTop button { background:#333; color:#eaeaea; border-color:#666; }
-#ovTop button:hover { filter:brightness(1.05); }
+#ovTop button.ovNavBtn { min-width:96px; }
+body.map-dark #ovTop button.ovNavBtn,
+body.map-dark #ovTop button.ovAction {
+  background:rgba(42,42,46,0.9); border-color:rgba(180,180,190,0.3); color:#eaeaea;
+}
+#ovTop button.ovNavBtn.active {
+  background:#2563eb; border-color:#2563eb; color:#fff;
+}
+#ovTop button.ovNavBtn:hover, #ovTop button.ovAction:hover {
+  background:#2563eb; border-color:#2563eb; color:#fff;
+}
 #ovPanel {
   display:none; position:fixed; top:0; right:0; width:min(460px,100%); height:100%;
   z-index:2000; overflow:auto; box-shadow:-4px 0 18px rgba(0,0,0,0.25);
@@ -325,15 +349,29 @@ body.map-dark #ovPanel input, body.map-dark #ovPanel select, body.map-dark #ovPa
 
 def _web_chrome_html() -> str:
     return """
+<script>
+(function(){
+  try {
+    if (new URLSearchParams(location.search).get('embed') === '1' || window.parent !== window)
+      document.documentElement.classList.add('embed-pending');
+  } catch (e) {}
+})();
+</script>
 <div id="ovTop">
-  <h1 id="ovTitle"></h1>
-  <button type="button" id="ovBtnSettings"></button>
-  <button type="button" id="ovBtnReload"></button>
-  <label id="ovChkActiveWrap" title="">
-    <input type="checkbox" id="ovChkActiveAnt"/>
-    <span id="ovChkActiveLabel"></span>
-  </label>
-  <div id="ovStatus"></div>
+  <nav id="ovNav" aria-label="Seiten">
+    <button type="button" class="ovNavBtn" id="ovNavMap" data-view="map">Karte</button>
+    <button type="button" class="ovNavBtn" id="ovNavCompass" data-view="compass">Kompass</button>
+    <button type="button" class="ovNavBtn active" id="ovNavOverview" data-view="overview">Rotoren</button>
+  </nav>
+  <div id="ovTopActions">
+    <button type="button" class="ovAction" id="ovBtnSettings"></button>
+    <button type="button" class="ovAction" id="ovBtnReload"></button>
+    <label id="ovChkActiveWrap" title="">
+      <input type="checkbox" id="ovChkActiveAnt"/>
+      <span id="ovChkActiveLabel"></span>
+    </label>
+    <div id="ovStatus"></div>
+  </div>
 </div>
 <div id="ovBackdrop"></div>
 <aside id="ovPanel">
@@ -368,11 +406,38 @@ def _web_chrome_html() -> str:
 def _web_js_block(status_text_json: str) -> str:
     js = r"""
 document.body.classList.add('web-ov');
+try {
+  if (document.documentElement.classList.contains('embed-pending')
+      || new URLSearchParams(location.search).get('embed') === '1'
+      || window.parent !== window) {
+    document.body.classList.add('embed');
+  }
+} catch (e) {}
 const statusEl = document.getElementById('ovStatus');
 (function() {
   const LBL = LABELS || {};
   function L(k, fb) { return LBL[k] || fb || k; }
-  document.getElementById('ovTitle').textContent = L('title', 'Rotorübersicht');
+  const navMap = document.getElementById('ovNavMap');
+  const navComp = document.getElementById('ovNavCompass');
+  const navOv = document.getElementById('ovNavOverview');
+  if (navMap) navMap.textContent = L('nav_map', 'Karte');
+  if (navComp) navComp.textContent = L('nav_compass', 'Kompass');
+  if (navOv) navOv.textContent = L('nav_overview', 'Rotoren');
+  function goView(v) {
+    try {
+      if (window.parent !== window) {
+        window.parent.postMessage({ rotorView: v }, window.location.origin);
+        return;
+      }
+    } catch (e) {}
+    if (v === 'overview') window.location.href = '/rotoren';
+    else if (v === 'compass') window.location.href = '/#compass';
+    else window.location.href = '/#map';
+  }
+  if (navMap) navMap.addEventListener('click', function() { goView('map'); });
+  if (navComp) navComp.addEventListener('click', function() { goView('compass'); });
+  if (navOv) navOv.addEventListener('click', function() { goView('overview'); });
+  document.title = L('title', 'Rotorübersicht');
   document.getElementById('ovBtnSettings').textContent = L('menu_sites', 'Standorte…');
   document.getElementById('ovBtnReload').textContent = L('menu_reload', 'Reload');
   document.getElementById('ovPanelTitle').textContent = L('settings_title', 'Standorte');
@@ -570,6 +635,28 @@ const statusEl = document.getElementById('ovStatus');
     await persistConfig();
   }
 
+  function syncActiveToShell(on) {
+    try {
+      if (window.parent !== window) {
+        window.parent.postMessage({
+          rotorOverviewState: { active_antenna_only: !!on }
+        }, window.location.origin);
+      }
+    } catch (e) {}
+  }
+
+  async function doReload() {
+    await postAction('reload', {});
+  }
+
+  async function setActiveAntennaOnly(on) {
+    if (chkActive) chkActive.checked = !!on;
+    const res = await postAction('set_active_antenna_only', { value: !!on });
+    if (res && res.ok && res.data) applyLive(res.data);
+    else if (res && !res.ok && chkActive) chkActive.checked = !on;
+    syncActiveToShell(chkActive ? chkActive.checked : on);
+  }
+
   document.getElementById('ovBtnSettings').onclick = openPanel;
   document.getElementById('ovBtnClosePanel').onclick = closePanel;
   backdrop.onclick = closePanel;
@@ -590,17 +677,22 @@ const statusEl = document.getElementById('ovStatus');
     OV_CONFIG.sites[editIndex] = site;
     if (await persistConfig()) editor.classList.remove('open');
   };
-  document.getElementById('ovBtnReload').onclick = async () => {
-    await postAction('reload', {});
-  };
+  document.getElementById('ovBtnReload').onclick = function() { doReload(); };
   if (chkActive) {
-    chkActive.onchange = async () => {
-      const on = !!chkActive.checked;
-      const res = await postAction('set_active_antenna_only', { value: on });
-      if (res && res.ok && res.data) applyLive(res.data);
-      else if (res && !res.ok) chkActive.checked = !on;
-    };
+    chkActive.onchange = function() { setActiveAntennaOnly(!!chkActive.checked); };
+    syncActiveToShell(chkActive.checked);
   }
+
+  window.addEventListener('message', function(ev) {
+    if (ev.origin !== window.location.origin) return;
+    const d = ev.data;
+    if (!d || typeof d !== 'object' || !d.rotorOverviewAction) return;
+    if (d.rotorOverviewAction === 'settings') openPanel();
+    else if (d.rotorOverviewAction === 'reload') doReload();
+    else if (d.rotorOverviewAction === 'set_active_antenna_only') {
+      setActiveAntennaOnly(!!d.value);
+    }
+  });
 
   let lastConfigRev = -1;
   function applyLive(data) {
@@ -614,8 +706,9 @@ const statusEl = document.getElementById('ovStatus');
     } else if (data.config && typeof data.config.show_active_antenna_only === 'boolean') {
       activeOnly = data.config.show_active_antenna_only;
     }
-    if (chkActive && activeOnly !== null && chkActive.checked !== activeOnly) {
-      chkActive.checked = activeOnly;
+    if (activeOnly !== null) {
+      if (chkActive && chkActive.checked !== activeOnly) chkActive.checked = activeOnly;
+      syncActiveToShell(activeOnly);
     }
     if (data.config && typeof data.revision === 'number' && data.revision !== lastConfigRev) {
       lastConfigRev = data.revision;

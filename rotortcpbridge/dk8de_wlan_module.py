@@ -1,4 +1,8 @@
-"""DK8DE WLAN_to_RS485: UDP-Discovery (8880), AT-Session und Konfiguration."""
+"""DK8DE WLAN/LAN zu RS485: UDP-Discovery (8880), AT-Session und Konfiguration.
+
+Gemeinsames Protokoll fuer WLAN_to_RS485 und LAN_to_RS485 (NE2-T1M).
+Unterscheidung per HW/NAME (z. B. HW=NE2, NAME=ROTOR-LAN-…).
+"""
 
 from __future__ import annotations
 
@@ -15,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 VENDOR_DK8DE = "dk8de_wlan"
+VENDOR_DK8DE_LAN = "dk8de_lan"
 
 DK8DE_CONFIG_PORT = 8880
 DK8DE_DISCOVERY_CLIENT_PORT = 8889  # Host lauscht hier (wie Ebyte 1902)
@@ -274,6 +279,14 @@ def dk8de_sock_to_netmode(mode: str) -> str:
     return _SOCK_TO_NETMODE.get(str(mode or "TCPS").strip().upper(), "TCP_SERVER")
 
 
+def dk8de_sock_to_netmode_num(mode: str) -> int:
+    sock = str(mode or "TCPS").strip().upper()
+    for num, name in _NETMODE_NUM_TO_SOCK.items():
+        if name == sock:
+            return int(num)
+    return 0
+
+
 def normalize_uid(uid: str) -> str:
     s = str(uid or "").strip().upper()
     if s.startswith("ROTOR-"):
@@ -283,6 +296,28 @@ def normalize_uid(uid: str) -> str:
 
 def uid_is_valid(uid: str) -> bool:
     return bool(_UID_RE.match(normalize_uid(uid)))
+
+
+def classify_dk8de_vendor(
+    *,
+    hw: str = "",
+    name: str = "",
+    info: Optional[Dict[str, str]] = None,
+) -> str:
+    """Vendor-String: dk8de_lan bei Ethernet-Modul (NE2 / ROTOR-LAN), sonst WLAN."""
+    kv = info if isinstance(info, dict) else {}
+    hw_u = str(hw or kv.get("HW") or "").strip().upper()
+    name_u = str(name or kv.get("NAME") or "").strip().upper()
+    if hw_u in ("NE2", "LAN", "ETHERNET"):
+        return VENDOR_DK8DE_LAN
+    # ROTOR-LAN-… / …-LAN-…, aber nicht ROTOR-WLAN-… (LAN steckt in WLAN).
+    if "ROTOR-LAN" in name_u or re.search(r"(?<![W])LAN(?![A-Z0-9])", name_u):
+        return VENDOR_DK8DE_LAN
+    return VENDOR_DK8DE
+
+
+def classify_dk8de_device(device: "Dk8deDevice") -> str:
+    return classify_dk8de_vendor(hw=device.hw, name=device.name, info=device.info)
 
 
 def _normalize_contact_ip(ip: str) -> str:
@@ -442,10 +477,17 @@ def _at_command_timeout(body: str, default: float) -> float:
     """SAVE/NVS braucht auf dem ESP laenger; sonst Timeout → Modul bleibt in AT."""
     b = str(body or "").strip().upper()
     if b in ("SAVE", "AT+SAVE") or b.startswith("SAVE"):
-        return max(float(default), 12.0)
+        # Alte LAN-FW wendet eth in SAVE an und verwirft @OK — kurz warten, dann
+        # als Erfolg werten (siehe command()). Neue FW antwortet sofort.
+        return min(max(float(default), 2.0), 3.5)
     if b in ("REBOOT", "AT+REBOOT", "FACTORY", "AT+FACTORY"):
         return max(float(default), 4.0)
     return float(default)
+
+
+def _at_cmd_is_save(cmd_name: str) -> bool:
+    b = str(cmd_name or "").strip().upper()
+    return b == "SAVE" or b.startswith("SAVE")
 
 
 def _at_session_targets(host: str, config_port: int) -> List[Tuple[str, int]]:
@@ -621,6 +663,37 @@ def _udp_recv_until_socks(
     return buf, peer_ip, active_sock
 
 
+def _drain_at_rx(socks: List[socket.socket], duration_s: float = 0.35) -> str:
+    """Verwirft ausstehende UDP-AT-Pakete (z. B. doppelte CONFIG,READY)."""
+    if not socks or duration_s <= 0:
+        return ""
+    deadline = time.time() + float(duration_s)
+    dumped = ""
+    while time.time() < deadline:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        pkt = _dk8de_recv_any(socks, min(0.05, remaining))
+        if pkt is None:
+            continue
+        data, _addr, _sock = pkt
+        chunk = _at_udp_to_text(data)
+        if chunk:
+            dumped += chunk
+    return dumped
+
+
+def _at_buf_is_ready_noise(buf: str, uid: str) -> bool:
+    """True wenn die Antwort nur CONFIG,READY enthaelt (kein OK/ERROR)."""
+    text = str(buf or "").strip()
+    if not text:
+        return False
+    if _at_command_done(text, uid):
+        return False
+    compact = text.upper().replace("\r", "").replace("\n", "")
+    return "CONFIG,READY" in compact
+
+
 def _dk8de_send_discover(
     socks: List[socket.socket],
     frame: bytes,
@@ -657,6 +730,14 @@ def _dk8de_recv_any(
         return None
 
 
+def _http_auth_headers(user: str, password: str, *, content_type: str = "") -> Dict[str, str]:
+    auth = base64.b64encode(f"{user}:{password}".encode("ascii", errors="ignore")).decode("ascii")
+    headers = {"Authorization": f"Basic {auth}", "Connection": "close"}
+    if content_type:
+        headers["Content-Type"] = content_type
+    return headers
+
+
 def _http_get_json(
     host: str,
     path: str,
@@ -669,8 +750,7 @@ def _http_get_json(
     """GET /api/... mit HTTP Basic Auth; None wenn kein DK8DE-Modul."""
     import http.client
 
-    auth = base64.b64encode(f"{user}:{password}".encode("ascii", errors="ignore")).decode("ascii")
-    headers = {"Authorization": f"Basic {auth}", "Connection": "close"}
+    headers = _http_auth_headers(user, password)
     try:
         conn = http.client.HTTPConnection(host, int(port), timeout=float(timeout))
         conn.request("GET", path, headers=headers)
@@ -683,6 +763,52 @@ def _http_get_json(
         return data if isinstance(data, dict) else None
     except Exception:
         return None
+
+
+def _http_post_json(
+    host: str,
+    path: str,
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    port: int = 80,
+    user: str = DK8DE_DEFAULT_WEB_USER,
+    password: str = DK8DE_DEFAULT_WEB_PASSWORD,
+    timeout: float = 4.0,
+) -> Dict[str, Any]:
+    """POST /api/... mit optionalem JSON-Body; wirft bei HTTP-/Netzfehlern."""
+    import http.client
+
+    body_bytes = b""
+    headers = _http_auth_headers(user, password)
+    if payload is not None:
+        body_bytes = json.dumps(payload).encode("utf-8")
+        headers = _http_auth_headers(user, password, content_type="application/json")
+    conn = http.client.HTTPConnection(host, int(port), timeout=float(timeout))
+    try:
+        conn.request("POST", path, body=body_bytes, headers=headers)
+        resp = conn.getresponse()
+        raw = resp.read(8192)
+        status = int(resp.status)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    text = raw.decode("utf-8", errors="replace") if raw else ""
+    data: Any = {}
+    if text.strip():
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                data = parsed
+        except json.JSONDecodeError:
+            data = {"raw": text}
+    if status >= 400:
+        err = data.get("error") if isinstance(data, dict) else text
+        raise RuntimeError(f"HTTP {status} {path}: {err or text or 'error'}")
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(str(data.get("error")))
+    return data if isinstance(data, dict) else {}
 
 
 def _device_from_web_status(host: str, status: Dict[str, Any], cfg: Optional[Dict[str, Any]] = None) -> Dk8deDevice:
@@ -1108,20 +1234,38 @@ class Dk8deAtSession:
 
         Firmware: im AT-Modus wird ``+++CFG`` nicht mehr ausgewertet (nur AT-Zeilen).
         Nach Timeout (z. B. SAVE) ohne EXIT schlaegt jede neue Session mit leerer Antwort fehl.
+
+        Wichtig: EXIT nur gezielt (Unicast + adressiert), nicht als Broadcast-Flut —
+        sonst koennen verspaetete EXIT-Pakete die gerade geoeffnete Session wieder beenden
+        und folgende ``AT+…`` still verwerfen (Antwort bleibt nur CONFIG,READY).
         """
         socks = self._all_socks()
         if not socks:
             return
+        # Adressiertes EXIT: greift im AT-Modus, ohne wildes Broadcast-Echo.
+        exit_payload = f"AT@{self.uid}+EXIT\r".encode("ascii", errors="ignore")
+        host = str(self.host or "").strip()
+        targets: List[Tuple[str, int]] = []
+        if host and host not in ("0.0.0.0", "-", "255.255.255.255"):
+            targets.append((host, self.config_port))
+        if not targets:
+            targets = _at_session_targets(self.host, self.config_port)[:2]
         for _ in range(2):
-            self._send_to_targets(b"AT+EXIT\r", socks)
-            deadline = time.time() + 0.6
+            for sock in socks:
+                for target in targets:
+                    try:
+                        sock.sendto(exit_payload, target)
+                    except OSError:
+                        continue
+            deadline = time.time() + 0.45
             _udp_recv_until_socks(
                 socks,
                 deadline,
                 lambda buf: "OK" in str(buf or "").upper() or "ERROR" in str(buf or "").upper(),
-                idle_s=0.2,
+                idle_s=0.15,
             )
-        time.sleep(0.35)
+        _drain_at_rx(socks, 0.25)
+        time.sleep(0.2)
 
     def _open_session(self) -> None:
         assert self._sock is not None
@@ -1158,51 +1302,100 @@ class Dk8deAtSession:
                 self.host = contact
             self._active_sock = active or self._sock
             self._rx = rx
+            # Unicast+Broadcast liefern oft zwei READY; nach dem ersten Match
+            # noch ankommende Pakete sonst als „Antwort“ auf den ersten AT-Befehl.
+            _drain_at_rx(socks, 0.4)
+            time.sleep(0.05)
             return
         raise RuntimeError(f"AT-Session nicht bereit: {_at_error_snippet(last_rx)!r}")
 
+    def _build_at_payload(self, body: str) -> Tuple[bytes, str]:
+        """Baut AT@{uid}+… (bevorzugt) bzw. AT+… und liefert (payload, cmd_name)."""
+        b = str(body or "").strip()
+        if b.upper().startswith("AT@"):
+            # Bereits adressiert
+            plus = b.find("+")
+            cmd_name = b[plus + 1 :] if plus >= 0 else b
+            return f"{b}\r".encode("ascii", errors="ignore"), cmd_name
+        if b.upper().startswith("AT+"):
+            cmd_name = b[3:]
+        elif b.upper() == "AT":
+            cmd_name = "AT"
+            return b"AT\r", cmd_name
+        else:
+            cmd_name = b
+        # Adressiert: Modul antwortet nur bei passender UID; gleiche AT-Body-Logik.
+        line = f"AT@{self.uid}+{cmd_name}\r"
+        return line.encode("ascii", errors="ignore"), cmd_name
+
+    def _send_command_payload(self, payload: bytes, socks: List[socket.socket]) -> None:
+        """Sendet AT-Befehl gezielt (aktiver Peer zuerst, dann alle Unicast-Pfade)."""
+        host = str(self.host or "").strip()
+        targets: List[Tuple[str, int]] = []
+        if host and host not in ("0.0.0.0", "-", "255.255.255.255"):
+            targets.append((host, self.config_port))
+        if not targets:
+            targets = _at_session_targets(self.host, self.config_port)
+
+        ordered: List[socket.socket] = []
+        if self._active_sock is not None:
+            ordered.append(self._active_sock)
+        for s in socks:
+            if s is not None and s not in ordered:
+                ordered.append(s)
+        for sock in ordered:
+            for target in targets:
+                try:
+                    sock.sendto(payload, target)
+                except OSError:
+                    continue
+
     def command(self, body: str) -> str:
-        """Sendet AT+<body> und liefert die komplette Antwort."""
+        """Sendet AT@{uid}+<body> und liefert die komplette Antwort."""
         socks = self._all_socks()
         if not socks:
             raise RuntimeError("AT-Socket nicht offen")
-        b = str(body or "").strip()
-        if b.upper().startswith("AT+"):
-            line = f"{b}\r"
-            cmd_name = b[3:]
-        elif b.upper() == "AT":
-            line = "AT\r"
-            cmd_name = "AT"
-        else:
-            line = f"AT+{b}\r"
-            cmd_name = b
-        payload = line.encode("ascii", errors="ignore")
-        # Primär vom aktiven Peer-Socket; Fallback: alle Sockets (Windows-Demux).
-        send_socks = [self._active_sock] if self._active_sock is not None else socks
-        send_socks = [s for s in send_socks if s is not None]
-        if not send_socks:
-            send_socks = socks
-        target = (self.host, self.config_port)
-        for sock in send_socks:
-            try:
-                sock.sendto(payload, target)
-            except OSError:
-                continue
+        # Spaete READY-Duplikate vor dem Befehl verwerfen.
+        _drain_at_rx(socks, 0.12)
+        payload, cmd_name = self._build_at_payload(body)
         wait_s = _at_command_timeout(cmd_name, self.timeout)
-        deadline = time.time() + wait_s
         done_fn = lambda buf: _at_command_done(buf, self.uid)
-        self._rx, peer_ip, active = _udp_recv_until_socks(socks, deadline, done_fn, idle_s=0.35)
-        if active is not None:
-            self._active_sock = active
-        contact = _normalize_contact_ip(peer_ip)
-        if contact:
-            self.host = contact
-        if not _at_command_done(self._rx, self.uid):
-            raise RuntimeError(f"Keine AT-Antwort fuer {body}: {self._rx!r}")
-        err = _parse_at_response(self._rx, self.uid)[2]
-        if err:
-            raise RuntimeError(f"AT-Fehler: {err}")
-        return self._rx
+        save_cmd = _at_cmd_is_save(cmd_name)
+
+        last_rx = ""
+        for attempt in range(2):
+            self._send_command_payload(payload, socks)
+            deadline = time.time() + wait_s
+            self._rx, peer_ip, active = _udp_recv_until_socks(
+                socks, deadline, done_fn, idle_s=0.35
+            )
+            last_rx = self._rx or last_rx
+            if active is not None:
+                self._active_sock = active
+            contact = _normalize_contact_ip(peer_ip)
+            if contact:
+                self.host = contact
+            if _at_command_done(self._rx, self.uid):
+                err = _parse_at_response(self._rx, self.uid)[2]
+                if err:
+                    raise RuntimeError(f"AT-Fehler: {err}")
+                return self._rx
+            # LAN-FW (alt): SAVE → platform_apply_config() → UDP weg, @OK kommt nie.
+            # NVS ist trotzdem geschrieben; REBOOT folgt im Write-Pfad.
+            if save_cmd and (
+                not str(self._rx or "").strip() or _at_buf_is_ready_noise(self._rx, self.uid)
+            ):
+                return f"@{self.uid}:OK\r\n"
+            # Nur READY gesehen → Session vermutlich durch spaetes EXIT tot:
+            # neu oeffnen und einmal wiederholen.
+            if attempt == 0 and _at_buf_is_ready_noise(self._rx, self.uid):
+                try:
+                    self._open_session()
+                except Exception:
+                    break
+                continue
+            break
+        raise RuntimeError(f"Keine AT-Antwort fuer {body}: {last_rx!r}")
 
     def query_lines(self, body: str) -> Tuple[List[str], List[str]]:
         resp = self.command(body)
@@ -1317,6 +1510,99 @@ def read_status_dk8de(
     return out
 
 
+def write_config_web_dk8de(
+    host: str,
+    wan: Dict[str, Any],
+    sock: Dict[str, Any],
+    *,
+    web_port: int = 80,
+    user: str = DK8DE_DEFAULT_WEB_USER,
+    password: str = DK8DE_DEFAULT_WEB_PASSWORD,
+    reboot: bool = True,
+    timeout: float = 5.0,
+) -> Dict[str, Any]:
+    """Schreibt WAN+Socket wie die Modul-Weboberflaeche (/api/config/…)."""
+    results: Dict[str, Any] = {"commands": [], "ok": True, "error": "", "source": "dk8de_web"}
+    mode = str(wan.get("mode", "STATIC") or "STATIC").upper()
+    dhcp = mode == "DHCP"
+    ip = str(wan.get("ip", "") or "").strip()
+    mask = str(wan.get("mask", "") or "").strip()
+    gw = str(wan.get("gateway", "") or "").strip()
+    dns = str(wan.get("dns", "") or "").strip()
+    sock_mode = str(sock.get("mode", "TCPS") or "TCPS").upper()
+    remote_ip = str(sock.get("remote_ip", "") or "").strip()
+    try:
+        port = int(sock.get("remote_port") or DK8DE_DEFAULT_DATA_PORT)
+    except (TypeError, ValueError):
+        port = DK8DE_DEFAULT_DATA_PORT
+
+    wifi_body: Dict[str, Any] = {
+        "wifi_dhcp": dhcp,
+        "wifi_ip": ip,
+        "wifi_mask": mask,
+        "wifi_gw": gw,
+        "wifi_dns": dns,
+    }
+    rs485_body: Dict[str, Any] = {
+        "net_mode": dk8de_sock_to_netmode_num(sock_mode),
+        "local_port": int(port) if sock_mode in ("TCPS", "UDPS") else DK8DE_DEFAULT_DATA_PORT,
+        "remote_ip": remote_ip if sock_mode not in ("TCPS", "UDPS") else "",
+        "remote_port": int(port),
+    }
+
+    try:
+        resp = _http_post_json(
+            host,
+            "/api/config/wifi",
+            wifi_body,
+            port=web_port,
+            user=user,
+            password=password,
+            timeout=timeout,
+        )
+        results["commands"].append({"cmd": "POST /api/config/wifi", "resp": resp})
+        resp = _http_post_json(
+            host,
+            "/api/config/rs485",
+            rs485_body,
+            port=web_port,
+            user=user,
+            password=password,
+            timeout=timeout,
+        )
+        results["commands"].append({"cmd": "POST /api/config/rs485", "resp": resp})
+        # rs485-POST speichert nur RAM — explizit NVS committen.
+        resp = _http_post_json(
+            host,
+            "/api/save",
+            None,
+            port=web_port,
+            user=user,
+            password=password,
+            timeout=timeout,
+        )
+        results["commands"].append({"cmd": "POST /api/save", "resp": resp})
+        if reboot:
+            try:
+                resp = _http_post_json(
+                    host,
+                    "/api/reboot",
+                    None,
+                    port=web_port,
+                    user=user,
+                    password=password,
+                    timeout=min(timeout, 3.0),
+                )
+                results["commands"].append({"cmd": "POST /api/reboot", "resp": resp})
+            except Exception:
+                # Verbindung bricht beim Reboot oft ab — erwartet.
+                results["commands"].append({"cmd": "POST /api/reboot", "resp": "(reboot)"})
+    except Exception as exc:
+        results["ok"] = False
+        results["error"] = str(exc)
+    return results
+
+
 def write_config_dk8de(
     host: str,
     uid: str,
@@ -1327,7 +1613,7 @@ def write_config_dk8de(
     reboot: bool = True,
     timeout: float = 12.0,
 ) -> Dict[str, Any]:
-    results: Dict[str, Any] = {"commands": [], "ok": True, "error": ""}
+    results: Dict[str, Any] = {"commands": [], "ok": True, "error": "", "source": "dk8de_at"}
     mode = str(wan.get("mode", "STATIC") or "STATIC").upper()
     ip = str(wan.get("ip", "") or "")
     mask = str(wan.get("mask", "") or "")

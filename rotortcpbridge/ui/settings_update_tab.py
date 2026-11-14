@@ -58,6 +58,8 @@ class UpdateTab(QWidget):
         self._ver_online_lbls: dict[str, QLabel] = {}
         self._ver_status_lbls: dict[str, QLabel] = {}
         self._ver_row_widgets: dict[str, list] = {}
+        # Dynamische Zeilen: ein Eintrag pro konfiguriertem WLAN-/LAN-Modul
+        self._module_row_widgets: list[list] = []
 
         root = QVBoxLayout(self)
         root.setSpacing(px_to_dip(self, 10))
@@ -294,6 +296,38 @@ class UpdateTab(QWidget):
         if visible is not None:
             for w in self._ver_row_widgets.get(key, []):
                 w.setVisible(bool(visible))
+
+    def clear_network_module_rows(self) -> None:
+        for widgets in self._module_row_widgets:
+            for w in widgets:
+                self._ver_grid.removeWidget(w)
+                w.deleteLater()
+        self._module_row_widgets.clear()
+
+    def set_network_module_rows(self, rows: list[dict]) -> None:
+        """Eine Tabellenzeile pro Modul: name/current/online/status_key/status_text."""
+        self.clear_network_module_rows()
+        start = 1 + len(self._ver_row_keys)
+        for i, item in enumerate(rows or []):
+            if not isinstance(item, dict):
+                continue
+            name = QLabel(str(item.get("name") or "—"))
+            name.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            tip = str(item.get("tooltip") or "").strip()
+            if tip:
+                name.setToolTip(tip)
+            cur = QLabel(str(item.get("current") or "—"))
+            cur.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            online = QLabel(str(item.get("online") or "—"))
+            online.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            status = QLabel(str(item.get("status_text") or "—"))
+            status.setStyleSheet(_status_style(str(item.get("status_key") or "unknown")))
+            r = start + i
+            self._ver_grid.addWidget(name, r, 0)
+            self._ver_grid.addWidget(cur, r, 1)
+            self._ver_grid.addWidget(online, r, 2)
+            self._ver_grid.addWidget(status, r, 3)
+            self._module_row_widgets.append([name, cur, online, status])
 
     def set_fw_extra_info(self, text: str) -> None:
         self._lbl_fw_extra.setText(str(text or ""))

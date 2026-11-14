@@ -1861,6 +1861,7 @@ class MapWindow(QDialog):
                 "toggle_controls_show": t("map.web_toggle_controls_show"),
                 "toggle_controls_hide": t("map.web_toggle_controls_hide"),
                 "open_compass": t("map.web_open_compass"),
+                "open_overview": t("map.web_open_overview"),
                 "back_to_map": t("map.web_back_to_map"),
                 "profile": t("main.menu_profile"),
                 "profile_sync_title": t("map.web_profile_sync_title"),

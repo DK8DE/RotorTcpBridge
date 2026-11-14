@@ -4,6 +4,7 @@ Unterstuetzte Hersteller:
   * Ebyte NE2 – Auslesen/Schreiben per UDP-Broadcast (1901/1902), wie Original-Tool
   * Ebyte NA11x – Web-API bzw. UDP; Suche/IP-Vergabe per UDP 1901/1902
   * DK8DE WLAN/RS485 – UDP 8880 / Web
+  * DK8DE LAN/RS485 (NE2-T1M) – gleiches AT/UDP-8880-Protokoll, Ethernet statt WLAN
 """
 
 from __future__ import annotations
@@ -26,24 +27,36 @@ from urllib.parse import urlencode
 VENDOR_NE2 = "ne2"
 VENDOR_NA11X = "na11x"
 VENDOR_DK8DE = "dk8de_wlan"
+VENDOR_DK8DE_LAN = "dk8de_lan"
 VENDOR_GENERIC = "generic"
 
-VALID_VENDORS = (VENDOR_NE2, VENDOR_NA11X, VENDOR_DK8DE, VENDOR_GENERIC)
+DK8DE_VENDORS = (VENDOR_DK8DE, VENDOR_DK8DE_LAN)
+VALID_VENDORS = (VENDOR_NE2, VENDOR_NA11X, VENDOR_DK8DE, VENDOR_DK8DE_LAN, VENDOR_GENERIC)
 VALID_ROLES = ("server", "client", "bus_gateway")
+
+
+def is_dk8de_vendor(vendor: str | None) -> bool:
+    """True fuer DK8DE WLAN- und LAN-Module (gemeinsames AT/UDP-8880-Protokoll)."""
+    v = str(vendor or "").strip().lower()
+    return v in DK8DE_VENDORS or v in ("dk8de", "wlan_to_rs485", "lan_to_rs485")
+
 
 DEFAULT_AT_PORTS = {
     VENDOR_NE2: 8886,
     VENDOR_NA11X: 8886,  # NA111-M typisch 8886 (aeltere Docs: 8887)
     VENDOR_DK8DE: 8886,  # Nutzdaten-Port; AT/Discovery auf config_port (8880)
+    VENDOR_DK8DE_LAN: 8886,
     VENDOR_GENERIC: 8886,
 }
 DEFAULT_CONFIG_PORTS = {
     VENDOR_DK8DE: 8880,
+    VENDOR_DK8DE_LAN: 8880,
 }
 DEFAULT_WEB_PORTS = {
     VENDOR_NE2: 80,
     VENDOR_NA11X: 80,
     VENDOR_DK8DE: 80,
+    VENDOR_DK8DE_LAN: 80,
     VENDOR_GENERIC: 80,
 }
 
@@ -87,7 +100,7 @@ class NetworkModule:
             d["vendor"] = VENDOR_GENERIC
         if d["role"] not in VALID_ROLES:
             d["role"] = "bus_gateway"
-        if d["vendor"] != VENDOR_DK8DE:
+        if not is_dk8de_vendor(d["vendor"]):
             d.pop("uid", None)
             d.pop("config_port", None)
         if not d["mac"]:
@@ -1144,7 +1157,7 @@ def _ebyte_udp_probe_announce(
 
 
 def probe_module(module: NetworkModule, timeout: float = 0.4) -> bool:
-    if module.vendor == VENDOR_DK8DE:
+    if is_dk8de_vendor(module.vendor):
         from .dk8de_wlan_module import probe_dk8de
 
         host = dk8de_module_connect_host(module)
@@ -1165,7 +1178,7 @@ def probe_module(module: NetworkModule, timeout: float = 0.4) -> bool:
 
 def probe_module_quick(module: NetworkModule, timeout: float = 0.35) -> bool:
     """Schnelle Erreichbarkeitspruefung (kurze Timeouts, kein langer AT-Fallback)."""
-    if module.vendor == VENDOR_DK8DE:
+    if is_dk8de_vendor(module.vendor):
         from .dk8de_wlan_module import probe_dk8de
 
         host = dk8de_module_connect_host(module)
@@ -1277,7 +1290,7 @@ def read_status(
     vendor = module.vendor
     errors: List[str] = []
 
-    if vendor == VENDOR_DK8DE:
+    if is_dk8de_vendor(vendor):
         from .dk8de_wlan_module import read_status_dk8de, read_status_web_dk8de
 
         connect = dk8de_module_connect_host(module, at_host=at_host)
@@ -1401,13 +1414,31 @@ def write_config(
     results: Dict[str, Any] = {"commands": [], "ok": True, "error": ""}
     vendor = module.vendor
 
-    if vendor == VENDOR_DK8DE:
-        from .dk8de_wlan_module import write_config_dk8de
+    if is_dk8de_vendor(vendor):
+        from .dk8de_wlan_module import write_config_dk8de, write_config_web_dk8de
 
         if not (module.uid or "").strip():
             return {"ok": False, "error": "UID fehlt (DK8DE-Modul)", "commands": []}
+        connect = dk8de_module_connect_host(module, at_host=at_host)
+        web_errors: List[str] = []
+        # Wie Auslesen: Web zuerst (stabiler; AT+SAVE verliert auf alter LAN-FW @OK).
         try:
-            connect = dk8de_module_connect_host(module, at_host=at_host)
+            web_res = write_config_web_dk8de(
+                connect,
+                wan,
+                sock,
+                web_port=int(module.web_port or 80),
+                user=str(module.web_user or "admin"),
+                password=str(module.web_password or "Rotorconfig"),
+                reboot=reboot,
+                timeout=max(timeout, 5.0),
+            )
+            if web_res.get("ok"):
+                return web_res
+            web_errors.append(str(web_res.get("error") or "Web-Schreiben fehlgeschlagen"))
+        except Exception as exc:
+            web_errors.append(f"Web: {exc}")
+        try:
             res = write_config_dk8de(
                 connect,
                 module.uid,
@@ -1417,9 +1448,20 @@ def write_config(
                 reboot=reboot,
                 timeout=max(timeout, 12.0),
             )
-            return res
+            if res.get("ok"):
+                if web_errors:
+                    res = dict(res)
+                    res["warning"] = "; ".join(web_errors)
+                return res
+            err = str(res.get("error") or "AT-Schreiben fehlgeschlagen")
+            if web_errors:
+                err = "; ".join(web_errors + [f"AT: {err}"])
+            return {"ok": False, "error": err, "commands": res.get("commands") or []}
         except Exception as exc:
-            return {"ok": False, "error": str(exc), "commands": []}
+            err = str(exc)
+            if web_errors:
+                err = "; ".join(web_errors + [f"AT: {err}"])
+            return {"ok": False, "error": err, "commands": []}
 
     if vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC):
         try:

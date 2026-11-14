@@ -42,7 +42,7 @@ VERSION_PY = ROOT / "rotortcpbridge" / "version.py"
 
 _CONST_RE = re.compile(
     r"^(?P<name>ROTOR_FW_VERSION|CONTROLLER_FW_VERSION|INCLINOMETER_FW_VERSION|"
-    r"WLAN_MODULE_FW_VERSION)\s*=\s*\"(?P<ver>[^\"]*)\"\s*$",
+    r"WLAN_MODULE_FW_VERSION|LAN_MODULE_FW_VERSION)\s*=\s*\"(?P<ver>[^\"]*)\"\s*$",
     re.MULTILINE,
 )
 

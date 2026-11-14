@@ -244,7 +244,11 @@ def build_compass_html(params: dict) -> str:
       }}
       #elRight .card {{ flex:1 1 150px; min-width:140px; }}
     }}
-    body.embed #btnBack, body.embed #btnBackEl {{ display:none !important; }}
+    body.embed #btnBack, body.embed #btnBackEl,
+    body.embed #btnOverview, body.embed #btnOverviewEl {{ display:none !important; }}
+    #navPageLinks, #navPageLinksEl {{
+      display:flex; flex-direction:column; gap:6px; width:100%;
+    }}
     body.embed #lblWebSerial, body.embed #webSerialHttpsBanner, body.embed #btnWebSerial,
     body.embed #webSerialHttpsLink, body.embed #webSerialStatus, body.embed #webSerialHint {{ display:none !important; }}
   </style>
@@ -358,7 +362,10 @@ def build_compass_html(params: dict) -> str:
             <label class="chk"><input type="checkbox" id="chkHeatOm" /> <span id="lblHeatOm">OM</span></label>
             <label class="chk"><input type="checkbox" id="chkHeatDwell" /> <span id="lblHeatDwell">Standzeit</span></label>
             <button type="button" id="btnDwellReset">Standzeit zurücksetzen</button>
-            <a href="/map" id="btnBack">Zur Karte</a>
+            <div id="navPageLinks">
+              <a href="/#map" id="btnBack">Zur Karte</a>
+              <a href="/rotoren" id="btnOverview">Rotoren</a>
+            </div>
           </div>
           <div class="card">
             <div class="cardHdr" id="lblFav">Favoriten</div>
@@ -423,7 +430,10 @@ def build_compass_html(params: dict) -> str:
             <button type="button" id="btnStopEl">STOP EL</button>
             <button type="button" id="btnRefEl">EL Homing</button>
             <label class="chk"><input type="checkbox" id="chkHeatElStrom" /> <span id="lblHeatElStrom">Strom</span></label>
-            <a href="/map" id="btnBackEl" style="display:none;">Zur Karte</a>
+            <div id="navPageLinksEl" style="display:none;">
+              <a href="/#map" id="btnBackEl">Zur Karte</a>
+              <a href="/rotoren" id="btnOverviewEl">Rotoren</a>
+            </div>
           </div>
         </aside>
       </div>
@@ -1119,6 +1129,8 @@ def build_compass_html(params: dict) -> str:
       const setPh = function(id, v) {{ const el=document.getElementById(id); if (el && v) el.placeholder = v; }};
       set('btnBack', L.back_to_map || 'Zur Karte');
       set('btnBackEl', L.back_to_map || 'Zur Karte');
+      set('btnOverview', L.open_overview || 'Rotoren');
+      set('btnOverviewEl', L.open_overview || 'Rotoren');
       set('lblSoll', L.soll || 'Soll');
       set('lblIst', L.ist || 'Ist');
       set('lblIstRev', L.ist_reverse || 'Ist Reverse');
@@ -1219,9 +1231,9 @@ def build_compass_html(params: dict) -> str:
       applyLabels();
       document.body.classList.toggle('el-on', !!s.enable_el);
       document.body.classList.toggle('az-off', s.enable_az === false);
-      const btnBackEl = document.getElementById('btnBackEl');
-      if (btnBackEl && !document.body.classList.contains('embed')) {{
-        btnBackEl.style.display = (s.enable_az === false) ? '' : 'none';
+      const navEl = document.getElementById('navPageLinksEl');
+      if (navEl && !document.body.classList.contains('embed')) {{
+        navEl.style.display = (s.enable_az === false) ? '' : 'none';
       }}
       const az = s.az || {{}};
       const el = s.el || {{}};
@@ -1518,15 +1530,34 @@ def build_compass_html(params: dict) -> str:
       bindJog('btnJogRight', 2);
       bindJog('btnJogDown', 1, 'jog_el');
       bindJog('btnJogUp', 2, 'jog_el');
-      const backLink = document.getElementById('btnBack');
-      if (backLink) {{
-        backLink.addEventListener('click', function(ev) {{
+      function bindMapNav(id) {{
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('click', function(ev) {{
           if (window.parent !== window) {{
             ev.preventDefault();
             try {{ window.parent.postMessage({{ rotorView: 'map' }}, window.location.origin); }} catch (e) {{}}
           }}
         }});
       }}
+      bindMapNav('btnBack');
+      bindMapNav('btnBackEl');
+      function bindOverviewNav(id) {{
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('click', function(ev) {{
+          if (window.parent !== window) {{
+            ev.preventDefault();
+            try {{
+              window.parent.postMessage({{ rotorView: 'overview' }}, window.location.origin);
+            }} catch (e) {{
+              window.location.href = '/rotoren';
+            }}
+          }}
+        }});
+      }}
+      bindOverviewNav('btnOverview');
+      bindOverviewNav('btnOverviewEl');
       document.getElementById('azCanvas').addEventListener('click', azClick);
       document.getElementById('elCanvas').addEventListener('click', elClick);
       bindSollInput('edAzSoll', 'btnAzSoll');

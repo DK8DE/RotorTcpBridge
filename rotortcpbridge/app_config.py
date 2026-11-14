@@ -135,8 +135,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # 30s-Stille trennen (sonst DTR-Reset → Display-Neustart alle ~Minute).
         "no_rx_timeout_s": 0,
     },
-    # RS485-Netzwerk-Konverter (Ebyte NE2/NA11x, DK8DE WLAN/RS485, …).
-    # Einträge: name, vendor (ne2|na11x|dk8de_wlan|generic), host, at_port,
+    # RS485-Netzwerk-Konverter (Ebyte NE2/NA11x, DK8DE WLAN/LAN RS485, …).
+    # Einträge: name, vendor (ne2|na11x|dk8de_wlan|dk8de_lan|generic), host, at_port,
     # web_port, role (server|client|bus_gateway), netat_header.
     "network_modules": [],
     "network_scan": {

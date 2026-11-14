@@ -276,15 +276,17 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       #webAzBtns button { width:100%; }
     }
     .webPanel select, .webPanel input[type=text], .webPanel input[type=search],
-    .webPanel button, #webTogglePanels, #webOpenCompass {
+    .webPanel button, #webTogglePanels, #webOpenCompass, #webOpenOverview {
       font:12px/1.2 sans-serif; padding:4px 6px; border-radius:4px;
       border:1px solid rgba(128,128,128,0.45); background:rgba(255,255,255,0.75); color:#111; }
     body.map-dark .webPanel select, body.map-dark .webPanel input[type=text],
     body.map-dark .webPanel input[type=search],
-    body.map-dark .webPanel button, body.map-dark #webTogglePanels, body.map-dark #webOpenCompass {
+    body.map-dark .webPanel button, body.map-dark #webTogglePanels,
+    body.map-dark #webOpenCompass, body.map-dark #webOpenOverview {
       background:rgba(42,42,46,0.85); color:#eee; border-color:rgba(180,180,190,0.35); }
     .webPanel input[type=search] {-webkit-appearance:none; appearance:none; }
-    .webPanel button, #webTogglePanels, #webOpenCompass { cursor:pointer; touch-action:manipulation; }
+    .webPanel button, #webTogglePanels, #webOpenCompass, #webOpenOverview {
+      cursor:pointer; touch-action:manipulation; }
     .webPanel label.chk { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
     .webPanel .bold { font-weight:700; }
     .webPanel .led { width:12px; height:12px; border-radius:50%; display:inline-block;
@@ -313,7 +315,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     body.map-dark #webProfile {
       background:rgba(42,42,46,0.85); color:#eee; border-color:rgba(180,180,190,0.35);
     }
-    #webAzBtns button, #webTogglePanels, #webOpenCompass {
+    #webAzBtns button, #webTogglePanels, #webOpenCompass, #webOpenOverview {
       width:100%; max-width:100%; font-weight:600;
       display:block; box-sizing:border-box; text-align:center;
     }
@@ -416,6 +418,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
         <div id="webAzBtns">
           <button type="button" id="webTogglePanels">Bedienung</button>
           <button type="button" id="webOpenCompass">Kompass</button>
+          <button type="button" id="webOpenOverview">Rotoren</button>
         </div>
       </div>"""
         web_chrome_html = """
@@ -554,7 +557,7 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
     {aswatch_userimg_css}
     {_cluster_extra_css}
     {web_chrome_css}
-    body.embed #webOpenCompass {{ display:none !important; }}
+    body.embed #webOpenCompass, body.embed #webOpenOverview {{ display:none !important; }}
   </style>
 </head>
 <body class="{body_map_dark_class}">
@@ -842,6 +845,8 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
       }}
       const openComp = document.getElementById('webOpenCompass');
       if (openComp) openComp.textContent = Lbl.open_compass || 'Kompass';
+      const openOv = document.getElementById('webOpenOverview');
+      if (openOv) openOv.textContent = Lbl.open_overview || 'Rotoren';
       const favSave = document.getElementById('webFavSave');
       const favDel = document.getElementById('webFavDel');
       const btnSat = document.getElementById('webBtnSat');
@@ -1191,6 +1196,20 @@ def build_map_html(params: dict, dark: bool | None = None) -> str:
               window.location.href = '/compass';
             }}
           }} catch (e) {{}}
+        }});
+      }}
+      const openOv = document.getElementById('webOpenOverview');
+      if (openOv) {{
+        openOv.addEventListener('click', function() {{
+          try {{
+            if (window.parent !== window) {{
+              window.parent.postMessage({{ rotorView: 'overview' }}, window.location.origin);
+            }} else {{
+              window.location.href = '/rotoren';
+            }}
+          }} catch (e) {{
+            window.location.href = '/rotoren';
+          }}
         }});
       }}
       window.addEventListener('orientationchange', function() {{

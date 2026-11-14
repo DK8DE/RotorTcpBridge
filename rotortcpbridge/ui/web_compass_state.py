@@ -460,6 +460,7 @@ def get_web_compass_payload(mw: Any) -> dict:
         {
             "back_to_map": t("map.web_back_to_map"),
             "open_compass": t("map.web_open_compass"),
+            "open_overview": t("map.web_open_overview"),
             "ist": t("compass.ist_label"),
             "ist_reverse": t("compass.ist_reverse_label"),
             "soll": t("compass.soll_label"),

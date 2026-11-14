@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import re
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
@@ -9,6 +10,7 @@ from typing import Any, List, Optional
 from .version import (
     CONTROLLER_FW_VERSION,
     INCLINOMETER_FW_VERSION,
+    LAN_MODULE_FW_VERSION,
     ROTOR_FW_VERSION,
     WLAN_MODULE_FW_VERSION,
 )
@@ -67,6 +69,20 @@ class AxisVersionResult:
 
 
 @dataclass
+class ModuleVersionResult:
+    """Ein konfiguriertes DK8DE WLAN- oder LAN-Modul."""
+
+    kind: str  # "wlan" | "lan"
+    label: str
+    uid: str
+    host: str
+    expected: str
+    found: Optional[str]
+    ok: bool
+    offline: bool = False
+
+
+@dataclass
 class CompatCheckResult:
     rotor_ok: bool = True
     rotor_axes: List[AxisVersionResult] = field(default_factory=list)
@@ -77,7 +93,9 @@ class CompatCheckResult:
     inclinometer_expected: str = INCLINOMETER_FW_VERSION
     inclinometer_ok: Optional[bool] = None
     inclinometer_axis: Optional[str] = None  # "AZ" | "EL" wenn gefunden
-    wlan_note: Optional[str] = None  # nur Info, oft keine Bus-Version
+    modules: List[ModuleVersionResult] = field(default_factory=list)
+    modules_ok: bool = True  # False wenn mind. ein erreichbares Modul zu alt
+    wlan_note: Optional[str] = None  # Abwärtskompatibel
     info_lines: List[str] = field(default_factory=list)
 
 
@@ -108,23 +126,6 @@ def _bus_connected(ctrl: Any) -> bool:
     return False
 
 
-def _has_dk8de_wlan_module(cfg: Optional[dict]) -> bool:
-    cfg = cfg if isinstance(cfg, dict) else {}
-    mods = cfg.get("network_modules")
-    if not isinstance(mods, list):
-        return False
-    for m in mods:
-        if not isinstance(m, dict):
-            continue
-        vendor = str(m.get("vendor") or "").strip().lower()
-        if vendor in ("dk8de_wlan", "dk8de", "wlan_to_rs485"):
-            return True
-        name = str(m.get("name") or "").lower()
-        if "wlan" in name and "rs485" in name:
-            return True
-    return False
-
-
 def _inclinometer_configured(ctrl: Any, cfg: Optional[dict]) -> bool:
     """Encoder-Typ 4 = Inklinometer."""
     try:
@@ -143,12 +144,200 @@ def _inclinometer_configured(ctrl: Any, cfg: Optional[dict]) -> bool:
     return False
 
 
+def _module_kind(vendor: str) -> str:
+    v = str(vendor or "").strip().lower()
+    if v in ("dk8de_lan", "lan_to_rs485"):
+        return "lan"
+    return "wlan"
+
+
+def _module_label(name: str, uid: str, host: str, kind: str) -> str:
+    n = str(name or "").strip()
+    if n:
+        return n
+    u = str(uid or "").strip().upper()
+    if u:
+        return f"{'LAN' if kind == 'lan' else 'WLAN'}-{u}"
+    h = str(host or "").strip()
+    return h or ("LAN" if kind == "lan" else "WLAN")
+
+
+def _read_dk8de_module_fw(
+    host: str,
+    *,
+    web_port: int = 80,
+    user: str = "admin",
+    password: str = "Rotorconfig",
+    timeout: float = 0.9,
+) -> Optional[str]:
+    """Schneller FW-String aus Web /api/status (ohne /api/config)."""
+    try:
+        from .dk8de_wlan_module import _http_get_json
+    except Exception:
+        return None
+    st = _http_get_json(
+        host,
+        "/api/status",
+        port=int(web_port or 80),
+        user=str(user or "admin"),
+        password=str(password if password is not None else "Rotorconfig"),
+        timeout=float(timeout),
+    )
+    if not isinstance(st, dict):
+        return None
+    return normalize_version(str(st.get("fw") or "")) or None
+
+
+def _check_network_modules(cfg: dict) -> List[ModuleVersionResult]:
+    """Alle konfigurierten DK8DE WLAN-/LAN-Module parallel per Web abfragen."""
+    try:
+        from .network_modules import is_dk8de_vendor, modules_from_cfg
+    except Exception:
+        return []
+
+    try:
+        modules = modules_from_cfg(cfg)
+    except Exception:
+        modules = []
+
+    jobs: List[tuple] = []
+    for m in modules:
+        if not is_dk8de_vendor(getattr(m, "vendor", "")):
+            continue
+        host = str(getattr(m, "host", "") or getattr(m, "contact_host", "") or "").strip()
+        if not host or host in ("0.0.0.0", "-", "255.255.255.255"):
+            continue
+        kind = _module_kind(str(getattr(m, "vendor", "")))
+        expected = LAN_MODULE_FW_VERSION if kind == "lan" else WLAN_MODULE_FW_VERSION
+        uid = str(getattr(m, "uid", "") or "").strip().upper()
+        label = _module_label(str(getattr(m, "name", "") or ""), uid, host, kind)
+        jobs.append(
+            (
+                kind,
+                label,
+                uid,
+                host,
+                expected,
+                int(getattr(m, "web_port", 80) or 80),
+                str(getattr(m, "web_user", "admin") or "admin"),
+                str(
+                    getattr(m, "web_password", "Rotorconfig")
+                    if getattr(m, "web_password", None) is not None
+                    else "Rotorconfig"
+                ),
+            )
+        )
+
+    if not jobs:
+        return []
+
+    results: List[ModuleVersionResult] = []
+
+    def _one(job: tuple) -> ModuleVersionResult:
+        kind, label, uid, host, expected, web_port, user, password = job
+        found = _read_dk8de_module_fw(
+            host, web_port=web_port, user=user, password=password, timeout=0.9
+        )
+        if not found:
+            return ModuleVersionResult(
+                kind=kind,
+                label=label,
+                uid=uid,
+                host=host,
+                expected=expected,
+                found=None,
+                ok=True,
+                offline=True,
+            )
+        ok = version_at_least(found, expected)
+        return ModuleVersionResult(
+            kind=kind,
+            label=label,
+            uid=uid,
+            host=host,
+            expected=expected,
+            found=found,
+            ok=ok,
+            offline=False,
+        )
+
+    workers = max(1, min(8, len(jobs)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [pool.submit(_one, j) for j in jobs]
+        try:
+            for fut in concurrent.futures.as_completed(
+                futs, timeout=max(4.0, 1.2 * len(jobs))
+            ):
+                try:
+                    results.append(fut.result())
+                except Exception:
+                    continue
+        except concurrent.futures.TimeoutError:
+            pass
+    # Offline-Einträge für Jobs ohne Ergebnis (Timeout)
+    done_hosts = {r.host for r in results}
+    for job in jobs:
+        kind, label, uid, host, expected, *_rest = job
+        if host in done_hosts:
+            continue
+        results.append(
+            ModuleVersionResult(
+                kind=kind,
+                label=label,
+                uid=uid,
+                host=host,
+                expected=expected,
+                found=None,
+                ok=True,
+                offline=True,
+            )
+        )
+    # stabile Reihenfolge: WLAN vor LAN, dann Label
+    results.sort(key=lambda r: (0 if r.kind == "wlan" else 1, r.label.lower(), r.host))
+    return results
+
+
 def run_compat_check(ctrl: Any, cfg: Optional[dict] = None) -> CompatCheckResult:
-    """Synchron am Bus abfragen (UI-Thread: kurz halten / nach Connect verzögern)."""
+    """Synchron am Bus abfragen (UI-Thread: kurz halten / nach Connect verzögern).
+
+    Netzwerkmodule (WLAN/LAN) werden unabhängig vom RS485-Bus per HTTP geprüft.
+    """
     out = CompatCheckResult()
     cfg = cfg if isinstance(cfg, dict) else {}
+
+    # Module zuerst / immer — braucht keinen Bus.
+    try:
+        out.modules = _check_network_modules(cfg)
+    except Exception:
+        out.modules = []
+    online_mods = [m for m in out.modules if not m.offline]
+    if online_mods:
+        out.modules_ok = all(m.ok for m in online_mods)
+    else:
+        out.modules_ok = True
+    for m in out.modules:
+        if m.offline:
+            out.info_lines.append(f"module_offline:{m.kind}:{m.label}:{m.expected}")
+        elif not m.ok and m.found:
+            out.info_lines.append(
+                f"module_mismatch:{m.kind}:{m.label}:{m.found}:{m.expected}"
+            )
+        else:
+            out.info_lines.append(f"module_ok:{m.kind}:{m.label}:{m.found}:{m.expected}")
+    if any(m.kind == "wlan" for m in out.modules):
+        out.wlan_note = WLAN_MODULE_FW_VERSION
+    # Abwärtskompatible Pin-Hinweise nur wenn Module konfiguriert, aber keines erreichbar
+    if any(m.kind == "wlan" for m in out.modules) and not any(
+        m.kind == "wlan" and not m.offline for m in out.modules
+    ):
+        out.info_lines.append(f"wlan_pin:{WLAN_MODULE_FW_VERSION}")
+    if any(m.kind == "lan" for m in out.modules) and not any(
+        m.kind == "lan" and not m.offline for m in out.modules
+    ):
+        out.info_lines.append(f"lan_pin:{LAN_MODULE_FW_VERSION}")
+
     if ctrl is None or not _bus_connected(ctrl):
-        out.rotor_ok = False
+        out.rotor_ok = True  # kein Bus → kein Rotor-Mismatch-Dialog
         out.info_lines.append("bus_offline")
         return out
 
@@ -238,7 +427,6 @@ def run_compat_check(ctrl: Any, cfg: Optional[dict] = None) -> CompatCheckResult
                     )
 
     # Inklinometer: GETINCVER nur wenn Typ 4 bekannt/konfiguriert (EL zuerst).
-    # Kein blindes GETENCTYPE an jede Achse — spart Buszeit beim Start.
     _inc_candidates: list[tuple[str, bool, str, str, int]] = [
         ("EL", enable_el, "slave_el", "slave_el", 21),
         ("AZ", enable_az, "slave_az", "slave_az", 20),
@@ -291,9 +479,5 @@ def run_compat_check(ctrl: Any, cfg: Optional[dict] = None) -> CompatCheckResult
         else:
             out.inclinometer_ok = None
             out.info_lines.append(f"inclinometer_pin:{INCLINOMETER_FW_VERSION}")
-
-    if _has_dk8de_wlan_module(cfg):
-        out.wlan_note = WLAN_MODULE_FW_VERSION
-        out.info_lines.append(f"wlan_pin:{WLAN_MODULE_FW_VERSION}")
 
     return out

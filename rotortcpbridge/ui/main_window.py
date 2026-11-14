@@ -4616,6 +4616,7 @@ class MainWindow(QMainWindow):
             APP_VERSION,
             CONTROLLER_FW_VERSION,
             INCLINOMETER_FW_VERSION,
+            LAN_MODULE_FW_VERSION,
             ROTOR_FW_VERSION,
             WLAN_MODULE_FW_VERSION,
         )
@@ -4628,7 +4629,7 @@ class MainWindow(QMainWindow):
         self._firmware_compat_result = result
         self._apply_firmware_status_to_update_tab(result)
 
-        # Optionale Info-Zeilen (kein eigener Pflicht-Dialog)
+        # Optionale Info-Zeilen / Modul-Mismatches
         info_parts: list[str] = []
         if result.controller_ok is False and result.controller_found:
             info_parts.append(
@@ -4639,17 +4640,31 @@ class MainWindow(QMainWindow):
                 )
             )
         for line in result.info_lines:
-            if str(line).startswith("inclinometer_pin:"):
+            s = str(line)
+            if s.startswith("inclinometer_pin:"):
                 info_parts.append(
                     t("fw.info_inclinometer", expected=INCLINOMETER_FW_VERSION)
                 )
-            elif str(line).startswith("wlan_pin:"):
+            elif s.startswith("module_mismatch:"):
+                bits = s.split(":")
+                if len(bits) >= 5:
+                    info_parts.append(
+                        t(
+                            "fw.info_module_mismatch",
+                            kind=bits[1].upper(),
+                            name=bits[2],
+                            found=bits[3],
+                            expected=bits[4],
+                        )
+                    )
+            elif s.startswith("wlan_pin:"):
                 info_parts.append(
                     t("fw.info_wlan", expected=WLAN_MODULE_FW_VERSION)
                 )
-
-        if result.rotor_ok:
-            return
+            elif s.startswith("lan_pin:"):
+                info_parts.append(
+                    t("fw.info_lan", expected=LAN_MODULE_FW_VERSION)
+                )
 
         # Nur echte Mismatches: Version wurde gelesen und ist zu alt.
         # Offline / nicht lesbar → kein Dialog „Firmware passt nicht“.
@@ -4665,25 +4680,60 @@ class MainWindow(QMainWindow):
                     expected=ax.expected,
                 )
             )
-        if not detail_lines and not info_parts:
-            return
-        if not detail_lines:
-            # Nur optionale Info (Controller/Inklinometer/WLAN) — kein Rotor-Mismatch-Dialog.
-            return
-        if info_parts:
-            detail_lines.extend(info_parts)
+        module_lines: list[str] = []
+        for mod in getattr(result, "modules", None) or []:
+            if getattr(mod, "offline", False) or getattr(mod, "ok", True) or not getattr(mod, "found", None):
+                continue
+            module_lines.append(
+                t(
+                    "fw.module_mismatch_line",
+                    kind=str(getattr(mod, "kind", "")).upper(),
+                    name=str(getattr(mod, "label", "") or "?"),
+                    found=str(mod.found),
+                    expected=str(getattr(mod, "expected", "")),
+                )
+            )
 
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle(t("fw.rotor_mismatch_title"))
-        box.setText(
-            t(
+        if result.rotor_ok and not module_lines:
+            return
+        if not detail_lines and not module_lines:
+            return
+
+        all_details = list(detail_lines) + list(module_lines)
+        if info_parts:
+            # Controller-/Pin-Hinweise nur zusätzlich zum Pflicht-Dialog
+            for p in info_parts:
+                if p not in all_details:
+                    all_details.append(p)
+
+        if detail_lines and not module_lines:
+            title = t("fw.rotor_mismatch_title")
+            msg = t(
                 "fw.rotor_mismatch_msg",
                 app=APP_VERSION,
                 expected=ROTOR_FW_VERSION,
-                details="\n".join(detail_lines),
+                details="\n".join(all_details),
             )
-        )
+        elif module_lines and not detail_lines:
+            title = t("fw.module_mismatch_title")
+            msg = t(
+                "fw.module_mismatch_msg",
+                app=APP_VERSION,
+                details="\n".join(all_details),
+            )
+        else:
+            title = t("fw.bundle_mismatch_title")
+            msg = t(
+                "fw.bundle_mismatch_msg",
+                app=APP_VERSION,
+                expected=ROTOR_FW_VERSION,
+                details="\n".join(all_details),
+            )
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(title)
+        box.setText(msg)
         btn_dl = box.addButton(
             t("fw.btn_open_download_page"),
             QMessageBox.ButtonRole.ActionRole,
@@ -4699,7 +4749,6 @@ class MainWindow(QMainWindow):
             from ..version import (
                 CONTROLLER_FW_VERSION,
                 INCLINOMETER_FW_VERSION,
-                WLAN_MODULE_FW_VERSION,
             )
 
             parts: list[str] = []
@@ -4712,12 +4761,24 @@ class MainWindow(QMainWindow):
                     )
                 )
             for line in getattr(result, "info_lines", []) or []:
-                if str(line).startswith("inclinometer_pin:"):
+                s = str(line)
+                if s.startswith("inclinometer_pin:"):
                     parts.append(
                         t("fw.info_inclinometer", expected=INCLINOMETER_FW_VERSION)
                     )
-                elif str(line).startswith("wlan_pin:"):
-                    parts.append(t("fw.info_wlan", expected=WLAN_MODULE_FW_VERSION))
+                elif s.startswith("module_mismatch:"):
+                    bits = s.split(":")
+                    if len(bits) >= 5:
+                        parts.append(
+                            t(
+                                "fw.info_module_mismatch",
+                                kind=bits[1].upper(),
+                                name=bits[2],
+                                found=bits[3],
+                                expected=bits[4],
+                            )
+                        )
+                # wlan_pin/lan_pin: nur in den Modulzeilen der Tabelle, nicht als Extra-Hinweis
             info_text = "\n".join(parts)
         except Exception:
             info_text = ""

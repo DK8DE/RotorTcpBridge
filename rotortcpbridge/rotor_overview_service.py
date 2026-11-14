@@ -449,6 +449,9 @@ class RotorOverviewService:
         labels["hud_temp_ambient"] = t("weather.temp_ambient_label")
         labels["hud_wind"] = t("weather.wind_speed_label")
         labels["hud_wind_dir"] = t("weather.wind_dir_label")
+        labels["nav_map"] = t("map.web_tab_map")
+        labels["nav_compass"] = t("map.web_open_compass")
+        labels["nav_overview"] = t("map.web_open_overview")
         return labels
 
     def build_web_html(self, *, force: bool = False) -> str:

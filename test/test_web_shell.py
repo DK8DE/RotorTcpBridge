@@ -29,9 +29,19 @@ def _get(url: str) -> str:
 
 
 def test_shell_html_contains_views_and_serial():
-    html = build_web_shell_html(dark=True, labels={"map": "Karte", "compass": "Kompass"})
+    html = build_web_shell_html(
+        dark=True,
+        labels={"map": "Karte", "compass": "Kompass", "overview": "Rotoren"},
+    )
     assert "/map?embed=1" in html
     assert "/compass?embed=1" in html
+    assert "/rotoren?embed=1" in html
+    assert "tabOverview" in html
+    assert 'data-view="overview"' in html
+    assert "fOverview" in html
+    assert "ovActions" in html
+    assert "ovBtnSettings" in html
+    assert "rotorOverviewAction" in html
     assert "window.WebSerial" in html
     assert "rotorView" in html
     assert "__BG__" not in html and "__LABELS__" not in html and "__WEB_SERIAL_JS__" not in html

@@ -42,9 +42,11 @@ from ..network_modules import (
     DEFAULT_CONFIG_PORTS,
     DEFAULT_WEB_PORTS,
     VENDOR_DK8DE,
+    VENDOR_DK8DE_LAN,
     VENDOR_GENERIC,
     VENDOR_NA11X,
     VENDOR_NE2,
+    is_dk8de_vendor,
     EbyteDevice,
     NetworkModule,
     ebyte_device_data_port,
@@ -63,6 +65,7 @@ from ..dk8de_wlan_module import (
     DK8DE_STATUS_STAT_KEYS,
     DK8DE_STATUS_UI_SECTIONS,
     Dk8deDevice,
+    classify_dk8de_device,
     dk8de_discover,
     dk8de_netmode_to_sock,
     parse_dk8de_stats_payload,
@@ -480,11 +483,27 @@ class _EbyteSetIpDialog(QDialog):
 
 
 class _Dk8deSetIpDialog(QDialog):
-    """WLAN-Zugang + IP/Maske/Gateway/DNS per DK8DE-AT (UDP 8880)."""
+    """IP/Maske/Gateway/DNS per DK8DE-AT (UDP 8880); WLAN zusaetzlich SSID/Band."""
 
-    def __init__(self, device: Dk8deDevice, parent=None):
+    def __init__(self, device: Dk8deDevice, parent=None, *, lan: bool = False):
         super().__init__(parent)
-        self.setWindowTitle(t("settings.network_discover_set_ip_title_dk8de"))
+        self._lan = bool(lan)
+        title_key = (
+            "settings.network_discover_set_ip_title_dk8de_lan"
+            if self._lan
+            else "settings.network_discover_set_ip_title_dk8de"
+        )
+        intro_key = (
+            "settings.network_discover_set_ip_intro_dk8de_lan"
+            if self._lan
+            else "settings.network_discover_set_ip_intro_dk8de"
+        )
+        hint_key = (
+            "settings.network_discover_set_ip_hint_dk8de_lan"
+            if self._lan
+            else "settings.network_discover_set_ip_hint_dk8de"
+        )
+        self.setWindowTitle(t(title_key))
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
         self._device = device
         info = device.info if isinstance(getattr(device, "info", None), dict) else {}
@@ -492,7 +511,7 @@ class _Dk8deSetIpDialog(QDialog):
         lay.addWidget(
             QLabel(
                 t(
-                    "settings.network_discover_set_ip_intro_dk8de",
+                    intro_key,
                     name=(device.name or device.uid_norm or "?"),
                     uid=(device.uid_norm or "?"),
                     mac=(device.mac or "?"),
@@ -512,10 +531,10 @@ class _Dk8deSetIpDialog(QDialog):
         self.cb_join_sta = QCheckBox()
         self.cb_join_sta.setChecked(True)
         self.cb_dhcp = QCheckBox()
-        self.cb_dhcp.setChecked(False)
+        self.cb_dhcp.setChecked(bool(self._lan))
         self.cb_dhcp.toggled.connect(self._update_ip_enabled)
         ap_ip = str(device.ip or "").strip()
-        sta_ip = "" if ap_ip.startswith("192.168.4.") else ap_ip
+        sta_ip = "" if (not self._lan and ap_ip.startswith("192.168.4.")) else ap_ip
         self.ed_ip = QLineEdit(sta_ip)
         reported = str(info.get("REPORTED_IP") or "").strip()
         if reported and reported not in ("", "-", "0.0.0.0") and reported != (device.ip or "").strip():
@@ -527,17 +546,18 @@ class _Dk8deSetIpDialog(QDialog):
         self.ed_mask = QLineEdit("255.255.255.0")
         self.ed_gw = QLineEdit("")
         self.ed_dns = QLineEdit("")
-        form.addRow(t("settings.network_discover_dk8de_ssid"), self.ed_ssid)
-        form.addRow(t("settings.network_discover_dk8de_pass"), self.ed_pass)
-        form.addRow(t("settings.network_discover_dk8de_band"), self.cb_band)
-        form.addRow(t("settings.network_discover_dk8de_join_sta"), self.cb_join_sta)
+        if not self._lan:
+            form.addRow(t("settings.network_discover_dk8de_ssid"), self.ed_ssid)
+            form.addRow(t("settings.network_discover_dk8de_pass"), self.ed_pass)
+            form.addRow(t("settings.network_discover_dk8de_band"), self.cb_band)
+            form.addRow(t("settings.network_discover_dk8de_join_sta"), self.cb_join_sta)
         form.addRow(t("settings.network_discover_dk8de_dhcp"), self.cb_dhcp)
         form.addRow(t("settings.network_ip"), self.ed_ip)
         form.addRow(t("settings.network_mask"), self.ed_mask)
         form.addRow(t("settings.network_gateway"), self.ed_gw)
         form.addRow(t("settings.network_dns"), self.ed_dns)
         lay.addLayout(form)
-        hint = QLabel(t("settings.network_discover_set_ip_hint_dk8de"))
+        hint = QLabel(t(hint_key))
         hint.setWordWrap(True)
         lay.addWidget(hint)
         bb = QDialogButtonBox(
@@ -554,9 +574,21 @@ class _Dk8deSetIpDialog(QDialog):
             w.setEnabled(not dhcp)
 
     def values(self) -> Dict[str, str]:
+        dhcp = self.cb_dhcp.isChecked()
+        if self._lan:
+            return {
+                "ssid": "",
+                "password": "",
+                "wifi_band": "",
+                "wifi_mode": "",
+                "dhcp": "1" if dhcp else "0",
+                "ip": self.ed_ip.text().strip(),
+                "mask": self.ed_mask.text().strip(),
+                "gateway": self.ed_gw.text().strip(),
+                "dns": self.ed_dns.text().strip(),
+            }
         band = str(self.cb_band.currentData() or "2G")
         join = self.cb_join_sta.isChecked()
-        dhcp = self.cb_dhcp.isChecked()
         return {
             "ssid": self.ed_ssid.text().strip(),
             "password": self.ed_pass.text(),
@@ -1333,7 +1365,12 @@ class _NetworkDiscoverDialog(_BusyProgressMixin, QDialog):
             row = self.tbl.rowCount()
             self.tbl.insertRow(row)
             if kind == "dk8de" and isinstance(dev, Dk8deDevice):
-                self.tbl.setItem(row, 0, QTableWidgetItem(t("settings.network_discover_type_dk8de")))
+                type_key = (
+                    "settings.network_discover_type_dk8de_lan"
+                    if classify_dk8de_device(dev) == VENDOR_DK8DE_LAN
+                    else "settings.network_discover_type_dk8de"
+                )
+                self.tbl.setItem(row, 0, QTableWidgetItem(t(type_key)))
                 self.tbl.setItem(row, 1, QTableWidgetItem(dev.name or "—"))
                 self.tbl.setItem(row, 2, QTableWidgetItem(dev.uid_norm or "—"))
                 self.tbl.setItem(row, 3, QTableWidgetItem(dev.mac or "—"))
@@ -1434,13 +1471,15 @@ class _NetworkDiscoverDialog(_BusyProgressMixin, QDialog):
                 t("settings.network_discover_dk8de_no_uid"),
             )
             return
-        dlg = _Dk8deSetIpDialog(dev, self)
+        dlg = _Dk8deSetIpDialog(
+            dev, self, lan=(classify_dk8de_device(dev) == VENDOR_DK8DE_LAN)
+        )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         vals = dlg.values()
         dhcp = vals.get("dhcp") == "1"
         join_sta = str(vals.get("wifi_mode") or "") == "STA"
-        if join_sta and not vals.get("ssid"):
+        if join_sta and not vals.get("ssid") and classify_dk8de_device(dev) != VENDOR_DK8DE_LAN:
             QMessageBox.warning(
                 self,
                 t("settings.network_discover_title"),
@@ -1991,6 +2030,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self.cb_vendor.addItem(t("settings.network_vendor_ne2"), VENDOR_NE2)
         self.cb_vendor.addItem(t("settings.network_vendor_na11x"), VENDOR_NA11X)
         self.cb_vendor.addItem(t("settings.network_vendor_dk8de"), VENDOR_DK8DE)
+        self.cb_vendor.addItem(t("settings.network_vendor_dk8de_lan"), VENDOR_DK8DE_LAN)
         self.cb_vendor.addItem(t("settings.network_vendor_generic"), VENDOR_GENERIC)
         self.cb_vendor.blockSignals(False)
 
@@ -2171,7 +2211,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
     def _module_label(self, m: NetworkModule) -> str:
         name = (m.name or "").strip() or t("settings.network_unnamed")
         host = (m.host or "").strip() or "?"
-        if m.vendor == VENDOR_DK8DE and (m.uid or "").strip():
+        if is_dk8de_vendor(m.vendor) and (m.uid or "").strip():
             return f"{name}  ({host} · {m.uid.strip().upper()})"
         return f"{name}  ({host}:{m.at_port})"
 
@@ -2295,7 +2335,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         )
         self.ed_uid.setText(m.uid or "")
         self.sp_config_port.setValue(int(m.config_port or DEFAULT_CONFIG_PORTS.get(m.vendor, 8880)))
-        if m.vendor == VENDOR_DK8DE and not (m.contact_host or "").strip() and (m.host or "").strip():
+        if is_dk8de_vendor(m.vendor) and not (m.contact_host or "").strip() and (m.host or "").strip():
             m.contact_host = m.host.strip()
         st = m.last_status or {}
         wan = st.get("wan") or {}
@@ -2343,7 +2383,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         m.netat_header = self.ed_netat.text().strip() or "NETAT"
         m.web_user = self.ed_web_user.text().strip() or "admin"
         m.web_password = self.ed_web_password.text()
-        if m.vendor == VENDOR_DK8DE:
+        if is_dk8de_vendor(m.vendor):
             m.uid = self.ed_uid.text().strip().upper()
             m.config_port = int(self.sp_config_port.value())
         else:
@@ -2369,7 +2409,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         self.sp_remote_port.setValue(DEFAULT_AT_PORTS.get(vendor, 8886))
         self.sp_web_port.setValue(DEFAULT_WEB_PORTS.get(vendor, 80))
         self.sp_config_port.setValue(DEFAULT_CONFIG_PORTS.get(vendor, 8880))
-        if vendor == VENDOR_DK8DE:
+        if is_dk8de_vendor(vendor):
             self.ed_web_password.setText("Rotorconfig")
         self.sp_remote_port.blockSignals(False)
         self.sp_web_port.blockSignals(False)
@@ -2379,8 +2419,8 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
 
     def _update_vendor_fields_visibility(self) -> None:
         vendor = str(self.cb_vendor.currentData() or VENDOR_GENERIC)
-        is_dk8de = vendor == VENDOR_DK8DE
-        use_web = vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC, VENDOR_DK8DE)
+        is_dk8de = is_dk8de_vendor(vendor)
+        use_web = vendor in (VENDOR_NE2, VENDOR_NA11X, VENDOR_GENERIC, VENDOR_DK8DE, VENDOR_DK8DE_LAN)
         self._lbl_netat.setVisible(not is_dk8de)
         self.ed_netat.setVisible(not is_dk8de)
         self._lbl_uid.setVisible(is_dk8de)
@@ -2566,7 +2606,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
             if interactive:
                 QMessageBox.information(self, t("settings.network_tab"), t("settings.network_need_host"))
             return
-        if m.vendor == VENDOR_DK8DE and not (m.uid or "").strip():
+        if is_dk8de_vendor(m.vendor) and not (m.uid or "").strip():
             if interactive:
                 QMessageBox.information(self, t("settings.network_tab"), t("settings.network_need_uid"))
             return
@@ -2602,7 +2642,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         mac = str(status.get("mac") or "").strip()
         if mac and mac not in ("—", "-"):
             m.mac = mac.upper()
-        if m.vendor == VENDOR_DK8DE:
+        if is_dk8de_vendor(m.vendor):
             uid = str(status.get("uid") or "").strip().upper()
             if uid:
                 m.uid = uid
@@ -2708,7 +2748,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         if m is None or not m.host.strip():
             QMessageBox.information(self, t("settings.network_tab"), t("settings.network_need_host"))
             return
-        if m.vendor == VENDOR_DK8DE and not (m.uid or "").strip():
+        if is_dk8de_vendor(m.vendor) and not (m.uid or "").strip():
             QMessageBox.information(self, t("settings.network_tab"), t("settings.network_need_uid"))
             return
         at_host = str(m.contact_host or m.host or "").strip()
@@ -2781,7 +2821,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
                 m.mac = mac.upper()
         if m is not None and new_ip and str(self.cb_wan_mode.currentData()) == "STATIC":
             m.host = new_ip
-            if m.vendor == VENDOR_DK8DE:
+            if is_dk8de_vendor(m.vendor):
                 m.contact_host = new_ip
             self._rebuild_list()
         self._lbl_status.setText(t("settings.network_status_write_ok"))
@@ -2795,7 +2835,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
                 t("settings.network_write_ok_manual_reboot_ne2"),
             )
             return
-        if m is not None and m.vendor == VENDOR_DK8DE:
+        if m is not None and is_dk8de_vendor(m.vendor):
             self._write_awaiting_reread = True
             self._write_reread_retries = 0
             # WLAN-Neustart kann etwas laenger dauern als beim NE2.
@@ -2820,7 +2860,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
     def _on_stats(self) -> None:
         self._apply_form_to_current()
         m = self._current()
-        if m is None or m.vendor != VENDOR_DK8DE:
+        if m is None or not is_dk8de_vendor(m.vendor):
             return
         if not m.host.strip():
             QMessageBox.information(self, t("settings.network_tab"), t("settings.network_need_host"))
@@ -2973,20 +3013,21 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
                 t("settings.network_discover_dk8de_no_uid"),
             )
             return
-        existing = {(m.host.strip(), m.uid.strip().upper()) for m in self._modules if m.vendor == VENDOR_DK8DE}
+        existing = {(m.host.strip(), m.uid.strip().upper()) for m in self._modules if is_dk8de_vendor(m.vendor)}
         if (host, uid) in existing:
             self._lbl_status.setText(t("settings.network_discover_already", host=host))
             return
+        vendor = classify_dk8de_device(device)
         label = (device.name or f"DK8DE {uid}").strip()
         m = NetworkModule(
             name=label,
-            vendor=VENDOR_DK8DE,
+            vendor=vendor,
             host=host,
             contact_host=host,
             uid=uid,
-            at_port=int(device.lport or DEFAULT_AT_PORTS[VENDOR_DK8DE]),
-            config_port=DEFAULT_CONFIG_PORTS[VENDOR_DK8DE],
-            web_port=DEFAULT_WEB_PORTS[VENDOR_DK8DE],
+            at_port=int(device.lport or DEFAULT_AT_PORTS.get(vendor, 8886)),
+            config_port=DEFAULT_CONFIG_PORTS.get(vendor, 8880),
+            web_port=DEFAULT_WEB_PORTS.get(vendor, 80),
             web_user="admin",
             web_password="Rotorconfig",
             role="bus_gateway",
@@ -3017,7 +3058,7 @@ class NetworkModulesTab(_BusyProgressMixin, QWidget):
         elif isinstance(device, Dk8deDevice):
             uid = device.uid_norm
             for m in self._modules:
-                if m.vendor != VENDOR_DK8DE:
+                if not is_dk8de_vendor(m.vendor):
                     continue
                 if uid and m.uid.strip().upper() == uid:
                     m.host = ip

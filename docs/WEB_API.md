@@ -344,6 +344,7 @@ ist `locator` (siehe unten). Aktionsnamen sind **Kleinbuchstaben**.
 | `set_pwm`  | `axis`: `"az"`\|`"el"`, `pct` (0–100)      | Motorgeschwindigkeit in % (nach unten durch `pwm_min` der Achse begrenzt)                 |
 | `ref_az`   | –                                          | Referenzfahrt (Homing) Azimut                                                             |
 | `ref_el`   | –                                          | Referenzfahrt Elevation                                                                   |
+| `park`     | –                                          | Alle aktiven Achsen zur jeweiligen Parkposition (GETHOMEPOS → SETPOSDG). AZ und EL haben eigene Parkwinkel; ein Aufruf parkt beide, falls aktiv. |
 | `az_scan`  | `a`, `b` (float)                           | Fährt zwischen zwei Azimutwinkeln `a` und `b` hin und her (Scan). Beenden mit `stop_az`, `set_az` oder `jog_az`. |
 | `place_pick` | `lat`, `lon`                             | wie `/api/setaz`                                                                          |
 

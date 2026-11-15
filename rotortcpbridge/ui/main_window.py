@@ -3847,7 +3847,7 @@ class MainWindow(QMainWindow):
             )
 
     def _on_park_clicked(self) -> None:
-        """Parken: Hom-Winkel per SETPOSDG anfahren (aus GETHOMEPOS-Cache)."""
+        """Parken: alle aktiven Achsen zur jeweiligen Parkposition (GETHOMEPOS → SETPOSDG)."""
         try:
             self.ctrl.park_all()
         except Exception:

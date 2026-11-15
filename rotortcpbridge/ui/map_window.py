@@ -143,10 +143,25 @@ class MapWindow(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        # Toolbar: Profil, Antenne, Favoriten, Name, Speichern, Löschen (wie Kompassfenster)
-        toolbar = QHBoxLayout()
+        # Toolbar: bei schmalem Fenster zweizeilig (Menü/Favoriten | Ort/Locator)
+        self.setMinimumWidth(px_to_dip(self, 480))
+        self._toolbar_compact: bool | None = None
+        self._toolbar_wrap = QWidget()
+        self._toolbar_vbox = QVBoxLayout(self._toolbar_wrap)
+        self._toolbar_vbox.setContentsMargins(0, 0, 0, 0)
+        self._toolbar_vbox.setSpacing(4)
+        self._toolbar_row1 = QHBoxLayout()
+        self._toolbar_row1.setContentsMargins(0, 0, 0, 0)
+        self._toolbar_row1.setSpacing(6)
+        self._toolbar_row2 = QHBoxLayout()
+        self._toolbar_row2.setContentsMargins(0, 0, 0, 0)
+        self._toolbar_row2.setSpacing(6)
+        self._toolbar_vbox.addLayout(self._toolbar_row1)
+        self._toolbar_vbox.addLayout(self._toolbar_row2)
+
         self._cb_profile = QComboBox()
-        self._cb_profile.setMinimumWidth(140)
+        self._cb_profile.setMinimumWidth(px_to_dip(self, 100))
+        self._cb_profile.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self._cb_profile.setToolTip(tt("main.menu_profile"))
         self._refresh_profile_dropdown()
         self._cb_profile.currentIndexChanged.connect(self._on_profile_changed)
@@ -156,17 +171,20 @@ class MapWindow(QDialog):
         sw = max(12, px_to_dip(self, 14))
         self._cb_antenna.setIconSize(QSize(sw, sw))
         self._populate_antenna_dropdown()
-        self._cb_antenna.setMinimumWidth(160)
+        self._cb_antenna.setMinimumWidth(px_to_dip(self, 110))
+        self._cb_antenna.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self._cb_antenna.setCurrentIndex(antenna_idx)
         self._cb_antenna.currentIndexChanged.connect(self._on_antenna_changed)
 
         self._cb_fav = QComboBox()
-        self._cb_fav.setMinimumWidth(180)
+        self._cb_fav.setMinimumWidth(px_to_dip(self, 120))
+        self._cb_fav.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._cb_fav.setEditable(False)
         self._ed_fav_name = QLineEdit()
         self._ed_fav_name.setPlaceholderText(t("compass.fav_name_placeholder"))
         self._ed_fav_name.setMaxLength(15)
-        self._ed_fav_name.setFixedWidth(110)
+        self._ed_fav_name.setMinimumWidth(px_to_dip(self, 72))
+        self._ed_fav_name.setMaximumWidth(px_to_dip(self, 120))
         self._btn_fav_save = QPushButton(t("compass.fav_btn_save"))
         self._btn_fav_save.setAutoDefault(False)
         self._btn_fav_save.setDefault(False)
@@ -176,7 +194,8 @@ class MapWindow(QDialog):
         self._ed_place_search = QLineEdit()
         self._ed_place_search.setPlaceholderText(t("map.search_placeholder"))
         self._ed_place_search.setClearButtonEnabled(True)
-        self._ed_place_search.setMinimumWidth(px_to_dip(self, 180))
+        self._ed_place_search.setMinimumWidth(px_to_dip(self, 100))
+        self._ed_place_search.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._ed_place_search.setToolTip(tt("map.search_tooltip"))
         self._place_search_tooltip_online = tt("map.search_tooltip")
         self._place_search_tooltip_offline = tt("map.search_offline_tooltip")
@@ -187,7 +206,8 @@ class MapWindow(QDialog):
         self._ed_map_loc.setPlaceholderText(t("compass.locator_placeholder"))
         self._ed_map_loc.setMaxLength(10)
         self._ed_map_loc.setToolTip(tt("compass.locator_tooltip"))
-        self._ed_map_loc.setFixedWidth(px_to_dip(self, 100))
+        self._ed_map_loc.setMinimumWidth(px_to_dip(self, 72))
+        self._ed_map_loc.setMaximumWidth(px_to_dip(self, 110))
         self._lbl_map_loc.setStyleSheet("font-size: 11pt; font-weight: bold;")
         self._w_map_loc = QWidget()
         _h_map_loc = QHBoxLayout(self._w_map_loc)
@@ -195,22 +215,25 @@ class MapWindow(QDialog):
         _h_map_loc.setSpacing(px_to_dip(self, 4))
         _h_map_loc.addWidget(self._lbl_map_loc, 0)
         _h_map_loc.addWidget(self._ed_map_loc, 0)
-        self._w_map_loc.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._w_map_loc.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self._btn_elevation = QPushButton(t("map.btn_elevation"))
         self._btn_elevation.setAutoDefault(False)
         self._btn_elevation.setDefault(False)
 
-        toolbar.addWidget(self._cb_profile)
-        toolbar.addWidget(self._cb_antenna)
-        toolbar.addWidget(self._cb_fav)
-        toolbar.addWidget(self._ed_fav_name)
-        toolbar.addWidget(self._btn_fav_save)
-        toolbar.addWidget(self._btn_fav_delete)
-        toolbar.addStretch(1)
-        toolbar.addWidget(self._lbl_map_ort)
-        toolbar.addWidget(self._ed_place_search)
-        toolbar.addWidget(self._w_map_loc)
-        toolbar.addWidget(self._btn_elevation)
+        self._toolbar_left = [
+            self._cb_profile,
+            self._cb_antenna,
+            self._cb_fav,
+            self._ed_fav_name,
+            self._btn_fav_save,
+            self._btn_fav_delete,
+        ]
+        self._toolbar_right = [
+            self._lbl_map_ort,
+            self._ed_place_search,
+            self._w_map_loc,
+            self._btn_elevation,
+        ]
         self._cb_antenna.setToolTip(tt("map.tooltip_antenna"))
         self.refresh_antenna_visibility()
         self._cb_fav.setToolTip(tt("map.tooltip_favorites"))
@@ -218,7 +241,8 @@ class MapWindow(QDialog):
         self._btn_fav_save.setToolTip(tt("map.tooltip_fav_save"))
         self._btn_fav_delete.setToolTip(tt("map.tooltip_fav_delete"))
         self._btn_elevation.setToolTip(tt("map.tooltip_elevation"))
-        layout.addLayout(toolbar)
+        layout.addWidget(self._toolbar_wrap, 0)
+        self._apply_toolbar_layout(force=True)
 
         self._cb_fav.activated.connect(self._on_fav_activated)
         self._btn_fav_save.clicked.connect(self._on_fav_save)
@@ -257,9 +281,20 @@ class MapWindow(QDialog):
         map_container._wind_overlay = self._wind_overlay
         layout.addWidget(map_container, 1)
 
-        # Statusleiste unter der Karte: Ist, Soll, LEDs (Fährt, Online, Ref), Ref AZ
-        status_bar = QHBoxLayout()
-        status_bar.setContentsMargins(0, 6, 0, 0)
+        # Statusleiste unter der Karte — bei schmalem Fenster zweizeilig
+        self._status_compact: bool | None = None
+        self._status_wrap = QWidget()
+        self._status_vbox = QVBoxLayout(self._status_wrap)
+        self._status_vbox.setContentsMargins(0, 6, 0, 0)
+        self._status_vbox.setSpacing(4)
+        self._status_row1 = QHBoxLayout()
+        self._status_row1.setContentsMargins(0, 0, 0, 0)
+        self._status_row1.setSpacing(6)
+        self._status_row2 = QHBoxLayout()
+        self._status_row2.setContentsMargins(0, 0, 0, 0)
+        self._status_row2.setSpacing(6)
+        self._status_vbox.addLayout(self._status_row1)
+        self._status_vbox.addLayout(self._status_row2)
         led_d = px_to_dip(self, 13)
         lbl_style = "font-size: 12pt; font-weight: bold;"
         self._lbl_ist = QLabel(t("compass.ist_prefix") + "–")
@@ -308,26 +343,28 @@ class MapWindow(QDialog):
         self._chk_locator.setToolTip(tt("map.tooltip_locator"))
         self._btn_ref_az.setToolTip(tt("map.tooltip_ref_az"))
 
-        status_bar.addWidget(self._lbl_ist)
-        status_bar.addWidget(self._lbl_soll)
-        status_bar.addWidget(self._lbl_soll_value)
-        status_bar.addStretch(1)
-        status_bar.addWidget(self._led_moving)
-        status_bar.addWidget(self._lbl_moving)
-        status_bar.addWidget(self._led_online)
-        status_bar.addWidget(self._lbl_online)
-        status_bar.addWidget(self._led_ref)
-        status_bar.addWidget(self._lbl_ref)
-        status_bar.addSpacing(px_to_dip(self, 20))
-        status_bar.addWidget(self._lbl_temp_motor)
-        status_bar.addWidget(self._lbl_temp_ambient)
-        status_bar.addStretch(1)
-        status_bar.addWidget(self._chk_offline)
-        status_bar.addWidget(self._chk_hover)
-        status_bar.addWidget(self._btn_satellite)
-        status_bar.addWidget(self._chk_locator)
-        status_bar.addWidget(self._btn_ref_az)
-        layout.addLayout(status_bar)
+        self._status_left = [
+            self._lbl_ist,
+            self._lbl_soll,
+            self._lbl_soll_value,
+            self._led_moving,
+            self._lbl_moving,
+            self._led_online,
+            self._lbl_online,
+            self._led_ref,
+            self._lbl_ref,
+            self._lbl_temp_motor,
+            self._lbl_temp_ambient,
+        ]
+        self._status_right = [
+            self._chk_offline,
+            self._chk_hover,
+            self._btn_satellite,
+            self._chk_locator,
+            self._btn_ref_az,
+        ]
+        layout.addWidget(self._status_wrap, 0)
+        self._apply_status_layout(force=True)
 
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(MAP_WEB_LIVE_INTERVAL_MS)
@@ -2213,6 +2250,69 @@ class MapWindow(QDialog):
             return
         super().keyPressEvent(event)
 
+    def _clear_hbox(self, row: QHBoxLayout) -> None:
+        while row.count():
+            item = row.takeAt(0)
+            if item is None:
+                break
+
+    def _apply_toolbar_layout(self, *, force: bool = False) -> None:
+        """Eine Zeile wenn breit, sonst Favoriten oben und Ort/Locator unten."""
+        want = int(self.width()) < int(px_to_dip(self, 920))
+        if not force and want == self._toolbar_compact:
+            return
+        self._toolbar_compact = want
+        self._clear_hbox(self._toolbar_row1)
+        self._clear_hbox(self._toolbar_row2)
+        left = list(getattr(self, "_toolbar_left", []) or [])
+        right = list(getattr(self, "_toolbar_right", []) or [])
+        if not want:
+            for w in left:
+                self._toolbar_row1.addWidget(w)
+            self._toolbar_row1.addStretch(1)
+            for w in right:
+                self._toolbar_row1.addWidget(w)
+        else:
+            for w in left:
+                self._toolbar_row1.addWidget(w)
+            self._toolbar_row1.addStretch(1)
+            for w in right:
+                self._toolbar_row2.addWidget(w)
+            self._toolbar_row2.addStretch(1)
+
+    def _apply_status_layout(self, *, force: bool = False) -> None:
+        """Status/LEDs und Optionen bei schmalem Fenster auf zwei Zeilen."""
+        want = int(self.width()) < int(px_to_dip(self, 900))
+        if not force and want == self._status_compact:
+            return
+        self._status_compact = want
+        self._clear_hbox(self._status_row1)
+        self._clear_hbox(self._status_row2)
+        left = list(getattr(self, "_status_left", []) or [])
+        right = list(getattr(self, "_status_right", []) or [])
+        if not want:
+            for w in left:
+                self._status_row1.addWidget(w)
+            self._status_row1.addStretch(1)
+            for w in right:
+                self._status_row1.addWidget(w)
+        else:
+            for w in left:
+                self._status_row1.addWidget(w)
+            self._status_row1.addStretch(1)
+            for w in right:
+                self._status_row2.addWidget(w)
+            self._status_row2.addStretch(1)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        try:
+            self._apply_toolbar_layout()
+            self._apply_status_layout()
+        except Exception:
+            pass
+        QTimer.singleShot(0, self._reposition_wind_overlay)
+
     def showEvent(self, event):
         super().showEvent(event)
         self._refresh_profile_dropdown()
@@ -2230,6 +2330,8 @@ class MapWindow(QDialog):
         self._sync_satellite_controls()
         self.update_homing_buttons_visibility()
         self._smooth_rotor_az = None
+        self._apply_toolbar_layout(force=True)
+        self._apply_status_layout(force=True)
         self._refresh_map()
         self._refresh_timer.start()
         QTimer.singleShot(100, self._reposition_wind_overlay)

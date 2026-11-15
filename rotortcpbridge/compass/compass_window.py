@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QToolButton,
@@ -80,7 +81,7 @@ from ..ui.favorite_selection_sync import (
     persist_favorite_selection,
 )
 from ..ui.place_search import GeocodeThread, confirm_internet_for_place_search, pick_geocode_result
-from ..ui.ui_utils import px_to_dip
+from ..ui.ui_utils import FlowLayout, px_to_dip
 from .compass_az_window import CompassWidget
 from .compass_el_window import ElevationCompassWidget
 from .statistic_compass_widget import parse_heatmap_scale
@@ -142,8 +143,11 @@ class CompassWindow(QDialog):
     sig_dgcal_get_done = Signal(str, object, str)  # axis, value|None, err
     sig_dgcal_set_done = Signal(str, bool, str, float)  # axis, ok, err, value
 
-    _MIN_WIDTH = 870
-    _MIN_HEIGHT = 870
+    # Weit: klassische Drei-Spalten-Ansicht; schmal: Karten umbrechen (wie Web-Kompass)
+    _MIN_WIDTH = 420
+    _MIN_HEIGHT = 480
+    _COMPACT_W_AZ = 760
+    _COMPACT_W_BOTH = 1180
     _VAL_COLOR_SOLL = "#ff6b6b"
     _VAL_COLOR_IST = "#5ee07a"
     _VAL_COLOR_IST_REVERSE = "#da9a5c"
@@ -310,8 +314,8 @@ class CompassWindow(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
-        self.setMinimumSize(self._MIN_WIDTH, self._MIN_HEIGHT)
-        self.resize(940, self._MIN_HEIGHT)
+        self.setMinimumSize(px_to_dip(self, self._MIN_WIDTH), px_to_dip(self, self._MIN_HEIGHT))
+        self.resize(px_to_dip(self, 940), px_to_dip(self, self._MIN_HEIGHT))
 
         self._target_az: Optional[float] = None
         self._target_el: Optional[float] = None
@@ -395,15 +399,62 @@ class CompassWindow(QDialog):
 
         from ..ui.led_widget import Led  # lokaler Import zur Vermeidung des Zirkel-Imports
 
-        # ── HAUPTBEREICH: Links-Panel | Kompass-Bereich | Rechts-Panel ─────────
-        main_row = QHBoxLayout()
+        # ── HAUPTBEREICH (weit: Spalten | schmal: Karten oben/unten, scrollbar) ─
+        self._compact_mode: bool | None = None
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll_host = QWidget()
+        self._scroll.setWidget(self._scroll_host)
+        self._scroll_host_lay = QVBoxLayout(self._scroll_host)
+        self._scroll_host_lay.setContentsMargins(0, 0, 0, 0)
+        self._scroll_host_lay.setSpacing(6)
+        root.addWidget(self._scroll, 1)
+
+        self._wide_row = QWidget()
+        main_row = QHBoxLayout(self._wide_row)
+        main_row.setContentsMargins(0, 0, 0, 0)
         main_row.setSpacing(6)
-        root.addLayout(main_row, 1)
+        self._main_row = main_row
+        self._scroll_host_lay.addWidget(self._wide_row, 1)
+
+        self._compact_host = QWidget()
+        self._compact_host.setVisible(False)
+        _compact_root = QVBoxLayout(self._compact_host)
+        _compact_root.setContentsMargins(0, 0, 0, 0)
+        _compact_root.setSpacing(8)
+        # Kompakt-Reihenfolge: Kompass oben → linke Karten → rechte Karten;
+        # EL: Anzeige/Kompass oben, rechte Karten darunter.
+        _flow_kw = dict(
+            h_spacing=6,
+            v_spacing=6,
+            equalize_heights=True,
+            fill_width=True,
+            min_item_width=px_to_dip(self, 150),
+        )
+        self._az_flow_left_w = QWidget()
+        self._az_flow_left = FlowLayout(self._az_flow_left_w, **_flow_kw)
+        self._az_flow_right_w = QWidget()
+        self._az_flow_right = FlowLayout(self._az_flow_right_w, **_flow_kw)
+        self._el_flow_w = QWidget()
+        self._el_flow = FlowLayout(self._el_flow_w, **_flow_kw)
+        self._compact_az_mid = QVBoxLayout()
+        self._compact_el_mid = QVBoxLayout()
+        # Stretch 0: Kompasshöhe = Breite (nicht durch Viewport-Höhe stauchen)
+        _compact_root.addLayout(self._compact_az_mid, 0)
+        _compact_root.addWidget(self._az_flow_left_w, 0)
+        _compact_root.addWidget(self._az_flow_right_w, 0)
+        _compact_root.addLayout(self._compact_el_mid, 0)
+        _compact_root.addWidget(self._el_flow_w, 0)
+        self._scroll_host_lay.addWidget(self._compact_host, 1)
 
         # --- Links-Panel: Soll / Ist / Wind / Locator-Karten (nur AZ) ---
         self._az_left_panel = QWidget()
         self._az_left_panel.setFixedWidth(px_to_dip(self, 158))
         left_vbox = QVBoxLayout(self._az_left_panel)
+        self._az_left_vbox = left_vbox
         left_vbox.setContentsMargins(0, 0, 0, 0)
         left_vbox.setSpacing(6)
 
@@ -436,11 +487,12 @@ class CompassWindow(QDialog):
         self.ed_az_soll.setPlaceholderText("–")
         self.ed_az_soll.setMaxLength(7)
 
-        _c_soll = QFrame()
-        self._apply_compass_card_style(_c_soll)
-        _vl_soll = QVBoxLayout(_c_soll)
+        self._c_soll = QFrame()
+        self._apply_compass_card_style(self._c_soll)
+        _vl_soll = QVBoxLayout(self._c_soll)
         _vl_soll.setContentsMargins(8, 8, 8, 10)
         _vl_soll.setSpacing(4)
+        _vl_soll.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._lbl_soll_h = QLabel(t("compass.soll_label").upper())
         self._lbl_soll_h.setStyleSheet(_HDR_STYLE)
         self._lbl_soll_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -452,11 +504,12 @@ class CompassWindow(QDialog):
         _vl_soll.addWidget(self.ed_az_soll)
 
         # ── Ist-Karte ──────────────────────────────────────────────────────
-        _c_ist = QFrame()
-        self._apply_compass_card_style(_c_ist)
-        _vl_ist = QVBoxLayout(_c_ist)
+        self._c_ist = QFrame()
+        self._apply_compass_card_style(self._c_ist)
+        _vl_ist = QVBoxLayout(self._c_ist)
         _vl_ist.setContentsMargins(8, 8, 8, 10)
         _vl_ist.setSpacing(4)
+        _vl_ist.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._lbl_ist_h = QLabel(t("compass.ist_label").upper())
         self._lbl_ist_h.setStyleSheet(_HDR_STYLE)
         self._lbl_ist_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -483,6 +536,7 @@ class CompassWindow(QDialog):
         _vl_wind = QVBoxLayout(self._c_wind)
         _vl_wind.setContentsMargins(8, 8, 8, 10)
         _vl_wind.setSpacing(4)
+        _vl_wind.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._lbl_wind_h = QLabel(t("compass.wind_label").upper())
         self._lbl_wind_h.setStyleSheet(_HDR_STYLE)
         self._lbl_wind_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -546,11 +600,12 @@ class CompassWindow(QDialog):
         _vl_wind.addWidget(self._temp_box)
 
         # ── Locator-Eingabe-Karte ──────────────────────────────────────────
-        _c_loc = QFrame()
-        self._apply_compass_card_style(_c_loc)
-        _vl_loc = QVBoxLayout(_c_loc)
+        self._c_loc = QFrame()
+        self._apply_compass_card_style(self._c_loc)
+        _vl_loc = QVBoxLayout(self._c_loc)
         _vl_loc.setContentsMargins(8, 8, 8, 10)
         _vl_loc.setSpacing(4)
+        _vl_loc.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.lbl_az_locator = QLabel(t("compass.locator_label").upper())
         self.lbl_az_locator.setStyleSheet(_HDR_STYLE)
         self.lbl_az_locator.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -588,6 +643,7 @@ class CompassWindow(QDialog):
         _vl_prof = QVBoxLayout(self._c_profile)
         _vl_prof.setContentsMargins(8, 8, 8, 10)
         _vl_prof.setSpacing(4)
+        _vl_prof.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._lbl_profile_h = QLabel(t("compass.profile_header").upper())
         self._lbl_profile_h.setStyleSheet(_HDR_STYLE)
         self._lbl_profile_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -601,11 +657,12 @@ class CompassWindow(QDialog):
         self.cb_profile.currentIndexChanged.connect(self._on_profile_changed)
 
         # ── Antennen-Karte ────────────────────────────────────────────────
-        _c_ant = QFrame()
-        self._apply_compass_card_style(_c_ant)
-        _vl_ant = QVBoxLayout(_c_ant)
+        self._c_ant = QFrame()
+        self._apply_compass_card_style(self._c_ant)
+        _vl_ant = QVBoxLayout(self._c_ant)
         _vl_ant.setContentsMargins(8, 8, 8, 10)
         _vl_ant.setSpacing(4)
+        _vl_ant.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._lbl_antenna_h = QLabel(t("compass.antenna_header").upper())
         self._lbl_antenna_h.setStyleSheet(_HDR_STYLE)
         self._lbl_antenna_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -614,11 +671,12 @@ class CompassWindow(QDialog):
         _vl_ant.addWidget(self.cb_antenna)
 
         # ── Korrekturwinkel AZ ────────────────────────────────────────────
-        _c_dgcal_az = QFrame()
-        self._apply_compass_card_style(_c_dgcal_az)
-        _vl_dgcal_az = QVBoxLayout(_c_dgcal_az)
+        self._c_dgcal_az = QFrame()
+        self._apply_compass_card_style(self._c_dgcal_az)
+        _vl_dgcal_az = QVBoxLayout(self._c_dgcal_az)
         _vl_dgcal_az.setContentsMargins(8, 8, 8, 10)
         _vl_dgcal_az.setSpacing(4)
+        _vl_dgcal_az.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._lbl_dgcal_az_h = QLabel(t("compass.dgcal_header").upper())
         self._lbl_dgcal_az_h.setStyleSheet(_HDR_STYLE)
         self._lbl_dgcal_az_h.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -645,13 +703,17 @@ class CompassWindow(QDialog):
         _vl_dgcal_az.addWidget(self.ed_dgcal_az_true)
         _vl_dgcal_az.addLayout(_dgcal_az_btns)
 
-        left_vbox.addWidget(_c_soll)
-        left_vbox.addWidget(_c_ist)
-        left_vbox.addWidget(self._c_wind)
-        left_vbox.addWidget(_c_loc)
-        left_vbox.addWidget(self._c_profile)
-        left_vbox.addWidget(_c_ant)
-        left_vbox.addWidget(_c_dgcal_az)
+        self._az_left_cards = [
+            self._c_soll,
+            self._c_ist,
+            self._c_wind,
+            self._c_loc,
+            self._c_profile,
+            self._c_ant,
+            self._c_dgcal_az,
+        ]
+        for _card in self._az_left_cards:
+            left_vbox.addWidget(_card)
         left_vbox.addStretch(1)
         main_row.addWidget(self._az_left_panel, 0)
 
@@ -747,9 +809,9 @@ class CompassWindow(QDialog):
             right_vbox.addWidget(self._c_rig_freq)
 
         # ── VERBINDUNG-Card ───────────────────────────────────────────────
-        _conn_card = QFrame()
-        self._apply_compass_card_style(_conn_card)
-        _conn_vbox = QVBoxLayout(_conn_card)
+        self._conn_card = QFrame()
+        self._apply_compass_card_style(self._conn_card)
+        _conn_vbox = QVBoxLayout(self._conn_card)
         _conn_vbox.setContentsMargins(8, 6, 8, 6)
         _conn_vbox.setSpacing(4)
 
@@ -791,12 +853,12 @@ class CompassWindow(QDialog):
         self._top_online_lbl.setStyleSheet(_lbl_style)
         _conn_vbox.addWidget(_status_row(self._top_online_led, self._top_online_lbl))
 
-        right_vbox.addWidget(_conn_card)
+        right_vbox.addWidget(self._conn_card)
 
         # ── STEUERUNG-Card ────────────────────────────────────────────────
-        _ctrl_card = QFrame()
-        self._apply_compass_card_style(_ctrl_card)
-        _ctrl_vbox = QVBoxLayout(_ctrl_card)
+        self._ctrl_card = QFrame()
+        self._apply_compass_card_style(self._ctrl_card)
+        _ctrl_vbox = QVBoxLayout(self._ctrl_card)
         _ctrl_vbox.setContentsMargins(8, 8, 8, 8)
         _ctrl_vbox.setSpacing(5)
 
@@ -879,7 +941,7 @@ class CompassWindow(QDialog):
             self._btn_open_map.setMinimumHeight(px_to_dip(self, 28))
             _ctrl_vbox.addWidget(self._btn_open_map)
 
-        right_vbox.addWidget(_ctrl_card)
+        right_vbox.addWidget(self._ctrl_card)
 
         # ── FAVORITEN-Card ────────────────────────────────────────────────
         # Bei nur EL wird die Karte nach rechts ans EL-Panel gehängt (refresh_visibility).
@@ -957,9 +1019,9 @@ class CompassWindow(QDialog):
         _el_right_vbox.setContentsMargins(0, 0, 0, 0)
         _el_right_vbox.setSpacing(6)
 
-        _conn_el_card = QFrame()
-        self._apply_compass_card_style(_conn_el_card)
-        _conn_el_vbox = QVBoxLayout(_conn_el_card)
+        self._conn_el_card = QFrame()
+        self._apply_compass_card_style(self._conn_el_card)
+        _conn_el_vbox = QVBoxLayout(self._conn_el_card)
         _conn_el_vbox.setContentsMargins(8, 6, 8, 6)
         _conn_el_vbox.setSpacing(4)
 
@@ -984,9 +1046,9 @@ class CompassWindow(QDialog):
         self._top_el_online_lbl.setStyleSheet(_lbl_style)
         _conn_el_vbox.addWidget(_status_row(self._top_el_online_led, self._top_el_online_lbl))
 
-        _c_el_soll = QFrame()
-        self._apply_compass_card_style(_c_el_soll)
-        _vl_el_soll = QVBoxLayout(_c_el_soll)
+        self._c_el_soll = QFrame()
+        self._apply_compass_card_style(self._c_el_soll)
+        _vl_el_soll = QVBoxLayout(self._c_el_soll)
         _vl_el_soll.setContentsMargins(8, 8, 8, 10)
         _vl_el_soll.setSpacing(4)
         self._lbl_el_soll_h = QLabel(t("compass.soll_label").upper())
@@ -999,9 +1061,9 @@ class CompassWindow(QDialog):
         _vl_el_soll.addWidget(_val_row(self._lbl_left_el_soll_val))
         _vl_el_soll.addWidget(self.ed_el_soll)
 
-        _c_el_ist = QFrame()
-        self._apply_compass_card_style(_c_el_ist)
-        _vl_el_ist = QVBoxLayout(_c_el_ist)
+        self._c_el_ist = QFrame()
+        self._apply_compass_card_style(self._c_el_ist)
+        _vl_el_ist = QVBoxLayout(self._c_el_ist)
         _vl_el_ist.setContentsMargins(8, 8, 8, 10)
         _vl_el_ist.setSpacing(4)
         self._lbl_el_ist_h = QLabel(t("compass.ist_label").upper())
@@ -1013,9 +1075,9 @@ class CompassWindow(QDialog):
         _vl_el_ist.addWidget(self._lbl_el_ist_h)
         _vl_el_ist.addWidget(_val_row(self._lbl_left_el_ist_val))
 
-        _c_dgcal_el = QFrame()
-        self._apply_compass_card_style(_c_dgcal_el)
-        _vl_dgcal_el = QVBoxLayout(_c_dgcal_el)
+        self._c_dgcal_el = QFrame()
+        self._apply_compass_card_style(self._c_dgcal_el)
+        _vl_dgcal_el = QVBoxLayout(self._c_dgcal_el)
         _vl_dgcal_el.setContentsMargins(8, 8, 8, 10)
         _vl_dgcal_el.setSpacing(4)
         self._lbl_dgcal_el_h = QLabel(t("compass.dgcal_header").upper())
@@ -1044,9 +1106,9 @@ class CompassWindow(QDialog):
         _vl_dgcal_el.addWidget(self.ed_dgcal_el_true)
         _vl_dgcal_el.addLayout(_dgcal_el_btns)
 
-        _ctrl_el_card = QFrame()
-        self._apply_compass_card_style(_ctrl_el_card)
-        _ctrl_el_vbox = QVBoxLayout(_ctrl_el_card)
+        self._ctrl_el_card = QFrame()
+        self._apply_compass_card_style(self._ctrl_el_card)
+        _ctrl_el_vbox = QVBoxLayout(self._ctrl_el_card)
         _ctrl_el_vbox.setContentsMargins(8, 8, 8, 8)
         _ctrl_el_vbox.setSpacing(5)
 
@@ -1085,12 +1147,36 @@ class CompassWindow(QDialog):
         _ctrl_el_vbox.addWidget(self.btn_ref_el)
         _ctrl_el_vbox.addWidget(self.cb_heatmap_el)
 
-        _el_right_vbox.addWidget(_conn_el_card)
-        _el_right_vbox.addWidget(_c_el_soll)
-        _el_right_vbox.addWidget(_c_el_ist)
-        _el_right_vbox.addWidget(_c_dgcal_el)
-        _el_right_vbox.addWidget(_ctrl_el_card)
+        self._el_right_cards = [
+            self._conn_el_card,
+            self._c_el_soll,
+            self._c_el_ist,
+            self._c_dgcal_el,
+            self._ctrl_el_card,
+        ]
+        for _card in self._el_right_cards:
+            _el_right_vbox.addWidget(_card)
         _el_right_vbox.addStretch(1)
+
+        self._az_right_cards = [
+            c
+            for c in (
+                self._c_rig_freq,
+                self._conn_card,
+                self._ctrl_card,
+                self._fav_card,
+                self._scan_card,
+            )
+            if c is not None
+        ]
+        _card_min_w = px_to_dip(self, 150)
+        for _card in (
+            list(self._az_left_cards)
+            + list(self._az_right_cards)
+            + list(self._el_right_cards)
+        ):
+            _card.setMinimumWidth(_card_min_w)
+            _card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         main_row.addWidget(self._az_right_panel, 0)
         main_row.addWidget(self._el_column, 1)
@@ -2417,6 +2503,10 @@ class CompassWindow(QDialog):
             return
         want_el_side = bool(el_on and not az_on)
         host = "el" if want_el_side else "az"
+        # Im Kompaktmodus legt apply_responsive_layout die Karte in den Flow.
+        if bool(self._compact_mode):
+            self._fav_host = host
+            return
         parent_ok = (
             card.parent() is self._el_right_panel
             if want_el_side
@@ -2450,36 +2540,234 @@ class CompassWindow(QDialog):
                 az_lay.insertWidget(max(0, az_lay.count() - 1), card)
         self._fav_host = host
 
+    def _clear_box_widgets(self, layout) -> None:
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            if item is None:
+                break
+            # Widgets behalten — nur aus dem Layout nehmen
+            _ = item.widget()
+
+    def _clear_flow(self, flow: FlowLayout) -> None:
+        while flow.count():
+            item = flow.takeAt(0)
+            if item is None:
+                break
+
+    def _want_compact_layout(self) -> bool:
+        az_on = bool(getattr(self.ctrl, "enable_az", True))
+        el_on = bool(getattr(self.ctrl, "enable_el", True))
+        thresh = self._COMPACT_W_BOTH if (az_on and el_on) else self._COMPACT_W_AZ
+        return int(self.width()) < int(px_to_dip(self, thresh))
+
+    def _card_min_w(self) -> int:
+        return px_to_dip(self, 150)
+
+    def _fill_vbox_cards(self, vbox, cards: list) -> None:
+        self._clear_box_widgets(vbox)
+        for c in cards:
+            if c is None:
+                continue
+            c.setMinimumWidth(0)
+            c.setMaximumWidth(16777215)
+            vbox.addWidget(c)
+        vbox.addStretch(1)
+
+    def _align_card_content_top(self, card: QWidget | None) -> None:
+        """Inhalt einer Kachel oben halten (bei gleicher Zeilenhöhe nicht mittig)."""
+        if card is None:
+            return
+        lay = card.layout()
+        if lay is None:
+            return
+        lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # Kein Stretch am Ende → Extra-Höhe bleibt unten leer
+        for i in range(lay.count()):
+            item = lay.itemAt(i)
+            if item is None:
+                continue
+            # Innere Boxen (z. B. Wertzeile) nicht vertikal zentrieren lassen
+            w = item.widget()
+            if w is not None and w.layout() is not None:
+                w.layout().setAlignment(Qt.AlignmentFlag.AlignTop)
+
+    def _fill_flow_cards(self, flow: FlowLayout, cards: list) -> None:
+        self._clear_flow(flow)
+        mw = self._card_min_w()
+        mh = px_to_dip(self, 118)
+        for c in cards:
+            if c is None:
+                continue
+            c.setMinimumWidth(mw)
+            c.setMaximumWidth(16777215)
+            c.setMinimumHeight(mh)
+            c.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            self._align_card_content_top(c)
+            # Am Layout-Ende Stretch entfernen falls vorhanden, dann oben andocken
+            lay = c.layout()
+            if isinstance(lay, QVBoxLayout):
+                # Sicherstellen: Inhalt oben, freier Platz unten
+                while lay.count() and lay.itemAt(lay.count() - 1) is not None:
+                    last = lay.itemAt(lay.count() - 1)
+                    if last is not None and last.spacerItem() is not None:
+                        lay.takeAt(lay.count() - 1)
+                    else:
+                        break
+                lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+                lay.addStretch(1)
+            flow.addWidget(c)
+
+    def _reset_compass_size_constraints(self) -> None:
+        for w in (getattr(self, "az_compass", None), getattr(self, "el_compass", None)):
+            if w is None:
+                continue
+            w.setMinimumSize(px_to_dip(self, 280), px_to_dip(self, 280))
+            w.setMaximumSize(16777215, 16777215)
+            w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        for col in (getattr(self, "_az_column", None), getattr(self, "_el_column", None)):
+            if col is None:
+                continue
+            col.setMinimumHeight(0)
+            col.setMaximumHeight(16777215)
+
+    def _sync_compact_compass_size(self) -> None:
+        """Kompakt: Kompass-Quadrat an verfügbare Breite (nicht an Fensterhöhe) koppeln."""
+        if not self._compact_mode:
+            self._reset_compass_size_constraints()
+            return
+        # Innenbreite der Scroll-Fläche (Karten nutzen dieselbe Breite)
+        host_w = int(self._scroll.viewport().width()) if self._scroll is not None else int(self.width())
+        host_w = max(px_to_dip(self, 260), host_w - 8)
+        az_on = bool(getattr(self.ctrl, "enable_az", True))
+        el_on = bool(getattr(self.ctrl, "enable_el", True))
+        if az_on and getattr(self, "az_compass", None) is not None:
+            # Quadrat = volle Breite → Kreis nutzt die Breite, Höhe folgt mit
+            side = host_w
+            self.az_compass.setMinimumSize(side, side)
+            self.az_compass.setMaximumSize(16777215, 16777215)
+            self._az_column.setMinimumHeight(side)
+            self._az_column.setMaximumHeight(16777215)
+            self.az_compass.updateGeometry()
+            self._az_column.updateGeometry()
+        if el_on and getattr(self, "el_compass", None) is not None:
+            side = max(px_to_dip(self, 220), int(host_w * 0.85))
+            self.el_compass.setMinimumSize(side, side)
+            self.el_compass.setMaximumSize(16777215, 16777215)
+            self._el_column.setMinimumHeight(side)
+            self._el_column.setMaximumHeight(16777215)
+            self.el_compass.updateGeometry()
+            self._el_column.updateGeometry()
+
+    def _az_right_cards_now(self) -> list:
+        cards = []
+        if self._c_rig_freq is not None:
+            cards.append(self._c_rig_freq)
+        cards.extend([self._conn_card, self._ctrl_card])
+        fav = getattr(self, "_fav_card", None)
+        if fav is not None and getattr(self, "_fav_host", "az") != "el":
+            cards.append(fav)
+        scan = getattr(self, "_scan_card", None)
+        if scan is not None:
+            cards.append(scan)
+        return cards
+
+    def _el_right_cards_now(self) -> list:
+        cards = list(getattr(self, "_el_right_cards", []) or [])
+        fav = getattr(self, "_fav_card", None)
+        if fav is not None and getattr(self, "_fav_host", "az") == "el":
+            # Favoriten vor dem Stretch / am Ende der EL-Karten
+            if fav not in cards:
+                cards.append(fav)
+        return cards
+
+    def apply_responsive_layout(self, *, force: bool = False) -> None:
+        """Weit: Seitenspalten; schmal: Kompass oben, darunter links, dann rechts / EL."""
+        want = self._want_compact_layout()
+        if not force and want == self._compact_mode:
+            return
+        self._compact_mode = want
+        az_on = bool(getattr(self.ctrl, "enable_az", True))
+        el_on = bool(getattr(self.ctrl, "enable_el", True))
+
+        # Spalten aus beiden Hosts lösen
+        for lay in (
+            self._main_row,
+            self._compact_az_mid,
+            self._compact_el_mid,
+        ):
+            self._clear_box_widgets(lay)
+        self._clear_flow(self._az_flow_left)
+        self._clear_flow(self._az_flow_right)
+        self._clear_flow(self._el_flow)
+
+        if not want:
+            self._compact_host.setVisible(False)
+            self._wide_row.setVisible(True)
+            self._reset_compass_size_constraints()
+            self._az_left_panel.setFixedWidth(px_to_dip(self, 158))
+            self._az_right_panel.setFixedWidth(px_to_dip(self, 168))
+            self._el_right_panel.setFixedWidth(px_to_dip(self, 168))
+            for c in list(self._az_left_cards) + self._az_right_cards_now() + self._el_right_cards_now():
+                if c is None:
+                    continue
+                c.setMinimumHeight(0)
+                c.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+            self._fill_vbox_cards(self._az_left_vbox, list(self._az_left_cards))
+            self._fill_vbox_cards(self._az_right_vbox, self._az_right_cards_now())
+            self._fill_vbox_cards(self._el_right_vbox, self._el_right_cards_now())
+            self._main_row.addWidget(self._az_left_panel, 0)
+            self._main_row.addWidget(self._az_column, 1)
+            self._main_row.addWidget(self._az_right_panel, 0)
+            self._main_row.addWidget(self._el_column, 1)
+            self._main_row.addWidget(self._el_right_panel, 0)
+        else:
+            self._wide_row.setVisible(False)
+            self._compact_host.setVisible(True)
+            self._az_left_panel.setVisible(False)
+            self._az_right_panel.setVisible(False)
+            self._el_right_panel.setVisible(False)
+            if az_on:
+                # Kompass ganz oben, darunter linke Karten, dann rechte Steuerung
+                self._compact_az_mid.addWidget(self._az_column, 0)
+                self._fill_flow_cards(self._az_flow_left, list(self._az_left_cards))
+                self._fill_flow_cards(self._az_flow_right, self._az_right_cards_now())
+            if el_on:
+                # EL-Anzeige oben, rechte Karten darunter
+                self._compact_el_mid.addWidget(self._el_column, 0)
+                self._fill_flow_cards(self._el_flow, self._el_right_cards_now())
+            self._az_flow_left_w.setVisible(az_on)
+            self._az_flow_right_w.setVisible(az_on)
+            self._el_flow_w.setVisible(el_on)
+            self._sync_compact_compass_size()
+
+        self._az_left_panel.setVisible(az_on and not want)
+        self._az_column.setVisible(az_on)
+        self._az_right_panel.setVisible(az_on and not want)
+        self._el_column.setVisible(el_on)
+        self._el_right_panel.setVisible(el_on and not want)
+        self.gb_az.setVisible(az_on)
+        self.gb_el.setVisible(el_on)
+
     def refresh_visibility(self) -> None:
         az_on = bool(getattr(self.ctrl, "enable_az", True))
         el_on = bool(getattr(self.ctrl, "enable_el", True))
-        self._az_left_panel.setVisible(az_on)
-        self._az_column.setVisible(az_on)
-        self._az_right_panel.setVisible(az_on)
-        self._el_column.setVisible(el_on)
-        self._el_right_panel.setVisible(el_on)
-        self.gb_az.setVisible(az_on)
-        self.gb_el.setVisible(el_on)
         self._place_favorites_panel(az_on, el_on)
         self.update_homing_buttons_visibility()
         self.update_ist_reverse_visibility()
         self._update_place_search_visibility()
 
         vis = (az_on, el_on)
-        if vis == self._last_axes_vis:
+        axes_changed = vis != self._last_axes_vis
+        self.apply_responsive_layout(force=axes_changed or self._compact_mode is None)
+        if not axes_changed:
             return
         self._last_axes_vis = vis
 
-        if az_on and el_on:
-            min_w, min_h = self._MIN_WIDTH, self._MIN_HEIGHT
-            open_w = 1680
-        else:
-            min_w, min_h = self._MIN_WIDTH, self._MIN_HEIGHT
-            open_w = max(self._MIN_WIDTH, 940)
-
-        self.setMinimumSize(min_w, min_h)
-        # Bei Sichtbarkeitswechsel Fenster auf Öffnungsgröße setzen.
-        # Höhe: Öffnungs- und Mindesthöhe = _MIN_HEIGHT (nicht kleiner ziehbar).
+        min_w, min_h = self._MIN_WIDTH, self._MIN_HEIGHT
+        open_w = 1680 if (az_on and el_on) else max(self._MIN_WIDTH, 940)
+        self.setMinimumSize(px_to_dip(self, min_w), px_to_dip(self, min_h))
         try:
             if self.isMaximized():
                 self.showNormal()
@@ -2487,8 +2775,7 @@ class CompassWindow(QDialog):
             if lay is not None:
                 lay.invalidate()
                 lay.activate()
-            self.adjustSize()
-            self.resize(open_w, min_h)
+            self.resize(open_w, max(open_w // 2, px_to_dip(self, min_h)))
         except Exception:
             pass
 
@@ -2565,6 +2852,12 @@ class CompassWindow(QDialog):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._fit_rig_freq_font_size()
+        try:
+            self.apply_responsive_layout()
+            if self._compact_mode:
+                self._sync_compact_compass_size()
+        except Exception:
+            pass
 
     def _rig_freq_field_stylesheet(self, hz: int) -> str:
         qss = self._RIG_FREQ_FIELD_BASE_QSS

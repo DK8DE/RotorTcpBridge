@@ -357,6 +357,7 @@ def build_compass_html(params: dict) -> str:
             </div>
             <button type="button" id="btnStopAz">STOP AZ</button>
             <button type="button" id="btnRefAz">AZ Homing</button>
+            <button type="button" id="btnParkAz">Parken</button>
             <div class="cardHdr" id="lblHeat">Ringe</div>
             <label class="chk"><input type="checkbox" id="chkHeatStrom" /> <span id="lblHeatStrom">Strom</span></label>
             <label class="chk"><input type="checkbox" id="chkHeatOm" /> <span id="lblHeatOm">OM</span></label>
@@ -429,6 +430,7 @@ def build_compass_html(params: dict) -> str:
             </div>
             <button type="button" id="btnStopEl">STOP EL</button>
             <button type="button" id="btnRefEl">EL Homing</button>
+            <button type="button" id="btnParkEl">Parken</button>
             <label class="chk"><input type="checkbox" id="chkHeatElStrom" /> <span id="lblHeatElStrom">Strom</span></label>
             <div id="navPageLinksEl" style="display:none;">
               <a href="/#map" id="btnBackEl">Zur Karte</a>
@@ -1150,6 +1152,13 @@ def build_compass_html(params: dict) -> str:
       set('btnJogDown', '\u25BC ' + (L.jog_down || 'Runter'));
       set('btnJogUp', (L.jog_up || 'Hoch') + ' \u25B2');
       set('btnRefAz', L.ref_az || 'AZ Homing');
+      set('btnParkAz', L.park || 'Parken');
+      set('btnParkEl', L.park || 'Parken');
+      const parkTip = L.park_tip || '';
+      const btnParkAz = document.getElementById('btnParkAz');
+      const btnParkEl = document.getElementById('btnParkEl');
+      if (btnParkAz && parkTip) btnParkAz.title = parkTip;
+      if (btnParkEl && parkTip) btnParkEl.title = parkTip;
       set('lblMoving', L.moving || 'Moving');
       set('lblOnline', L.online || 'Online');
       set('lblRef', L.ref || 'Home');
@@ -1180,6 +1189,7 @@ def build_compass_html(params: dict) -> str:
       set('lblElRef', L.ref || 'Home');
       set('btnStopEl', L.stop_el || 'STOP EL');
       set('btnRefEl', L.ref_el || 'EL Homing');
+      set('btnParkEl', L.park || 'Parken');
       set('lblHeatElStrom', L.heatmap_strom || 'Strom');
       set('lblElDgcal', L.dgcal || 'Korrekturwinkel');
       set('btnElDgcalSave', L.dgcal_save || 'Speichern');
@@ -1585,6 +1595,9 @@ def build_compass_html(params: dict) -> str:
         }}
         api('ref_az');
       }});
+      document.getElementById('btnParkAz').addEventListener('click', function() {{
+        api('park');
+      }});
       bindPwmSlider('az', 'slPwmAz', 'slPwmAzVal');
       const selProfile = document.getElementById('selProfile');
       if (selProfile) {{
@@ -1673,6 +1686,9 @@ def build_compass_html(params: dict) -> str:
           return;
         }}
         api('ref_el');
+      }});
+      document.getElementById('btnParkEl').addEventListener('click', function() {{
+        api('park');
       }});
       bindPwmSlider('el', 'slPwmEl', 'slPwmElVal');
       document.getElementById('chkHeatElStrom').addEventListener('change', function() {{

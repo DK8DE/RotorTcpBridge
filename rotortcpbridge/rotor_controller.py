@@ -3232,7 +3232,11 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 setattr(self, a_inflight, 0.0)
 
     def park_all(self) -> None:
-        """Parken: Hom-Winkel per SETPOSDG anfahren (sichtbar für alle Bus-Teilnehmer)."""
+        """Parken: jede aktive Achse zur eigenen Parkposition (GETHOMEPOS → SETPOSDG).
+
+        Ein Aufruf bewegt AZ und EL gemeinsam, sofern die Achse aktiviert ist —
+        nicht nur die Achse, von deren UI-Button ausgelöst wurde.
+        """
         if self.enable_az:
             self.park_az()
         if self.enable_el:

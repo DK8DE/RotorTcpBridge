@@ -480,6 +480,8 @@ def get_web_compass_payload(mw: Any) -> dict:
             "jog_down": t("compass.btn_jog_down"),
             "jog_up": t("compass.btn_jog_up"),
             "ref_az": t("compass.btn_ref_az"),
+            "park": t("compass.btn_park"),
+            "park_tip": t("compass.btn_park_tooltip"),
             "stop_el": t("compass.btn_stop_el"),
             "ref_el": t("compass.btn_ref_el"),
             "heatmap_strom": t("compass.heatmap_strom"),
@@ -810,6 +812,14 @@ def handle_web_compass_action(mw: Any, act: str, data: dict) -> bool:
     if act == "ref_el":
         try:
             mw.ctrl.reference_el(True)
+        except Exception:
+            pass
+        return True
+    if act == "park":
+        # Immer alle aktiven Achsen (AZ und/oder EL) zur jeweiligen Parkposition
+        mw._web_scan_active = False
+        try:
+            mw.ctrl.park_all()
         except Exception:
             pass
         return True

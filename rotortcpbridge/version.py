@@ -15,7 +15,7 @@ ROTOR_FW_VERSION = "1.10.14"
 CONTROLLER_FW_VERSION = "1.5.9"
 INCLINOMETER_FW_VERSION = "1.3.8"
 WLAN_MODULE_FW_VERSION = "1.5.1"
-LAN_MODULE_FW_VERSION = "1.0.1"
+LAN_MODULE_FW_VERSION = "1.0.2"
 # Download-Seite (kein Auto-Download in der App)
 DOWNLOAD_PAGE_URL = "https://dk8.de/de/download/"
 

@@ -146,6 +146,8 @@ class CompassWindow(QDialog):
     # Weit: klassische Drei-Spalten-Ansicht; schmal: Karten umbrechen (wie Web-Kompass)
     _MIN_WIDTH = 420
     _MIN_HEIGHT = 480
+    # Beim Öffnen mindestens so hoch; Verkleinern bis _MIN_HEIGHT bleibt möglich
+    _OPEN_HEIGHT = 780
     _COMPACT_W_AZ = 760
     _COMPACT_W_BOTH = 1180
     _VAL_COLOR_SOLL = "#ff6b6b"
@@ -315,7 +317,7 @@ class CompassWindow(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.setWindowIcon(get_app_icon())
         self.setMinimumSize(px_to_dip(self, self._MIN_WIDTH), px_to_dip(self, self._MIN_HEIGHT))
-        self.resize(px_to_dip(self, 940), px_to_dip(self, self._MIN_HEIGHT))
+        self.resize(px_to_dip(self, 940), px_to_dip(self, self._OPEN_HEIGHT))
 
         self._target_az: Optional[float] = None
         self._target_el: Optional[float] = None
@@ -2073,17 +2075,18 @@ class CompassWindow(QDialog):
             self.ed_az_soll.setText(f"{display_bearing:.1f}")
         except Exception:
             pass
+        sent = False
         try:
-            d10 = int(round(float(rotor_deg) * 10.0))
-            self.ctrl.az.target_d10 = d10
-            self.ctrl.az.moving = True
-            self.ctrl.az.last_set_sent_ts = time.time()
+            sent = bool(self.ctrl.set_az_deg(rotor_deg, force=True))
         except Exception:
-            pass
-        try:
-            self.ctrl.set_az_deg(rotor_deg, force=True)
-        except Exception:
-            pass
+            sent = False
+        if not sent:
+            try:
+                self.ctrl.az.target_d10 = int(round(float(rotor_deg) * 10.0))
+                self.ctrl.az.moving = False
+                self.ctrl.az.last_set_sent_target_d10 = None
+            except Exception:
+                pass
         try:
             self._compass_last_bus_target_d10_az = self._effective_az_bus_target_d10()
         except Exception:
@@ -2767,6 +2770,7 @@ class CompassWindow(QDialog):
 
         min_w, min_h = self._MIN_WIDTH, self._MIN_HEIGHT
         open_w = 1680 if (az_on and el_on) else max(self._MIN_WIDTH, 940)
+        open_h = px_to_dip(self, self._OPEN_HEIGHT)
         self.setMinimumSize(px_to_dip(self, min_w), px_to_dip(self, min_h))
         try:
             if self.isMaximized():
@@ -2775,7 +2779,7 @@ class CompassWindow(QDialog):
             if lay is not None:
                 lay.invalidate()
                 lay.activate()
-            self.resize(open_w, max(open_w // 2, px_to_dip(self, min_h)))
+            self.resize(open_w, max(open_w // 2, open_h))
         except Exception:
             pass
 
@@ -3996,17 +4000,19 @@ class CompassWindow(QDialog):
         self.ed_az_soll.setText(f"{display_bearing:.1f}")
         self.ed_az_soll.setFocus()
         self.ed_az_soll.selectAll()
+        sent = False
         try:
-            d10 = int(round(float(rotor_deg) * 10.0))
-            self.ctrl.az.target_d10 = d10
-            self.ctrl.az.moving = True
-            self.ctrl.az.last_set_sent_ts = time.time()
+            sent = bool(self.ctrl.set_az_deg(rotor_deg, force=True))
         except Exception:
-            pass
-        try:
-            self.ctrl.set_az_deg(rotor_deg, force=True)
-        except Exception:
-            pass
+            sent = False
+        if not sent:
+            # Offline / Sync-Hold: Anzeige ok, aber kein „gesendet“-Latch
+            try:
+                self.ctrl.az.target_d10 = int(round(float(rotor_deg) * 10.0))
+                self.ctrl.az.moving = False
+                self.ctrl.az.last_set_sent_target_d10 = None
+            except Exception:
+                pass
         try:
             self._compass_last_bus_target_d10_az = self._effective_az_bus_target_d10()
         except Exception:
@@ -4023,17 +4029,18 @@ class CompassWindow(QDialog):
         self.ed_el_soll.setText(f"{deg:.1f}")
         self.ed_el_soll.setFocus()
         self.ed_el_soll.selectAll()
+        sent = False
         try:
-            d10 = int(round(float(rotor_deg) * 10.0))
-            self.ctrl.el.target_d10 = d10
-            self.ctrl.el.moving = True
-            self.ctrl.el.last_set_sent_ts = time.time()
+            sent = bool(self.ctrl.set_el_deg(rotor_deg, force=True))
         except Exception:
-            pass
-        try:
-            self.ctrl.set_el_deg(rotor_deg, force=True)
-        except Exception:
-            pass
+            sent = False
+        if not sent:
+            try:
+                self.ctrl.el.target_d10 = int(round(float(rotor_deg) * 10.0))
+                self.ctrl.el.moving = False
+                self.ctrl.el.last_set_sent_target_d10 = None
+            except Exception:
+                pass
         try:
             self._compass_last_bus_target_d10_el = int(getattr(self.ctrl.el, "target_d10", 0))
         except Exception:

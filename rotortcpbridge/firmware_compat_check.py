@@ -58,6 +58,79 @@ def version_at_least(found: Optional[str], minimum: Optional[str]) -> bool:
     return tf >= tm
 
 
+def fw_ignore_key_rotor(axis: str) -> str:
+    return f"rotor:{str(axis or '').strip().upper() or '?'}"
+
+
+def fw_ignore_key_module(*, uid: str = "", host: str = "", kind: str = "") -> str:
+    u = str(uid or "").strip().upper()
+    if u:
+        return f"module:{u}"
+    h = str(host or "").strip()
+    k = str(kind or "").strip().lower() or "mod"
+    return f"module:{k}:{h}"
+
+
+def _fw_ignore_map(cfg: Optional[dict]) -> dict:
+    if not isinstance(cfg, dict):
+        return {}
+    raw = cfg.get("firmware_mismatch_ignore")
+    return raw if isinstance(raw, dict) else {}
+
+
+def fw_mismatch_is_suppressed(cfg: Optional[dict], key: str, found: Optional[str]) -> bool:
+    """True, wenn diese gelesene Version (oder älter) bewusst ignoriert wurde.
+
+    Beim Programmstart wieder melden, sobald die gelesene Firmware *höher* ist
+    als die gespeicherte Ignorier-Version (Update auf dem Gerät, aber noch zu alt).
+    """
+    k = str(key or "").strip()
+    found_n = normalize_version(found)
+    if not k or not found_n:
+        return False
+    ignored = normalize_version(_fw_ignore_map(cfg).get(k))
+    if not ignored:
+        return False
+    tf, ti = version_tuple(found_n), version_tuple(ignored)
+    if tf is None or ti is None:
+        return found_n == ignored
+    return tf <= ti
+
+
+def remember_fw_mismatch_ignore(cfg: dict, key: str, found: Optional[str]) -> bool:
+    """Speichert die gelesene Version als „nicht mehr erinnern“. True bei Änderung."""
+    if not isinstance(cfg, dict):
+        return False
+    k = str(key or "").strip()
+    found_n = normalize_version(found)
+    if not k or not found_n:
+        return False
+    block = cfg.setdefault("firmware_mismatch_ignore", {})
+    if not isinstance(block, dict):
+        block = {}
+        cfg["firmware_mismatch_ignore"] = block
+    if normalize_version(block.get(k)) == found_n:
+        return False
+    block[k] = found_n
+    return True
+
+
+def clear_fw_mismatch_ignore_if_ok(
+    cfg: Optional[dict], key: str, *, found: Optional[str], expected: Optional[str]
+) -> None:
+    """Ignorier-Eintrag entfernen, wenn die Firmware wieder passt."""
+    if not isinstance(cfg, dict):
+        return
+    k = str(key or "").strip()
+    if not k:
+        return
+    block = cfg.get("firmware_mismatch_ignore")
+    if not isinstance(block, dict) or k not in block:
+        return
+    if version_at_least(found, expected):
+        block.pop(k, None)
+
+
 @dataclass
 class AxisVersionResult:
     axis: str

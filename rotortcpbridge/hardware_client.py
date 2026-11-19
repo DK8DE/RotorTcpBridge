@@ -253,9 +253,16 @@ class HardwareClient:
         # Wenn keine Verbindung steht, Polling-Requests nicht aufstauen.
         # Sie würden beim Reconnect sonst in einem Burst gesendet und den Serial-Server
         # überfluten; außerdem sind alte Polls wertlos, da sofort neue erzeugt werden.
+        #
+        # SETPOSDG (Prio 0) ebenfalls verwerfen: Offline-Klicks würden sonst in der
+        # Queue liegen und beim Reconnect den Rotor ungefragt anfahren.
         try:
-            if (not self.is_connected()) and int(getattr(req, "priority", 5)) >= 5:
-                return
+            if not self.is_connected():
+                line_u = str(getattr(req, "line", "") or "").upper()
+                if "SETPOSDG" in line_u or "SETPOSCC" in line_u:
+                    return
+                if int(getattr(req, "priority", 5)) >= 5:
+                    return
         except Exception:
             pass
 
@@ -263,6 +270,39 @@ class HardwareClient:
         with self._tx_lock:
             self._tx_seq += 1
             self._txq.put((int(req.priority), int(self._tx_seq), req))
+
+    def drop_queued_drive_commands(self) -> int:
+        """Entfernt wartende SETPOSDG/SETPOSCC aus der TX-Queue (Reconnect/Startup)."""
+        kept: list[tuple[int, int, HwRequest]] = []
+        dropped = 0
+        with self._tx_lock:
+            try:
+                while True:
+                    try:
+                        item = self._txq.get_nowait()
+                    except queue.Empty:
+                        break
+                    _pr, _seq, req = item
+                    line_u = str(getattr(req, "line", "") or "").upper()
+                    if "SETPOSDG" in line_u or "SETPOSCC" in line_u:
+                        dropped += 1
+                        continue
+                    kept.append(item)
+            finally:
+                self._txq = queue.PriorityQueue()
+                for item in kept:
+                    self._txq.put(item)
+        # Auch ein bereits ausstehendes SETPOSDG-Pending verwerfen
+        try:
+            with self._lock:
+                pending = self._pending
+            if pending is not None:
+                line_u = str(getattr(pending, "line", "") or "").upper()
+                if "SETPOSDG" in line_u or "SETPOSCC" in line_u:
+                    self.clear_pending("drop_drive_on_reconnect")
+        except Exception:
+            pass
+        return int(dropped)
 
     # ------------------ Connection helpers ------------------
     def _connect(self):
@@ -841,8 +881,9 @@ class HardwareClient:
         """Sendeloop.
 
         WICHTIG:
-        - Solange keine Verbindung steht, werden Requests NICHT verworfen.
-          Sie bleiben in der Queue und werden gesendet, sobald die Verbindung da ist.
+        - Polling (Prio >= 5) und SETPOSDG/SETPOSCC werden offline verworfen
+          (kein Burst / keine Geisterfahrt beim Reconnect).
+        - Andere Requests können in der Queue bleiben bis die Verbindung da ist.
         - Pending-Requests haben weiterhin Timeouts.
         """
         last_connect_try = 0.0

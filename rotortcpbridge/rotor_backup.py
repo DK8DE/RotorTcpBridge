@@ -34,6 +34,8 @@ _GUI_CONFIG_KEYS = (
     "controller_link",
     "network_modules",
     "network_scan",
+    "network_announce",
+    "firmware_mismatch_ignore",
     "ui",
     "polling_ms",
     "spid",

@@ -420,6 +420,10 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         # Wenn die Hardware-Verbindung gerade (wieder) da ist: Timer zurücksetzen,
         # damit beim ersten Mal alle Werte sofort abgefragt werden (Startup/Recover).
         if link_on and (not self._hw_prev_connected):
+            try:
+                self._discard_stale_drive_on_reconnect()
+            except Exception:
+                pass
             self._startup_burst_until = float(now) + 4.0
             # Antennen/Config erst nach Main-GUI-Erstabfrage (AZ→EL)
             self._startup_secondary_due_ts = float(now) + 1.6
@@ -962,6 +966,34 @@ class RotorControllerPollingMixin(_RotorPollingHost):
             ):
                 self._acc_bins_compass_arm_after_move_el = True
 
+    def _discard_stale_drive_on_reconnect(self) -> None:
+        """Nach Offline/Reconnect: keine wartenden SETPOSDG, kein „Fährt“-Latch.
+
+        Offline gesetzte Ziele dürfen den Rotor nicht anfahren; zuerst nur Ist lesen.
+        """
+        for hw in (getattr(self, "hw", None), getattr(self, "el_hw", None)):
+            if hw is None:
+                continue
+            try:
+                n = int(hw.drop_queued_drive_commands())
+                if n > 0:
+                    self.log.write(
+                        "INFO",
+                        f"Reconnect: {n} wartende SETPOS-Befehle verworfen",
+                    )
+            except Exception:
+                pass
+        for ax in (getattr(self, "az", None), getattr(self, "el", None)):
+            if ax is None:
+                continue
+            try:
+                ax.moving = False
+                ax.last_set_sent_target_d10 = None
+                ax.compass_target_d10 = None
+                ax.external_panel_move_active = False
+            except Exception:
+                pass
+
     def _send_setpos(self, dst: int, d10: int, axis: str, retry_count: int = 0):
         """SETPOSDG senden. Bei fehlendem ACK nach ~250ms einmal erneut — **nur**, wenn das
         Achsen-Ziel seither nicht überschrieben wurde.
@@ -971,7 +1003,17 @@ class RotorControllerPollingMixin(_RotorPollingHost):
         Rotor fährt dann „zurück nach 0“ / zum veralteten Ziel. Retry wegen möglicher
         RS485-Kollisionen; Verbindung bleibt bei Timeout erhalten.
         """
-        if self._block_drive_until_ready(str(axis or "").upper() or "?"):
+        axu0 = str(axis or "").upper() or "?"
+        if self._block_drive_until_ready(axu0):
+            return
+        try:
+            if not bool(self._hw_link_up_for_axis(axu0)):
+                self.log.write(
+                    "WARN",
+                    f"{axu0} SETPOSDG nicht gesendet: keine Verbindung",
+                )
+                return
+        except Exception:
             return
         try:
             self.note_setposdg_poll_restrict()

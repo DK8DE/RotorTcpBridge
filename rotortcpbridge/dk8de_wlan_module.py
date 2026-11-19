@@ -334,6 +334,33 @@ def _normalize_contact_ip(ip: str) -> str:
     return s
 
 
+def _ipv4_is_on_link(ip: str, *, bind_ip: str = "") -> bool:
+    """True, wenn ``ip`` im /24 eines lokalen Adapters liegt (gleicher L3-Nachbar).
+
+    Factory-Module oft ``10.10.100.x`` / ``192.168.3.x`` bei PC in ``192.168.0.x``:
+    Discovery per L2-Broadcast funktioniert, Unicast-Routing oft nicht.
+    """
+    host = _normalize_contact_ip(ip)
+    if not host:
+        return False
+    try:
+        target = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if not isinstance(target, ipaddress.IPv4Address):
+        return False
+    bind = str(bind_ip or "").strip()
+    locals_ = [bind] if bind and not bind.startswith("127.") else _dk8de_local_ipv4_addrs()
+    for local in locals_:
+        try:
+            net = ipaddress.IPv4Network(f"{local}/24", strict=False)
+        except ValueError:
+            continue
+        if target in net:
+            return True
+    return False
+
+
 def _pick_device_ip(reported: str, reply: str) -> str:
     """Kontakt-IP: UDP-Antwortadresse hat Vorrang vor gemeldeter Modul-IP."""
     reply_n = _normalize_contact_ip(reply)
@@ -419,8 +446,14 @@ def _bind_udp_listen(sock: socket.socket, host: str, port: int) -> None:
         sock.bind((host, 0))
 
 
-def _open_udp_socket(listen: bool = True) -> socket.socket:
-    """Discovery-Empfang (Port 8889)."""
+def _open_udp_socket(listen: bool = True, *, bind_ip: str = "") -> socket.socket:
+    """Discovery-Empfang (Port 8889).
+
+    ``bind_ip``: optional feste Adapter-IP; leer = ``0.0.0.0``.
+    """
+    host = str(bind_ip or "").strip() or "0.0.0.0"
+    if host.startswith("127."):
+        host = "0.0.0.0"
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
@@ -428,18 +461,23 @@ def _open_udp_socket(listen: bool = True) -> socket.socket:
     except OSError:
         pass
     if listen:
-        _bind_udp_listen(sock, "0.0.0.0", DK8DE_DISCOVERY_CLIENT_PORT)
+        _bind_udp_listen(sock, host, DK8DE_DISCOVERY_CLIENT_PORT)
     sock.settimeout(0.2)
     return sock
 
 
-def _open_at_udp_socket() -> socket.socket:
+def _open_at_udp_socket(*, bind_ip: str = "") -> socket.socket:
     """AT-Session auf Discovery-Client-Port (8889) — gleicher Empfang wie Discovery.
 
     Ephemeral Ports werden unter Windows oft von der Firewall blockiert; Discovery
     funktioniert bereits auf 8889. Kein Fallback auf Port 0 — sonst kommt
     ``CONFIG,READY`` nie an.
+
+    ``bind_ip``: optional feste Adapter-IP (wie bei der Modul-Suche).
     """
+    host = str(bind_ip or "").strip() or "0.0.0.0"
+    if host.startswith("127."):
+        host = "0.0.0.0"
     last_err: Optional[OSError] = None
     for _ in range(8):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -449,7 +487,7 @@ def _open_at_udp_socket() -> socket.socket:
         except OSError:
             pass
         try:
-            sock.bind(("0.0.0.0", DK8DE_DISCOVERY_CLIENT_PORT))
+            sock.bind((host, DK8DE_DISCOVERY_CLIENT_PORT))
             sock.settimeout(0.2)
             return sock
         except OSError as exc:
@@ -490,10 +528,21 @@ def _at_cmd_is_save(cmd_name: str) -> bool:
     return b == "SAVE" or b.startswith("SAVE")
 
 
-def _at_session_targets(host: str, config_port: int) -> List[Tuple[str, int]]:
-    """Ziele fuer +++CFG (Unicast + Broadcast), falls Modul-IP falsch ist."""
+def _at_session_targets(
+    host: str,
+    config_port: int,
+    *,
+    bind_ip: str = "",
+) -> List[Tuple[str, int]]:
+    """Ziele fuer +++CFG / AT (Unicast + Broadcast).
+
+    Liegt die Modul-IP nicht im lokalen /24 (Factory-Segment), wird Broadcast
+    zuerst gesendet — Unicast waere sonst oft nicht routbar, obwohl Discovery
+    per L2-Broadcast das Modul findet.
+    """
     seen: set[Tuple[str, int]] = set()
     out: List[Tuple[str, int]] = []
+    bind = str(bind_ip or "").strip()
 
     def _add(h: str) -> None:
         key = (h, int(config_port))
@@ -502,18 +551,30 @@ def _at_session_targets(host: str, config_port: int) -> List[Tuple[str, int]]:
             out.append(key)
 
     h = str(host or "").strip()
-    if h and h not in ("0.0.0.0", "-", "255.255.255.255"):
-        _add(h)
-    _add("255.255.255.255")
-    for net in _local_ipv4_subnets():
-        try:
-            _add(str(net.broadcast_address))
-        except ValueError:
-            continue
-    for addr in _dk8de_local_ipv4_addrs():
-        bc = _ipv4_subnet_broadcast(addr)
-        if bc:
-            _add(bc)
+    unicast = h if h and h not in ("0.0.0.0", "-", "255.255.255.255") else ""
+    on_link = _ipv4_is_on_link(unicast, bind_ip=bind) if unicast else False
+
+    def _add_broadcasts() -> None:
+        _add("255.255.255.255")
+        for net in _local_ipv4_subnets(bind_ip=bind):
+            try:
+                _add(str(net.broadcast_address))
+            except ValueError:
+                continue
+        addrs = [bind] if bind and not bind.startswith("127.") else _dk8de_local_ipv4_addrs()
+        for addr in addrs:
+            bc = _ipv4_subnet_broadcast(addr)
+            if bc:
+                _add(bc)
+
+    if unicast and on_link:
+        _add(unicast)
+        _add_broadcasts()
+    else:
+        # Fremdes Segment / unbekannte IP: Broadcast zuerst (wie Discovery)
+        _add_broadcasts()
+        if unicast:
+            _add(unicast)
     return out
 
 
@@ -534,10 +595,15 @@ def _ipv4_subnet_broadcast(ip: str) -> str:
     return f"{parts[0]}.{parts[1]}.{parts[2]}.255"
 
 
-def _local_ipv4_subnets() -> List[ipaddress.IPv4Network]:
-    """Lokale /24-Subnetze aller Adapter (fuer Broadcast + HTTP-Scan)."""
+def _local_ipv4_subnets(*, bind_ip: str = "") -> List[ipaddress.IPv4Network]:
+    """Lokale /24-Subnetze (fuer Broadcast + HTTP-Scan).
+
+    ``bind_ip`` gesetzt → nur das Subnetz dieses Adapters (+ AP-Fallback 192.168.4.0/24).
+    """
     nets: Dict[str, ipaddress.IPv4Network] = {}
-    for ip in _dk8de_local_ipv4_addrs():
+    bind = str(bind_ip or "").strip()
+    ips = [bind] if bind and not bind.startswith("127.") else _dk8de_local_ipv4_addrs()
+    for ip in ips:
         try:
             addr = ipaddress.ip_address(ip)
             if not isinstance(addr, ipaddress.IPv4Address) or addr.is_link_local:
@@ -553,9 +619,10 @@ def _local_ipv4_subnets() -> List[ipaddress.IPv4Network]:
     return list(nets.values())
 
 
-def _broadcast_targets() -> List[Tuple[str, int]]:
+def _broadcast_targets(*, bind_ip: str = "") -> List[Tuple[str, int]]:
     out: List[Tuple[str, int]] = []
     seen: set[Tuple[str, int]] = set()
+    bind = str(bind_ip or "").strip()
 
     def _add(host: str) -> None:
         key = (host, DK8DE_CONFIG_PORT)
@@ -564,20 +631,33 @@ def _broadcast_targets() -> List[Tuple[str, int]]:
             out.append(key)
 
     _add("255.255.255.255")
-    for net in _local_ipv4_subnets():
+    for net in _local_ipv4_subnets(bind_ip=bind):
         try:
             _add(str(net.broadcast_address))
         except ValueError:
             continue
-    for addr in _dk8de_local_ipv4_addrs():
+    addrs = [bind] if bind and not bind.startswith("127.") else _dk8de_local_ipv4_addrs()
+    for addr in addrs:
         bc = _ipv4_subnet_broadcast(addr)
         if bc:
             _add(bc)
     return out
 
 
-def _dk8de_open_interface_sockets(*, listen_port: int = DK8DE_DISCOVERY_CLIENT_PORT) -> List[socket.socket]:
-    """Zusaetzliche UDP-Sockets pro lokalem Adapter (Windows: Broadcast-Routing)."""
+def _dk8de_open_interface_sockets(
+    *,
+    listen_port: int = DK8DE_DISCOVERY_CLIENT_PORT,
+    bind_ip: str = "",
+) -> List[socket.socket]:
+    """Zusaetzliche UDP-Sockets pro lokalem Adapter (Windows: Broadcast-Routing).
+
+    Bei gesetztem ``bind_ip`` nur dieser Adapter (Haupt-Socket ist schon gebunden —
+    dann typischerweise leere Liste, falls Port belegt).
+    """
+    bind = str(bind_ip or "").strip()
+    if bind:
+        # Haupt-Socket lauscht bereits auf bind_ip — keine Extra-Sockets noetig.
+        return []
     extra: List[socket.socket] = []
     for addr in _dk8de_local_ipv4_addrs():
         s: Optional[socket.socket] = None
@@ -844,11 +924,15 @@ def dk8de_http_discover(
     timeout: float = 0.45,
     max_workers: int = 48,
     max_hosts: int = 256,
+    bind_ip: str = "",
 ) -> List[Dk8deDevice]:
-    """Findet DK8DE-Module per /api/status im lokalen /24 (Web-Fallback)."""
+    """Findet DK8DE-Module per /api/status im lokalen /24 (Web-Fallback).
+
+    ``bind_ip``: nur Subnetz dieses Adapters scannen.
+    """
     devices: Dict[str, Dk8deDevice] = {}
     hosts: List[str] = []
-    for net in _local_ipv4_subnets():
+    for net in _local_ipv4_subnets(bind_ip=str(bind_ip or "").strip()):
         for host in net.hosts():
             hosts.append(str(host))
             if len(hosts) >= max(1, int(max_hosts)):
@@ -983,20 +1067,33 @@ def _parse_discover_payloads(data: bytes) -> List[Dk8deDevice]:
     return list(devices.values())
 
 
-def dk8de_udp_discover(*, timeout: float = 2.0) -> List[Dk8deDevice]:
+def parse_dk8de_announce_datagram(data: bytes, reply_ip: str = "") -> List[Dk8deDevice]:
+    """Parst ein UDP-8889-Datagramm (Selbstmeldung oder Discovery-Antwort)."""
+    devices = _parse_discover_payloads(data)
+    tip = str(reply_ip or "").strip()
+    if tip:
+        for dev in devices:
+            _apply_discover_contact_ip(dev, tip)
+    return devices
+
+
+def dk8de_udp_discover(*, timeout: float = 2.0, bind_ip: str = "") -> List[Dk8deDevice]:
     """UDP-Discovery auf Port 8880 (Broadcast + Subnetz-Broadcast).
 
     Broadcast erreicht nur Geraete im gleichen IP-Subnetz (typisch /24). Die
     Kontakt-IP stammt aus der UDP-Antwortadresse (recvfrom), nicht nur aus
     dem IP=-Feld der Payload.
+
+    ``bind_ip``: Suche nur über diesen Adapter. Leer = alle Adapter.
     """
-    sock = _open_udp_socket()
-    extra_socks = _dk8de_open_interface_sockets()
+    bind = str(bind_ip or "").strip()
+    sock = _open_udp_socket(bind_ip=bind)
+    extra_socks = _dk8de_open_interface_sockets(bind_ip=bind)
     recv_socks = [sock] + extra_socks
     devices: Dict[str, Dk8deDevice] = {}
     wait_s = max(2.0, float(timeout))
     frame = config_frame_encode(_MSG_DISCOVER, seq=1)
-    targets = _broadcast_targets()
+    targets = _broadcast_targets(bind_ip=bind)
 
     try:
         if not _dk8de_send_discover(recv_socks, frame, targets):
@@ -1039,11 +1136,16 @@ def dk8de_discover(
     web_user: str = DK8DE_DEFAULT_WEB_USER,
     web_password: str = DK8DE_DEFAULT_WEB_PASSWORD,
     http_fallback: bool = True,
+    bind_ip: str = "",
 ) -> List[Dk8deDevice]:
-    """Kombinierte Suche: UDP 8880 (primaer, Broadcast) + Web /api/status (Fallback)."""
+    """Kombinierte Suche: UDP 8880 (primaer, Broadcast) + Web /api/status (Fallback).
+
+    ``bind_ip``: Suche nur über diesen Adapter. Leer = alle Adapter.
+    """
+    bind = str(bind_ip or "").strip()
     merged: Dict[str, Dk8deDevice] = {}
     udp_wait = max(1.5, min(3.0, float(timeout) * 0.55))
-    for dev in dk8de_udp_discover(timeout=udp_wait):
+    for dev in dk8de_udp_discover(timeout=udp_wait, bind_ip=bind):
         merged[dev.uid_norm] = dev
     if not http_fallback:
         return sorted(merged.values(), key=lambda d: (d.ip or "", d.uid_norm))
@@ -1058,6 +1160,7 @@ def dk8de_discover(
         user=web_user,
         password=web_password,
         timeout=http_timeout,
+        bind_ip=bind,
     ):
         prev = merged.get(dev.uid_norm)
         if prev is None:
@@ -1167,11 +1270,13 @@ class Dk8deAtSession:
         *,
         config_port: int = DK8DE_CONFIG_PORT,
         timeout: float = 2.5,
+        bind_ip: str = "",
     ):
         self.host = host.strip()
         self.uid = normalize_uid(uid)
         self.config_port = int(config_port)
         self.timeout = float(timeout)
+        self.bind_ip = str(bind_ip or "").strip()
         self._sock: Optional[socket.socket] = None
         self._extra_socks: List[socket.socket] = []
         self._active_sock: Optional[socket.socket] = None
@@ -1183,8 +1288,11 @@ class Dk8deAtSession:
             raise ValueError("host empty")
         if not uid_is_valid(self.uid):
             raise ValueError(f"invalid uid: {self.uid!r}")
-        self._sock = _open_at_udp_socket()
-        self._extra_socks = _dk8de_open_interface_sockets(listen_port=DK8DE_DISCOVERY_CLIENT_PORT)
+        self._sock = _open_at_udp_socket(bind_ip=self.bind_ip)
+        self._extra_socks = _dk8de_open_interface_sockets(
+            listen_port=DK8DE_DISCOVERY_CLIENT_PORT,
+            bind_ip=self.bind_ip,
+        )
         try:
             self._open_session()
         except Exception:
@@ -1221,7 +1329,9 @@ class Dk8deAtSession:
         return _at_listen_socks(self)
 
     def _send_to_targets(self, payload: bytes, socks: Optional[List[socket.socket]] = None) -> None:
-        targets = _at_session_targets(self.host, self.config_port)
+        targets = _at_session_targets(
+            self.host, self.config_port, bind_ip=self.bind_ip
+        )
         for sock in socks or self._all_socks():
             for target in targets:
                 try:
@@ -1235,21 +1345,17 @@ class Dk8deAtSession:
         Firmware: im AT-Modus wird ``+++CFG`` nicht mehr ausgewertet (nur AT-Zeilen).
         Nach Timeout (z. B. SAVE) ohne EXIT schlaegt jede neue Session mit leerer Antwort fehl.
 
-        Wichtig: EXIT nur gezielt (Unicast + adressiert), nicht als Broadcast-Flut —
-        sonst koennen verspaetete EXIT-Pakete die gerade geoeffnete Session wieder beenden
-        und folgende ``AT+…`` still verwerfen (Antwort bleibt nur CONFIG,READY).
+        Adressiertes EXIT (UID) — Unicast wenn on-link, sonst Broadcast zuerst
+        (Factory-IP in anderem Segment).
         """
         socks = self._all_socks()
         if not socks:
             return
         # Adressiertes EXIT: greift im AT-Modus, ohne wildes Broadcast-Echo.
         exit_payload = f"AT@{self.uid}+EXIT\r".encode("ascii", errors="ignore")
-        host = str(self.host or "").strip()
-        targets: List[Tuple[str, int]] = []
-        if host and host not in ("0.0.0.0", "-", "255.255.255.255"):
-            targets.append((host, self.config_port))
-        if not targets:
-            targets = _at_session_targets(self.host, self.config_port)[:2]
+        targets = _at_session_targets(
+            self.host, self.config_port, bind_ip=self.bind_ip
+        )[:4]
         for _ in range(2):
             for sock in socks:
                 for target in targets:
@@ -1329,13 +1435,14 @@ class Dk8deAtSession:
         return line.encode("ascii", errors="ignore"), cmd_name
 
     def _send_command_payload(self, payload: bytes, socks: List[socket.socket]) -> None:
-        """Sendet AT-Befehl gezielt (aktiver Peer zuerst, dann alle Unicast-Pfade)."""
-        host = str(self.host or "").strip()
-        targets: List[Tuple[str, int]] = []
-        if host and host not in ("0.0.0.0", "-", "255.255.255.255"):
-            targets.append((host, self.config_port))
-        if not targets:
-            targets = _at_session_targets(self.host, self.config_port)
+        """Sendet AT-Befehl (on-link Unicast + Broadcast; fremdes Segment: Broadcast zuerst).
+
+        Frueher nur Unicast an die Discovery-IP — bei Factory-IP in anderem /24
+        findet die Suche das Modul, IP setzen schlaegt aber fehl (kein Routing).
+        """
+        targets = _at_session_targets(
+            self.host, self.config_port, bind_ip=self.bind_ip
+        )
 
         ordered: List[socket.socket] = []
         if self._active_sock is not None:
@@ -1741,8 +1848,12 @@ def write_wan_dk8de(
     config_port: int = DK8DE_CONFIG_PORT,
     reboot: bool = True,
     timeout: float = 12.0,
+    bind_ip: str = "",
 ) -> Dict[str, Any]:
-    """Schreibt WLAN/IP per AT (SSID/PASS/Band, DHCP/IP/MASK/GW/DNS, SAVE, optional STA+REBOOT)."""
+    """Schreibt WLAN/IP per AT (SSID/PASS/Band, DHCP/IP/MASK/GW/DNS, SAVE, optional STA+REBOOT).
+
+    ``bind_ip`` / Broadcast: noetig, wenn Modul-IP nicht im PC-/24 liegt (Factory).
+    """
     results: Dict[str, Any] = {"commands": [], "ok": True, "error": ""}
     cmds = build_wan_cmds_dk8de(
         ip=ip,
@@ -1758,7 +1869,13 @@ def write_wan_dk8de(
     )
 
     try:
-        with Dk8deAtSession(host, uid, config_port=config_port, timeout=timeout) as ses:
+        with Dk8deAtSession(
+            host,
+            uid,
+            config_port=config_port,
+            timeout=timeout,
+            bind_ip=str(bind_ip or "").strip(),
+        ) as ses:
             for cmd in cmds:
                 if cmd == "REBOOT":
                     try:

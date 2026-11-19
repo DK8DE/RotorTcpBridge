@@ -2717,25 +2717,50 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
             # Keine harte Fehlerbehandlung: UI darf nicht wegen Status-Update abbrechen.
             return
 
-    def set_az_deg(self, deg: float, force: bool = True) -> None:
+    def _hw_link_up_for_axis(self, axis: str) -> bool:
+        """True, wenn der Bus-Link für die Achse steht (kein Offline-SETPOS)."""
+        axu = str(axis or "").strip().upper()
+        try:
+            if axu == "EL":
+                el_hw = getattr(self, "el_hw", None)
+                if el_hw is not None:
+                    return bool(el_hw.is_connected())
+            return bool(self.hw.is_connected())
+        except Exception:
+            return False
+
+    def set_az_deg(self, deg: float, force: bool = True) -> bool:
         """AZ-Zielwinkel in Grad setzen.
 
         - Wenn force=True, wird der Entprell-Mechanismus ("gleiches Ziel") umgangen.
         - Referenz-Check wird beibehalten (wie beim restlichen Bridge-Verhalten).
+        - Offline: kein SETPOSDG (sonst Queue-Flush beim Reconnect).
+        Returns True wenn ein SETPOSDG wirklich abgesetzt wurde.
         """
         d10 = int(round(float(deg) * 10.0))
         # Manuelle Kompass-Steuerung (force=True) soll immer senden, auch wenn
         # der Referenzstatus nach Reconnect kurzzeitig noch unbekannt ist.
         if force:
             if not self.enable_az:
-                return
+                return False
             if self._block_drive_until_ready("AZ"):
-                return
+                return False
             self._jog_hold_pending_map().pop("az", None)
             self.az.compass_target_d10 = None
             self.az.external_panel_move_active = False
             self.az.target_d10 = d10
             self._compass_manual_az_ts = time.time()
+            if not self._hw_link_up_for_axis("AZ"):
+                try:
+                    self.log.write(
+                        "WARN",
+                        "AZ SETPOSDG verworfen: keine Verbindung (Ziel nur lokal)",
+                    )
+                except Exception:
+                    pass
+                self.az.last_set_sent_target_d10 = None
+                self.az.moving = False
+                return False
             self._send_setpos(self.slave_az, d10, axis="AZ")
             self.az.last_set_sent_target_d10 = d10
             self.az.last_set_sent_ts = time.time()
@@ -2744,28 +2769,42 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 self.az.setposcc_ignore_until_ts = time.time() + _SETPOSCC_SUPPRESS_S
             except Exception:
                 pass
-            return
+            return True
         self.set_az_from_spid(d10)
+        return True
 
-    def set_el_deg(self, deg: float, force: bool = True) -> None:
+    def set_el_deg(self, deg: float, force: bool = True) -> bool:
         """EL-Zielwinkel in Grad setzen.
 
         Analog zu :meth:`set_az_deg`.
 
         - Wenn force=True, wird der Entprell-Mechanismus ("gleiches Ziel") umgangen.
         - Referenz-Check wird beibehalten.
+        - Offline: kein SETPOSDG.
+        Returns True wenn ein SETPOSDG wirklich abgesetzt wurde.
         """
         d10 = int(round(float(deg) * 10.0))
         if force:
             if not self.enable_el:
-                return
+                return False
             if self._block_drive_until_ready("EL"):
-                return
+                return False
             self._jog_hold_pending_map().pop("el", None)
             self.el.compass_target_d10 = None
             self.el.external_panel_move_active = False
             self.el.target_d10 = d10
             self._compass_manual_el_ts = time.time()
+            if not self._hw_link_up_for_axis("EL"):
+                try:
+                    self.log.write(
+                        "WARN",
+                        "EL SETPOSDG verworfen: keine Verbindung (Ziel nur lokal)",
+                    )
+                except Exception:
+                    pass
+                self.el.last_set_sent_target_d10 = None
+                self.el.moving = False
+                return False
             self._send_setpos(self.slave_el, d10, axis="EL")
             self.el.last_set_sent_target_d10 = d10
             self.el.last_set_sent_ts = time.time()
@@ -2774,8 +2813,9 @@ class RotorController(RotorControllerPollingMixin, RotorControllerAsyncMixin):
                 self.el.setposcc_ignore_until_ts = time.time() + _SETPOSCC_SUPPRESS_S
             except Exception:
                 pass
-            return
+            return True
         self.set_el_from_spid(d10)
+        return True
 
     def check_ref_once(self):
         """Einmalig GETREF absetzen, um festzustellen, ob der Rotor bereits referenziert ist.

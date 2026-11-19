@@ -2474,6 +2474,13 @@ class SettingsWindow(QDialog):
         except Exception as exc:
             self.logbuf.write("WARN", f"Netzwerk-Module: Sofort-Speichern fehlgeschlagen: {exc}")
 
+    def offer_announced_network_module(self, device: object) -> None:
+        """Nach Selbstmeldung: Verbindungen-Tab + Discover/IP-Dialog."""
+        self.open_settings_tab("connections")
+        tab = getattr(self, "_network_tab", None)
+        if tab is not None and hasattr(tab, "offer_announced_device"):
+            tab.offer_announced_device(device)
+
     def _on_network_apply_to_link(self, host: str, port: int) -> None:
         """LAN-Modul → Felder Rotorverbindung (TCP IP/Port)."""
         panel = getattr(self, "_rotor_link_panel", None)

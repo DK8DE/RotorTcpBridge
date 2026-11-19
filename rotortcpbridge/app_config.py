@@ -143,7 +143,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "subnet_cidr": "",
         "ports": [8886, 80],
         "enabled": True,
+        # IPv4 des Adapters für die Modul-Suche; leer = alle Interfaces
+        "bind_ip": "",
     },
+    # Selbstmeldungen neuer DK8DE-Module (UDP 8889 Broadcast alle ~12 s)
+    "network_announce": {
+        "enabled": True,
+        # UIDs, die der Nutzer abgelehnt hat (keine erneute Meldung)
+        "dismissed_uids": [],
+    },
+    # Start-Warnung Firmware-Mismatch: Key → ignorierte gelesene Version
+    # (erneut melden, wenn die gelesene Firmware höher ist als dieser Stand)
+    "firmware_mismatch_ignore": {},
     "rotor_bus": {
         "master_id": 0,
         "slave_az": 20,

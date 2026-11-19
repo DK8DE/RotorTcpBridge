@@ -204,6 +204,139 @@ def get_local_ipv4_addresses(force_refresh: bool = False) -> set[str]:
         return set(fresh)
 
 
+def _windows_ipv4_adapters() -> list[tuple[str, str]]:
+    """[(ip, friendly_name), ...] über GetAdaptersAddresses (ohne Extra-Deps)."""
+    if platform.system().lower() != "windows":
+        return []
+    try:
+        iphlpapi = ctypes.windll.iphlpapi  # type: ignore[attr-defined]
+    except Exception:
+        return []
+
+    AF_INET = 2
+    GAA_FLAG_INCLUDE_PREFIX = 0x0010
+    ERROR_BUFFER_OVERFLOW = 111
+    IF_TYPE_SOFTWARE_LOOPBACK = 24
+    IF_OPER_STATUS_UP = 1
+
+    class SOCKADDR_IN(ctypes.Structure):
+        _fields_ = [
+            ("sin_family", ctypes.c_short),
+            ("sin_port", ctypes.c_ushort),
+            ("sin_addr", ctypes.c_ubyte * 4),
+            ("sin_zero", ctypes.c_char * 8),
+        ]
+
+    class SOCKET_ADDRESS(ctypes.Structure):
+        _fields_ = [("lpSockaddr", ctypes.c_void_p), ("iSockaddrLength", ctypes.c_int)]
+
+    class IP_ADAPTER_UNICAST_ADDRESS(ctypes.Structure):
+        pass
+
+    IP_ADAPTER_UNICAST_ADDRESS._fields_ = [
+        ("Length", ctypes.c_ulong),
+        ("Flags", ctypes.c_ulong),
+        ("Next", ctypes.POINTER(IP_ADAPTER_UNICAST_ADDRESS)),
+        ("Address", SOCKET_ADDRESS),
+    ]
+
+    class IP_ADAPTER_ADDRESSES(ctypes.Structure):
+        # 64-bit Windows: sonst liegen FriendlyName/IfType falsch
+        _pack_ = 8
+
+    IP_ADAPTER_ADDRESSES._fields_ = [
+        ("Length", ctypes.c_ulong),
+        ("IfIndex", ctypes.c_ulong),
+        ("Next", ctypes.POINTER(IP_ADAPTER_ADDRESSES)),
+        ("AdapterName", ctypes.c_char_p),
+        ("FirstUnicastAddress", ctypes.POINTER(IP_ADAPTER_UNICAST_ADDRESS)),
+        ("FirstAnycastAddress", ctypes.c_void_p),
+        ("FirstMulticastAddress", ctypes.c_void_p),
+        ("FirstDnsServerAddress", ctypes.c_void_p),
+        ("DnsSuffix", ctypes.c_wchar_p),
+        ("Description", ctypes.c_wchar_p),
+        ("FriendlyName", ctypes.c_wchar_p),
+        ("PhysicalAddress", ctypes.c_ubyte * 8),
+        ("PhysicalAddressLength", ctypes.c_ulong),
+        ("Flags", ctypes.c_ulong),
+        ("Mtu", ctypes.c_ulong),
+        ("IfType", ctypes.c_ulong),
+        ("OperStatus", ctypes.c_ulong),
+    ]
+
+    size = ctypes.c_ulong(15000)
+    buf = ctypes.create_string_buffer(size.value)
+    flags = GAA_FLAG_INCLUDE_PREFIX
+    ret = iphlpapi.GetAdaptersAddresses(AF_INET, flags, None, buf, ctypes.byref(size))
+    if ret == ERROR_BUFFER_OVERFLOW:
+        buf = ctypes.create_string_buffer(size.value)
+        ret = iphlpapi.GetAdaptersAddresses(AF_INET, flags, None, buf, ctypes.byref(size))
+    if ret != 0:
+        return []
+
+    out: list[tuple[str, str]] = []
+    addr = ctypes.cast(buf, ctypes.POINTER(IP_ADAPTER_ADDRESSES))
+    while addr:
+        aa = addr.contents
+        if int(aa.IfType) == IF_TYPE_SOFTWARE_LOOPBACK:
+            addr = aa.Next
+            continue
+        if int(aa.OperStatus) != IF_OPER_STATUS_UP:
+            addr = aa.Next
+            continue
+        name = str(aa.FriendlyName or aa.Description or "").strip() or "Adapter"
+        ua = aa.FirstUnicastAddress
+        while ua:
+            try:
+                ptr = ua.contents.Address.lpSockaddr
+                if ptr:
+                    sa = ctypes.cast(ptr, ctypes.POINTER(SOCKADDR_IN)).contents
+                    if int(sa.sin_family) == AF_INET:
+                        ip = socket.inet_ntoa(bytes(sa.sin_addr))
+                        # Loopback / APIPA ausblenden (für Modul-Suche unbrauchbar)
+                        if (
+                            ip
+                            and not ip.startswith("127.")
+                            and not ip.startswith("169.254.")
+                        ):
+                            out.append((ip, name))
+            except Exception:
+                pass
+            ua = ua.contents.Next
+        addr = aa.Next
+    return out
+
+
+def list_ipv4_interfaces(*, force_refresh: bool = False) -> list[tuple[str, str]]:
+    """Lokale IPv4-Interfaces für die Modul-Suche: ``[(ip, label), ...]``.
+
+    Label enthält nach Möglichkeit den Adapter-Namen (Windows) und die IP,
+    z. B. ``\"Ethernet (192.168.0.10)\"``. Loopback wird ausgelassen.
+    """
+    named = _windows_ipv4_adapters()
+    by_ip: dict[str, str] = {}
+    for ip, name in named:
+        if ip and not ip.startswith("127."):
+            by_ip.setdefault(ip, name)
+
+    ips = sorted(
+        a
+        for a in get_local_ipv4_addresses(force_refresh=force_refresh)
+        if a and not a.startswith("127.")
+    )
+    out: list[tuple[str, str]] = []
+    for ip in ips:
+        name = by_ip.get(ip, "").strip()
+        label = f"{name} ({ip})" if name else ip
+        out.append((ip, label))
+    # Windows-Namen auch für IPs, die nur GetAdapters kennt
+    for ip, name in named:
+        if ip not in {x[0] for x in out} and ip and not ip.startswith("127."):
+            out.append((ip, f"{name} ({ip})"))
+    out.sort(key=lambda t: t[1].lower())
+    return out
+
+
 def is_local_ipv4(ip: str | None) -> bool:
     """True, wenn ``ip`` zu diesem Rechner gehört (Loopback oder lokaler Adapter).
 

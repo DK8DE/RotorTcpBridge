@@ -509,6 +509,12 @@ class MainWindow(QMainWindow):
         self._act_tray_commands: QAction | None = None
         self._act_tray_quit: QAction | None = None
         self._init_tray_icon()
+        # DK8DE-Selbstmeldungen (UDP 8889)
+        self._announce_watcher = None
+        self._announce_session_suppress: set[str] = set()
+        self._announce_dialog_open = False
+        self._announce_pending_device = None
+        self._announce_tray_uid = ""
 
         menubar.setStyleSheet("QMenuBar { font-weight: bold; }")
         _menu_bold = "QMenu { font-weight: bold; }"
@@ -1074,6 +1080,7 @@ class MainWindow(QMainWindow):
         self._update_axis_visibility()
         self._update_srv_rows_visibility()
         self._apply_fixed_mainwindow_size()
+        QTimer.singleShot(1500, self._start_module_announce_watcher)
 
         self._global_hotkey_controller = None
         if sys.platform == "win32":
@@ -1409,6 +1416,139 @@ class MainWindow(QMainWindow):
         self._settings_win.show()
         self._settings_win.raise_()
         self._settings_win.activateWindow()
+
+    def _start_module_announce_watcher(self) -> None:
+        from ..module_announce_watcher import ModuleAnnounceWatcher
+
+        w = getattr(self, "_announce_watcher", None)
+        if w is not None:
+            try:
+                if w.isRunning():
+                    return
+            except RuntimeError:
+                self._announce_watcher = None
+        watcher = ModuleAnnounceWatcher(self)
+        watcher.module_announced.connect(
+            self._on_module_announced, Qt.ConnectionType.QueuedConnection
+        )
+        watcher.start()
+        self._announce_watcher = watcher
+
+    def _stop_module_announce_watcher(self) -> None:
+        w = getattr(self, "_announce_watcher", None)
+        self._announce_watcher = None
+        if w is None:
+            return
+        try:
+            w.stop()
+            w.wait(1500)
+        except Exception:
+            pass
+
+    def _known_network_module_uids(self) -> set[str]:
+        from ..network_modules import is_dk8de_vendor, modules_from_cfg
+
+        out: set[str] = set()
+        try:
+            for m in modules_from_cfg(self.cfg):
+                if not is_dk8de_vendor(getattr(m, "vendor", "")):
+                    continue
+                uid = str(getattr(m, "uid", "") or "").strip().upper()
+                if uid:
+                    out.add(uid)
+        except Exception:
+            pass
+        return out
+
+    def _on_module_announced(self, device: object) -> None:
+        from ..dk8de_wlan_module import Dk8deDevice
+        from ..module_announce_watcher import announce_enabled, dismissed_announce_uids
+
+        if not isinstance(device, Dk8deDevice):
+            return
+        if not announce_enabled(self.cfg):
+            return
+        uid = device.uid_norm
+        if not uid:
+            return
+        if uid in dismissed_announce_uids(self.cfg):
+            return
+        if uid in self._known_network_module_uids():
+            return
+        if uid in self._announce_session_suppress:
+            return
+        if self._announce_dialog_open:
+            return
+        self._announce_session_suppress.add(uid)
+        self._announce_pending_device = device
+        self._announce_tray_uid = uid
+        # Tray-Hinweis (falls verfügbar), Dialog danach
+        try:
+            tray = self._tray_icon
+            if tray is not None and QSystemTrayIcon.isSystemTrayAvailable():
+                tray.showMessage(
+                    t("settings.network_announce_title"),
+                    t(
+                        "settings.network_announce_tray",
+                        name=device.name or uid,
+                        uid=uid,
+                        ip=device.ip or "—",
+                    ),
+                    QSystemTrayIcon.MessageIcon.Information,
+                    12000,
+                )
+        except Exception:
+            pass
+        QTimer.singleShot(0, self._show_module_announce_dialog)
+
+    def _show_module_announce_dialog(self) -> None:
+        from ..dk8de_wlan_module import Dk8deDevice
+        from ..module_announce_watcher import dismiss_announce_uid
+        from .settings_network_tab import NewModuleAnnounceDialog
+
+        device = self._announce_pending_device
+        if not isinstance(device, Dk8deDevice):
+            return
+        if self._announce_dialog_open:
+            return
+        self._announce_dialog_open = True
+        try:
+            dlg = NewModuleAnnounceDialog(device, self)
+            dlg.exec()
+            choice = dlg.choice
+        except Exception:
+            self._announce_dialog_open = False
+            return
+        self._announce_dialog_open = False
+        self._announce_pending_device = None
+        uid = device.uid_norm
+        if choice == NewModuleAnnounceDialog.RESULT_DISMISS:
+            if dismiss_announce_uid(self.cfg, uid):
+                try:
+                    if self.save_cfg_cb:
+                        self.save_cfg_cb(self.cfg)
+                except Exception:
+                    pass
+            self._announce_session_suppress.add(uid)
+            return
+        if choice == NewModuleAnnounceDialog.RESULT_CONFIGURE:
+            self._announce_session_suppress.discard(uid)
+            self._configure_announced_module(device)
+            if uid not in self._known_network_module_uids():
+                self._announce_session_suppress.add(uid)
+            return
+        # Später: diese Session nicht erneut nerven
+        self._announce_session_suppress.add(uid)
+
+    def _configure_announced_module(self, device: object) -> None:
+        sw = getattr(self, "_settings_win", None)
+        if sw is None:
+            self._open_settings()
+            sw = getattr(self, "_settings_win", None)
+        if sw is not None and hasattr(sw, "offer_announced_network_module"):
+            sw.offer_announced_network_module(device)
+        else:
+            self._open_settings()
 
     def _toggle_log(self):
         if self._log_win.isVisible():
@@ -4611,7 +4751,14 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(200, _poll)
 
     def _run_firmware_compat_check_and_dialogs(self) -> None:
-        from ..firmware_compat_check import run_compat_check
+        from ..firmware_compat_check import (
+            clear_fw_mismatch_ignore_if_ok,
+            fw_ignore_key_module,
+            fw_ignore_key_rotor,
+            fw_mismatch_is_suppressed,
+            remember_fw_mismatch_ignore,
+            run_compat_check,
+        )
         from ..version import (
             APP_VERSION,
             CONTROLLER_FW_VERSION,
@@ -4628,6 +4775,43 @@ class MainWindow(QMainWindow):
             return
         self._firmware_compat_result = result
         self._apply_firmware_status_to_update_tab(result)
+
+        # Passende Firmware → alte Ignorier-Einträge aufräumen
+        ignore_dirty = False
+        for ax in result.rotor_axes:
+            if ax.ok and ax.found:
+                before = dict(self.cfg.get("firmware_mismatch_ignore") or {})
+                clear_fw_mismatch_ignore_if_ok(
+                    self.cfg,
+                    fw_ignore_key_rotor(ax.axis),
+                    found=ax.found,
+                    expected=ax.expected,
+                )
+                after = self.cfg.get("firmware_mismatch_ignore") or {}
+                if before != after:
+                    ignore_dirty = True
+        for mod in getattr(result, "modules", None) or []:
+            if getattr(mod, "ok", False) and getattr(mod, "found", None):
+                key = fw_ignore_key_module(
+                    uid=str(getattr(mod, "uid", "") or ""),
+                    host=str(getattr(mod, "host", "") or ""),
+                    kind=str(getattr(mod, "kind", "") or ""),
+                )
+                before = dict(self.cfg.get("firmware_mismatch_ignore") or {})
+                clear_fw_mismatch_ignore_if_ok(
+                    self.cfg,
+                    key,
+                    found=mod.found,
+                    expected=getattr(mod, "expected", ""),
+                )
+                after = self.cfg.get("firmware_mismatch_ignore") or {}
+                if before != after:
+                    ignore_dirty = True
+        if ignore_dirty and self.save_cfg_cb:
+            try:
+                self.save_cfg_cb(self.cfg)
+            except Exception:
+                pass
 
         # Optionale Info-Zeilen / Modul-Mismatches
         info_parts: list[str] = []
@@ -4668,10 +4852,16 @@ class MainWindow(QMainWindow):
 
         # Nur echte Mismatches: Version wurde gelesen und ist zu alt.
         # Offline / nicht lesbar → kein Dialog „Firmware passt nicht“.
+        # „Nicht mehr erinnern“: unterdrücken bis die gelesene Version steigt.
         detail_lines: list[str] = []
+        pending_ignore: list[tuple[str, str]] = []
         for ax in result.rotor_axes:
             if ax.offline or ax.ok or ax.query_failed or not ax.found:
                 continue
+            key = fw_ignore_key_rotor(ax.axis)
+            if fw_mismatch_is_suppressed(self.cfg, key, ax.found):
+                continue
+            pending_ignore.append((key, str(ax.found)))
             detail_lines.append(
                 t(
                     "fw.rotor_mismatch_axis_line",
@@ -4684,6 +4874,14 @@ class MainWindow(QMainWindow):
         for mod in getattr(result, "modules", None) or []:
             if getattr(mod, "offline", False) or getattr(mod, "ok", True) or not getattr(mod, "found", None):
                 continue
+            key = fw_ignore_key_module(
+                uid=str(getattr(mod, "uid", "") or ""),
+                host=str(getattr(mod, "host", "") or ""),
+                kind=str(getattr(mod, "kind", "") or ""),
+            )
+            if fw_mismatch_is_suppressed(self.cfg, key, mod.found):
+                continue
+            pending_ignore.append((key, str(mod.found)))
             module_lines.append(
                 t(
                     "fw.module_mismatch_line",
@@ -4694,8 +4892,6 @@ class MainWindow(QMainWindow):
                 )
             )
 
-        if result.rotor_ok and not module_lines:
-            return
         if not detail_lines and not module_lines:
             return
 
@@ -4738,10 +4934,26 @@ class MainWindow(QMainWindow):
             t("fw.btn_open_download_page"),
             QMessageBox.ButtonRole.ActionRole,
         )
+        btn_ignore = box.addButton(
+            t("fw.mismatch_dont_remind"),
+            QMessageBox.ButtonRole.DestructiveRole,
+        )
+        btn_ignore.setToolTip(tt("fw.mismatch_dont_remind_tooltip"))
         box.addButton(t("fw.rotor_mismatch_ack"), QMessageBox.ButtonRole.AcceptRole)
         box.exec()
-        if box.clickedButton() is btn_dl:
+        clicked = box.clickedButton()
+        if clicked is btn_dl:
             self._open_download_page()
+        elif clicked is btn_ignore and pending_ignore:
+            changed = False
+            for key, found in pending_ignore:
+                if remember_fw_mismatch_ignore(self.cfg, key, found):
+                    changed = True
+            if changed and self.save_cfg_cb:
+                try:
+                    self.save_cfg_cb(self.cfg)
+                except Exception:
+                    pass
 
     def _apply_firmware_status_to_update_tab(self, result) -> None:
         info_text = ""
@@ -4821,6 +5033,10 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             self._closing_after_park_confirm = True
+        try:
+            self._stop_module_announce_watcher()
+        except Exception:
+            pass
         try:
             if self._tray_icon is not None:
                 self._tray_icon.hide()

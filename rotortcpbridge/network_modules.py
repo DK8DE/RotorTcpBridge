@@ -1900,18 +1900,28 @@ def ebyte_page_from_payload(payload: bytes) -> Optional[EbytePage]:
     return EbytePage(page=page, body=body, crc_k=k, crc_hi=bytes(crc_hi))
 
 
-def _ebyte_open_socket(listen_port: int = EBYTE_UDP_LISTEN_PORT) -> socket.socket:
+def _ebyte_open_socket(
+    listen_port: int = EBYTE_UDP_LISTEN_PORT,
+    *,
+    bind_ip: str = "",
+) -> socket.socket:
     """UDP-Socket an Port 1902 — Geraete antworten dorthin (Mitschnitt).
+
+    ``bind_ip``: optional feste Adapter-IP (Windows: Broadcast geht dann über
+    dieses Interface). Leer = ``0.0.0.0`` (alle Adapter).
 
     Kein Fallback auf Port 0: Antworten gingen sonst verloren (kein RX / kein ACK).
     """
+    host = str(bind_ip or "").strip() or "0.0.0.0"
+    if host.startswith("127."):
+        host = "0.0.0.0"
     last_err: Optional[OSError] = None
     for _ in range(5):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         try:
-            sock.bind(("0.0.0.0", int(listen_port)))
+            sock.bind((host, int(listen_port)))
             sock.settimeout(0.2)
             return sock
         except OSError as exc:
@@ -1982,23 +1992,44 @@ def ebyte_udp_discover(
     timeout: float = 1.5,
     read_pages: bool = True,
     max_pages: int = 16,
+    bind_ip: str = "",
 ) -> List[EbyteDevice]:
-    """Broadcast-Discovery auf UDP 1901/1902; optional Seiten lesen und Netzfelder parsen."""
+    """Broadcast-Discovery auf UDP 1901/1902; optional Seiten lesen und Netzfelder parsen.
+
+    ``bind_ip``: Suche nur über diesen Adapter (IPv4). Leer = alle Adapter
+    (0.0.0.0 + zusätzlicher Broadcast je lokaler Adresse).
+    """
+    bind = str(bind_ip or "").strip()
     devices: Dict[bytes, EbyteDevice] = {}
-    sock = _ebyte_open_socket()
+    sock = _ebyte_open_socket(bind_ip=bind)
+    extra_socks: List[socket.socket] = []
     try:
         deadline = time.time() + max(0.3, float(timeout))
         # Zwei Pings wie im Mitschnitt
         for _ in range(2):
             _ebyte_send_broadcast(sock, EBYTE_DISCOVER_PING)
+            # Ohne festes Interface: zusätzlich von allen Adaptern (Windows)
+            if not bind:
+                if not extra_socks:
+                    extra_socks = _ebyte_send_from_all_interfaces(
+                        EBYTE_DISCOVER_PING, EBYTE_UDP_CMD_PORT
+                    )
+                else:
+                    for s in extra_socks:
+                        try:
+                            s.sendto(
+                                EBYTE_DISCOVER_PING,
+                                ("255.255.255.255", EBYTE_UDP_CMD_PORT),
+                            )
+                        except OSError:
+                            pass
             time.sleep(0.05)
+        listen = [sock] + extra_socks
         while time.time() < deadline:
-            try:
-                data, _addr = sock.recvfrom(2048)
-            except socket.timeout:
+            pkt = _ebyte_recv_from_any(listen, 0.2)
+            if pkt is None:
                 continue
-            except OSError:
-                break
+            data, _addr = pkt
             if len(data) >= 10 and data[0] == 0xFD and data[1] == 0x06:
                 mac = data[2:8]
                 if mac not in devices:
@@ -2050,6 +2081,11 @@ def ebyte_udp_discover(
                         except Exception:
                             pass
     finally:
+        for s in extra_socks:
+            try:
+                s.close()
+            except OSError:
+                pass
         try:
             sock.close()
         except OSError:
